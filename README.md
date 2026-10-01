@@ -24,6 +24,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-Workbench.ps
 
 初回インストール時のみ、ハッシュを固定した Python パッケージを取得します。ランタイムに CDN や外部 JavaScript はありません。
 
+### 会社のプロキシ経由でインストールする場合
+
+セットアップ中の `WARNING: Retrying ... ConnectTimeoutError` は、パッケージの取得先またはプロキシへの接続がタイムアウトしている状態です。会社で指定されたプロキシのホスト名・ポートを使って再実行してください。アプリの設定画面で指定するプロキシとは別の、インストール時の指定です。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Setup-Windows.ps1 -ProxyUrl "http://proxy.example.local:8080" -CreateDesktopShortcut
+```
+
+上の URL は例です。実際の会社の設定に置き換えてください。HTTPS のパッケージを取得する場合でも、接続するプロキシ自体が HTTP なら `http://` を指定します。`-ProxyUrl` は HTTP(S) の接続先のみ対応し、PAC ファイルや認証情報を埋め込んだ URL は受け付けません。認証が必要な環境では会社指定の pip 設定・認証方法を利用してください。プロキシのパスワードをチャットや GitHub Issue に貼らないでください。
+
+既にダウンロードした旧版のセットアップでも、同じ PowerShell 内で環境変数を指定してから実行できます。これはその PowerShell と子プロセスだけに適用され、Windows の永続設定は変更しません。
+
+```powershell
+$env:PIP_PROXY = "http://proxy.example.local:8080"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Setup-Windows.ps1 -CreateDesktopShortcut
+```
+
+`PIP_PROXY` は pip 用の指定です。明示プロキシを指定しなければ、既存の pip 設定や `HTTP_PROXY` / `HTTPS_PROXY` 等の環境変数も使われます。セットアップ自身はプロキシ設定を保存しません。Local LLM の実行時プロキシ除外も変わりません。作成済みの `.venv` は再実行で利用できるので、ダウンロード失敗を理由に削除する必要はありません。
+
+`407 Proxy Authentication Required` はプロキシ認証、`CERTIFICATE_VERIFY_FAILED` は証明書の信頼設定の問題です。証明書エラーの場合は、会社から指定された PEM 形式の CA バンドルを `-CertificatePath "C:\Certificates\company-ca.pem"` で渡せます。証明書検証を無効にする設定は行いません。必要に応じて `-TimeoutSeconds 120` / `-Retries 3` も指定できますが、接続先や認証の誤りは待ち時間を延ばしても解消しません。
+
+参考: [pip のプロキシ設定](https://pip.pypa.io/en/stable/user_guide/#using-a-proxy-server)、[pip の HTTPS 証明書設定](https://pip.pypa.io/en/stable/topics/https-certificates/)。
+
 ## 最初の設定
 
 1. **設定 → API プロファイル**で接続先、モデル名を入力して保存します。モデル名は利用中のサーバーやアカウントで有効なものを入力してください。固定の推奨モデル名は埋め込んでいません。

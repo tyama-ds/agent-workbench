@@ -17,6 +17,7 @@ Recorded local result after adding the automatic collaboration budget: **159 pas
 - Browser bootstrap expiry/one-use policy, Host/Origin checks, CSP, JSON-only mutations, memory-key persistence boundary, chunked models-list parsing, and active-run settings lock.
 - Agent budget/role restrictions, cross-team mail rejection, pause/finish suppressing later calls, human FIFO, secret snapshot redaction and reservation conflicts.
 - Automatic collaboration default/migration (24), configurable bounds (0–1000), counting successful assignments/mail/completion/error notices, failed-delivery exclusion, atomic competing sends, exact-limit completion, zero-budget batch suppression, successful worker results when notification is blocked, and no budget reset after human input.
+- Windows installer proxy handling passed 17 focused checks using the real PowerShell 5.1 script and a temporary command stub that records arguments instead of downloading packages. This covers both pip stages, inherited proxy settings, explicit proxy/CA/timeout options, paths with spaces, invalid-option rejection and preservation of an existing environment after installation failure. It does not verify a user's corporate proxy credentials or network reachability.
 
 The Windows symlink test can skip when the account lacks symlink creation privilege. Windows junction coverage is a separate test and is exercised. On hosts without Node.js, JavaScript syntax/unit tests skip; the UI runtime itself does not need Node.
 
