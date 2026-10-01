@@ -2,7 +2,7 @@
 
 Local verification date: 2026-10-01. Environment: Windows, Python 3.13, Edge headless for UI tests.
 
-Recorded local result: **143 passed, 1 skipped**, with `pip check` reporting no broken requirements. Setup was also run successfully through Windows PowerShell 5.1 and created the desktop shortcut. A separate launcher smoke test verified a Japanese/spaced state path and duplicate-launch handling without interrupting the running fixture server.
+Recorded local result after adding the automatic collaboration budget: **159 passed, 1 skipped**. The initial setup also passed `pip check`, ran successfully through Windows PowerShell 5.1 and created the desktop shortcut. A separate launcher smoke test verified a Japanese/spaced state path and duplicate-launch handling without interrupting the running fixture server.
 
 ## Automated checks
 
@@ -16,6 +16,7 @@ Recorded local result: **143 passed, 1 skipped**, with `pip check` reporting no 
 - Real HTTP proxy fixture receives both search and fetch; environment proxy variables are ignored, private redirects and unsafe IP families are refused, and decompressed response sizes are bounded.
 - Browser bootstrap expiry/one-use policy, Host/Origin checks, CSP, JSON-only mutations, memory-key persistence boundary, chunked models-list parsing, and active-run settings lock.
 - Agent budget/role restrictions, cross-team mail rejection, pause/finish suppressing later calls, human FIFO, secret snapshot redaction and reservation conflicts.
+- Automatic collaboration default/migration (24), configurable bounds (0–1000), counting successful assignments/mail/completion/error notices, failed-delivery exclusion, atomic competing sends, exact-limit completion, zero-budget batch suppression, successful worker results when notification is blocked, and no budget reset after human input.
 
 The Windows symlink test can skip when the account lacks symlink creation privilege. Windows junction coverage is a separate test and is exercised. On hosts without Node.js, JavaScript syntax/unit tests skip; the UI runtime itself does not need Node.
 
@@ -27,7 +28,7 @@ The Windows symlink test can skip when the account lacks symlink creation privil
 
 `tools/browser_smoke.cjs` starts a separate real app instance on a random port with temporary state, uses a real `/models` fixture, and opens Edge. It verifies bootstrap, configuration persistence, memory-only secret entry, exact text submission, role cards, mail, human answers, stopped state, settings lock, default collapsed reasoning, desktop/mobile layout and no HTML injection. Team snapshots here are synthetic UI fixtures; engine behavior is covered independently by the HTTP integration tests above.
 
-Screenshots and the report are generated under ignored `runtime/verification/`. The tested browser page made no external asset/network requests and had no JavaScript or CSP errors.
+Screenshots and the report are generated under ignored `runtime/verification/`. The automatic collaboration setting was checked from default 24 through edit/save/reload at 7; live counters and a blocked-handoff notice were also exercised. The tested browser page made no external asset/network requests and had no JavaScript or CSP errors.
 
 ## Not yet verified with real services
 

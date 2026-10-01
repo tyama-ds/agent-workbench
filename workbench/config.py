@@ -134,7 +134,7 @@ def validate_settings(raw):
         number(local[key], key, low, high, integer=key in {'max_concurrent_requests', 'max_retries', 'gpu_index', 'max_vram_mb'})
     if local['gpu_guard_enabled'] and any(p['enabled'] and p['kind'] == 'local' and urlsplit(p['base_url']).hostname not in LOOPBACK for p in profiles):
         raise ValueError('LAN の Local API では、このPCの GPU 監視を使用できません')
-    limits = {'max_workers': (0, 16), 'max_model_calls': (1, 1000), 'max_tool_calls': (1, 5000),
+    limits = {'max_workers': (0, 16), 'max_auto_collaborations': (0, 1000), 'max_model_calls': (1, 1000), 'max_tool_calls': (1, 5000),
               'max_turns_per_agent': (1, 100), 'max_run_seconds': (10, 86400),
               'max_context_chars': (4000, 2000000), 'max_output_tokens': (128, 65536),
               'max_file_bytes': (1024, 50 * 1024 * 1024)}

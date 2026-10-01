@@ -42,6 +42,10 @@ async function main() {
     assert.equal(await page.locator('#startRun').isDisabled(),true);
     report.checks.push('real one-use bootstrap, cookie session, fragment removal, same-origin assets');
     await page.locator('#navSettings').click();
+    assert.equal(await page.locator('#limits-max_auto_collaborations').inputValue(),'24');
+    assert.equal(await page.locator('#limits-max_auto_collaborations').getAttribute('min'),'0');
+    assert.equal(await page.locator('#limits-max_auto_collaborations').getAttribute('max'),'1000');
+    await page.locator('#limits-max_auto_collaborations').fill('7');
     await page.locator('#profile-0-base_url').fill(providerUrl);await page.locator('#profile-0-model').fill('fixture-local-model');
     await page.locator('.profile-editor').nth(1).getByRole('button',{name:'編集',exact:true}).click();
     await page.locator('.profile-editor').nth(2).getByRole('button',{name:'編集',exact:true}).click();
@@ -56,8 +60,12 @@ async function main() {
     await page.locator('#systemPolicy').fill(policy);await page.locator('#saveSettings').click();
     await page.locator('#settingsStatus').filter({hasText:'設定を保存しました'}).waitFor();
     const persisted=JSON.parse(fs.readFileSync(path.join(stateDir,'settings.json'),'utf8'));
-    assert.equal(persisted.providers.length,4);assert.equal(persisted.local.max_concurrent_requests,1);assert.equal(persisted.limits.max_workers,3);assert.equal(persisted.system_policy,policy);
+    assert.equal(persisted.providers.length,4);assert.equal(persisted.local.max_concurrent_requests,1);assert.equal(persisted.limits.max_workers,3);assert.equal(persisted.limits.max_auto_collaborations,7);assert.equal(persisted.system_policy,policy);
     assert.deepEqual(persisted.paths.deny_roots,[path.join(workspace,'private')]);
+    await page.reload();await page.getByText('接続中',{exact:true}).waitFor();await page.locator('#navSettings').click();
+    assert.equal(await page.locator('#limits-max_auto_collaborations').inputValue(),'7');
+    for(const index of [1,2,3])await page.locator('.profile-editor').nth(index).getByRole('button',{name:'編集',exact:true}).click();
+    report.checks.push('automatic collaboration limit defaults to 24, accepts 0–1000, persists edited value across reload');
     await page.locator('#profile-1-secret').fill('fixture-memory-secret');
     await page.locator('.profile-editor').nth(1).getByRole('button',{name:'キーをセット',exact:true}).click();
     await page.locator('.profile-editor').nth(1).locator('.inline-status').filter({hasText:'キーをセットしました'}).waitFor();
@@ -76,7 +84,7 @@ async function main() {
     await page.route('**/api/state',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixture)}));
     await page.route('**/api/runs',async route=>{
       const data=route.request().postDataJSON();sentRuns.push(data);const at=Date.now()/1000;
-      const run={id:'fixture-run',...data,status:'working',created_at:at,model_calls:4,tool_calls:6,agent_ids:['fixture-pm','fixture-worker-1','fixture-worker-2']};fixture.runs=[run];
+      const run={id:'fixture-run',...data,status:'working',created_at:at,model_calls:4,tool_calls:6,auto_collaborations:3,max_auto_collaborations:7,collaboration_limit_reached:false,agent_ids:['fixture-pm','fixture-worker-1','fixture-worker-2']};fixture.runs=[run];
       fixture.agents=[
         {id:'fixture-pm',run_id:run.id,name:'PM',role:'pm',profile_id:'local',status:'waiting',question:'更新した社内FAQを共有する前に、確認対象のチームを指定してください。',turns:2,logs:[{id:1,kind:'assistant',text:'作業を2つに分けました。検索案の整理と、記載内容の確認を並行して進めています。',thinking:'参照する資料と、確認すべき観点を整理しています。',at}]},
         {id:'fixture-worker-1',run_id:run.id,name:'資料・検索担当',role:'worker',profile_id:'openai',parent_id:'fixture-pm',status:'working',turns:3,task:'検索パターンと参照先を整理する',logs:[{id:2,kind:'assistant',text:'資料を確認し、検索案をまとめています。',at}]},
@@ -97,6 +105,8 @@ async function main() {
     await page.locator('#humanQuestion').waitFor({state:'visible'});
     assert.deepEqual(sentRuns,[{task,pm_profile:'local',worker_profiles:['local','openai'],max_workers:2}]);
     assert.equal(await page.locator('.agent-card').count(),3);
+    assert.equal(await page.locator('#runMetrics .metric').filter({hasText:'自動連携'}).locator('b').textContent(),'3 / 7');
+    assert.equal(await page.locator('#collaborationLimitNotice').isVisible(),false);
     assert.equal(await page.locator('#conversationLog details[open]').count(),0);
     await page.locator('#conversationLog summary').click();assert.equal(await page.locator('#conversationLog details[open]').count(),1);
     assert.equal(await page.locator('#activityFeed img').count(),0);assert.equal(await page.evaluate(()=>Boolean(window.fixtureInjected)),false);
@@ -110,6 +120,13 @@ async function main() {
     await page.locator('#messageStatus').filter({hasText:'送信しました'}).waitFor();
     assert.deepEqual(sentMessages,[{text:answer}]);assert.equal(await page.locator('#messageInput').inputValue(),'送信中に編集した次の指示');
     report.checks.push('simulated multi-provider team: exact visible task, editable policy, worker limit, mail escaping, collapsed model thinking, human reply, draft preservation and settings lock; no inference');
+    fixture.runs[0].auto_collaborations=7;fixture.runs[0].collaboration_limit_reached=true;fixture.runs[0].status='waiting';
+    await page.locator('#collaborationLimitNotice').waitFor({state:'visible'});
+    assert.equal(await page.locator('#runMetrics .metric').filter({hasText:'自動連携'}).locator('b').textContent(),'7 / 7');
+    assert.equal(await page.locator('#activeRunStatus').textContent(),'連携上限');
+    assert.match(await page.locator('#collaborationLimitNotice').textContent(),/新しい作業を開始/);
+    assert.match(await page.locator('#collaborationLimitNotice').textContent(),/回数はリセットされません/);
+    report.checks.push('collaboration counter and blocked-handoff notice distinguish budget exhaustion from completion');
     await page.locator('#stopRun').click();await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();assert.equal(stopped.length,1);assert.equal(await page.locator('#messageInput').isDisabled(),true);
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.locator('#navWork').click();
     await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));

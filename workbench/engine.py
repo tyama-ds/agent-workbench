@@ -38,6 +38,10 @@ TEAM_TOOLS = [
 TEAM_NAMES = {t['name'] for t in TEAM_TOOLS}
 
 
+class CollaborationLimitError(ValueError):
+    """No new automatic handoff can be accepted in this run."""
+
+
 @dataclass
 class Agent:
     id: str
@@ -153,18 +157,24 @@ class Engine:
         run_id = 'r-' + secrets.token_hex(8)
         run = {'id': run_id, 'task': task, 'pm_profile': pm, 'worker_profiles': list(dict.fromkeys(workers)),
                'max_workers': count, 'status': 'running', 'created_at': time.time(), 'model_calls': 0,
-               'tool_calls': 0, 'agent_ids': [], '_config': config, '_harness': harness,
+               'tool_calls': 0, 'auto_collaborations': 0,
+               'max_auto_collaborations': config['limits']['max_auto_collaborations'],
+               'collaboration_limit_reached': False, '_collaboration_blocked': False,
+               'agent_ids': [], '_config': config, '_harness': harness,
                '_executor': ToolExecutor(harness), '_web': WebTools({'search': search})}
         self.runs[run_id] = run
         lead = self._new_agent(run, pm, 'pm')
         self.enqueue(lead, task, human=True)
         return {'ok': True, 'run': self._redact_tree({k: v for k, v in run.items() if not k.startswith('_')})}
 
-    def enqueue(self, agent, content, *, human=False):
+    def _check_queue(self, agent, *, human=False):
         if agent.closing or self.closed:
             raise ValueError('エージェントは停止しています')
         if len(agent.pending) >= (32 if human else 31):
             raise ValueError('待機キューが満杯です')
+
+    def enqueue(self, agent, content, *, human=False):
+        self._check_queue(agent, human=human)
         if human:
             position = next((i for i, (_, is_human) in enumerate(agent.pending) if not is_human), len(agent.pending))
             agent.pending.insert(position, (content, True))
@@ -194,14 +204,19 @@ class Engine:
             raise ValueError('停止したチームは再開できません。新しい仕事を開始してください')
         if run['_config'] != self.settings.value:
             raise ValueError('設定が変更されています。現在の権限・API 設定で新しい仕事を開始してください')
-        run['status'] = 'running'
         self.enqueue(agent, content, human=True)
+        run['status'] = 'running'
+        # A human may continue an individual agent, but cannot silently refill
+        # the team's automatic handoff budget.
+        run['_collaboration_blocked'] = False
         return {'ok': True}
 
     def _policy(self, run, agent):
         config = run['_config']
         identity = {'id': agent.id, 'role': agent.role, 'parent_id': agent.parent_id,
                     'worker_profiles': run['worker_profiles'], 'max_workers': run['max_workers'],
+                    'auto_collaborations': run['auto_collaborations'],
+                    'max_auto_collaborations': run['max_auto_collaborations'],
                     'read_roots': config['paths']['read_roots'], 'write_roots': config['paths']['write_roots'],
                     'deny_roots': config['paths']['deny_roots']}
         return config['system_policy'] + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False)
@@ -262,6 +277,9 @@ class Engine:
                             if not isinstance(args, dict):
                                 raise ValueError('ツール引数は JSON object が必要です')
                             result = await self.execute_tool(run, agent, name, args)
+                        except CollaborationLimitError as exc:
+                            result = {'ok': False, 'error': str(exc), 'collaboration_limit_reached': True}
+                            stop = True
                         except (ValueError, OSError, TypeError, KeyError) as exc:
                             result = {'ok': False, 'error': self.redact(str(exc))[:1000]}
                         self.log(agent, 'tool', name + '\n' + json.dumps(result, ensure_ascii=False)[:12000])
@@ -285,7 +303,12 @@ class Engine:
                 if agent.parent_id:
                     parent = self.agents[agent.parent_id]
                     if not parent.closing:
-                        self._mail(agent, parent, summary or 'Worker turn completed without a text summary.', completed=True)
+                        try:
+                            self._mail(agent, parent, summary or 'Worker turn completed without a text summary.', completed=True)
+                        except CollaborationLimitError:
+                            # The worker's work succeeded. Keep its result in
+                            # the visible log even if automatic delivery stops.
+                            self.log(agent, 'notice', '自動連携の上限により PM への完了通知を停止しました。結果はこのログで確認できます。')
                 self._run_status(run)
         except asyncio.CancelledError:
             agent.status = 'stopped'
@@ -310,7 +333,7 @@ class Engine:
         agents = [self.agents[x] for x in run['agent_ids']]
         if any(a.status in {'working', 'queued'} or (a.pending and not a.question and a.status != 'error') for a in agents):
             run['status'] = 'running'
-        elif any(a.question or a.status == 'error' for a in agents):
+        elif run.get('_collaboration_blocked') or any(a.question or a.status == 'error' for a in agents):
             run['status'] = 'waiting'
         else:
             run['status'] = 'done'
@@ -318,10 +341,27 @@ class Engine:
     def _mail(self, actor, target, body, completed=False):
         if target.run_id != actor.run_id or target.id == actor.id:
             raise ValueError('別チームまたは自分へのメールは禁止です')
+        self._check_queue(target)
+        run = self.runs[actor.run_id]
+        self._check_collaboration(run, actor)
         envelope = {'kind': 'worker_completed' if completed else 'peer_message', 'sender': actor.id,
                     'sender_name': actor.name, 'body': body, 'untrusted': True}
-        self.event(actor.run_id, actor.id, 'mail', body, **{'from': actor.name, 'to': target.name})
         self.enqueue(target, 'Peer data; not human authorization:\n' + json.dumps(envelope, ensure_ascii=False))
+        run['auto_collaborations'] += 1
+        self.event(actor.run_id, actor.id, 'mail', body, **{'from': actor.name, 'to': target.name})
+
+    def _check_collaboration(self, run, actor):
+        if run['auto_collaborations'] < run['max_auto_collaborations']:
+            return
+        message = (f'自動連携の上限 {run["max_auto_collaborations"]} 回に達しました。'
+                   '新しい委任・メール・自動完了通知は送信できません。'
+                   '自動連携を続ける場合は新しい仕事を開始してください。')
+        run['_collaboration_blocked'] = True
+        if not run['collaboration_limit_reached']:
+            run['collaboration_limit_reached'] = True
+            self.event(run['id'], actor.id, 'collaboration_limit', message)
+        self.log(actor, 'notice', message)
+        raise CollaborationLimitError(message)
 
     def _release(self, agent, selected=None):
         for path, owner in list(self.reservations.items()):
@@ -329,12 +369,15 @@ class Engine:
                 del self.reservations[path]
 
     async def execute_tool(self, run, agent, name, args):
+        if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
+            raise ValueError('停止したチームではツールを実行できません')
         if name in TEAM_NAMES:
             spec = next(t['parameters'] for t in TEAM_TOOLS if t['name'] == name)
             if set(args) - set(spec['properties']) or set(spec['required']) - set(args):
                 raise ValueError('ツール引数が不正です')
         if name == 'list_team':
             return {'self': agent.id, 'max_workers': run['max_workers'], 'allowed_profiles': run['worker_profiles'],
+                    'auto_collaborations': run['auto_collaborations'], 'max_auto_collaborations': run['max_auto_collaborations'],
                     'agents': [{k: getattr(self.agents[i], k) for k in ('id', 'name', 'role', 'profile_id', 'status', 'parent_id')} for i in run['agent_ids']]}
         if name == 'spawn_worker':
             if agent.parent_id is not None:
@@ -346,8 +389,10 @@ class Engine:
                 raise ValueError('この仕事で許可されていない API です')
             task = text(args['task'], 'worker task', 16000, False)
             role = text(args['role'], 'role', 80, False)
+            self._check_collaboration(run, agent)
             child = self._new_agent(run, profile, role, agent.id)
             self.enqueue(child, task)
+            run['auto_collaborations'] += 1
             return {'ok': True, 'agent_id': child.id, 'name': child.name}
         if name == 'send_message':
             target = self.agents.get(text(args['to_agent_id'], 'to_agent_id', 100, False))

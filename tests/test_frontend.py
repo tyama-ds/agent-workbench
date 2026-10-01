@@ -74,6 +74,19 @@ def test_bootstrap_drops_token_before_authenticated_requests():
     assert "credentials:'same-origin'" in APP
 
 
+def test_auto_collaboration_limit_exposes_integer_bounds_and_blocked_run_state():
+    prefix = APP[:APP.index("const ACTIVE_STATUSES")]
+    result = run_javascript(prefix + "console.log(JSON.stringify({field:FIELD_GROUPS.limits.find(field=>field[0]==='max_auto_collaborations'),bounds:NUMBER_BOUNDS.limits.max_auto_collaborations}));")
+    assert result["bounds"] == [0, 1000]
+    assert result["field"][2] == "number"
+    assert result["field"][4] == "1"
+    assert "24" in result["field"][5]
+    assert 'id="collaborationLimitNotice"' in HTML
+    assert "run.auto_collaborations??0" in APP
+    assert "run.max_auto_collaborations??24" in APP
+    assert "run.collaboration_limit_reached===true" in APP
+
+
 def test_run_and_reply_preserve_exact_visible_text_and_default_thinking_is_collapsed():
     assert "const task=$('taskInput').value" in APP
     assert "body:{task,pm_profile:" in APP

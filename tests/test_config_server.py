@@ -37,6 +37,28 @@ def test_config_bounds_and_secret_free_persistence(tmp_path, monkeypatch):
         validate_settings({'search': {'timeout_seconds': 61}})
 
 
+def test_old_settings_inherit_24_auto_collaborations_and_custom_value_persists(tmp_path):
+    previous = copy.deepcopy(DEFAULT)
+    del previous['limits']['max_auto_collaborations']
+    (tmp_path / 'settings.json').write_text(json.dumps(previous), encoding='utf-8')
+    settings = Settings(tmp_path)
+    assert settings.value['limits']['max_auto_collaborations'] == 24
+    settings.value['limits']['max_auto_collaborations'] = 7
+    settings.save(settings.value)
+    assert Settings(tmp_path).value['limits']['max_auto_collaborations'] == 7
+
+
+@pytest.mark.parametrize('value', [-1, 1001, 2.5, True, '24', None])
+def test_auto_collaboration_limit_rejects_invalid_values(value):
+    with pytest.raises(ValueError):
+        validate_settings({'limits': {'max_auto_collaborations': value}})
+
+
+@pytest.mark.parametrize('value', [0, 24, 1000])
+def test_auto_collaboration_limit_accepts_bounds(value):
+    assert validate_settings({'limits': {'max_auto_collaborations': value}})['limits']['max_auto_collaborations'] == value
+
+
 @pytest.mark.parametrize('host', ['192.168.1.5', '10.0.0.1', '172.16.1.2', '[fd00::1]', '127.0.0.1', 'localhost'])
 def test_local_lan_hosts(host):
     assert url('http://' + host + ':8000/v1', local=True)

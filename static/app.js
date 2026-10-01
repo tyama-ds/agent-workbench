@@ -32,6 +32,7 @@ const FIELD_GROUPS = {
   ],
   limits: [
     ['max_workers','作業者数の最大値','number',0],
+    ['max_auto_collaborations','自動連携回数の上限','number',0,'1','初期値24回。委任・メール・完了通知の合計。0 は自動連携なし。',1000],
     ['max_model_calls','モデル呼び出し上限','number',1],
     ['max_tool_calls','ツール呼び出し上限','number',1],
     ['max_turns_per_agent','1エージェントのターン上限','number',1],
@@ -51,7 +52,7 @@ const PROFILE_FIELDS = [
   ['request_timeout_seconds','リクエスト上限（秒）','number',1,'1','Local は共通設定の上限も適用されます'],
 ];
 const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'回答待ち',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機'};
-const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
+const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
 const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,drafts:new Map(),logSignature:'',busyMessage:false};
 const $ = id => document.getElementById(id);
@@ -250,15 +251,19 @@ function renderActivity(run) {
   if(!events.length){feed.appendChild(element('p','empty-small','エージェント同士の連絡や作業の進捗がここに表示されます。'));return;}
   events.forEach(event=>{const row=element('article','activity-item'),content=element('div');let title;
     if(event.kind==='mail')title=`${event.from||'エージェント'} → ${Array.isArray(event.to)?event.to.join(', '):event.to||'チーム'}`;
-    else title=({spawn:'作業者が参加',question:'人への質問',error:'エラー',done:'作業完了',stopped:'作業を停止',tool:'ツール実行'})[event.kind]||event.kind||'進捗';
+    else title=({spawn:'作業者が参加',question:'人への質問',error:'エラー',done:'作業完了',stopped:'作業を停止',tool:'ツール実行',collaboration_limit:'自動連携が上限に到達'})[event.kind]||event.kind||'進捗';
     content.append(element('div','activity-title',title),element('div','activity-body',event.text||''));row.append(element('time','activity-time',localTime(event.at)),content);feed.appendChild(row);
   });
 }
 function renderRun() {
   const run=getRun();$('activeRunSection').hidden=!run;$('workEmpty').hidden=Boolean(run);if(!run)return;
   $('activeRunTitle').textContent='チームの作業';$('activeRunStatus').className='status-badge '+(Object.hasOwn(STATUS_LABELS,run.status)?run.status:'');$('activeRunStatus').textContent=statusLabel(run.status);$('activeRunTask').textContent=run.task||'';
+  const collaborationBlocked=run.collaboration_limit_reached===true;
+  if(collaborationBlocked&&run.status==='waiting')$('activeRunStatus').textContent='連携上限';
+  $('collaborationLimitNotice').hidden=!collaborationBlocked;
+  $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。開始済み・待機中の作業は続行できます。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!ACTIVE_STATUSES.has(run.status)||run.status==='stopping';
-  const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of [['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0]]){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}
+  const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of [['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0]]){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}
   const agents=ui.state.agents.filter(agent=>agent.run_id===run.id);
   if(!agents.some(agent=>agent.id===ui.selectedAgent)){saveAgentDraft();ui.selectedAgent=agents.find(agent=>agent.role==='pm')?.id||agents[0]?.id||null;$('messageInput').value=ui.drafts.get(ui.selectedAgent)||'';}
   renderAgents(agents);renderConversation(getAgent());renderActivity(run);

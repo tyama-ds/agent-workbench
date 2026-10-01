@@ -6,7 +6,7 @@ import time
 import pytest
 
 from workbench.config import Settings, DEFAULT
-from workbench.engine import Engine, Agent
+from workbench.engine import Engine, Agent, CollaborationLimitError
 from workbench.providers import ModelReply
 
 
@@ -228,5 +228,127 @@ async def test_old_run_cannot_resume_after_scope_or_provider_settings_change(tmp
         engine.settings.value['paths']['write_roots'] = []
         with pytest.raises(ValueError, match='設定が変更'):
             await engine.human_message(pm.id, 'Continue with the old write permission')
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('maximum', [1, 2])
+async def test_auto_completion_counts_and_exact_limit_can_finish(tmp_path, maximum):
+    client = ScriptClient([
+        reply(calls=[('spawn_worker', {'role': 'writer', 'task': 'Prepare result', 'profile_id': 'local'})]),
+        reply('Waiting for the worker'),
+        reply(calls=[('finish_work', {'summary': 'Verified result'})]),
+        reply(calls=[('finish_work', {'summary': 'Team complete'})]),
+    ])
+    engine, _ = configured(tmp_path, client)
+    engine.settings.value['limits']['max_auto_collaborations'] = maximum
+    try:
+        run, pm = await start(engine)
+        await settled(engine)
+        worker = engine.agents[run['agent_ids'][1]]
+        assert worker.status == 'done' and not worker.last_error
+        assert any(log['kind'] == 'result' and log['text'] == 'Verified result' for log in worker.logs)
+        assert run['auto_collaborations'] == maximum
+        assert run['collaboration_limit_reached'] is (maximum == 1)
+        assert run['status'] == ('waiting' if maximum == 1 else 'done')
+        assert len(client.calls) == (3 if maximum == 1 else 4)
+        assert sum(event['kind'] == 'mail' for event in engine.events) == (0 if maximum == 1 else 1)
+        if maximum == 1:
+            # Explicit human direction may finish PM work, but cannot refill the budget.
+            await engine.human_message(pm.id, 'I reviewed the worker log. Finish your own report.')
+            await settled(engine)
+            assert run['status'] == 'done' and run['auto_collaborations'] == 1
+            assert run['collaboration_limit_reached']
+            with pytest.raises(CollaborationLimitError):
+                await engine.execute_tool(run, pm, 'send_message', {'to_agent_id': worker.id, 'body': 'More work'})
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_zero_auto_limit_stops_batch_without_retry_or_orphan_worker(tmp_path):
+    client = ScriptClient([reply(calls=[
+        ('spawn_worker', {'role': 'writer', 'task': 'Must not start', 'profile_id': 'local'}),
+        ('write_text', {'path': 'unexpected.txt', 'text': 'no', 'expected_sha256': 'missing'}),
+        ('ask_user', {'question': 'This later tool must also be skipped'}),
+    ])])
+    engine, work = configured(tmp_path, client)
+    engine.settings.value['limits']['max_auto_collaborations'] = 0
+    try:
+        run, pm = await start(engine)
+        await settled(engine)
+        assert len(run['agent_ids']) == 1 and run['auto_collaborations'] == 0
+        assert run['status'] == 'waiting' and run['collaboration_limit_reached']
+        assert len(client.calls) == 1 and not (work / 'unexpected.txt').exists()
+        assert not pm.question and not pm.last_error
+        results = [json.loads(item['content']) for item in pm.conversation if item['role'] == 'tool']
+        assert len(results) == 3 and all(value['ok'] is False for value in results)
+        assert results[0]['collaboration_limit_reached']
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_auto_budget_counts_successful_deliveries_only_and_is_per_run(tmp_path):
+    engine, work = configured(tmp_path, ScriptClient([]))
+    engine.kick = lambda a: None
+    engine.settings.value['limits']['max_auto_collaborations'] = 2
+    try:
+        run, pm = await start(engine)
+        run2, pm2 = await start(engine)
+        assert run['auto_collaborations'] == run2['auto_collaborations'] == 0
+        await engine.execute_tool(run, pm, 'list_team', {})
+        await engine.execute_tool(run, pm, 'write_text', {'path': 'ordinary.txt', 'text': 'yes', 'expected_sha256': 'missing'})
+        await engine.human_message(pm.id, 'Human instruction')
+        assert run['auto_collaborations'] == 0
+        with pytest.raises(ValueError):
+            await engine.execute_tool(run, pm, 'spawn_worker', {'role': 'bad', 'task': 'bad', 'profile_id': 'unknown'})
+        result = await engine.execute_tool(run, pm, 'spawn_worker', {'role': 'writer', 'task': 'Write', 'profile_id': 'local'})
+        worker = engine.agents[result['agent_id']]
+        assert run['auto_collaborations'] == 1
+        for target in (pm, pm2):
+            with pytest.raises(ValueError):
+                await engine.execute_tool(run, pm, 'send_message', {'to_agent_id': target.id, 'body': 'invalid'})
+        for _ in range(30):
+            engine.enqueue(worker, 'Previously delivered fixture mail')
+        before = len(engine.events)
+        with pytest.raises(ValueError, match='キュー'):
+            await engine.execute_tool(run, pm, 'send_message', {'to_agent_id': worker.id, 'body': 'Full'})
+        assert len(engine.events) == before and run['auto_collaborations'] == 1
+        worker.pending.clear()
+        # Two tasks competing for one remaining delivery cannot overshoot.
+        results = await asyncio.gather(*[
+            engine.execute_tool(run, pm, 'send_message', {'to_agent_id': worker.id, 'body': f'Message {i}'})
+            for i in range(2)], return_exceptions=True)
+        assert sum(isinstance(value, CollaborationLimitError) for value in results) == 1
+        assert len(worker.pending) == 1 and run['auto_collaborations'] == 2
+        assert run2['auto_collaborations'] == 0
+        assert sum(event['kind'] == 'mail' for event in engine.events) == 1
+        team = await engine.execute_tool(run, pm, 'list_team', {})
+        assert team['auto_collaborations'] == team['max_auto_collaborations'] == 2
+        await engine.stop_run(run['id'])
+        with pytest.raises(ValueError, match='停止'):
+            await engine.execute_tool(run, pm, 'spawn_worker', {'role': 'late', 'task': 'late', 'profile_id': 'local'})
+        assert len(run['agent_ids']) == 2 and run['auto_collaborations'] == 2
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_error_notice_also_consumes_one_collaboration(tmp_path):
+    async def fail(profile, messages):
+        raise ValueError('Fixture worker failure')
+    client = ScriptClient([
+        reply(calls=[('spawn_worker', {'role': 'writer', 'task': 'Work', 'profile_id': 'local'})]),
+        reply('Wait'), fail, reply('Worker failure noted'),
+    ])
+    engine, _ = configured(tmp_path, client)
+    try:
+        run, pm = await start(engine)
+        await settled(engine)
+        assert run['auto_collaborations'] == 2
+        assert any('Worker blocked: Fixture worker failure' in item['content'] for item in pm.conversation)
+        assert not run['collaboration_limit_reached']
     finally:
         await engine.close()
