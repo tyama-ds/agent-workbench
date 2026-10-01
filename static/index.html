@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Agent Workbench</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">本文へ移動</a>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="Agent Workbench ホーム"><span class="brand-mark" aria-hidden="true">a<span>·</span>w</span><span>Agent<br><strong>Workbench</strong></span></a>
+      <p class="sidebar-label">WORKSPACE</p>
+      <nav class="primary-nav" aria-label="メインナビゲーション">
+        <button class="nav-button active" id="navWork" type="button" aria-current="page"><span aria-hidden="true">◫</span>チームで作業</button>
+        <button class="nav-button" id="navSettings" type="button"><span aria-hidden="true">⚙</span>設定</button>
+      </nav>
+      <div class="sidebar-section"><div class="sidebar-label-row"><p class="sidebar-label">実行履歴</p><span id="runCount" class="sidebar-count">0</span></div><div id="runList" class="run-list"><p class="sidebar-empty">ここにチームの作業が並びます</p></div></div>
+      <div class="sidebar-footer"><span class="connection-dot" id="connectionDot" aria-hidden="true"></span><span id="connectionStatus">接続を確認中</span><span class="local-label">LOCAL</span></div>
+    </aside>
+    <main id="main">
+      <header class="topbar"><div><span class="eyebrow">YOUR AGENTS, YOUR WORKSPACE</span><span class="topbar-title" id="pageTitle">チームで作業</span></div><div class="resource-summary" id="resourceSummary">リソース情報を取得中</div></header>
+      <div id="globalNotice" class="notice" role="status" aria-live="polite" hidden></div>
+      <section id="workView" class="view" aria-labelledby="workTitle">
+        <div class="page-heading"><div><p class="eyebrow">TEAM WORKSPACE</p><h1 id="workTitle">ひとつの依頼を、チームで。</h1><p class="subtitle">PM が作業を分け、エージェント同士で相談しながら進めます。</p></div><span class="tag quiet">ローカルの作業環境</span></div>
+        <section class="panel task-panel" aria-labelledby="newTaskTitle">
+          <div class="panel-heading"><h2 id="newTaskTitle">新しい作業</h2><button id="toggleBrief" class="button minor" type="button" aria-controls="runForm" aria-expanded="true">折りたたむ</button></div>
+          <form id="runForm">
+            <label class="field-label" for="taskInput">チームへの依頼</label><textarea id="taskInput" name="task" rows="4" required maxlength="16000" placeholder="目的、作業する場所、完了の条件を伝えてください。&#10;例：このプロジェクトの検索機能を改善し、テスト結果と変更点をまとめる。"></textarea>
+            <div class="run-options"><div class="field"><label for="pmProfile">PM のプロファイル</label><select id="pmProfile" required><option value="">設定でプロファイルを追加してください</option></select></div><div class="field compact-field"><label for="maxWorkers">作業者の上限</label><input id="maxWorkers" type="number" min="0" max="16" step="1" value="3" required><small>0 は PM だけで作業</small></div></div>
+            <fieldset class="worker-selection"><legend>作業者に使ってよいプロファイル</legend><div id="workerProfiles" class="choice-list"><span class="muted">まだプロファイルがありません</span></div></fieldset>
+            <details class="policy-preview"><summary>チームに共有される作業方針を確認</summary><pre id="policyPreview"></pre><p>この方針は設定で編集できます。入力した依頼はそのまま送信されます。加えて、エージェントの ID・役割・選択したプロファイル・人数・許可パスを実行情報としてモデルへ渡します。</p></details>
+            <div class="form-footer"><p class="field-help">作業者数と、ローカルモデルの同時リクエスト数は別の設定です。</p><button class="button primary" id="startRun" type="submit"><span aria-hidden="true">＋</span> チームを開始</button></div>
+            <p id="runFormStatus" class="inline-status" role="status" aria-live="polite"></p>
+          </form>
+        </section>
+        <section id="activeRunSection" class="active-run" aria-labelledby="activeRunTitle" hidden>
+          <div class="section-heading"><div><p class="eyebrow">LIVE WORK</p><h2 id="activeRunTitle">チームの作業</h2></div><div class="run-actions"><span id="activeRunStatus" class="status-badge">待機</span><button id="stopRun" class="button danger" type="button">停止</button></div></div>
+          <p id="activeRunTask" class="run-task"></p><div id="runMetrics" class="metrics"></div>
+          <div class="team-layout"><section class="team-column" aria-label="参加エージェント"><div class="subheading"><h3>チーム</h3><span id="agentCount" class="count">0</span></div><div id="agentCards" class="agent-cards"></div></section>
+            <section class="panel conversation-panel" aria-labelledby="conversationTitle"><div class="panel-heading"><div><h3 id="conversationTitle">作業ログ</h3><p id="conversationMeta" class="muted small"></p></div><span id="conversationStatus" class="status-badge" hidden></span></div><div id="humanQuestion" class="question-box" role="status" aria-live="polite" hidden></div><div id="conversationLog" class="conversation-log" aria-live="off"><div class="empty-small">エージェントを選ぶと、作業の経過が表示されます。</div></div><form id="messageForm" class="message-form"><label for="messageInput" id="messageLabel">追加の指示</label><textarea id="messageInput" rows="2" placeholder="指示や質問への回答を送る" required maxlength="16000"></textarea><div class="message-footer"><span class="small muted">入力内容は選択したエージェントへ送信します</span><button id="sendMessage" class="button primary" type="submit">送信</button></div><p id="messageStatus" class="inline-status" role="status"></p></form></section>
+          </div>
+          <section class="panel activity-panel" aria-labelledby="activityTitle"><div class="panel-heading"><h3 id="activityTitle">チームのメールと進捗</h3><span class="section-number">ACTIVITY</span></div><div id="activityFeed" class="activity-feed"><p class="empty-small">エージェント同士の連絡や、作業の進捗がここに表示されます。</p></div></section>
+        </section>
+        <div id="workEmpty" class="workspace-empty"><div class="empty-symbol" aria-hidden="true">↗</div><h2>作業の見通しを、ひとつの場所に。</h2><p>チームを開始すると、担当・会話・相談の履歴がここに並びます。<br>人への質問があるときは、回答欄から続きを指示できます。</p></div>
+      </section>
+      <section id="settingsView" class="view" aria-labelledby="settingsTitle" hidden>
+        <div class="page-heading"><div><p class="eyebrow">CONFIGURATION</p><h1 id="settingsTitle">作業環境を整える。</h1><p class="subtitle">使うモデル、アクセスできる場所、実行の上限を設定します。</p></div><button id="saveSettings" class="button primary" type="submit" form="settingsForm">設定を保存</button></div>
+        <form id="settingsForm">
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>モデルのプロファイル</h2><p class="muted small">同じサービスに複数のモデルを登録できます。モデル名は自由に指定できます。</p></div><button class="button secondary" id="addProfile" type="button">＋ 追加</button></div><div id="profilesEditor" class="profiles-editor"></div></section>
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>ファイルへのアクセス</h2><p class="muted small">絶対パスを1行に1つ入力してください。拒否する場所は許可より優先されます。</p></div></div><div id="pathFields" class="settings-grid"></div></section>
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>Web 検索</h2><p class="muted small">検索サービスの接続先と、必要な環境変数を指定します。</p></div></div><div id="searchFields" class="settings-grid"></div><div class="profile-secret"><div class="field"><label for="searchSecret">今回の起動中だけ使う検索 API キー（任意）</label><input id="searchSecret" type="password" autocomplete="new-password" placeholder="設定ファイルには保存しません"></div><button id="setSearchSecret" class="button secondary" type="button">キーをセット</button><p id="searchSecretStatus" class="secret-status" role="status">未入力のままなら、指定した環境変数を使用します。</p></div></section>
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>ローカルモデルの実行制御</h2><p class="muted small">人数に関わらず、Local 全体のリクエスト数・待ち時間を制御します。リクエスト上限は、プロファイルの設定値にも適用されます。</p></div></div><div id="localFields" class="settings-grid"></div><p class="callout">GPU のしきい値はリクエスト開始前の確認です。モデルの VRAM 割り当て量を強制的に制限する機能ではありません。確認対象はこの PC の GPU です。別の PC にある Local API では使用できません。</p></section>
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>作業の上限</h2><p class="muted small">呼び出し回数、時間、コンテキスト、出力の予算を設定します。</p></div></div><div id="budgetFields" class="settings-grid"></div></section>
+          <section class="panel settings-panel"><div class="panel-heading"><div><h2>共通の作業方針</h2><p class="muted small">PM と作業者に共有する指示です。作業を始める前に確認・編集できます。</p></div></div><label class="field-label" for="systemPolicy">システム方針</label><textarea id="systemPolicy" rows="7" required maxlength="16000"></textarea></section>
+          <div class="settings-footer"><p id="settingsStatus" class="inline-status" role="status" aria-live="polite"></p><button class="button primary" type="submit">設定を保存</button></div>
+        </form>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-workbench"
+version = "0.1.0"
+description = "A local-first, multi-provider agent workspace with explicit file permissions"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["aiohttp>=3.14.3,<4", "python-docx>=1.2,<2", "openpyxl>=3.1.5,<4", "python-pptx>=1.0.2,<2"]
+
+[project.optional-dependencies]
+test = ["pytest>=9,<10", "pytest-asyncio>=1.4,<2"]
+
+[project.scripts]
+agent-workbench = "workbench.server:main"
+
+[tool.setuptools]
+packages = ["workbench"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
