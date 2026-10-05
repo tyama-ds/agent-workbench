@@ -407,3 +407,11 @@ def test_real_setup_rejects_hidden_redirect_before_dependency_install(project, m
     assert secret not in str(error.value) + capsys.readouterr().out
     assert not leak_log.exists()
     assert config.read_text(encoding='utf-8').startswith('[global]\nroot = ' + secret)
+
+
+
+def test_captured_python_output_uses_private_utf8_contract(tmp_path):
+    env = dict(os.environ, PYTHONIOENCODING='cp1252')
+    text = setup.invoke([sys.executable, '-c', "print('\\u4f1a\\u793e path')"], cwd=tmp_path, env=env, capture=True)
+    assert text.strip() == '\u4f1a\u793e path'
+    assert env['PYTHONIOENCODING'] == 'cp1252'

@@ -502,3 +502,13 @@ Research decisions:
 
 Exact-head Windows matrix, real Edge and evaluation-only package evidence are required
 for the handoff. No live inference, binary uploads, release, merge or deployment.
+
+
+The first dev10 Windows run passed Edge and the other matrix tests, but the new
+Japanese-path setup regression failed while capturing `pip --version`. A deterministic
+local reproduction using `PYTHONIOENCODING=cp1252` confirmed Windows-style redirected
+output could not encode the extraction path. [Python's stream documentation](https://docs.python.org/3/library/sys.html#sys.stdout)
+confirms Windows pipes use the ANSI code page. Give captured Python subprocesses a
+private UTF-8 output/decoding contract, retain ordinary console behavior and caller
+environment, and keep the original strict config-rejection assertion. This is a real
+source-installer path fix; the failing run is not final acceptance evidence.

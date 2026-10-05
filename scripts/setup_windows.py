@@ -122,8 +122,12 @@ def preflight(options):
 
 
 def invoke(arguments, *, cwd, env, capture=False):
-    result = subprocess.run([str(value) for value in arguments], cwd=cwd, env=env, check=False,
-                            capture_output=capture, text=capture)
+    # Windows pipes otherwise use the ANSI code page, which cannot represent
+    # every approved extraction path. Only captured reads use this private UTF-8
+    # contract; preserve the caller's environment and normal console behavior.
+    child_env = dict(env, PYTHONIOENCODING='utf-8') if capture else env
+    result = subprocess.run([str(value) for value in arguments], cwd=cwd, env=child_env, check=False,
+                            capture_output=capture, text=capture, encoding='utf-8' if capture else None)
     if result.returncode:
         raise RuntimeError(f'Command failed (exit {result.returncode}).')
     return result.stdout if capture else ''
