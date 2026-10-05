@@ -51,7 +51,7 @@ def test_settings_ui_covers_every_interface_field_without_persisting_raw_keys():
     assert {field[0] for field in result["profiles"]} | {"enabled"} == set(config["providers"][0])
     assert 'id="systemPolicy"' in HTML and 'id="policyPreview"' in HTML
     assert "config.system_policy=$('systemPolicy').value" in APP
-    assert "'/api/secrets'" in APP and "secret.value=''" in APP
+    assert "'/api/secrets'" in APP and "control.input.value=''" in APP
     assert not any(field[0] == "api_key" for field in result["profiles"])
 
 
@@ -69,7 +69,7 @@ console.log(JSON.stringify({empty:resourceLabel({}),state:resourceLabel({active:
 def test_bootstrap_drops_token_before_authenticated_requests():
     drop = APP.index("history.replaceState(null,'',location.pathname+location.search)")
     bootstrap = APP.index("await api('/api/bootstrap'")
-    config = APP.index("const response=await api('/api/config')")
+    config = APP.index("const response=await api('/api/config')", bootstrap)
     assert drop < bootstrap < config
     assert "'X-Workbench-Bootstrap':token},body:{}" in APP
     assert "credentials:'same-origin'" in APP

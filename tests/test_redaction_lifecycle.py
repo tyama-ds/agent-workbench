@@ -373,13 +373,13 @@ async def test_http_transition_state_errors_and_capacity_fail_closed(tmp_path):
         await bootstrap(auth, client); headers = {'Origin': auth.origin}
         engine = app[APP_KEY]; isolate(engine)
         engine.client = ScriptClient([reply('Response ' + OLD)])
-        response = await client.post(auth.origin + '/api/secrets', json={'id': 'local', 'key': OLD}, headers=headers)
+        response = await client.post(auth.origin + '/api/secrets', json={'config_revision': app[APP_KEY].settings.revision, 'id': 'local', 'key': OLD}, headers=headers)
         assert response.status == 200
         response = await client.post(auth.origin + '/api/runs', json={'task': 'Task ' + OLD,
             'pm_profile': 'local', 'max_workers': 0}, headers=headers)
         assert response.status == 200
         await settled(engine)
-        response = await client.post(auth.origin + '/api/secrets', json={'id': 'local', 'key': NEW}, headers=headers)
+        response = await client.post(auth.origin + '/api/secrets', json={'config_revision': app[APP_KEY].settings.revision, 'id': 'local', 'key': NEW}, headers=headers)
         assert response.status == 200
         for path in ('/api/state', '/api/state?view=selected'):
             response = await client.get(auth.origin + path)
@@ -388,7 +388,7 @@ async def test_http_transition_state_errors_and_capacity_fail_closed(tmp_path):
         response = await client.post(auth.origin + '/api/runs', json={'task': 'Task', 'pm_profile': 'local'}, headers=headers)
         assert response.status == 400 and OLD not in await response.text()
         engine._redaction = SecretRedactor(max_values=1); engine._redaction.remember([NEW])
-        response = await client.post(auth.origin + '/api/secrets', json={'id': 'local', 'key': OLD}, headers=headers)
+        response = await client.post(auth.origin + '/api/secrets', json={'config_revision': app[APP_KEY].settings.revision, 'id': 'local', 'key': OLD}, headers=headers)
         assert response.status == 409
         assert await response.json() == {'ok': False, 'error': REDACTION_CAPACITY_MESSAGE, 'code': 'redaction_capacity'}
         assert engine.settings.secrets['local'] == NEW
@@ -412,7 +412,7 @@ async def test_delayed_diagnostic_masks_old_key_and_capacity_blocks_new_probe(tm
         task = asyncio.create_task(client.post(auth.origin + '/api/provider-test', json={'provider_id': 'local'}, headers=headers))
         try:
             await entered.wait()
-            response = await client.post(auth.origin + '/api/secrets', json={'id': 'local', 'key': NEW}, headers=headers)
+            response = await client.post(auth.origin + '/api/secrets', json={'config_revision': app[APP_KEY].settings.revision, 'id': 'local', 'key': NEW}, headers=headers)
             assert response.status == 200
             release.set(); response = await task
             assert response.status == 200 and (await response.json())['models'] == ['model-[redacted]']

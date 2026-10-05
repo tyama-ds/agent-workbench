@@ -558,3 +558,50 @@ Tests use deferred synthetic transport through actual frontend callbacks and rea
 Windows Edge interactions. They retain all prior source/Engine/browser assertions.
 Exact-head six-job CI and screenshot acceptance belong to the final handoff. No
 live inference, user-PC operation, binary upload, release, merge or deployment.
+
+## 0.1.1.dev12 — Saved-destination memory-key recovery (2026-10-05)
+
+- Reproduced a recoverable authentication error leaving a run waiting while the
+  UI disabled every key field. The server already supported atomic replacement
+  followed by an explicit same-run human message without resetting any budget.
+- Separate saved provider/Brave credentials from the active-run configuration lock.
+  Disclose profile/search scope, saved endpoint/proxy and subsequent-request impact.
+  Keep endpoint, model, rights, budgets and diagnostics locked during active work.
+  SearXNG/page fetching do not use the search key; no speculative authentication
+  error classifier, automatic probe, retry or new scheduler path is introduced.
+- Require a server-owned saved-config revision on every key write, including clear.
+  Reject missing/stale/malformed values before mutation, without a legacy bypass.
+  Keep revision outside persisted config and run eligibility; config/key failures
+  remain atomic with the bounded output-mask registry.
+- Guard both provider and search keys against dirty/new settings. Add a GET-only
+  discard/reload action. Independent review reproduced empty worker selections
+  being silently defaulted during discard; preserve the entire task draft, including
+  unavailable old choices and an above-new-limit worker count for explicit correction.
+- Own pending writes per target across polls and close/reopen. Preserve unrelated
+  pending requests and drafts; clear submitted/abandoned password inputs. Validate
+  value-free acceptance receipts and report unknown outcomes without replay.
+  Separate credential feedback from diagnostic feedback and avoid transiently
+  disabling focused password inputs during ordinary polling.
+
+Research decisions:
+- [Microsoft HAX correction](https://www.microsoft.com/en-us/haxtoolkit/guideline/support-efficient-correction/)
+  and [consequence guidance](https://www.microsoft.com/en-us/research/blog/guidelines-for-human-ai-interaction-design/):
+  adopt a discoverable, bounded correction path with explicit next-request effects.
+  Reject silent reruns and claims that storing a key validates authentication.
+- [W3C status messages](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html):
+  keep concise status regions without moving focus or repeating text on each poll.
+  No claim of full assistive-technology or WCAG conformance is made.
+- [RFC 9110 conditional requests](https://www.rfc-editor.org/rfc/rfc9110.html#section-13.1.1):
+  apply a server-checked stale-write precondition. The JSON configuration revision
+  is an application contract, not an implementation claim for HTTP If-Match.
+- [OWASP Secrets Management](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)
+  and [Logging](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html#data-to-exclude):
+  retain value-free statuses, authentication/mask separation and bounded retired
+  masks. Defer vaults, persistence, automatic account-key rotation and new logging.
+
+Tests use synthetic credentials and local fixtures only. They cover actual callbacks,
+concurrent target writes, stale destination/revision races, keyboard and narrow Edge
+flows, explicit same-run recovery and unchanged quota/stop/redaction protections.
+Exact-head six-job CI, visual review and evaluation-only package evidence belong to
+the final handoff. No live inference, real-key entry by the assistant, user-PC work,
+binary distribution, merge, release or deployment is included.

@@ -189,3 +189,28 @@ without regex-prefix stalls, unbounded match lists or replacement-marker rematch
 Capacity errors use a fixed safe branch, including nested agent-error handling.
 No fallback serializes an unmasked state. See SECURITY.md for retained-memory,
 editable-config, private-conversation, file and previously-delivered-data exclusions.
+
+## Saved-destination credential writes (0.1.1.dev12)
+
+`Settings.revision` is a process-local monotonic integer returned as
+`config_revision` alongside public settings. A successful settings save increments
+it after atomic file replacement; failed validation, disk writes and mask-capacity
+checks do not. It stays outside `Settings.value`, persisted JSON and frozen run
+configuration. `POST /api/secrets` requires an exact current revision and validates
+the saved provider/search destination before calling `Engine.set_secret`, without
+an intervening await. The response is a value-free acceptance receipt, not a live
+provider test. There is no legacy unguarded request path.
+
+The frontend separates configuration locking from saved credential eligibility.
+Each saved target has independent pending ownership; configuration writes and
+reload/discard wait for all key requests to settle. Local configuration/dialog
+ownership prevents delayed feedback from overwriting a newer context. Passwords
+are not copied into UI draft state. A local GET-based discard rebinds settings while
+preserving task text, conversation drafts, empty worker selections, unavailable old
+selections and requested worker count. New server settings are still enforced by
+normal preflight/start validation; reloading is not permission to silently rewrite
+the user's task draft.
+
+Key operations invalidate diagnostics but do not mutate run configuration or
+scheduler queues. The ordinary explicit human-message API remains the only recovery
+instruction, and its current settings/budget/context/stop checks remain unchanged.

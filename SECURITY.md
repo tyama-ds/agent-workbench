@@ -50,3 +50,31 @@ Multiple independently launched Workbench servers have independent budgets; the 
 ## Reporting
 
 Do not put real API keys, private documents, prompts or launch URLs in a public issue. Report reproduction steps using synthetic data. Tests under `tests/` contain fake keys and local API fixtures, not live credentials. See `docs/VALIDATION.md` for what was and was not exercised.
+
+## Saved-target credential recovery
+
+Every browser `POST /api/secrets`, including clearing a memory override, requires
+an exact integer `config_revision` obtained with the saved configuration. Missing,
+malformed or stale revisions fail before changing credentials or the redaction
+registry. The process-local revision advances only after successful configuration
+persistence, never after key replacement. It is neither persisted configuration nor
+a run-eligibility value. Revision and target checks occur after the request body is
+read, with no await before the existing atomic secret setter. Existing session,
+Host/Origin, JSON and capacity checks remain mandatory; the revision is a concurrency
+precondition, not an authentication credential or a replacement for authorization.
+
+Saved provider IDs bind memory keys. Search uses its separate reserved identity;
+nonempty search submissions require saved Brave settings with an explicit endpoint.
+The UI discloses saved identity, endpoint and proxy. Dirty/new settings cannot receive
+keys, and active runs never unlock configuration. The read-only discard/reload action
+preserves unrelated task and conversation drafts. Concurrent key operations have
+per-target ownership and prevent configuration writes until they settle.
+
+Replacement affects subsequent ordinary requests for that profile/search identity
+across all teams in this process. It does not alter dispatched headers, verify an API
+key, enqueue a retry, refill quotas or restart stopped work. Explicit human messages
+still pass the original eligibility checks. Late responses cannot repaint reopened
+or rebound credential fields. Unknown outcomes are not automatically replayed;
+credential-presence booleans cannot establish which key is currently installed.
+Input values are cleared on submit, dismissal and configuration editing; JavaScript
+and Python do not promise secure zeroization of previously allocated strings.

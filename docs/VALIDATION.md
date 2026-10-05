@@ -1,6 +1,21 @@
 # Validation scope
 
-## Current revision — contained corporate setup (2026-10-05)
+## Current revision — saved-destination credential recovery (2026-10-05)
+
+Version **0.1.1.dev12** permits memory-key correction for saved provider/Brave targets
+without unlocking active-run configuration. A mandatory server configuration revision
+rejects stale destination writes; real callbacks own pending operations and preserve
+unrelated drafts. Local aggregate: **830 passed, 6 platform-specific skips**. Exact-head
+Windows Edge, four Python/OS jobs and packaged evaluation are still required for final
+acceptance; consult the draft PR handoff for those results and reviewed screenshots.
+
+## Prior revision — Start/Stop response ownership (2026-10-05)
+
+Version **0.1.1.dev11** retains accepted Start identity until observed, prevents replay
+on observation failure, and preserves newer dialog/navigation/draft ownership. Stop
+uses per-run pending guards. Its source and real Edge assertions remain in the suite.
+
+## Prior revision — contained corporate setup (2026-10-05)
 
 Version **0.1.1.dev10** pins every pip invocation to the expected private interpreter,
 rejects inherited install redirection and trusted-host settings, and reports safe
@@ -338,3 +353,26 @@ are not turned into proof of rejection. There is no durable operation queue, ser
 idempotency key, automatic creation retry or cross-reload exactly-once guarantee.
 Final full-suite, exact-head Windows and screenshot results are recorded in the
 cycle handoff; DOM-only tests do not establish actual browser layout or focus.
+
+## Saved-destination credential recovery (0.1.1.dev12)
+
+`test_credential_recovery.py` exercises authenticated real loopback requests with
+synthetic credentials: missing/malformed/stale revision rejection, a request whose
+JSON body is delayed across a settings change, endpoint/proxy/kind/env/ID-reuse/ABA
+ownership, provider/search isolation, unusable search destinations, unchanged failed
+save/capacity revisions, and explicit same-run recovery. Replacement cannot bypass
+model, turn, time, context, stop or changed-settings reply eligibility.
+
+`test_credential_recovery_frontend.py` calls the actual registered callbacks with
+synthetic DOM/deferred transport. It covers saved-target-only enablement during
+waiting runs, focused-input stability through polling, dirty/new guards, per-target
+concurrency and save locking, unknown/malformed receipts, close/reopen ownership,
+GET-only discard, complete draft preservation and search applicability.
+
+`credential_recovery_acceptance.cjs` adds real Windows Edge keyboard/native control
+coverage using the real loopback server and synthetic authentication-error fixture.
+It exercises dirty/error recovery, discard without settings PUT, independent target
+requests, delayed real acceptance/rejection, unchanged budgets/settings, and explicit
+same-agent continuation. Desktop/narrow screenshots and no-external-request checks
+join the existing evidence-only artifact allowlist. The new stage must pass on the
+exact candidate head; syntax checks or fixture HTTP tests are not browser evidence.

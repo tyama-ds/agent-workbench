@@ -136,12 +136,12 @@ async def test_key_not_persisted_invalid_key_and_active_config_lock(tmp_path):
     async with serving(tmp_path) as (auth, app, client):
         await bootstrap(auth, client)
         headers = {'Origin': auth.origin}
-        response = await client.post(auth.origin + '/api/secrets', json={'id': 'local', 'key': 'fixture-memory-secret'}, headers=headers)
+        response = await client.post(auth.origin + '/api/secrets', json={'config_revision': app[APP_KEY].settings.revision, 'id': 'local', 'key': 'fixture-memory-secret'}, headers=headers)
         assert response.status == 200
         response = await client.get(auth.origin + '/api/config')
         value = await response.text()
         assert 'fixture-memory-secret' not in value and json.loads(value)['secret_status']['local']
-        response = await client.post(auth.origin + '/api/secrets', json={'id': 'local', 'key': 'bad\r\nheader'}, headers=headers)
+        response = await client.post(auth.origin + '/api/secrets', json={'config_revision': app[APP_KEY].settings.revision, 'id': 'local', 'key': 'bad\r\nheader'}, headers=headers)
         assert response.status == 400
         engine = app[APP_KEY]
         engine.runs['test'] = {'id': 'test', 'status': 'waiting', 'agent_ids': []}

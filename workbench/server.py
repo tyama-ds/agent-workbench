@@ -148,14 +148,23 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
 
     async def secret(request):
         value = await body(request)
+        revision = value.get('config_revision')
+        if type(revision) is not int or revision != settings.revision:
+            return web.json_response({'ok': False, 'code': 'settings_changed',
+                'error': '保存済み設定が変わったか、設定の確認情報がありません。保存済み設定を読み直してからキーを入力してください。'}, status=409)
         ident = value.get('id')
-        if ident not in {p['id'] for p in settings.value['providers']} | {'search'}:
+        if not isinstance(ident, str) or ident not in {p['id'] for p in settings.value['providers']} | {'search'}:
             raise ValueError('未知のプロファイル ID です')
         key = text(value.get('key'), 'key', 4096)
         if any(ord(c) < 32 or ord(c) == 127 for c in key):
             raise ValueError('API キーに制御文字は使用できません')
+        if key and ident == 'search' and (settings.value['search']['provider'] != 'brave' or not settings.value['search']['endpoint']):
+            raise ValueError('検索キーは保存済みの接続先を持つ Brave Search だけで使用できます。SearXNG とページ取得では使用しません。')
+        # No await between saved-target validation and the atomic mutation.
+        # Clearing an old value also requires the same revision precondition.
         engine.set_secret(ident, key)
-        return web.json_response({'ok': True, 'configured': bool(key)})
+        return web.json_response({'ok': True, 'id': ident, 'config_revision': settings.revision,
+                                  'configured': settings.public()['secret_status'][ident]})
 
     async def state(request):
         view = request.query.get('view')

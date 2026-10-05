@@ -12,7 +12,7 @@ from pathlib import Path
 
 from aiohttp import web
 from workbench.engine import Agent
-from workbench.providers import ModelReply
+from workbench.providers import ModelReply, ProviderError
 from workbench.server import BrowserAuth, create_app
 
 
@@ -21,6 +21,16 @@ REDACTION_CASES = {
     'environment': {'old': 'WB9-env-retired-exact-402d7', 'new': 'WB9-env-current-exact-f83c1',
                     'old_env': 'WORKBENCH_BROWSER_SYNTHETIC_OLD',
                     'new_env': 'WORKBENCH_BROWSER_SYNTHETIC_NEW'},
+}
+
+CREDENTIAL_RECOVERY_CASE = {
+    'task': '[SYNTHETIC] Recover saved-destination credentials.',
+    'resume': '[SYNTHETIC] Explicitly continue after replacing the key.',
+    'old': 'WB12-provider-invalid-exact-31cd6',
+    'new': 'WB12-provider-current-exact-04e72',
+    'search_old': 'WB12-search-old-exact-a37bd',
+    'search_new': 'WB12-search-current-exact-971de',
+    'other': 'WB12-other-provider-exact-649ab',
 }
 
 
@@ -37,6 +47,20 @@ class SyntheticClient:
         self.calls[ident] = count + 1
         calls = []
         initial = messages[0].get('content', '') if messages else ''
+        if initial == CREDENTIAL_RECOVERY_CASE['task']:
+            if identity['parent_id']:
+                raise AssertionError('Credential recovery must remain a PM-only synthetic run')
+            if count == 0:
+                if profile.get('api_key') != CREDENTIAL_RECOVERY_CASE['old']:
+                    raise AssertionError('Credential recovery did not receive its initial synthetic key')
+                raise ProviderError('[SYNTHETIC] Provider returned HTTP 401; invalid API key; no automatic retry',
+                                    status=401)
+            if count != 1 or profile.get('api_key') != CREDENTIAL_RECOVERY_CASE['new']:
+                raise AssertionError('Credential recovery retried automatically or used the wrong destination key')
+            if messages[-1] != {'role': 'user', 'content': CREDENTIAL_RECOVERY_CASE['resume']}:
+                raise AssertionError('Credential recovery requires an explicit subsequent human message')
+            return ModelReply(text='[SYNTHETIC] Same run resumed with the replacement provider key.',
+                              thinking='', tool_calls=[], usage={}, raw={})
         retained_case = next((name for name in REDACTION_CASES if initial.startswith(tuple(
             f'[SYNTHETIC] Retained {kind} {name} ' for kind in ('credential', 'worker', 'replay')))), None)
         if retained_case:
@@ -112,11 +136,14 @@ if __name__ == '__main__':
     parser.add_argument('--state-dir')
     parser.add_argument('--agent-contract', action='store_true')
     parser.add_argument('--redaction-contract', action='store_true')
+    parser.add_argument('--credential-contract', action='store_true')
     args = parser.parse_args()
     if args.agent_contract:
         print(json.dumps(Agent('id', 'run', 'name', 'pm', 'local').public()))
     elif args.redaction_contract:
         print(json.dumps(REDACTION_CASES))
+    elif args.credential_contract:
+        print(json.dumps(CREDENTIAL_RECOVERY_CASE))
     elif args.state_dir:
         asyncio.run(serve(args.state_dir))
     else:

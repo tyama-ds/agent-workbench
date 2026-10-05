@@ -36,6 +36,10 @@ async function waitForRunState(readState,runId,status,{timeoutMs=10000,pollMs=25
 async function retainedRedactionAcceptance({page,context,origin,workspace,stateDir,artifacts,cases,report}) {
   const keys=Object.values(cases).flatMap(item=>[item.old,item.new]);
   const api=async(url,method='GET',body)=>{
+    // API-only fixture setup has no settings dialog snapshot. Bind every write
+    // to the revision read immediately before it; actual UI writes are tested
+    // separately by the saved-destination credential acceptance.
+    if(url==='/api/secrets'&&method==='POST')body={...body,config_revision:(await api('/api/config')).config_revision};
     const response=await page.evaluate(async({url,method,body})=>{
       const response=await fetch(url,{method,credentials:'same-origin',cache:'no-store',
         ...(body===undefined?{}:{headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})});
