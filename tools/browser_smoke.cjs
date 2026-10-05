@@ -49,9 +49,12 @@ async function main() {
     report.checks.push('real one-use bootstrap, cookie session, fragment removal, same-origin assets');
     await page.screenshot({path:path.join(artifacts,'workbench-empty.png'),fullPage:true,animations:'disabled'});
     await page.locator('#newRun').click();
-    assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true);
+    assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true,'Opening a native modal moves focus inside');
+    await page.locator('#taskInput').focus();
     await page.keyboard.press('Shift+Tab');assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true);
     await page.keyboard.press('Tab');
+    await page.locator('#newRun').evaluate(button=>button.focus());
+    assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true,'Modal background must stay inert');
     await page.locator('#taskInput').fill('閉じても残る下書き');await page.keyboard.press('Escape');
     assert.equal(await page.locator('#newRun').evaluate(button=>button===document.activeElement),true);
     assert.equal(await page.locator('#taskDialog').isVisible(),false);await page.locator('#newRun').click();assert.equal(await page.locator('#taskInput').inputValue(),'閉じても残る下書き');await page.locator('#toggleBrief').click();
@@ -190,7 +193,7 @@ async function main() {
   } catch(error) {
     if(page)await page.screenshot({path:path.join(artifacts,'workbench-failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{});
     report.ok=false;const redact=value=>String(value).replace(/(#token=|X-Workbench-Bootstrap[=: ]+)[A-Za-z0-9_-]+/gi,'$1[REDACTED]').replaceAll('fixture-memory-secret','[REDACTED]');
-    report.error=redact(error.message);report.serverError=redact(stderr);
+    report.error=redact(error.stack||error.message);report.serverError=redact(stderr);
     fs.writeFileSync(path.join(artifacts,'browser-smoke.json'),JSON.stringify(report,null,2));
     console.error(JSON.stringify(report,null,2));process.exitCode=1;
   } finally {
