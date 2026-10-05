@@ -749,3 +749,43 @@ both delayed-success and delayed-409 cases assert the cleared/unknown state befo
 releasing the real upstream response. Exact post-response equality assertions remain.
 A deterministic helper test proves that removing the `open` flag alone is not
 completion. Application frontend code is unchanged; fresh full CI is required.
+
+## 0.1.1.dev16 — Provider completion evidence and Local refusals (2026-10-05)
+
+- Reproduced absent/null Local and Anthropic completion reasons being accepted as
+  final reports or executable write/finish batches. Non-streaming replies now need
+  recognized terminal reasons. Proxies omitting those fields must return protocol
+  evidence rather than relying on an HTTP 200 response being treated as completion.
+- Reproduced OpenAI output marked incomplete/in-progress, or carrying error/incomplete
+  details with optional response status omitted, executing tools. Reject explicit
+  negative evidence before returning the normalized response. Preserve documented
+  optional response/item status compatibility instead of requiring every field.
+- Reproduced a valid Local Chat refusal with null content disappearing from both
+  display and native replay. Preserve its text alongside ordinary content, retaining
+  display redaction and exact native replay. Reject non-string/non-null refusal
+  values and nonempty refusal paired with actual or declared tool calls.
+- Keep existing error/waiting states, human continuation, earlier receipts/reports,
+  native reasoning and consumed budgets. No rejected response enters conversation
+  history. Retain dev15 tool-result closure unchanged.
+
+Research decisions:
+- [OpenAI Responses reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
+  and the [official response type](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response.py):
+  optional status fields are not themselves evidence of failure; explicit negative
+  status, error and incomplete details must take precedence over parseable output.
+- [OpenAI Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create):
+  adopt documented non-streaming finish reasons and the optional refusal string.
+  Preserve refusal in native assistant replay, not only in the display projection.
+- [Anthropic stop reasons](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons):
+  non-streaming completion needs its stop reason. Empty `end_turn` responses can be
+  legitimate, so reject a broad empty-response ban. Keep paused, truncated, context-
+  limited and refusal stop reasons on the existing blocked path.
+- Reject automatic retries, continuation, fallback, status-schema expansion and SDK
+  migration. Defer generic tool-reason/content consistency tightening; Local servers
+  returning `stop` with valid structured calls remain compatible. No live model calls.
+
+Deterministic loopback tests cover whole-response admission with text and mutation
+batches, preserved prior writes/receipts, budgets and explicit continuation; direct
+adapter tests preserve optional metadata and empty terminals. Full local validation,
+independent review, exact-head six-job CI, real Windows Edge and evaluation-only
+package evidence are required for the handoff. Frontend files remain unchanged.

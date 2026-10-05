@@ -1,6 +1,29 @@
 # Validation scope
 
-## Current revision — tool-result integrity after failures (2026-10-05)
+## Current revision — provider completion evidence (2026-10-05)
+
+Version **0.1.1.dev16** checks non-streaming completion evidence before accepting
+reports or executing any call. Local/Anthropic missing, null, unknown and incomplete
+terminal reasons are rejected. OpenAI optional statuses remain compatible while
+explicit negative item status, error and incomplete details reject the entire reply.
+Local refusal text is visible, redacted for display and preserved exactly in replay;
+malformed refusal values and refusal/tool contradictions are rejected.
+
+Synthetic loopback HTTP tests exercise text and mixed write/finish batches,
+unchanged earlier committed output and receipts, consumed budgets, explicit human
+continuation and safe public error states. Optional OpenAI metadata and legitimate
+empty terminal replies remain covered. Truncated second-call arguments cannot
+execute an earlier valid write. Existing dev15 result closure, cancellation,
+credential redaction, retention and GUI tests remain in the full suite.
+
+These fixtures validate application behavior and wire structure, not live-provider
+acceptance. Local aggregate: **983 passed, 6 platform-specific skips**, including
+**98 new completion/refusal cases**; the focused provider/integrity suite has
+**174 passed**. Exact-head six-job CI results, actual Windows Edge and evaluation-only
+package evidence belong to the final handoff. No browser launch retry, new public
+status, automatic provider retry or binary distribution is added.
+
+## Prior revision — tool-result integrity after failures (2026-10-05)
 
 Version **0.1.1.dev15** rejects non-anchor merged-cell writes without saving that
 XLSX request and closes provider batches after unexpected ordinary execution or

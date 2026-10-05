@@ -172,7 +172,7 @@ async def test_local_retry_limit_exhausted_and_unknown_tool_refused():
     assert len(calls) == 2 and caught.value.status == 429
     assert 'sensitive' not in str(caught.value)
     with pytest.raises(ProviderError, match='unknown tool'):
-        ProviderClient()._parse('anthropic', 'test', {'content': [
+        ProviderClient()._parse('anthropic', 'test', {'stop_reason': 'tool_use', 'content': [
             {'type': 'tool_use', 'id': 'one', 'name': 'execute_shell', 'input': {}}]}, {'read_file'})
 
 
@@ -235,7 +235,7 @@ async def test_timeout_is_not_retried_and_output_limit_is_global_cap():
 def test_thinking_unclosed_or_quoted_and_prose_never_creates_tools():
     assert split_thinking('<think>still working') == ('', 'still working')
     assert split_thinking('Example <think>literal</think>') == ('Example <think>literal</think>', '')
-    reply = ProviderClient()._parse('local', 'test', {'choices': [{'message': {
+    reply = ProviderClient()._parse('local', 'test', {'choices': [{'finish_reason': 'stop', 'message': {
         'content': 'Use read_file({"path":"secret"})', 'role': 'assistant'}}]}, {'read_file'})
     assert reply.tool_calls == []
 

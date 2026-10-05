@@ -37,6 +37,35 @@ The app does not force a fixed number of agents on every request. PM decides whe
 
 Snapshots contain bounded display logs. Full protocol history remains in process memory, bounded at the next model request by the context character limit. There is no silent truncation of tool history and no hidden summarizer; budget exhaustion is surfaced as an error. The UI can receive another instruction, but spent run/turn budgets are not reset.
 
+### Provider completion evidence (0.1.1.dev16)
+
+Provider normalization completes before the engine logs an assistant response,
+records a final report or dispatches any call from that response. Non-streaming
+Local Chat requires `stop` or `tool_calls`; Anthropic requires `end_turn`,
+`tool_use` or `stop_sequence`. Missing, null, unknown and incomplete reasons fail
+with fixed non-retryable errors. Compatibility servers/proxies must supply these
+terminal reasons; HTTP 200 and parseable arguments alone are insufficient.
+
+OpenAI Responses retains compatibility with absent/null optional response and
+item statuses. An explicit non-completed status, non-null `error` or non-null
+`incomplete_details` rejects the entire response, including any earlier valid
+calls in its output. No partial response is admitted to private replay history.
+Existing native reasoning, phase and call/result structures remain unchanged.
+
+Local `refusal` accepts a string or null. Nonempty refusal text is displayed with
+any ordinary answer text and preserved exactly in native replay. A nonempty
+refusal accompanied by calls or a `tool_calls` finish reason is contradictory
+and rejected before execution. General reason/call-pair consistency tightening
+is outside this cycle: Local backends that use `stop` with structured tool calls
+remain supported. Empty recognized terminal responses remain supported, including
+Anthropic `end_turn`. A returned refusal is a model response, not verified task
+success; the existing report explanation and public status schema are unchanged.
+
+Rejected responses use the existing agent-error/run-waiting path. Previously
+committed files, receipts, reports and consumed budgets remain. Further inference
+requires an admitted human instruction; no automatic continuation, retry, model
+fallback or history repair is introduced.
+
 ### Tool-result closure (0.1.1.dev15)
 
 Expected validation/access errors remain ordinary failed tool results. XLSX writes
