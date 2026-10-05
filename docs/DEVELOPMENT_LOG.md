@@ -347,3 +347,11 @@ flow cover profile rename, model change, profile removal, new versus retained ru
 byte-identical old exports, and desktop/narrow layout. Final full-suite and exact-head
 six-job CI results belong to the cycle handoff; earlier results are not evidence for
 this head. Existing no-binary-distribution and no-live-inference gates remain.
+
+First cycle-7 Edge acceptance caught a real tablet regression: the extra configured
+identity line displaced the Send control in the long-question view. Narrow roster
+identity also obscured assignment text. Keep roster identity to two compact lines
+and make the full selected heading a bounded, keyboard-focusable scroll region.
+The original strict composer geometry assertion remains, with added maximum-length
+identity, keyboard-scroll persistence and narrow assignment-visibility checks.
+A fresh exact-head full CI and screenshot review is required after this correction.

@@ -401,6 +401,32 @@ async function main() {
     await page.screenshot({path:path.join(artifacts,'workbench-active-narrow.png'),fullPage:true,animations:'disabled'});
     await page.setViewportSize({width:820,height:768});await assertLayout(page,'tablet active long question');
     await page.screenshot({path:path.join(artifacts,'workbench-tablet.png'),fullPage:true,animations:'disabled'});
+    const ordinaryProfile={...fixture.agents[0].configured_profile};
+    fixture.agents[0].configured_profile={...ordinaryProfile,label:'[SYNTHETIC] 最大長表示名 '+ '長'.repeat(180),model:'x'.repeat(200)};
+    await page.locator('#conversationProfile').filter({hasText:'最大長表示名'}).waitFor();
+    await assertLayout(page,'tablet maximum profile identity and long question');
+    assert(await page.locator('#conversationHeading').evaluate(node=>{
+      node.scrollTop=0;return document.querySelector('#conversationTitle').getBoundingClientRect().top>=node.getBoundingClientRect().top;
+    }),'Beginning of full identity remains reachable above the scroll region');
+    await page.locator('#conversationHeading').focus();await page.keyboard.press('End');
+    await page.waitForFunction(()=>{const node=document.querySelector('#conversationHeading');return node.scrollTop>0&&node.scrollHeight-node.clientHeight-node.scrollTop<=1;});
+    assert(await page.locator('#conversationHeading').evaluate(node=>document.querySelector('#conversationProfile').getBoundingClientRect().bottom<=node.getBoundingClientRect().bottom),'Keyboard reaches full model identity and disclaimer');
+    const headingScroll=await page.locator('#conversationHeading').evaluate(node=>node.scrollTop);
+    const unchangedProfilePoll=await page.waitForResponse(response=>response.url().includes('/api/state?'));
+    await unchangedProfilePoll.finished();await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('#conversationHeading').evaluate(node=>node.scrollTop),headingScroll,'Unchanged polling preserves keyboard metadata scroll');
+    await assertLayout(page,'tablet scrolled profile identity');
+    await page.screenshot({path:path.join(artifacts,'workbench-attribution-long-tablet.png'),fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow maximum profile identity');
+    assert(await page.locator('[data-agent-id="fixture-pm"] .agent-task').evaluate(node=>{
+      const task=node.getBoundingClientRect(),card=node.closest('.agent-card').getBoundingClientRect();
+      return task.height>0&&task.bottom<=card.bottom&&task.top>=card.top;
+    }),'Narrow cards preserve visible assignment space with maximum profile identity');
+    await page.screenshot({path:path.join(artifacts,'workbench-attribution-long-narrow.png'),fullPage:true,animations:'disabled'});
+    fixture.agents[0].configured_profile=ordinaryProfile;
+    await page.waitForFunction(()=>!document.querySelector('#conversationProfile').textContent.includes('最大長表示名'));
+    await page.locator('#conversationHeading').evaluate(node=>{node.scrollTop=0;});
+    report.checks.push('maximum configured label/model stays in bounded keyboard-scrollable heading; unchanged polling preserves metadata scroll; tablet/narrow long-question composer and narrow assignment text remain visible');
     await page.setViewportSize({width:1366,height:768});
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),true);assert.equal(await page.locator('#systemPolicy').isDisabled(),true);
     await page.locator('#closeSettings').click();

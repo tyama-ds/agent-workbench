@@ -7,6 +7,7 @@ import pytest
 from test_engine import ScriptClient, configured, start
 from test_compact_frontend import DOM
 from test_frontend import APP, run_javascript
+from test_frontend import HTML, STATIC
 
 
 def projected(engine, run, agent):
@@ -170,3 +171,11 @@ for(const descriptor of [undefined,null,{},[],{...original,id:'wrong'},{...origi
 console.log(JSON.stringify({ok:true}));
 """)
     assert value == {'ok': True}
+
+
+def test_identity_layout_is_bounded_and_keyboard_accessible():
+    assert 'id="conversationHeading" class="panel-heading" tabindex="0" role="region" aria-label="担当者と開始時のモデル設定"' in HTML
+    css = (STATIC / 'styles.css').read_text(encoding='utf-8')
+    assert '#conversationHeading{flex:0 1 auto;min-height:64px;max-height:120px;overflow:auto;' in css
+    assert '#conversationHeading:focus-visible' in css
+    assert '.agent-model{display:-webkit-box;-webkit-line-clamp:2;' in css
