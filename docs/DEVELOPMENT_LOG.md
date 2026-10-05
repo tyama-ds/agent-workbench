@@ -105,6 +105,14 @@ Application version **0.1.1.dev2**, based on cycle 1 head
 - Defer assignment revision/history, persisted activity, broad state-machine changes,
   new providers, approval flows and telemetry to separate reviewed cycles.
 
+### Screenshot-led correction
+
+The first cycle 2 Edge run passed its assertions, but pixel inspection exposed a stale
+send confirmation carried into a newly selected run. Clear composer feedback on run or
+automatic agent selection, and bind late send success/error feedback to its original
+selected agent. Preserve drafts and queue behavior. Add browser/DOM regression assertions;
+the corrected source requires its own exact-head CI and screenshot review.
+
 ### Verification
 
 Final exact-head CI and screenshot evidence is recorded in the cycle handoff. Historical

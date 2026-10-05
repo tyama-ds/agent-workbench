@@ -116,7 +116,7 @@ async function main() {
     await page.locator('#settingsDialog').evaluate(dialog=>{dialog.scrollTop=0;});
     await page.screenshot({path:path.join(artifacts,'workbench-settings.png'),fullPage:true,animations:'disabled'});
 
-    const sentRuns=[],sentMessages=[],stopped=[];
+    const sentRuns=[],sentMessages=[],stopped=[];let messageDelay=300,messageFailure=false;
     const fixture={runs:[],agents:[],events:[],resources:{active:1,queued:1,gpu_readings:[{index:0,used_mb:7168,total_mb:24576,utilization_percent:35}]}};
     await page.route('**/api/state',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixture)}));
     await page.route('**/api/runs',async route=>{
@@ -136,8 +136,10 @@ async function main() {
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,run})});
     });
     await page.route('**/api/agents/*/message',async route=>{
-      const data=route.request().postDataJSON();sentMessages.push(data);fixture.agents[0].question='';fixture.agents[0].status='working';fixture.agents[0].status_reason='working';fixture.agents[0].logs.push({id:4,kind:'user',text:data.text,at:Date.now()/1000});
-      await new Promise(resolve=>setTimeout(resolve,300));await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});
+      const data=route.request().postDataJSON();sentMessages.push(data);
+      if(messageFailure){await new Promise(resolve=>setTimeout(resolve,messageDelay));await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({ok:false,error:'[SYNTHETIC] Delayed rejected send'})});return;}
+      fixture.agents[0].question='';fixture.agents[0].status='working';fixture.agents[0].status_reason='working';fixture.agents[0].logs.push({id:4,kind:'user',text:data.text,at:Date.now()/1000});
+      await new Promise(resolve=>setTimeout(resolve,messageDelay));await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});
     });
     await page.route('**/api/runs/*/stop',async route=>{stopped.push(route.request().url());fixture.runs[0].status='stopped';fixture.runs[0].status_reason='stopped';fixture.agents.forEach(agent=>{agent.status='stopped';agent.status_reason='stopped';});await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});});
     await page.locator('#closeSettings').click();await page.locator('#newRun').click();await page.locator('#pmProfile').selectOption('local');
@@ -176,6 +178,18 @@ async function main() {
     await page.locator('#messageInput').fill(answer);await page.locator('#sendMessage').click();await page.locator('#messageInput').fill('送信中に編集した次の指示');
     await page.locator('#messageStatus').filter({hasText:'送信しました'}).waitFor();
     assert.deepEqual(sentMessages,[{text:answer}]);assert.equal(await page.locator('#messageInput').inputValue(),'送信中に編集した次の指示');
+    messageDelay=600;
+    await page.locator('#sendMessage').click();await page.locator('#agentTabs [data-focus-key="tab:fixture-worker-2"]').click();
+    await page.waitForFunction(()=>!document.querySelector('#sendMessage').disabled);
+    assert.equal(await page.locator('#messageStatus').textContent(),'','Late success belongs to the original agent');
+    messageFailure=true;
+    await page.locator('#messageInput').fill('[SYNTHETIC] Keep this rejected draft');await page.locator('#sendMessage').click();
+    await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();await page.waitForFunction(()=>!document.querySelector('#sendMessage').disabled);
+    assert.equal(await page.locator('#messageStatus').textContent(),'','Late error belongs to the original agent');
+    await page.locator('#agentTabs [data-focus-key="tab:fixture-worker-2"]').click();
+    assert.equal(await page.locator('#messageInput').inputValue(),'[SYNTHETIC] Keep this rejected draft');
+    await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();messageFailure=false;
+    report.checks.push('late send success/error never appear on a different selected agent; failed-message draft is retained');
     report.checks.push('simulated multi-provider team: exact visible task, editable policy, worker limit, mail escaping, collapsed model thinking, human reply, draft preservation and settings lock; no inference');
     fixture.runs[0].auto_collaborations=7;fixture.runs[0].collaboration_limit_reached=true;fixture.runs[0].status='waiting';fixture.runs[0].status_reason='collaboration_limit';
     await page.locator('#collaborationLimitNotice').waitFor({state:'visible'});
@@ -223,6 +237,7 @@ async function main() {
     await page.locator('#saveSettings').click();await page.locator('#settingsStatus').filter({hasText:'設定を保存しました。'}).waitFor();await page.keyboard.press('Escape');
     await page.locator('#newRun').click();await page.locator('#taskInput').fill('[SYNTHETIC] Complete immediately.');await page.locator('#maxWorkers').fill('0');await page.locator('#startRun').click();
     await page.locator('#activeRunStatus').filter({hasText:'完了'}).waitFor();
+    assert.equal(await page.locator('#messageStatus').textContent(),'','Previous run send confirmation must not leak into a new run');
     assert.equal(await page.locator('#sendMessage').isDisabled(),true);
     await page.locator('#messageEligibility').filter({hasText:'ターン上限'}).waitFor();
     await assertLayout(page,'desktop exhausted budget');
