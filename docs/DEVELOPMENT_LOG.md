@@ -228,3 +228,9 @@ Research decisions:
 No live model service, user data, user PC or corporate security configuration is used
 for acceptance. Final exact-head CI, ZIP inspection and screenshots are recorded in
 handoff; until those pass, the portable binary remains unverified.
+
+First Windows build correction: Git's automatic CRLF conversion changed the exact
+bytes of checksum-pinned third-party notice supplements. Mark those reviewed files
+as binary-preserved in `.gitattributes`; do not weaken or normalize away their hash
+checks. The full source/install/Edge suite passed before the packaging gate caught
+this issue. Binary upload remains separately blocked on native redistribution review.

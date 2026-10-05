@@ -237,3 +237,8 @@ def test_spec_contract_and_bootstrap_have_no_onefile_or_upx():
     assert '"--require-hashes"' in source
     assert '"--only-binary=:all:"' in source
     assert source.index('for filename in ("requirements.lock", "requirements-build.lock")') >= 0
+
+
+def test_checksum_pinned_notices_disable_checkout_line_ending_conversion():
+    attributes = (Path(__file__).resolve().parents[1] / '.gitattributes').read_text(encoding='utf-8')
+    assert 'tools/portable-notices/** -text' in attributes.splitlines()
