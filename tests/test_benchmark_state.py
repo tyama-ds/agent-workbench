@@ -113,3 +113,16 @@ async def test_sentinel_rejects_any_model_work():
     with pytest.raises(AssertionError, match='must not call a model'):
         await model.complete()
     assert model.calls == 1
+
+
+def test_cli_json_survives_legacy_windows_stdout_encoding():
+    import os
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, '-m', 'tools.benchmark_state', '--fixture', 'small'],
+                            env={**os.environ, 'PYTHONIOENCODING': 'cp1252'},
+                            capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr.decode('ascii', errors='replace')
+    report = json.loads(result.stdout.decode('ascii'))
+    assert report['assumptions']['text_pattern'] == '調査abcde'
+    assert report['results'][0]['model_calls'] == 0

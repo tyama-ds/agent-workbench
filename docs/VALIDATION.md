@@ -221,7 +221,7 @@ against the exact published head; local Chromium launch in this container was bl
 by its socket restrictions, including after an approved launch attempt. DOM shims
 are not a substitute for browser layout evidence.
 
-Local aggregate: **547 passed, 6 Windows-only skips**, plus dependency consistency,
+Local aggregate: **549 passed, 6 Windows-only skips**, plus dependency consistency,
 JavaScript syntax, whitespace and optional DOM smoke. Independent review additionally
 ran focused API and deferred-frontend suites without a source blocker. The Windows
 browser job also records its own bounded benchmark JSON beside screenshots; consult

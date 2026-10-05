@@ -288,3 +288,15 @@ Research decisions:
 No live inference, user PC, credentials, external telemetry or new runtime dependency
 is required. Source changes remain in the existing draft PR; no merge or release is
 part of this cycle. Exact-head Windows Edge and all CI jobs remain required evidence.
+
+First Windows cycle-6 CI correction: the expanded deferred-frontend harness passed
+its complete JavaScript source through `node -e`, exceeding Windows CreateProcess's
+command-line limit. Stream the same source through `node -` stdin instead, with a
+70,000-character regression. This changes test transport only; production behavior
+and the behavioral assertions stay intact. Fresh exact-head CI is required.
+
+The same Windows run passed all real Edge interaction checks, including compact
+navigation and stable nodes, before benchmark-report output hit redirected cp1252
+stdout. Emit ASCII-escaped JSON (decoded values unchanged), and test the CLI under
+an explicit legacy encoding. This fixes evidence transport, not the measured API
+serializer or application character handling. No initial failed job is called green.

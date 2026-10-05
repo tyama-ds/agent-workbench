@@ -19,7 +19,8 @@ NODE = shutil.which("node")
 def run_javascript(source):
     if not NODE:
         pytest.skip("Node is required for JavaScript checks")
-    result = subprocess.run([NODE, "-e", source], capture_output=True, text=True, encoding="utf-8")
+    # Full-app behavioral fixtures exceed Windows CreateProcess argument limits.
+    result = subprocess.run([NODE, "-"], input=source, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
@@ -372,3 +373,8 @@ console.log(JSON.stringify({held,beforeDefaultAction,rendered,active:ui.startPoi
 """)
     assert result == {'held': True, 'beforeDefaultAction': True, 'rendered': True, 'active': False, 'waiters': 0}
     assert '.submit(' not in source and 'requestSubmit(' not in source
+
+
+def test_javascript_harness_streams_sources_larger_than_windows_command_limit():
+    source = "// " + "x" * 70000 + "\nconsole.log(JSON.stringify({ok:true}));"
+    assert run_javascript(source) == {'ok': True}

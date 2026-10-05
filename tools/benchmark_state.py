@@ -307,7 +307,8 @@ def main():
         print(json.dumps({'error': type(error).__name__, 'memory_limit': memory_limit}), file=sys.stderr)
         return 1
     report['memory_limit'] = memory_limit
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    # ASCII-escaped JSON also works when Windows redirects a legacy code-page stdout.
+    print(json.dumps(report, ensure_ascii=True, indent=2))
     return 0
 
 
