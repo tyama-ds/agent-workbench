@@ -272,7 +272,7 @@ async function main() {
     await page.locator('#resultSelection').selectOption(receiptOption);
     assert((await page.locator('#resultNotice').textContent()).includes('未確認'));
     await page.locator('#copyResult').click();await page.locator('#resultActionStatus').filter({hasText:'パスをコピーしました。'}).waitFor();
-    assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),path.join(workspace,'browser-result.txt'));
+    assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),fs.realpathSync.native(path.join(workspace,'browser-result.txt')));
     const receiptExport=await saveText('workbench-save-receipt.txt');assert(receiptExport.includes('browser-result.txt'));assert(!receiptExport.includes('[SYNTHETIC] Saved text'));
     assert.equal(await saveText('workbench-save-receipt.txt'),receiptExport,'Repeated exports are exact selected metadata');
     assert.equal(await page.locator('#messageInput').inputValue(),'結果を確認中の未送信メモ');

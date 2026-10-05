@@ -161,3 +161,10 @@ model-inferred file receipts, automatic archives and persistent history.
 
 Final tests, exact-head Windows/Edge CI and screenshot review are recorded in the cycle
 handoff. Earlier cycle evidence does not prove this feature's implementation.
+
+### Windows path normalization correction
+
+The first Edge run reached real result export and path copy, then exposed a test-only
+assumption: Windows temporary paths may use an 8.3 user-directory alias while the path
+guard returns the canonical long path. Compare the copied path with native realpath;
+keep exact path verification and leave production permission/receipt behavior unchanged.
