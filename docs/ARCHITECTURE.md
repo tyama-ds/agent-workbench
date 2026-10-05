@@ -97,3 +97,27 @@ Returning to the same IDs does not authorize an older request. Polling remains
 single-flight and refreshes the current selection after superseded work completes.
 A new selection displays a loading state and cannot copy/export another owner's
 content. Successful unchanged refreshes preserve existing detail and control nodes.
+
+### Run-scoped configured profile identity (0.1.1.dev7)
+
+Every public agent includes `configured_profile`: `{id, label, kind, model}` or
+`null` when the original descriptor is unavailable. Both complete and compact
+state include the same descriptor, including unselected summaries. It describes
+configuration at run admission, not successful inference or a verified served
+model. Provider aliases may resolve elsewhere and are not probed by this feature.
+
+At `start_run`, an explicit allowlist is projected from the admitted configuration
+for the PM and allowed worker profiles. These descriptors are redacted immediately
+and kept in the run's private in-memory `_configured_profiles` map. Capture-time
+redaction prevents later removal of a profile or environment-secret reference
+from revealing previously redacted descriptor text, including for workers created
+later. Public projection returns independent copies and still applies ordinary
+snapshot redaction. The private inference configuration is not altered.
+
+The UI never joins retained agents to current editable settings. Missing descriptors
+produce an explicit unknown state; there is no current-settings fallback. Existing
+settings-change reply restrictions remain. Explicit report/receipt text exports
+include only the selected record plus its run/agent and configured-profile identity.
+Names and model values are JSON-quoted to distinguish embedded newlines/delimiters.
+No URL, proxy, key reference, policy or directory scope is added to this metadata.
+There is no new persistence, download endpoint, model request or permission change.

@@ -226,3 +226,15 @@ JavaScript syntax, whitespace and optional DOM smoke. Independent review additio
 ran focused API and deferred-frontend suites without a source blocker. The Windows
 browser job also records its own bounded benchmark JSON beside screenshots; consult
 that exact-head artifact rather than extrapolating the Linux timing table.
+
+## Configured-model attribution (0.1.1.dev7)
+
+`test_configured_profiles.py` covers immutable descriptors across reused IDs,
+renames, disabling/deletion, mixed providers, full/compact parity, independent public
+copies, missing metadata, stale-config reply rejection, and secret-reference deletion
+before later worker creation. Frontend assertions cover poll-stable roster nodes,
+unknown/malformed metadata, explicit ownership and JSON-quoted export names/model IDs.
+The Edge acceptance script edits and removes a real saved profile after actual
+synthetic engine runs, starts a new configured-model run, and verifies old report and
+receipt exports stay byte-identical. New desktop/narrow attribution screenshots must
+be reviewed with the exact-head report. No server alias or live API is verified.

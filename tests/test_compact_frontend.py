@@ -52,7 +52,7 @@ const summaries=[
   {id:'agent-a',run_id:'run-a',name:'PM A',parent_id:null},
   {id:'agent-b',run_id:'run-a',name:'Worker B',parent_id:'agent-a'},
   {id:'agent-c',run_id:'run-b',name:'PM C',parent_id:null},
-].map(agent=>({...agent,profile_id:'local',assignment:'Visible assignment',status:'done',status_reason:'done',
+].map(agent=>({...agent,profile_id:'local',configured_profile:{id:'local',label:'Original fixture '+agent.id,kind:'local',model:'configured-'+agent.id},assignment:'Visible assignment',status:'done',status_reason:'done',
   question:'',last_error:'',turns:1,result_revision:1,results_omitted:0,receipts_omitted:0,
   message_eligibility:{allowed:true,reason:'',message:''}}));
 function details(agent,marker='current') {
@@ -136,15 +136,20 @@ assert.equal(ui.selectionGeneration,generation+2);assert.equal(requests.length,2
 assert.equal($('messageInput').value,'Exact A draft');assert.equal(ui.drafts.get('agent-b'),'Exact B draft');
 assert.equal(selectedOutput(),null);assert.equal($('resultText').textContent,'');
 const stateBeforeStale=JSON.stringify(ui.state);
-requests[1].resolve(compactState('run-a','agent-a','STALE'));await flush();
+const stale=compactState('run-a','agent-a','STALE');stale.agents[0].configured_profile.model='WRONG-STALE-MODEL';
+requests[1].resolve(stale);await flush();
 assert.equal(requests.length,3);assert.deepEqual(selectionOf(requests[2]),{view:'selected',run_id:'run-a',agent_id:'agent-a'});
 assert.equal(selectedOutput(),null);
 assert.equal(JSON.stringify(ui.state),stateBeforeStale);
 assert.ok(!renderedText($('conversationLog')).includes('STALE'));
 assert.ok(!renderedText($('activityFeed')).includes('STALE'));
+assert.ok(!$('conversationProfile').textContent.includes('WRONG-STALE-MODEL'));
 requests[2].resolve(compactState('run-a','agent-a','LATEST'));await pending;
 assert.equal(selectedOutput().record.text,'LATEST result agent-a');assert.equal(maxInFlight,1);
 assert.equal($('messageInput').value,'Exact A draft');
+const exported=exportOutputText(getAgent(),selectedOutput());
+assert.ok(exported.includes('作業 ID: run-a'));assert.ok(exported.includes('エージェント ID: agent-a'));
+assert.ok(exported.includes('開始時のモデル設定: "configured-agent-a"'));assert.ok(!exported.includes('WRONG-STALE-MODEL'));
 """)
 
 

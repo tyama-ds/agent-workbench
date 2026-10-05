@@ -87,7 +87,7 @@ def validate_settings(raw):
         if profile.get('kind') not in {'local', 'openai', 'anthropic'}:
             raise ValueError('provider kind が不正です')
         for key in ('label', 'model'):
-            text(profile.get(key, ''), key, 200)
+            text(profile.setdefault(key, ''), key, 200)
         profile['base_url'] = url(profile.get('base_url'), local=profile['kind'] == 'local')
         env = profile.setdefault('api_key_env', '')
         if not isinstance(env, str) or (env and not ENV.fullmatch(env)):

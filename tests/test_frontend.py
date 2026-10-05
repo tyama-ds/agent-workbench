@@ -184,7 +184,8 @@ def test_message_feedback_stays_with_its_selected_agent_and_clears_on_run_change
     assert "inlineStatus($('messageStatus'),'')" in select
 
 
-OUTPUT_SOURCE = APP[APP.index('function outputRecords('):APP.index('function renderConversation(')]
+PROFILE_SOURCE = APP[APP.index('function profileLabel('):APP.index('function lines(')]
+OUTPUT_SOURCE = PROFILE_SOURCE + APP[APP.index('function outputRecords('):APP.index('function renderConversation(')]
 OUTPUT_DOM = r"""
 class Node {
   constructor(tag='div'){this.tag=tag;this.children=[];this.textContent='';this.value='';this.scrollTop=0;this.hidden=false;this.disabled=false;this.className='';this.classList={toggle(){}};}

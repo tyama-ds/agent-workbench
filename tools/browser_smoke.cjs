@@ -332,6 +332,7 @@ async function main() {
       for(const agent of fixture.agents){
         for(const key of Object.keys(agent))assert(Object.hasOwn(agentContract,key),'Fixture drift: '+key);
         Object.assign(agent,{...agentContract,...agent,message_eligibility:{allowed:true,reason:'',message:''},status_reason:agent.question?'human_input':agent.status});
+        agent.configured_profile={id:agent.profile_id,label:'[SYNTHETIC] '+agent.profile_id,kind:agent.profile_id,model:'[SYNTHETIC] configured-'+agent.profile_id};
         agent.name='[SYNTHETIC] '+agent.name;
       }
       fixture.events=[{id:1,run_id:run.id,kind:'spawn',text:'PM が2人の作業者に担当を割り当てました。',at},{id:2,run_id:run.id,kind:'mail',from:'レビュー担当',to:'PM',text:'確認結果を共有します。参照先の変更は1件です。',at},{id:3,run_id:run.id,kind:'mail',from:'資料・検索担当',to:'PM',text:'<img src=x onerror="window.fixtureInjected=true">',at}];
@@ -568,6 +569,48 @@ async function main() {
     assert.match(await page.locator('#resultText').textContent(),/Terminal answer 日本語/);
     assert.equal(fs.readFileSync(path.join(workspace,'browser-result.txt'),'utf8'),'[SYNTHETIC] Saved text 日本語.');
     report.checks.push('real PM-only text run accepts no file roots and an unlisted alias; unused missing-key worker does not block or become a destination; preflight/settings preserve prior report, receipt, selected record, draft and file bytes without model calls');
+    // Real retained runs keep the configuration they started with after editing
+    // and deleting a profile. No current-settings fallback or model identity claim.
+    const originalProfile=await page.evaluate(async()=>{
+      const state=await (await fetch('/api/state',{credentials:'same-origin',cache:'no-store'})).json();
+      const run=state.runs.find(run=>run.task==='[SYNTHETIC] Save result.');
+      return state.agents.find(agent=>agent.run_id===run.id&&!agent.parent_id).configured_profile;
+    });
+    assert.deepEqual(Object.keys(originalProfile).sort(),['id','kind','label','model']);
+    assert.equal(originalProfile.model,'manual-unlisted-alias');
+    assert.match(await page.locator('#conversationProfile').textContent(),/manual-unlisted-alias.*応答モデル未確認/);
+    assert(exported.includes('開始時のモデル設定: "manual-unlisted-alias"'));
+    assert.match(exported,/作業 ID: r-[a-f0-9]+/);assert.match(exported,/エージェント ID: a-[a-f0-9]+/);
+    assert(exported.includes('接続先が実際に使ったモデルの確認ではありません'));
+    await page.locator('#navSettings').click();await page.locator('#profile-0-label').fill('Cycle7 renamed provider');
+    await page.locator('#profile-0-model').fill('cycle7-new-configured-alias');
+    await page.locator('#saveSettings').click();await page.locator('#settingsStatus').filter({hasText:'設定を保存しました'}).waitFor();
+    await page.keyboard.press('Escape');
+    assert.match(await page.locator('#conversationProfile').textContent(),/manual-unlisted-alias/);
+    assert(!await page.locator('.agent-card .agent-model').first().textContent().then(text=>text.includes('Cycle7 renamed')));
+    assert.equal(await saveText('workbench-result.txt'),exported,'Saved report attribution cannot change with current profile');
+    await page.locator('#newRun').click();await page.locator('#taskInput').fill('[SYNTHETIC] Complete immediately.');
+    const newRunResponse=page.waitForResponse(response=>response.url().endsWith('/api/runs')&&response.request().method()==='POST');
+    await page.locator('#startRun').click();const newRun=(await (await newRunResponse).json()).run;
+    await page.locator(`#runList .run-link.selected[data-focus-key="run:${newRun.id}"]`).waitFor();
+    await page.locator('#activeRunStatus').filter({hasText:'完了'}).waitFor();
+    assert.match(await page.locator('#conversationProfile').textContent(),/Cycle7 renamed provider.*cycle7-new-configured-alias/);
+    await page.locator('#navSettings').click();
+    await page.locator('.profile-editor').first().getByRole('button',{name:'削除',exact:true}).click();
+    await page.locator('#saveSettings').click();await page.locator('#settingsStatus').filter({hasText:'設定を保存しました'}).waitFor();
+    await page.keyboard.press('Escape');
+    assert.match(await page.locator('#conversationProfile').textContent(),/cycle7-new-configured-alias/);
+    await page.locator('#runList .run-link').filter({hasText:'[SYNTHETIC] Save result.'}).click();
+    await page.waitForFunction(()=>!document.querySelector('#resultSelection').disabled);
+    assert.match(await page.locator('#conversationProfile').textContent(),/manual-unlisted-alias/);
+    assert.equal(await saveText('workbench-result.txt'),exported);
+    await page.locator('#resultSelection').selectOption(receiptOption);
+    assert.equal(await saveText('workbench-save-receipt.txt'),receiptExport);
+    await page.setViewportSize({width:1366,height:768});await assertLayout(page,'desktop historical profile');
+    await page.screenshot({path:path.join(artifacts,'workbench-attribution-desktop.png'),fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow historical profile');
+    await page.screenshot({path:path.join(artifacts,'workbench-attribution-narrow.png'),fullPage:true,animations:'disabled'});
+    report.checks.push('real run-scoped configured identity survives profile rename/model change/removal; new run captures new model; old report and receipt exports remain byte-identical with run/agent attribution; labels distinguish configuration from verified response model; desktop/narrow screenshots');
     assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'},{method:'GET',path:'/v1/models'}]);
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
     assert.deepEqual(report.pageErrors,[]);assert.deepEqual(report.cspErrors,[]);assert.deepEqual(report.externalRequests,[]);

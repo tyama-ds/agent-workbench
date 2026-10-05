@@ -300,3 +300,50 @@ navigation and stable nodes, before benchmark-report output hit redirected cp125
 stdout. Emit ASCII-escaped JSON (decoded values unchanged), and test the CLI under
 an explicit legacy encoding. This fixes evidence transport, not the measured API
 serializer or application character handling. No initial failed job is called green.
+
+## 0.1.1.dev7 — Stable configured-model attribution (2026-10-05)
+
+- Reproduced the old roster relabeling completed work when the same current profile
+  was changed or removed. Capture a small original-run descriptor and show it in
+  the existing roster and selected-agent header. Both state projections preserve it.
+- Mark identity as configured, with the actual response model unverified. Do not
+  infer how a remote server resolved an alias or whether inference succeeded.
+- Add run/agent/profile identity to the existing explicit report/receipt text export.
+  Keep copying, record selection, report provenance and file-save semantics unchanged.
+  Quote metadata names/model strings so embedded newlines cannot masquerade as fields.
+- Normalize the already-optional profile label/model fields on settings validation.
+  Review found that an accepted label-omitted configuration could otherwise fail the
+  new descriptor capture and the existing preflight; missing models now reach the
+  ordinary admission blocker. Required fields and accepted input scope do not change.
+- Independent review found that redaction based only on current environment-key
+  references could reveal an old descriptor after profile deletion. Redact the
+  allowlisted descriptor at admission while its original references exist, then apply
+  ordinary snapshot redaction again. Do not alter private inference configuration.
+
+Research decisions:
+- [MLflow run parameters](https://mlflow.org/docs/latest/api_reference/rest-api.html#log-param):
+  adopt immutable run-scoped configuration identity rather than a mutable-profile
+  join. Reject adding its service, telemetry, database or tracking dependency.
+- [W3C PROV-DM](https://www.w3.org/TR/prov-dm/#section-entity-activity): retain the
+  distinction between a generating activity's original context and later changed
+  configuration. Reuse run/agent IDs; defer graphs and PROV serialization.
+- [Microsoft HAX G11](https://www.microsoft.com/en-us/haxtoolkit/guideline/make-clear-why-the-system-did-what-it-did/):
+  make explanations factual and limited, because an explanation can itself increase
+  trust. Configured identity does not certify the served model or output quality.
+- Reject broad configuration export, per-call traces and automatic archives. No
+  endpoints, proxy settings, environment names, policy or file scopes are needed
+  for this attribution descriptor. No runtime dependency or external call is added.
+
+Deferred next-cycle candidate: `web_fetch` currently decodes all accepted text as
+UTF-8 with replacement. A no-network synthetic Shift_JIS HTML response with an
+explicit charset silently corrupted Japanese text. [W3C encoding guidance](https://www.w3.org/International/questions/qa-html-encoding-declarations)
+and the [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/) support a
+separate declaration-aware decoding design, but label mappings, precedence, missing
+and malformed declarations, and strict failure behavior need their own reviewed
+scope. This cycle intentionally makes no web-fetch change.
+
+Verification: focused descriptor/privacy/frontend tests and the actual Windows Edge
+flow cover profile rename, model change, profile removal, new versus retained runs,
+byte-identical old exports, and desktop/narrow layout. Final full-suite and exact-head
+six-job CI results belong to the cycle handoff; earlier results are not evidence for
+this head. Existing no-binary-distribution and no-live-inference gates remain.

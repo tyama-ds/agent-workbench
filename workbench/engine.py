@@ -77,7 +77,7 @@ class Agent:
     receipts_omitted: int = 0
     result_revision: int = 0
 
-    def public(self, *, message_eligibility=None, status_reason=None, include_detail=True):
+    def public(self, *, message_eligibility=None, status_reason=None, include_detail=True, configured_profile=None):
         value = {k: getattr(self, k) for k in ('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id',
                                              'status', 'question', 'last_error', 'turns', 'assignment')}
         # Build summaries directly: unselected histories must not be copied or
@@ -86,6 +86,7 @@ class Agent:
             value.update({'logs': list(self.logs), 'results': list(self.results),
                           'output_receipts': list(self.output_receipts)})
         return value | {
+                    'configured_profile': configured_profile,
                     'results_omitted': self.results_omitted, 'receipts_omitted': self.receipts_omitted,
                     'result_revision': self.result_revision,
                     'status_reason': status_reason or ('human_input' if self.status == 'waiting' and self.question else self.status),
@@ -163,10 +164,15 @@ class Engine:
     def active(self):
         return any(a.task and not a.task.done() for a in self.agents.values()) or any(r['status'] in {'running', 'waiting', 'stopping'} for r in self.runs.values())
 
+    def configured_profile(self, agent):
+        """Only the original run's public identity, never current settings or a model claim."""
+        return copy.deepcopy(self.runs[agent.run_id].get('_configured_profiles', {}).get(agent.profile_id))
+
     def snapshot(self):
         return self._redact_tree({'runs': [{k: v for k, v in run.items() if not k.startswith('_')} |
                          {'status_reason': self.run_status_reason(run)} for run in self.runs.values()],
-                'agents': [a.public(message_eligibility=self.message_eligibility(a), status_reason=self.agent_status_reason(a)) for a in self.agents.values()], 'events': list(self.events),
+                'agents': [a.public(message_eligibility=self.message_eligibility(a), status_reason=self.agent_status_reason(a),
+                                    configured_profile=self.configured_profile(a)) for a in self.agents.values()], 'events': list(self.events),
                 'resources': self.gate.snapshot()})
 
     def selected_snapshot(self, *, run_id=None, agent_id=None):
@@ -197,7 +203,8 @@ class Engine:
             'runs': [{k: v for k, v in run.items() if not k.startswith('_')} |
                      {'status_reason': self.run_status_reason(run)} for run in self.runs.values()],
             'agents': [a.public(message_eligibility=self.message_eligibility(a),
-                                status_reason=self.agent_status_reason(a), include_detail=a.id == agent_id)
+                                status_reason=self.agent_status_reason(a), include_detail=a.id == agent_id,
+                                configured_profile=self.configured_profile(a))
                        for a in self.agents.values()],
             'events': events, 'resources': self.gate.snapshot(),
             'selection': {'run_id': run_id, 'agent_id': agent_id, 'detail_loaded': agent_id is not None},
@@ -257,12 +264,17 @@ class Engine:
     async def start_run(self, payload):
         task, config, pm, workers, count, harness, web_tools = self._prepare_run(payload)
         run_id = 'r-' + secrets.token_hex(8)
+        # Capture a small public descriptor while original secret references are
+        # still available. Later profile/environment removal must not unredact it.
+        # No URLs, proxies, key references, policy or file scopes enter this map.
+        configured_profiles = {p['id']: self._redact_tree({key: p.get(key, '') for key in ('id', 'label', 'kind', 'model')})
+                               for p in config['providers'] if p['id'] in {pm, *workers}}
         run = {'id': run_id, 'task': task, 'pm_profile': pm, 'worker_profiles': list(dict.fromkeys(workers)),
                'max_workers': count, 'status': 'running', 'created_at': time.time(), 'model_calls': 0,
                'tool_calls': 0, 'auto_collaborations': 0,
                'max_auto_collaborations': config['limits']['max_auto_collaborations'],
                'collaboration_limit_reached': False, '_collaboration_blocked': False,
-               'agent_ids': [], '_config': config, '_harness': harness,
+               'agent_ids': [], '_config': config, '_configured_profiles': configured_profiles, '_harness': harness,
                '_executor': ToolExecutor(harness), '_web': web_tools}
         self.runs[run_id] = run
         lead = self._new_agent(run, pm, 'pm', assignment=task)

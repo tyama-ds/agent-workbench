@@ -65,6 +65,15 @@ function element(tag, className, text) {
 }
 function statusLabel(value) { return STATUS_LABELS[value]||String(value||'待機'); }
 function profileLabel(profile) { return profile ? `${profile.label||profile.id}${profile.model?' · '+profile.model:''}` : '未設定'; }
+const PROFILE_KINDS={local:'Local / Chat Completions',openai:'OpenAI / Responses',anthropic:'Anthropic / Messages'};
+function configuredProfile(agent) {
+  const profile=agent?.configured_profile;
+  return profile&&['id','label','kind','model'].every(key=>typeof profile[key]==='string')&&profile.id===agent.profile_id&&Object.hasOwn(PROFILE_KINDS,profile.kind)?profile:null;
+}
+function configuredProfileLabel(agent) {
+  const profile=configuredProfile(agent);
+  return profile?`開始時の設定: ${profileLabel(profile)} · ${PROFILE_KINDS[profile.kind]}`:'開始時の設定情報なし';
+}
 function lines(value) { return String(value||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean); }
 function localTime(value) {
   if(!value)return '';
@@ -315,13 +324,12 @@ const REASON_LABELS = {human_input:'回答待ち',teammates:'作業者待ち',te
 function stateLabel(item) { return REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
 function badge(status,reason) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),REASON_LABELS[reason]||statusLabel(status)); }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.status,agent.status_reason,agent.assignment,agent.question,agent.last_error]),ui.config?.providers]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.assignment,agent.question,agent.last_error])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   filteredAgents(agents).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
     const top=element('div','agent-card-top');top.append(element('span','agent-avatar',!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`),badge(agent.status,agent.status_reason));
-    const profile=ui.config?.providers?.find(item=>item.id===agent.profile_id);
-    card.append(top,element('span','agent-name',agent.name||agent.id),element('span','agent-model',profileLabel(profile)),element('span','agent-task',agent.assignment||agent.question||agent.last_error||(!agent.parent_id?'チームの作業を管理':'割り当てられた作業を担当')));
+    card.append(top,element('span','agent-name',agent.name||agent.id),element('span','agent-model',configuredProfileLabel(agent)),element('span','agent-task',agent.assignment||agent.question||agent.last_error||(!agent.parent_id?'チームの作業を管理':'割り当てられた作業を担当')));
     card.addEventListener('click',()=>selectAgent(agent.id));$('agentCards').appendChild(card);
   });
 }
@@ -348,8 +356,14 @@ function receiptText(receipt) {
   return [`パス: ${receipt.path??''}`,`保存操作: ${receipt.operation==='updated'?'更新':'新規作成'}`,`ツール: ${receipt.tool??''}`,`保存時のサイズ: ${receipt.bytes??'不明'} bytes`,`保存時の SHA-256: ${receipt.sha256??'不明'}`].join('\n');
 }
 function exportOutputText(agent,item) {
-  const record=item.record,heading=item.kind==='result'?'モデルの報告':'ファイル保存記録';
-  const meta=[heading,`時刻: ${outputTimestamp(record.at)}`,`ターン: ${record.turn??'不明'}`];
+  const record=item.record,heading=item.kind==='result'?'モデルの報告':'ファイル保存記録',profile=configuredProfile(agent);
+  const meta=[heading,`作業 ID: ${agent.run_id??'不明'}`,`担当: ${JSON.stringify(agent.name||agent.id||'不明')}`,
+    `エージェント ID: ${agent.id??'不明'}`,`プロファイル ID: ${agent.profile_id??'不明'}`];
+  if(profile)meta.push(`開始時の表示名: ${JSON.stringify(profile.label)}`,`開始時の接続方式: ${PROFILE_KINDS[profile.kind]}`,
+    `開始時のモデル設定: ${JSON.stringify(profile.model)}`);
+  else meta.push('開始時の設定情報なし');
+  meta.push('モデル名は開始時の設定値です。接続先が実際に使ったモデルの確認ではありません。',
+    `時刻: ${outputTimestamp(record.at)}`,`ターン: ${record.turn??'不明'}`);
   if(item.kind==='result')meta.push(`出典: ${resultSource(record)}（${resultSourceTag(record)}）`,`状態: ${resultPosition(agent,record)}`,`本文の省略: ${record.truncated?'あり（保持された範囲のみ）':'なし'}`,'モデルによる報告です。内容の正しさや作業の完了を検証したものではありません。');
   else meta.push('保存時点の記録です。現在のファイルの存在・内容は未確認です。ファイル本体は含みません。');
   return meta.join('\n')+'\n\n'+(item.kind==='result'?String(record.text??''):receiptText(record))+'\n';
@@ -434,6 +448,7 @@ function renderConversation(agent) {
   $('conversationLog').setAttribute('aria-busy',String(loading));$('resultsPanel').setAttribute('aria-busy',String(loading));
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
   $('conversationMeta').textContent=agent?`${!agent.parent_id?'PM':'作業者'} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
+  $('conversationProfile').textContent=agent?configuredProfileLabel(agent)+'（応答モデル未確認）':'';
   $('conversationStatus').hidden=!agent;
   if(agent){$('conversationStatus').className='status-badge '+(Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'');$('conversationStatus').textContent=stateLabel(agent);}
   const question=agent&&needsHuman(agent)?agent.question||'':'';$('humanQuestion').hidden=!question;$('humanQuestion').textContent=question?`判断が必要です\n${question}`:'';
