@@ -141,9 +141,15 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     async def config(request):
         if request.method == 'PUT':
             value = await body(request)
+            revision = value.get('config_revision')
+            if type(revision) is not int or revision != settings.revision:
+                return web.json_response({'ok': False, 'code': 'settings_changed',
+                    'error': '保存済み設定が変わったか、設定の確認情報がありません。保存済み設定を読み直してから編集してください。'}, status=409)
             if engine.active():
                 raise web.HTTPConflict(text='設定変更は実行中のチームを停止してから行ってください')
-            return web.json_response(engine.save_settings(value))
+            # Recheck ownership after the body arrives; do not await between
+            # this revision/active-run check and the atomic settings transition.
+            return web.json_response(engine.save_settings(value.get('config')))
         return web.json_response(settings.public())
 
     async def secret(request):

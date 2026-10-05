@@ -140,7 +140,7 @@ def main():
                         config = public['config']
                         config['providers'] = [{**config['providers'][0], 'model': 'console-fixture',
                             'base_url': f'http://127.0.0.1:{model.server_port}/v1'}]
-                        api('/api/config', config)
+                        api('/api/config', {'config_revision': public['config_revision'], 'config': config})
                         api('/api/runs', {'task': '[SYNTHETIC] Wait for interruption', 'pm_profile': 'local',
                                            'worker_profiles': [], 'max_workers': 0})
                         assert held.wait(10), 'Real provider request was not held by local fixture'

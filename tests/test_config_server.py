@@ -123,7 +123,7 @@ async def test_http_auth_origin_host_one_use_bootstrap_and_csp(tmp_path):
         assert response.status == 401
         response = await client.get(auth.origin + '/api/state')
         assert response.status == 200
-        response = await client.put(auth.origin + '/api/config', json=DEFAULT)
+        response = await client.put(auth.origin + '/api/config', json={'config_revision': app[APP_KEY].settings.revision, 'config': DEFAULT})
         assert response.status == 403
         response = await client.get(auth.origin + '/workbench/config.py')
         assert response.status == 404
@@ -145,7 +145,7 @@ async def test_key_not_persisted_invalid_key_and_active_config_lock(tmp_path):
         assert response.status == 400
         engine = app[APP_KEY]
         engine.runs['test'] = {'id': 'test', 'status': 'waiting', 'agent_ids': []}
-        response = await client.put(auth.origin + '/api/config', json=DEFAULT, headers=headers)
+        response = await client.put(auth.origin + '/api/config', json={'config_revision': app[APP_KEY].settings.revision, 'config': DEFAULT}, headers=headers)
         assert response.status == 409
         assert not (tmp_path / 'state' / 'settings.json').exists()
 

@@ -511,20 +511,26 @@ async function main() {
     const api = async (route, options = {}) => {
       if (fixture.errors.length) throw new Error(fixture.errors.join('\n'));
       if (app.exited) throw new Error('Packaged server exited: ' + redact(app.stderr));
+      if (route === '/api/config' && options.method === 'PUT') {
+        const {config_revision} = await api('/api/config');
+        options = {...options, body: {config_revision, config: options.body}};
+      }
       const response = await request(origin, route, {...options, headers: {...authHeaders, ...options.headers}});
       assert.equal(response.status, 200, route + ': ' + response.raw);
       return response.json;
     };
+    const initialConfig = await api('/api/config');
+    const config = initialConfig.config;
+    const configEnvelope = {config_revision: initialConfig.config_revision, config};
     assert.equal((await request(origin, '/api/bootstrap', {method: 'POST', body: {},
       headers: {...authHeaders, 'X-Workbench-Bootstrap': token}})).status, 401);
     assert.equal((await request(origin, '/api/config', {headers: {...authHeaders, Host: 'localhost:' + port}})).status, 403);
-    assert.equal((await request(origin, '/api/config', {method: 'PUT', body: {},
+    assert.equal((await request(origin, '/api/config', {method: 'PUT', body: configEnvelope,
       headers: {...authHeaders, Origin: 'https://evil.invalid'}})).status, 403);
-    assert.equal((await request(origin, '/api/config', {method: 'PUT', body: {},
+    assert.equal((await request(origin, '/api/config', {method: 'PUT', body: configEnvelope,
       headers: {...authHeaders, 'Content-Type': 'text/plain'}})).status, 415);
     report.checks.push('Real Edge consumes one-use bootstrap, removes fragment and receives HttpOnly SameSite=Strict cookie; replay and authenticated Host/Origin/content-type attacks denied');
 
-    const config = (await api('/api/config')).config;
     const profile = {...config.providers.find(item => item.kind === 'local'), id: 'local', label: 'Synthetic portable acceptance',
       base_url: providerUrl, model: MODEL, api_key_env: '', enabled: true, request_timeout_seconds: 30};
     config.providers = [profile];
@@ -605,7 +611,9 @@ async function main() {
     await page.locator('#startRun').click();
     const stopRunId = (await (await stopStarted).json()).run.id;
     await until(() => fixture.pendingStops.size === 1, 'real provider request in flight');
-    assert.equal((await request(origin, '/api/config', {method: 'PUT', body: config, headers: authHeaders})).status, 409);
+    const lockedRevision = (await api('/api/config')).config_revision;
+    assert.equal((await request(origin, '/api/config', {method: 'PUT',
+      body: {config_revision: lockedRevision, config}, headers: authHeaders})).status, 409);
     await page.locator('#stopRun').click();
     await page.locator('#activeRunStatus').filter({hasText: '停止'}).waitFor();
     const stopped = await api('/api/state');

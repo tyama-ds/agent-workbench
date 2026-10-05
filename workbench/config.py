@@ -155,7 +155,7 @@ class Settings:
             raise ValueError('設定ファイルにリンクは使用できません')
         self.value = validate_settings(json.loads(self.path.read_text(encoding='utf-8'))) if self.path.exists() else copy.deepcopy(DEFAULT)
         self.secrets: dict[str, str] = {}
-        # Process-local ownership for browser credential writes. It is not part
+        # Process-local ownership for browser config/credential writes. It is not part
         # of persisted settings or a retained run's configuration/eligibility.
         self.revision = 0
 

@@ -283,3 +283,34 @@ the user's task draft.
 Key operations invalidate diagnostics but do not mutate run configuration or
 scheduler queues. The ordinary explicit human-message API remains the only recovery
 instruction, and its current settings/budget/context/stop checks remain unchanged.
+
+
+## Settings-save ownership (0.1.1.dev20)
+
+`PUT /api/config` requires `{config_revision, config}`. The outer revision is an
+exact Python integer equal to the current process-local revision; booleans,
+missing/malformed values and old revisions return `409 settings_changed`. The
+comparison follows complete body arrival and precedes the active-run check and
+synchronous save with no intervening await. There is no raw-configuration legacy
+path. Rejected ownership cannot mutate settings bytes, memory keys, masks or
+revision. Engine-internal `save_settings` and the persisted configuration schema
+are unchanged. This application revision contract is not HTTP If-Match or an
+across-restart idempotency guarantee.
+
+The frontend captures the submitted configuration, baseline revision, dedicated
+settings-draft generation and dialog/workspace generation. A complete, typed
+acceptance receipt at exactly the next revision advances the saved baseline even
+after the dialog closes. Only the same draft can become clean, and only its current
+workspace can receive completion feedback. A native close changes diagnostic and
+workspace ownership, not the settings-draft generation. Task profile rendering
+preserves exact task text, PM/worker choices (including empty/unavailable choices)
+and the raw worker-count draft, with logical keyboard focus restoration after
+replacement. A newer global notice is never cleared by Save.
+
+Known rejection keeps the draft and allows an explicit corrected retry. Revision
+conflict, unknown transport outcome or malformed acceptance latches stale state:
+Save, model-list checks and credential writes wait for explicit saved-settings
+reload, while ordinary draft fields remain editable. Reload validates a complete
+snapshot before replacing the form. It remains GET-only and explicitly discards
+settings edits, not task or conversation drafts. No automatic retry, merge, rollback,
+background settings synchronization or new persistence is introduced.

@@ -896,3 +896,54 @@ independent visual review. Full local checks and exact-head source/PR six-job CI
 required. Previous dev18 acceptance is retained in a versioned evidence record; the
 frozen original PR archive and dev15 source ZIP remain untouched. No live inference,
 new dependency, local browser retry, user-PC action, binary distribution, merge or release.
+
+
+## 0.1.1.dev20 — Keep settings saves with their owning revision and drafts (2026-10-05)
+
+- Reproduced two tabs reading one revision, one lowering the model-call limit,
+  then the other's unrelated-label save silently restoring the older limit.
+  Require the existing process-local revision on every configuration PUT. Check
+  after body arrival immediately before the synchronous mutation; reject stale,
+  missing and malformed ownership without a legacy bypass or partial mutation.
+- Reproduced delayed Save selecting explicitly unchecked workers, clamping a newer
+  task's worker count and clearing newer feedback. Preserve complete task drafts,
+  including removed choices as unavailable, and restore logical worker-control
+  focus only when DOM replacement left the document body focused.
+- Separate accepted saved-baseline reconciliation from dialog feedback authority.
+  Native close/reopen does not make an unchanged submitted form falsely dirty or
+  let late success/failure paint a newer context. Dedicated draft generations and
+  a captured-form comparison keep newer/ABA/unsignaled changes dirty. Independent
+  review extended this through an initially pristine form with an unsignaled edit.
+- Validate full value-free acceptance snapshots and the exact next revision. A
+  conflict or uncertain outcome preserves the draft but blocks Save, credentials
+  and model diagnostics until explicit saved-settings reload. Keep fields editable,
+  explain that users should note their changes before discarding, and never replay
+  a request or pretend a lost response proves no save occurred.
+- Keep active-run locks, memory-only keys, atomic disk/mask behavior, budgets,
+  configured destinations, native dialogs and existing cockpit styling. Migrate
+  all synthetic API clients to the revision envelope without weakening tests.
+
+Research decisions:
+- [RFC 9110 conditional requests](https://www.rfc-editor.org/rfc/rfc9110.html#section-13.1.1):
+  adopt a server-checked precondition for the demonstrated lost-update race. Reuse
+  the application's JSON revision contract; do not claim HTTP If-Match compliance
+  or add a general transaction/idempotency service.
+- [W3C status messages](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html):
+  preserve concise accessible outcome feedback without moving focus or replacing
+  newer feedback. This does not establish full accessibility conformance.
+- [Microsoft HAX correction guidance](https://www.microsoft.com/en-us/haxtoolkit/guideline/support-efficient-correction/):
+  preserve editable drafts and an explicit recovery path. Reject silent merge,
+  automatic resend, guessed defaults and destructive automatic reload.
+- Defer cross-tab live synchronization, retained edit history, persistent revision
+  tokens, automatic backups and generic undo. Configuration conflicts justify this
+  bounded precondition; no new provider, credential storage or runtime dependency.
+
+Real loopback API tests cover two-client/concurrent/streamed-body/ABA races and
+atomic failures; production callbacks cover old responses, exact draft retention,
+malformed receipts and locks. Real Windows Edge acceptance covers two tabs, actual
+queued native close, delayed committed responses, unknown transport and keyboard /
+desktop/narrow state. Full local checks, independent source/evidence/pixel review
+and exact-head six-job CI belong to the final handoff. Preserve the previous compact
+PR overview as a hash-bound historical record, along with all earlier evidence and
+the frozen original PR archive. No local browser retry, live inference, user-PC work,
+binary distribution, merge or release is included.

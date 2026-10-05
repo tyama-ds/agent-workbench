@@ -40,6 +40,7 @@ async function retainedRedactionAcceptance({page,context,origin,workspace,stateD
     // to the revision read immediately before it; actual UI writes are tested
     // separately by the saved-destination credential acceptance.
     if(url==='/api/secrets'&&method==='POST')body={...body,config_revision:(await api('/api/config')).config_revision};
+    if(url==='/api/config'&&method==='PUT')body={config_revision:(await api('/api/config')).config_revision,config:body};
     const response=await page.evaluate(async({url,method,body})=>{
       const response=await fetch(url,{method,credentials:'same-origin',cache:'no-store',
         ...(body===undefined?{}:{headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})});

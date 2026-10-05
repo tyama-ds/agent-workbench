@@ -27,7 +27,8 @@ Its original **“Current verification” means the captured dev17 source head o
 
 | Cycle | Subject | Original verification record |
 | --- | --- | --- |
-| 19 | Poll-stable keyboard disclosure focus | [Development decisions](../DEVELOPMENT_LOG.md#011dev19--keep-keyboard-focus-on-changing-logs-2026-10-05) and [validation scope](../VALIDATION.md#current-revision--keyboard-disclosure-focus-2026-10-05); exact-head acceptance is in the live draft PR |
+| 20 | Revision-owned settings saves and retained drafts | [Development decisions](../DEVELOPMENT_LOG.md#011dev20--keep-settings-saves-with-their-owning-revision-and-drafts-2026-10-05) and [validation scope](../VALIDATION.md#current-revision--settings-save-ownership-2026-10-05); exact-head acceptance is in the live draft PR |
+| 19 | Poll-stable keyboard disclosure focus | [Complete prior compact PR overview](dev19-keyboard-verification.md) and [exact-body provenance](dev19-keyboard-verification.json) |
 | 18 | Hash-bound native notice/provenance evidence | [Prior dev18 verification, including retry history](dev18-native-evidence-verification.md) |
 | 17 | Queued filesystem deadline checks | [Captured dev17 verification](pr-2-2026-10-05.md#current-verification) |
 | 16 | Provider completion evidence and Local refusals | [Cycle 16 verification](pr-2-2026-10-05.md#historical-cycle-16-verification) |

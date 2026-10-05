@@ -5,7 +5,38 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
-## Current revision — keyboard disclosure focus (2026-10-05)
+## Current revision — settings-save ownership (2026-10-05)
+
+Version **0.1.1.dev20** requires the current saved revision for every configuration
+PUT, after complete body arrival and before atomic mutation. Two stale browser
+snapshots cannot silently overwrite newer saved settings. Existing active-run,
+credential, disk-failure and redaction-capacity protections remain in place.
+
+Save completion reconciles valid acceptance to the saved baseline while retaining
+newer settings and task drafts. Empty worker selections, removed/unavailable choices
+and above-new-limit counts remain explicit user decisions. Unknown/conflicting Save
+results preserve editable fields but block resending and credential/model actions
+until an explicit GET reload; malformed acceptance cannot silently claim success.
+Native close/reopen, later notices and focused controls retain their ownership.
+
+Deterministic tests use actual production callbacks and real synthetic loopback API
+requests, including streamed bodies and concurrent clients. Windows Edge tests add
+two tabs, real committed/delayed/aborted responses, queued native close, keyboard
+focus and desktop/narrow screenshots. No local browser launch was retried. These
+checks do not prove live-provider or corporate-PC compatibility, cross-tab live
+synchronization, persistence across restarts or full accessibility conformance.
+
+Local aggregate: **1156 passed, 6 platform-specific skips**, including **33 new
+loopback revision/atomicity cases and 38 new Save callback cases**. Dependency
+consistency, Python compilation, JavaScript syntax, existing DOM-only smoke and
+whitespace checks pass. DOM-only checks are not browser/layout evidence.
+
+Exact-head source/PR six-job CI, artifact bindings and independent pixel review are
+recorded in the live PR after completion. Previous dev19 acceptance remains in its
+[complete historical overview](evidence/dev19-keyboard-verification.md), with an
+[exact-body provenance manifest](evidence/dev19-keyboard-verification.json).
+
+## Prior revision — keyboard disclosure focus (2026-10-05)
 
 Version **0.1.1.dev19** preserves focus on the same native log disclosure when a
 loaded owner's log content changes. Stable keys include run, agent and unique log

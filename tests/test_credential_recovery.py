@@ -22,7 +22,7 @@ async def setup(auth, app, client):
     config['providers'] = [dict(config['providers'][0], id='model', kind='openai', model='fixture',
                                 base_url='https://saved.example/v1', api_key_env='', proxy_url='')]
     config['search'].update(provider='brave', endpoint='https://saved.example/search', api_key_env='', enabled=False)
-    response = await client.put(auth.origin + '/api/config', json=config, headers=headers)
+    response = await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)
     assert response.status == 200
     return engine, config, headers, (await response.json())['config_revision']
 
@@ -60,9 +60,9 @@ async def test_stale_saved_target_rejected_before_mutation(tmp_path, change):
             changed['providers'][0][key] = value
         else:
             changed['providers'][0]['id' if change == 'id_reuse' else 'base_url'] = 'other' if change == 'id_reuse' else 'https://new.example/v1'
-        assert (await client.put(auth.origin + '/api/config', json=changed, headers=headers)).status == 200
+        assert (await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': changed}, headers=headers)).status == 200
         if change in {'id_reuse', 'aba'}:
-            assert (await client.put(auth.origin + '/api/config', json=config, headers=headers)).status == 200
+            assert (await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)).status == 200
         before = (dict(engine.settings.secrets), engine._redaction.value_count, engine.settings.path.read_bytes())
         for key in [NEW, '']:
             response = await set_key(client, auth, headers, revision, key=key)
@@ -85,7 +85,7 @@ async def test_revision_is_checked_after_request_body_arrives(tmp_path):
                                       headers={**headers, 'Content-Type': 'application/json'}))
         await entered.wait()
         config['providers'][0]['base_url'] = 'https://new.example/v1'
-        assert (await client.put(auth.origin + '/api/config', json=config, headers=headers)).status == 200
+        assert (await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)).status == 200
         release.set()
         response = await pending
         assert response.status == 409
@@ -101,7 +101,7 @@ async def test_search_destination_and_provider_namespaces_are_separate(tmp_path)
         assert engine.settings.secrets == {'model': OLD, 'search': NEW}
         for provider, endpoint in [('searxng', 'https://saved.example/search'), ('brave', '')]:
             config['search'].update(provider=provider, endpoint=endpoint)
-            saved = await client.put(auth.origin + '/api/config', json=config, headers=headers)
+            saved = await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)
             revision = (await saved.json())['config_revision']
             response = await set_key(client, auth, headers, revision, ident='search')
             assert response.status == 400 and NEW not in await response.text()
@@ -130,7 +130,7 @@ async def test_real_api_recovery_requires_explicit_message_without_reset(tmp_pat
         assert (run['status'], agent.status) == ('waiting', 'error')
         assert engine.message_eligibility(agent)['allowed']
         before = (run['model_calls'], run['tool_calls'], run['auto_collaborations'], agent.turns, run['created_at'], agent.result_revision)
-        assert (await client.put(auth.origin + '/api/config', json=config, headers=headers)).status == 409
+        assert (await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)).status == 409
         assert engine.settings.revision == revision
         assert (await set_key(client, auth, headers, revision)).status == 200
         await asyncio.sleep(.02)
@@ -165,7 +165,7 @@ async def test_key_replacement_never_bypasses_reply_eligibility(tmp_path, limit)
         elif limit == 'stopped': await engine.stop_run(run['id'])
         else:
             config['providers'][0]['model'] = 'changed-model'
-            response = await client.put(auth.origin + '/api/config', json=config, headers=headers)
+            response = await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)
             revision = (await response.json())['config_revision']
         before = (run['model_calls'], run['tool_calls'], run['auto_collaborations'], agent.turns)
         assert (await set_key(client, auth, headers, revision)).status == 200
@@ -185,12 +185,12 @@ async def test_failed_save_and_capacity_do_not_advance_revision(tmp_path, monkey
         assert response.status == 409 and (await response.json())['code'] == 'redaction_capacity'
         assert engine.settings.revision == revision and engine.settings.secrets == {'model': OLD}
         invalid = copy.deepcopy(config); invalid['limits']['max_model_calls'] = 0
-        assert (await client.put(auth.origin + '/api/config', json=invalid, headers=headers)).status == 400
+        assert (await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': invalid}, headers=headers)).status == 400
         monkeypatch.setenv('SYNTHETIC_RECOVERY_ENV', NEW)
         changed = copy.deepcopy(config); changed['providers'][0]['api_key_env'] = 'SYNTHETIC_RECOVERY_ENV'
         with pytest.raises(RedactionCapacityError): engine.save_settings(changed)
         def fail(*args): raise OSError('synthetic failure')
         monkeypatch.setattr('workbench.config.os.replace', fail)
-        assert (await client.put(auth.origin + '/api/config', json=config, headers=headers)).status == 503
+        assert (await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)).status == 503
         assert engine.settings.revision == revision and engine.settings.path.read_bytes() == before
         assert 'config_revision' not in json.loads(before)

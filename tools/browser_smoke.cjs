@@ -13,6 +13,7 @@ const {credentialRecoveryAcceptance} = require('./browser-tests/credential_recov
 const {firstTaskAcceptance} = require('./browser-tests/first_task_acceptance.cjs');
 const {retentionAcceptance} = require('./browser-tests/retention_acceptance.cjs');
 const {disclosureFocusAcceptance} = require('./browser-tests/disclosure_focus_acceptance.cjs');
+const {settingsSaveAcceptance} = require('./browser-tests/settings_save_acceptance.cjs');
 
 async function assertLayout(page,label) {
   const metrics=await page.evaluate(()=>{
@@ -673,6 +674,8 @@ async function main() {
     await retainedRedactionAcceptance({page,context,origin,workspace,stateDir,artifacts,cases:redactionCases,report});
     await credentialRecoveryAcceptance({page,origin,providerUrl,providerRequests,stateDir,artifacts,
       scenario:credentialScenario,report,assertLayout,assertDialogLayout});
+    await settingsSaveAcceptance({page,context,origin,providerUrl,providerRequests,stateDir,artifacts,
+      report,assertLayout,assertDialogLayout});
     assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'},{method:'GET',path:'/v1/models'}]);
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
     assert.deepEqual(report.pageErrors,[]);assert.deepEqual(report.cspErrors,[]);assert.deepEqual(report.externalRequests,[]);

@@ -37,6 +37,9 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     if(pathname==='/api/config'&&request.method()==='PUT')configPuts.push(request);
   };
   const api=async(url,method='GET',body,expected=200)=>{
+    // Fixture-only writes read their revision immediately before writing. UI
+    // acceptance always submits the revision captured by the real form instead.
+    if(url==='/api/config'&&method==='PUT')body={config_revision:(await api('/api/config')).config_revision,config:body};
     const response=await page.evaluate(async({url,method,body})=>{
       const response=await fetch(url,{method,credentials:'same-origin',cache:'no-store',
         ...(body===undefined?{}:{headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})});

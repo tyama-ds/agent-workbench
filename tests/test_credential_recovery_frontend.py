@@ -149,7 +149,7 @@ await wire();$('workerProfiles').querySelectorAll('input').forEach(node=>{node.c
 $('taskInput').value='  Exact\n task draft  ';$('messageInput').value='  Exact chat draft  ';ui.drafts.set('agent-a','Saved chat draft');
 $('maxWorkers').value='2';const before=runPayload();markSettingsDirty();ui.state.runs=[{status:'waiting'}];setSettingsLock();
 const pending=$('discardSettings').listeners.click();assert.equal(requests[0].path,'/api/config');assert($('saveSettings').disabled);
-requests[0].resolve({config:CONFIG,config_revision:4,secret_status:{}});await pending;
+requests[0].resolve({config:CONFIG,config_revision:4,secret_status:{local:false,search:false}});await pending;
 assert.deepEqual(runPayload(),before);assert.equal($('messageInput').value,'  Exact chat draft  ');assert.equal(ui.drafts.get('agent-a'),'Saved chat draft');
 assert(!ui.settingsDirty);assert($('saveSettings').disabled);assert(!control().input.disabled);assert.equal(requests.length,1);
 ''')
@@ -159,7 +159,7 @@ def test_discard_keeps_removed_task_selections_visible_and_does_not_clamp_draft(
     check(r'''
 await wire();$('maxWorkers').value='3';const before=runPayload();markSettingsDirty();
 const config=structuredClone(CONFIG);config.providers[0].id='replacement';config.limits.max_workers=0;
-const pending=discardSettings();requests[0].resolve({config,config_revision:5,secret_status:{}});await pending;
+const pending=discardSettings();requests[0].resolve({config,config_revision:5,secret_status:{replacement:false,search:false}});await pending;
 assert.deepEqual(runPayload(),before);assert($('pmProfile').children.some(option=>option.value==='local'&&option.textContent.includes('利用不可')));
 assert($('workerProfiles').querySelectorAll('input:checked').some(input=>input.value==='local'));
 ''')
@@ -169,7 +169,7 @@ def test_discard_response_does_not_repaint_a_reopened_dialog():
     check(r'''
 await wire();markSettingsDirty();const pending=discardSettings();showView('work');showView('settings');
 $('settingsStatus').textContent='Newer settings context';const before=ui.configRevision;
-requests[0].resolve({config:CONFIG,config_revision:8,secret_status:{}});await pending;
+requests[0].resolve({config:CONFIG,config_revision:8,secret_status:{local:false,search:false}});await pending;
 assert.equal(ui.configRevision,before);assert(ui.settingsDirty);assert.equal($('settingsStatus').textContent,'Newer settings context');
 assert(!ui.settingsReloading);
 ''')

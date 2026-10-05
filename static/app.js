@@ -57,6 +57,7 @@ const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting
 const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,selectionGeneration:0,compactState:false,loadedDetail:null,loadedEventsRun:null,detailError:false,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,pollAgain:false,drafts:new Map(),conversationViews:new Map(),logContext:'',logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
 Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map()});
 Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,credentialGeneration:0,credentialOperations:new Map()});
+Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -133,7 +134,7 @@ function inputValue(input) {
   return input.value.trim();
 }
 function invalidateDiagnostics() { ui.settingsRevision++;document.querySelectorAll('[data-probe-result]').forEach(node=>{node.textContent='設定または画面が変わりました。必要ならモデル一覧を再確認してください。';node.classList.remove('error');}); }
-function markSettingsDirty() { invalidateDiagnostics();ui.credentialGeneration++;ui.settingsDirty=true;clearCredentialInputs();setSettingsLock(true);inlineStatus($('settingsStatus'),'未保存の変更があります。キーの入力前に設定を保存するか、変更を破棄してください。'); }
+function markSettingsDirty() { ui.settingsDraftGeneration++;invalidateDiagnostics();ui.credentialGeneration++;ui.settingsDirty=true;clearCredentialInputs();setSettingsLock(true);inlineStatus($('settingsStatus'),'未保存の変更があります。キーの入力前に設定を保存するか、変更を破棄してください。'); }
 function secretStatusText(configured) { return configured?'キー設定あり。値は画面に取得しません。':'キー未設定。必要ならキーを入力するか、環境変数の参照先を確認してください。'; }
 function refreshSecretStatus(status) {
   ui.secretStatus=status||{};
@@ -205,11 +206,57 @@ async function discardSettings() {
   try {
     const response=await api('/api/config');
     if(workspace!==ui.workspaceGeneration||!$('settingsDialog').open)return;
-    if(!response.config||!Number.isInteger(response.config_revision))throw new Error('保存済み設定を確認できませんでした。');
+    if(!validSavedSettings(response,response.config_revision))throw new Error('保存済み設定を確認できませんでした。');
     ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status||{};
     renderSettings();invalidateDiagnostics();renderProfileChoices(true);inlineStatus($('settingsStatus'),'未保存の変更を破棄し、保存済み設定を読み直しました。');
   } catch(error){if(workspace===ui.workspaceGeneration&&$('settingsDialog').open)inlineStatus($('settingsStatus'),errorText(error),true);}
   finally{ui.settingsReloading=false;setSettingsLock(true);schedulePreflight();}
+}
+
+function validSavedSettings(response,revision) {
+  const record=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+  if(!record(response)||!Number.isSafeInteger(response.config_revision)||response.config_revision<0||response.config_revision!==revision)return false;
+  const config=response.config,status=response.secret_status;
+  if(!record(config)||config.version!==1||typeof config.system_policy!=='string'||!record(status)||typeof status.search!=='boolean')return false;
+  if(!Array.isArray(config.providers)||!config.providers.length||new Set(config.providers.map(p=>p?.id)).size!==config.providers.length)return false;
+  if(!config.providers.every(p=>record(p)&&PROFILE_FIELDS.every(([key,,type])=>type==='number'?Number.isFinite(p[key]):typeof p[key]==='string')&&
+    p.id&&Object.hasOwn(PROFILE_KINDS,p.kind)&&typeof p.enabled==='boolean'&&typeof status[p.id]==='boolean'))return false;
+  return Object.entries(FIELD_GROUPS).every(([group,specs])=>record(config[group])&&specs.every(([key,,type])=>{
+    const value=config[group][key];
+    if(type==='paths')return Array.isArray(value)&&value.every(path=>typeof path==='string');
+    if(type==='checkbox')return typeof value==='boolean';
+    return type==='number'?Number.isFinite(value):typeof value==='string';
+  }));
+}
+async function saveSettings(event) {
+  event.preventDefault();if(ui.settingsLocked||ui.settingsSaving||ui.settingsReloading||ui.credentialOperations.size||ui.configStale)return;
+  let config;
+  try{config=collectConfig();}catch(error){inlineStatus($('settingsStatus'),errorText(error),true);return;}
+  if(!Number.isSafeInteger(ui.configRevision)||ui.configRevision<0){ui.configStale=true;setSettingsLock(true);return;}
+  const action={config,revision:ui.configRevision,draft:ui.settingsDraftGeneration,workspace:ui.workspaceGeneration};
+  const owns=()=>ui.settingsSaveOperation===action&&action.workspace===ui.workspaceGeneration&&action.draft===ui.settingsDraftGeneration&&$('settingsDialog').open;
+  ui.settingsSaveOperation=action;ui.settingsSaving=true;clearCredentialInputs();setSettingsLock(true);inlineStatus($('settingsStatus'),'保存しています…');
+  try {
+    const response=await api('/api/config',{method:'PUT',body:{config_revision:action.revision,config:action.config}});
+    if(!validSavedSettings(response,action.revision+1)){const failure=new Error('設定の保存応答を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
+    if(ui.settingsSaveOperation!==action||ui.configRevision!==action.revision)return;
+    // Acceptance updates the saved baseline even after close. It never submits,
+    // discards, defaults or clamps the separate current task/settings drafts.
+    let sameDraft=false;try{sameDraft=action.draft===ui.settingsDraftGeneration&&JSON.stringify(collectConfig())===JSON.stringify(action.config);}catch(_){}
+    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status;ui.credentialGeneration++;
+    ui.settingsDirty=!sameDraft;
+    if(sameDraft)$('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card._credential.id=inputValue(card.querySelector('[data-key="id"]'));});
+    if(owns())invalidateDiagnostics();else ui.settingsRevision++;
+    preserveControlFocus(()=>renderProfileChoices(true),()=>$('pmProfile'));
+    if(owns()&&sameDraft){refreshSecretStatus(response.secret_status);inlineStatus($('settingsStatus'),'設定を保存しました。');}
+  } catch(error) {
+    if(ui.settingsSaveOperation!==action)return;
+    if(error.outcomeUnknown||error.code==='settings_changed'){ui.configStale=true;if(owns()){clearCredentialInputs();invalidateDiagnostics();}else ui.settingsRevision++;}
+    if(owns())inlineStatus($('settingsStatus'),errorText(error)+(error.outcomeUnknown?' 保存されたかどうかは未確認です。自動再送信はしません。変更内容を控えてから、保存済み設定を読み直してください。':error.code==='settings_changed'?' この下書きは保存していません。変更内容を控えてから、保存済み設定を読み直してください。':''),true);
+  } finally {
+    if(ui.settingsSaveOperation===action){ui.settingsSaveOperation=null;ui.settingsSaving=false;}
+    setSettingsLock(true);schedulePreflight();
+  }
 }
 
 function appendProfile(profile,index,expanded=true,saved=true) {
@@ -219,7 +266,7 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   const enabled=makeField(['enabled','使用する','checkbox'],profile.enabled!==false,`profile-${index}`);enabled.classList.add('choice');
   heading.append(title,enabled);toolbar.appendChild(heading);
   const actions=element('div','profile-actions'),toggle=element('button','button minor',expanded?'閉じる':'編集'),probe=element('button','button minor','モデル一覧を確認'),remove=element('button','button minor remove','削除');
-  toggle.type='button';toggle.dataset.readonly='true';toggle.setAttribute('aria-expanded',String(expanded));probe.type='button';remove.type='button';actions.append(toggle,probe,remove);toolbar.appendChild(actions);card.appendChild(toolbar);
+  toggle.type='button';toggle.dataset.readonly='true';toggle.setAttribute('aria-expanded',String(expanded));probe.type='button';probe.dataset.probe='true';remove.type='button';actions.append(toggle,probe,remove);toolbar.appendChild(actions);card.appendChild(toolbar);
   const content=element('div','profile-content');content.hidden=!expanded;card.classList.toggle('collapsed',!expanded);content.id=`profile-content-${index}`;toggle.setAttribute('aria-controls',content.id);
   toggle.addEventListener('click',()=>{content.hidden=!content.hidden;card.classList.toggle('collapsed',content.hidden);toggle.textContent=content.hidden?'編集':'閉じる';toggle.setAttribute('aria-expanded',String(!content.hidden));});
   const fields=element('div','profile-fields');PROFILE_FIELDS.forEach(spec=>fields.appendChild(makeField(spec,profile[spec[0]],`profile-${index}`)));content.appendChild(fields);card.appendChild(content);
@@ -243,7 +290,7 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   kind.addEventListener('change',()=>{if(kind.value==='local')proxy.value='';updateKind();});updateKind();
   remove.addEventListener('click',()=>{card.remove();markSettingsDirty();});
   probe.addEventListener('click',async()=>{
-    if(ui.settingsDirty){inlineStatus(result,'モデル一覧の確認前に、設定を保存してください。',true);return;}
+    if(ui.settingsDirty||ui.configStale){inlineStatus(result,ui.configStale?'モデル一覧の確認前に、保存済み設定を読み直してください。':'モデル一覧の確認前に、設定を保存してください。',true);return;}
     const revision=ui.settingsRevision,profileId=card.querySelector('[data-key="id"]').value;
     const current=()=>revision===ui.settingsRevision&&card.isConnected&&$('settingsDialog').open&&card.querySelector('[data-key="id"]').value===profileId;
     probe.disabled=true;inlineStatus(result,'保存済み接続先のモデル一覧を確認しています。推論は実行しません…');
@@ -254,7 +301,7 @@ function appendProfile(profile,index,expanded=true,saved=true) {
       const observed=response.selected_model==='observed'?'指定モデルが一覧にあります。':'指定モデルの利用可否は一覧だけでは判断できません。手入力の別名も使用できます。';
       inlineStatus(result,`モデル一覧を取得しました。${models?' モデル: '+models:' 一覧は空です。'} ${observed}${response.list_incomplete?' 一覧には続き・省略がある可能性があります。':''} 推論・ツール動作は未確認です。`);
     } catch(error){if(current())inlineStatus(result,errorText(error)+' 推論・ツール動作は未確認です。',true);}
-    finally{probe.disabled=ui.settingsLocked;}
+    finally{probe.disabled=Boolean(ui.settingsLocked||ui.settingsSaving||ui.settingsReloading||ui.configStale||ui.credentialOperations.size);}
   });
   card._credential={id:saved?profile.id:null,input:secret,button:saveSecret,status:secretState,result:secretResult,target};
   saveSecret.addEventListener('click',()=>setCredential(card._credential));
@@ -262,6 +309,7 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   $('profilesEditor').appendChild(card);
 }
 function renderSettings() {
+  ui.settingsDraftGeneration++;
   ui.credentialGeneration++;
   $('profilesEditor').replaceChildren();(ui.config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
   const containers={paths:'pathFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
@@ -284,10 +332,10 @@ function collectConfig() {
 function setSettingsLock(force=false) {
   const locked=ui.state.runs.some(run=>ACTIVE_STATUSES.has(run.status));ui.settingsLocked=locked;
   const disabled=locked||ui.settingsSaving===true||ui.settingsReloading||ui.credentialOperations.size>0;
-  $('settingsForm').querySelectorAll('input,textarea,select,button').forEach(node=>{if(node.dataset.credential!=='true')node.disabled=disabled&&node.dataset.readonly!=='true';});$('saveSettings').disabled=disabled;
+  $('settingsForm').querySelectorAll('input,textarea,select,button').forEach(node=>{if(node.dataset.credential!=='true')node.disabled=disabled&&node.dataset.readonly!=='true'||ui.configStale&&(node.type==='submit'||node.dataset.probe==='true');});$('saveSettings').disabled=disabled||ui.configStale;
   if(!disabled)$('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card.querySelector('[data-key="proxy_url"]').disabled=card.querySelector('[data-key="kind"]').value==='local';});
   refreshCredentialControls();$('discardSettings').disabled=Boolean(ui.settingsSaving||ui.settingsReloading||ui.credentialOperations.size);
-  const lockText=locked?'作業の実行中は接続先・モデル・権限を変更できません。保存済み接続先のキーだけ変更できます。':'';
+  const lockText=(locked?'作業の実行中は接続先・モデル・権限を変更できません。保存済み接続先のキーだけ変更できます。':'')+(ui.configStale?' 保存済み設定が変わったか、保存結果が未確認です。変更内容を控えてから「変更を破棄・保存済み設定を読み直す」で確認してください。保存・キー更新・モデル確認はそれまで行いません。':'');
   if($('settingsLockStatus').textContent!==lockText)$('settingsLockStatus').textContent=lockText;
 }
 function renderProfileChoices(preserveDraft=false) {
@@ -299,7 +347,7 @@ function renderProfileChoices(preserveDraft=false) {
   if(preserveDraft&&previous&&!profiles.some(profile=>profile.id===previous)){const option=element('option','',`${previous}（保存済み設定では利用不可）`);option.value=previous;$('pmProfile').appendChild(option);}
   if(preserveDraft||profiles.some(profile=>profile.id===previous))$('pmProfile').value=previous;
   const choices=[...profiles,...(preserveDraft?[...checked].filter(id=>!profiles.some(profile=>profile.id===id)).map(id=>({id,label:`${id}（保存済み設定では利用不可）` })):[])];
-  choices.forEach(profile=>{const label=element('label','choice'),input=element('input');input.type='checkbox';input.value=profile.id;input.checked=preserveDraft||checked.size?checked.has(profile.id):profile.id===$('pmProfile').value;label.append(input,element('span','',profile.label||profile.id));$('workerProfiles').appendChild(label);});
+  choices.forEach(profile=>{const label=element('label','choice'),input=element('input');input.type='checkbox';input.value=profile.id;input.dataset.focusKey=`task-worker:${profile.id}`;input.checked=preserveDraft||checked.size?checked.has(profile.id):profile.id===$('pmProfile').value;label.append(input,element('span','',profile.label||profile.id));$('workerProfiles').appendChild(label);});
   const limit=Number(ui.config.limits?.max_workers??3);$('maxWorkers').max=String(limit);if(!preserveDraft)$('maxWorkers').value=String(Math.min(Number($('maxWorkers').value),limit));
   $('policyPreview').textContent=ui.config.system_policy||'設定された共通方針はありません。';trackTaskDraft();syncStartControl();
 }
@@ -726,7 +774,7 @@ async function initialize() {
   $('runForm').addEventListener('input',()=>{trackTaskDraft();schedulePreflight();});
   $('runForm').addEventListener('change',()=>{trackTaskDraft();schedulePreflight();});
   $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
-  $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
+  $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
   $('discardSettings').addEventListener('click',discardSettings);
   $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
   $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));
@@ -741,12 +789,7 @@ async function initialize() {
   $('settingsForm').addEventListener('change',event=>{if(event.target.type!=='password')markSettingsDirty();});
   $('settingsForm').addEventListener('invalid',event=>{const card=event.target.closest('.profile-editor');if(card&&card.querySelector('.profile-content').hidden)card.querySelector('[data-readonly]').click();},true);
   $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180},index,true,false);markSettingsDirty();});
-  $('settingsForm').addEventListener('submit',async event=>{
-    event.preventDefault();if(ui.settingsLocked||ui.settingsSaving||ui.settingsReloading||ui.credentialOperations.size)return;
-    ui.settingsSaving=true;setSettingsLock(true);inlineStatus($('settingsStatus'),'保存しています…');
-    try {const config=collectConfig();const response=await api('/api/config',{method:'PUT',body:config});if(!Number.isInteger(response.config_revision)){ui.configStale=true;throw new Error('設定の保存結果を確認できませんでした。保存済み設定を読み直してください。');}ui.config=response.config||config;ui.configRevision=response.config_revision;ui.configStale=false;ui.credentialGeneration++;$('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card._credential.id=inputValue(card.querySelector('[data-key="id"]'));});clearCredentialInputs();refreshSecretStatus(response.secret_status);invalidateDiagnostics();ui.settingsDirty=false;renderProfileChoices();inlineStatus($('settingsStatus'),'設定を保存しました。');notice('');}
-    catch(error){inlineStatus($('settingsStatus'),errorText(error),true);}finally{ui.settingsSaving=false;setSettingsLock(true);}
-  });
+  $('settingsForm').addEventListener('submit',saveSettings);
   $('runForm').addEventListener('submit',async event=>{
     event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun)return;
     const workerProfiles=[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value);
