@@ -5,7 +5,26 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
-## Current revision — terminal batch precedence (2026-10-05)
+## Source-only installation policy (0.1.1.dev23, 2026-10-05)
+
+Python is separately approved and installed by the organization. The former bundled
+builder CLI, direct assembly API and PyInstaller spec now fail before build/download
+operations. The portable CI job is removed. Current CI consists of four source-test
+matrix jobs (Windows/Linux, Python 3.11/3.13) and one Windows Edge acceptance job.
+Historical package acceptance and notice records below are not current build steps.
+
+Setup uses only the explicit local path to the separately approved interpreter;
+it never invokes install-capable py/python aliases for discovery or fallback. The
+PowerShell compatibility wrapper has the same requirement. New tests exercise
+disabled modes, source-only CI contracts and direct interpreter selection without
+installing Python or building executables.
+Local aggregate: **1202 passed, 14 platform-specific skips**. Dependency consistency,
+Python compilation, JavaScript syntax and whitespace checks pass. The eight new
+Windows-only rejection cases require exact-head Windows CI; local static tests are
+not Windows execution evidence. No new UI or pixel-review claim is made. Exact-head
+CI and independent review are recorded in the final handoff.
+
+## Prior revision — terminal batch precedence (2026-10-05)
 
 Version **0.1.1.dev21** fixes a reachable boundary: a successful `finish_work` or
 `ask_user` followed by a skipped sibling at the exact tool limit, or after the run

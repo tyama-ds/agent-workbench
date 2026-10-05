@@ -203,15 +203,17 @@ def test_checked_in_reference_has_exact_archive_identity_and_pinned_original_byt
     assert "_internal/ucrtbase.dll" not in paths
 
 
-def test_workflow_uploads_remain_exact_nonbinary_evidence_allowlist():
+def test_current_ci_is_source_only_with_exact_nonbinary_evidence_allowlist():
     workflow = (builder.ROOT / ".github/workflows/tests.yml").read_text()
+    assert re.findall(r"(?m)^  ([a-z_]+):$", workflow) == ["tests", "browser"]
+    assert "os: [windows-latest, ubuntu-latest]" in workflow
+    assert "python: ['3.11', '3.13']" in workflow
+    for retired in ("build_portable", "portable.spec", "requirements-build.lock", "portable_smoke", "portable_console", "PyInstaller", "dist/"):
+        assert retired not in workflow
     paths = []
     for match in re.finditer(r"(?m)^          path: \|\n((?:            [^\n]+\n)+)", workflow):
         paths.extend(x.strip() for x in match[1].splitlines())
     assert set(paths) == {
         "runtime/verification/workbench-*.png", "runtime/verification/browser-smoke.json",
-        "runtime/verification/state-benchmark.json", "runtime/verification/portable-smoke.json",
-        "runtime/verification/portable-console.json", "runtime/verification/portable-workbench.png",
-        "runtime/verification/portable-workbench-failure.png", "dist/AgentWorkbench/build-manifest.json",
-        "dist/AgentWorkbench/THIRD-PARTY-NOTICES/inventory.json"}
-    assert workflow.count("uses: actions/upload-artifact@") == 2
+        "runtime/verification/state-benchmark.json"}
+    assert workflow.count("uses: actions/upload-artifact@") == 1

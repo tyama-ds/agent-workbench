@@ -2,11 +2,18 @@
 
 ## 最短の手順
 
-1. 社内で許可された **64-bit の通常版 CPython 3.13** を用意します。3.11 / 3.12 も対応対象です。管理者権限はアプリのセットアップには不要です。Python の導入に社内申請が必要なら IT 担当へ依頼してください。
+1. 組織の認可を受け、アプリとは別に **64-bit の通常版 CPython 3.13** をインストールします。3.11 / 3.12 も対応対象です。管理者権限はアプリのセットアップには不要です。Python の導入に社内申請が必要なら IT 担当へ依頼してください。
 2. ソース ZIP を**すべて展開**し、自分が書き込めるローカルフォルダーに置きます。例: `%LOCALAPPDATA%\AgentWorkbenchApp`。ZIP の中から直接実行したり、Program Files、ネットワーク共有に置いたりしないでください。
-3. `Setup.cmd` をダブルクリックします。`Setup complete` が出たら `Launch.cmd` をダブルクリックします。
+3. 展開先でコマンドプロンプトを開き、IT 担当が指定した実際の `python.exe` のフルパスを設定してから `Setup.cmd` を実行します。次のパスは例です。
 
-Git、WSL、Docker、Node.js、Office、管理者 PowerShell は不要です。セットアップはプロジェクト内の `.venv` に依存ライブラリーを入れます。Python 本体を勝手にダウンロードしたり、Windows の PATH、実行ポリシー、証明書ストア、プロキシ設定を変更したりしません。通常の利用に PowerShell は使いません。
+   ```bat
+   set "WORKBENCH_PYTHON=C:\Approved Python\python.exe"
+   Setup.cmd
+   ```
+
+4. `Setup complete` が出たら `Launch.cmd` をダブルクリックします。起動のたびに Python のパスを設定し直す必要はありません。
+
+Git、WSL、Docker、Node.js、Office、管理者 PowerShell は不要です。セットアップはプロジェクト内の `.venv` に依存ライブラリーを入れます。Python は同梱せず、本体のダウンロード・インストールも行いません。Windows の PATH、実行ポリシー、証明書ストア、プロキシ設定を変更しません。通常の利用に PowerShell は使いません。
 
 起動中のコンソールを閉じるか Ctrl+C でサーバーを終了します。すべてのチームの履歴と画面で入力した API キーが失われるため、先に必要な報告・保存記録を「成果・保存記録」で1件ずつ選んで `.txt 保存` し、ブラウザー側でダウンロード完了を確認してください。環境変数のキーは次の起動時の環境を使います。設定と既に保存した作業ファイルは終了時に削除しません。保存記録にはファイル本体は含まれず、現在のファイルの存在・内容は未確認です。
 
@@ -18,7 +25,9 @@ Git、WSL、Docker、Node.js、Office、管理者 PowerShell は不要です。�
 
 ## Python が見つからないとき
 
-セットアップは Python Launcher で 3.13 → 3.12 → 3.11 を探し、なければ PATH の `python` を確認します。32-bit、PyPy、free-threaded 版、未検証の 3.14 以降は利用対象外です。Python 3.13 の通常版 x64 を推奨します。ARM64 Windows は未検証であり、依存 wheel の対応を別途確認する必要があります。
+セットアップは `WORKBENCH_PYTHON` で指定された、別途認可・導入済みの実際の `python.exe` のみを使います。`py` / `python` エイリアスは未導入の Python を自動インストールする場合があるため、自動探索・実行しません。パスを指定していない場合や実行ファイルがない場合は停止します。ドライブ名で始まるローカルのフルパスを使い、Microsoft Store / Python Install Manager のエイリアスや `.venv` 内の Python は指定しないでください。実行前に標準インストールの `Lib\os.py`、`Lib\venv`、`Lib\ensurepip` を確認します。これは構成の確認であり、会社による認可をアプリが判定するものではありません。
+
+32-bit、PyPy、free-threaded 版、未検証の 3.14 以降は利用対象外です。Python 3.13 の通常版 x64 を推奨します。ARM64 Windows は未検証であり、依存 wheel の対応を別途確認する必要があります。
 
 承認済み Python が別の場所にある場合は、コマンドプロンプトで指定できます。
 
@@ -27,11 +36,11 @@ set "WORKBENCH_PYTHON=C:\Approved Python\python.exe"
 Setup.cmd
 ```
 
-この指定はそのコマンドプロンプトだけに適用されます。Microsoft Store のエイリアスだけが存在する場合は、実際の Python を IT 担当に用意してもらってください。
+この指定はそのコマンドプロンプトだけに適用されます。同じ画面から `Setup.cmd` を実行してください。Microsoft Store のエイリアスだけが存在する場合は、実際の Python を IT 担当に別途導入してもらってください。会社の設定・環境変数は変更しません。
 
 ## インストール前の確認
 
-展開先でコマンドプロンプトを開きます。
+展開先でコマンドプロンプトを開き、上の手順で `WORKBENCH_PYTHON` を指定します。
 
 ```bat
 Setup.cmd --check
@@ -104,37 +113,16 @@ Launch.cmd --state-dir "C:\Users\me\AppData\Local\AgentWorkbench-test"
 
 旧式の `-Port` / `-StateDir` / `-NoBrowser` も受け付けます。デスクトップから起動したい場合は、Explorer で `Launch.cmd` のショートカットを作成できます。
 
-既存の PowerShell スクリプトは互換入口として残っています。会社の実行ポリシーで許可されている場合だけ利用してください。`Setup-Windows.ps1` の `-ProxyUrl` / `-CertificatePath` / `-PythonExecutable` / `-CreateDesktopShortcut` に加え、`-Wheelhouse` / `-CheckOnly` に対応します。実行ポリシーを変更する必要はありません。
+既存の PowerShell スクリプトは互換入口として残っています。`-PythonExecutable` または `WORKBENCH_PYTHON` で、上記と同じ実際の Python のフルパスを指定してください。自動探索は行いません。会社の実行ポリシーで許可されている場合だけ利用してください。`Setup-Windows.ps1` の `-ProxyUrl` / `-CertificatePath` / `-PythonExecutable` / `-CreateDesktopShortcut` に加え、`-Wheelhouse` / `-CheckOnly` に対応します。実行ポリシーを変更する必要はありません。
 
 ## 配布・検証の限界
 
 この手順は Python が必要なソース配布です。Python 同梱 EXE、署名済みインストーラー、会社の端末管理ツール向けパッケージではありません。依存パッケージは固定されていますが、会社ごとの通信許可、証明書、端末制御の検証は対象 PC で必要です。
 
-## 評価限定: Python 同梱ポータブルの開発状況
+## Python 同梱版の終了
 
-`0.1.1.dev5` には Windows x64 / CPython 3.13 の ONEDIR ビルドと実物の検証機能があります。
-**現在、利用者向けのポータブル ZIP は提供していません。** CI 内部で評価するだけで、
-成功時・失敗時とも EXE、DLL、ZIP を artifact にアップロードしません。
-この機能の追加は、社用 PC 用のダウンロードが完成したという意味ではありません。
-利用者は引き続き上記の承認済み Python と `Setup.cmd` によるソース版を使ってください。
+`0.1.1.dev23` から、Python 同梱版の試作・ビルド・配布準備は行いません。旧 `tools/build_portable.py` と `tools/portable.spec` は、評価用・直接実行を含めて処理開始前に停止します。同梱版の CI ジョブも削除しています。
 
-配布保留の理由は、lxml の Windows wheel に含まれる iconv の静的リンク・対応ソース・
-再リンク条件と、CPython に含まれるネイティブ依存の正確な通知・再配布条件の確認が未完了なためです。
-実行テストの成功、ライセンス文の同梱、SHA-256 一致だけではこの確認を代替できません。
-未確認事項は `build-manifest.json` と `THIRD-PARTY-NOTICES/inventory.json` に明記します。
-複数年のソース提供の約束やコード署名は作成していません。
+過去の notice・manifest・検証記録、および一部の検証用補助コードは履歴を保つため残しています。`requirements-build.lock` は旧同梱版専用の記録であり、インストールに使用しません。過去の再配布調査が完了しても、この同梱禁止方針が自動で変わることはありません。
 
-開発者の内部評価に限り、承認済み Windows x64 CPython 3.13 環境のクリーンな checkout で
-`python tools/build_portable.py --evaluation-only --output-dir dist` を使用します。
-評価用 ZIP は全内容を展開し、`AgentWorkbench.exe` と `_internal` を分離しません。
-`--version`、`--port 8820`、`--no-browser` に対応します。コンソールを開いたまま使い、Ctrl+C で停止します。
-起動リンクには認証情報を含むため共有しないでください。
-
-評価用 EXE の起動自体に Python の事前導入は不要ですが、設定は既定で
-`%LOCALAPPDATA%\AgentWorkbench` に保存され、EXE と一緒には移動しません。
-本体、`_internal`、状態フォルダーは、親フォルダーを許可してもエージェントから読み書きできません。
-既存ソース版と設定場所・ポートを共有するため、同時起動を避けてください。
-
-署名のない評価ビルドなので、再配布確認後も会社の許可や SmartScreen、Smart App Control、
-WDAC/AppLocker、ウイルス対策の制約は別途残ります。警告の回避・保護機能の無効化・証明書の追加は行いません。
-Windows ARM64、32-bit、全企業ポリシー環境を検証したものではありません。
+現在の導入手順は、この文書の `Setup.cmd` / `Launch.cmd` のみです。Python 本体の版・パッチ更新と利用許可は、組織の承認手順で別途管理してください。

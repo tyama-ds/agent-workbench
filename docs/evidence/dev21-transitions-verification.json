@@ -1,0 +1,24 @@
+{
+  "pr_url": "https://github.com/tyama-ds/agent-workbench/pull/2",
+  "source_head": "11e3d8a0810c0a5179f3da33044874ac41d292ea",
+  "pr_updated_at": "2026-10-05T14:21:35Z",
+  "captured_at": "2026-10-05T23:38:46.067317+00:00",
+  "body_utf8_offset": 610,
+  "body_bytes": 8410,
+  "body_characters": 8403,
+  "body_sha256": "66a39fe54c5212c4b713dc5482e9dad0a09d57565b01081255d49aec186a6f9a",
+  "original_urls": [
+    "https://github.com/tyama-ds/agent-workbench/blob/11e3d8a0810c0a5179f3da33044874ac41d292ea/README.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/11e3d8a0810c0a5179f3da33044874ac41d292ea/docs/ARCHITECTURE.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/11e3d8a0810c0a5179f3da33044874ac41d292ea/SECURITY.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/11e3d8a0810c0a5179f3da33044874ac41d292ea/docs/VALIDATION.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/11e3d8a0810c0a5179f3da33044874ac41d292ea/docs/DEVELOPMENT_LOG.md",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37322593578",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37322603979",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37322593578/artifacts/11351190832",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37322593578/artifacts/11349969176",
+    "https://github.com/tyama-ds/agent-workbench/blob/11e3d8a0810c0a5179f3da33044874ac41d292ea/docs/evidence/dev20-settings-verification.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/11e3d8a0810c0a5179f3da33044874ac41d292ea/docs/evidence/dev20-settings-verification.json",
+    "https://github.com/tyama-ds/agent-workbench/blob/11e3d8a0810c0a5179f3da33044874ac41d292ea/docs/evidence/README.md"
+  ]
+}

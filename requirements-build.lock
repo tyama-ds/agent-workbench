@@ -1,8 +1,9 @@
-# Build-only lock for Windows x64, CPython 3.13, PyInstaller ONEDIR.
+# HISTORICAL RECORD ONLY: Python-bundled builds are disabled.
+# Not used by Setup.cmd, Launch.cmd, current CI, or any supported build command.
+# Former build-only lock for Windows x64, CPython 3.13, PyInstaller ONEDIR.
 # Verified against official PyPI release metadata on 2026-10-05.
-# Install requirements.lock first; it supplies packaging==26.3 and setuptools==84.0.0.
-# Install: python -m pip install --only-binary=:all: --require-hashes -r requirements-build.lock
-# Only the intended Windows x64 / universal wheels are authorized below.
+# Historical prerequisite was requirements.lock with packaging==26.3 and setuptools==84.0.0.
+# The former lock covered only Windows x64 / universal wheels.
 # No source builds, non-Windows PyInstaller wheels, or optional extras are included.
 
 # https://pypi.org/project/altgraph/0.17.5/

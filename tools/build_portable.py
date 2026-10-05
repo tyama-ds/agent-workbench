@@ -1,29 +1,23 @@
-"""Build an evaluation-only, unsigned Windows x64 ONEDIR app in a fresh venv.
+"""Retired Python-bundled builder; source installation is the only supported path.
 
-Run with official CPython 3.13 x64 on Windows. No cross-compilation, signing,
-publishing, or smoke-test claim is performed here. Native redistribution review
-is unresolved: no distribution mode exists. CI must not upload the binary.
-See tools/portable.spec.
+Historical notice and inventory helpers remain for offline synthetic regression
+checks. CLI and direct assembly are disabled, including evaluation-only builds.
+No interpreter or packaging dependency is downloaded or installed here.
 """
 from __future__ import annotations
 
-import argparse
 import ast
 from datetime import datetime, timezone
 import hashlib
 from importlib import metadata
 import json
-import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
 import struct
-import subprocess
 import sys
-import tempfile
 import tomllib
-import venv
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -404,116 +398,21 @@ def archive_bundle(bundle: Path, output: Path, version: str) -> Path:
     return archive
 
 
+BUNDLING_DISABLED = (
+    "Python bundling is disabled. Use an organization-approved, separately installed "
+    "Python with Setup.cmd and Launch.cmd."
+)
+
+
 def assemble(output: Path, work: Path, source_sha: str, *, evaluation_only: bool = False) -> Path:
-    if not evaluation_only:
-        raise RuntimeError("Only explicit --evaluation-only builds are supported; binary distribution is blocked")
-    validate_host()
-    if sys.prefix == sys.base_prefix:
-        raise RuntimeError("Internal assembly requires the fresh build virtual environment")
-    version = source_version()
-    runtime_lock = lock_versions(ROOT / "requirements.lock")
-    build_lock = lock_versions(ROOT / "requirements-build.lock")
-    installed = installed_versions()
-    for name, expected in {**runtime_lock, **build_lock}.items():
-        if installed.get(name) != expected:
-            raise RuntimeError(f"Build environment differs from lock: {name}")
-    unexpected = set(installed) - set(runtime_lock) - set(build_lock) - {"pip", "agent-workbench"}
-    if unexpected:
-        raise RuntimeError(f"Unexpected build environment packages: {sorted(unexpected)}")
-    runtime = runtime_distributions()
-    build = sorted(set(build_lock) | {"packaging", "setuptools"})
-    notices = work / "THIRD-PARTY-NOTICES"
-    notice_inventory = collect_notices(notices, runtime, build)
-    version_file = work / "version-resource.txt"
-    write_version_resource(version_file, version)
-    context = work / "context.json"
-    context.write_text(json.dumps({"root": str(ROOT), "runtime_distributions": runtime,
-                                   "version_resource": str(version_file)}), encoding="utf-8")
-    env = os.environ.copy()
-    env["WORKBENCH_BUILD_CONTEXT"] = str(context)
-    env["PYTHONHASHSEED"] = "0"
-    subprocess.run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
-                    "--distpath", str(output), "--workpath", str(work / "pyinstaller"),
-                    str(ROOT / "tools" / "portable.spec")], check=True, cwd=ROOT, env=env)
-    bundle = output / APP_NAME
-    if not (bundle / f"{APP_NAME}.exe").is_file():
-        raise RuntimeError("PyInstaller did not create the expected executable")
-    for required in ("static/index.html", "static/app.js", "static/styles.css", "docs/interface.json",
-                     "docx/templates/default.docx", "pptx/templates/default.pptx"):
-        if not (bundle / "_internal" / required).is_file():
-            raise RuntimeError(f"Missing bundled application resource: {required}")
-    record_native_bundle(notice_inventory, bundle)
-    record_reviewed_cpython_evidence(notice_inventory, notices)
-    (notices / "inventory.json").write_text(json.dumps(notice_inventory, indent=2) + "\n", encoding="utf-8")
-    shutil.copytree(notices, bundle / notices.name)
-    shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
-    shutil.copyfile(ROOT / "README.md", bundle / "README.md")
-    shutil.copytree(ROOT / "docs", bundle / "docs")
-    (bundle / "EXPERIMENTAL.txt").write_text(
-        "EVALUATION ONLY: NOT FOR DISTRIBUTION\n"
-        "EXPERIMENTAL, UNSIGNED WINDOWS X64 BUILD\n"
-        "Native dependency notice, source-provenance, and redistribution review is unresolved.\n"
-        "Passing functional tests does not clear binary distribution.\n"
-        "See build-manifest.json and THIRD-PARTY-NOTICES/inventory.json for unresolved components.\n"
-        "Extract the entire folder. Keep _internal beside AgentWorkbench.exe.\n"
-        "This build has no installer, updater, tray integration, or code signature.\n"
-        "Build success does not establish acceptance-test success.\n"
-        "Do not bypass Windows security warnings.\n", encoding="utf-8")
-    write_manifest(bundle, version, source_sha, runtime, build)
-    return archive_bundle(bundle, output, version)
+    """Reject the former internal entrypoint before any build or download."""
+    raise RuntimeError(BUNDLING_DISABLED)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
-    parser.add_argument("--work-dir", type=Path, default=ROOT / "build" / "portable")
-    parser.add_argument("--evaluation-only", action="store_true",
-                        help="Required: build only for internal evaluation; binary distribution remains blocked")
-    parser.add_argument("--_assemble", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--_source-sha", help=argparse.SUPPRESS)
-    args = parser.parse_args(argv)
-    try:
-        if not args.evaluation_only:
-            raise RuntimeError("Explicit --evaluation-only is required; no distribution mode is available")
-        validate_host()
-        version = source_version()
-        output = args.output_dir.resolve()
-        work_root = args.work_dir.resolve()
-        if args._assemble:
-            if not args._source_sha or not re.fullmatch(r"[0-9a-f]{40,64}", args._source_sha):
-                raise RuntimeError("Missing verified Git source SHA")
-            archive = assemble(output, work_root, args._source_sha, evaluation_only=True)
-            print(f"Built evaluation-only artifact; NOT FOR DISTRIBUTION: {archive}")
-            return 0
-        source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-        status = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all"],
-                                         cwd=ROOT, text=True).strip()
-        if status:
-            raise RuntimeError("Build requires a clean Git checkout so source_sha identifies the source")
-        if (output / APP_NAME).exists() or list(output.glob(f"{APP_NAME}-{version}-windows-x64-experimental.zip*")):
-            raise RuntimeError("Output already contains this bundle; choose an empty --output-dir")
-        output.mkdir(parents=True, exist_ok=True)
-        work_root.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="build-", dir=work_root) as temporary:
-            work = Path(temporary)
-            environment = work / "venv"
-            venv.EnvBuilder(with_pip=True).create(environment)
-            python = environment / "Scripts" / "python.exe"
-            for filename in ("requirements.lock", "requirements-build.lock"):
-                subprocess.run([str(python), "-m", "pip", "--isolated", "install", "--require-hashes",
-                                "--only-binary=:all:", "--index-url", "https://pypi.org/simple",
-                                "-r", str(ROOT / filename)], check=True, cwd=ROOT)
-            subprocess.run([str(python), "-m", "pip", "--isolated", "install", "--no-deps",
-                            "--no-build-isolation", str(ROOT)], check=True, cwd=ROOT)
-            subprocess.run([str(python), "-m", "pip", "check"], check=True, cwd=ROOT)
-            subprocess.run([str(python), str(Path(__file__).resolve()), "--_assemble",
-                            "--evaluation-only",
-                            "--_source-sha", source_sha, "--output-dir", str(output),
-                            "--work-dir", str(work)], check=True, cwd=ROOT)
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
-        print(f"Portable build failed: {error}", file=sys.stderr)
-        return 1
-    return 0
+    """Reject every former CLI mode without parsing or acting on its arguments."""
+    print(BUNDLING_DISABLED, file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

@@ -171,7 +171,9 @@ def test_real_cmd_check_with_unicode_and_spaces(tmp_path):
     import shutil
     project = tmp_path / '会社 project & spaces !'
     shutil.copytree(ROOT, project, ignore=shutil.ignore_patterns('.git', '.venv', '__pycache__', 'runtime'))
-    env = dict(os.environ, WORKBENCH_PYTHON=sys.executable)
+    env = dict(os.environ, WORKBENCH_PYTHON=sys.executable,
+               PYLAUNCHER_ALLOW_INSTALL="1", PYLAUNCHER_ALWAYS_INSTALL="1",
+               PYTHON_MANAGER_AUTOMATIC_INSTALL="true")
     # Launch as a user would from the extracted project directory. Passing a
     # quoted batch path as a subprocess argument invokes cmd's special /c
     # quote stripping, before the batch file itself can protect its paths.
@@ -219,9 +221,8 @@ def test_online_rejects_extra_pip_config(project, config):
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell 5.1 required')
 def test_ps51_wrapper_check_with_explicit_python(project):
-    # CI only: process-local Bypass lets the test exercise the compatibility wrapper.
-    # Shipping entrypoints never change execution policy.
-    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    # Exercise the wrapper under the runner's existing execution policy.
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
                              '-File', str(ROOT / 'scripts/Setup-Windows.ps1'), '-ProjectRoot', str(project),
                              '-PythonExecutable', sys.executable, '-CheckOnly'],
                             capture_output=True, text=True, timeout=30)
@@ -415,3 +416,61 @@ def test_captured_python_output_uses_private_utf8_contract(tmp_path):
     text = setup.invoke([sys.executable, '-c', "print('\\u4f1a\\u793e path')"], cwd=tmp_path, env=env, capture=True)
     assert text.strip() == '\u4f1a\u793e path'
     assert env['PYTHONIOENCODING'] == 'cp1252'
+
+
+def test_setup_entrypoints_use_only_explicit_standard_interpreter():
+    cmd = (ROOT / 'Setup.cmd').read_text()
+    ps = (ROOT / 'scripts/Setup-Windows.ps1').read_text()
+    assert 'if not defined WORKBENCH_PYTHON goto python_required' in cmd
+    assert '"%WORKBENCH_PYTHON%" "%~dp0scripts\\setup_windows.py"' in cmd
+    assert 'Get-Command' not in ps
+    assert '& $PythonExecutable @arguments' in ps
+    assert '$env:WORKBENCH_PYTHON' in ps
+    import re
+    assert not re.search(r'(?m)^\s*(?:call\s+)?(?:py|python)(?:\s|$)', cmd, re.I)
+    for relative in ('Lib\\os.py', 'Lib\\venv\\__init__.py', 'Lib\\ensurepip\\__init__.py'):
+        assert relative in cmd and relative in ps
+    for text in (cmd, ps):
+        assert 'PYTHON_MANAGER_' not in text  # no overrideable install-on-demand workaround
+        assert 'PYLAUNCHER_' not in text
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows cmd.exe required')
+@pytest.mark.parametrize('selection', ['', 'python', 'relative\\python.exe', 'missing', 'alias'])
+def test_real_cmd_rejects_missing_or_alias_runtime_without_invocation(tmp_path, selection):
+    import shutil
+    project = tmp_path / 'source & spaces !'
+    project.mkdir()
+    shutil.copy2(ROOT / 'Setup.cmd', project / 'Setup.cmd')
+    # An alias-like executable path without a standard runtime layout is rejected
+    # before Windows can attempt to execute it. No executable fixture is built.
+    alias = project / 'python.exe'
+    alias.write_text('not an executable')
+    selected = str(alias) if selection == 'alias' else str(project / 'missing' / 'python.exe') if selection == 'missing' else selection
+    env = dict(os.environ, WORKBENCH_PYTHON=selected,
+               PYLAUNCHER_ALLOW_INSTALL='1', PYLAUNCHER_ALWAYS_INSTALL='1',
+               PYTHON_MANAGER_AUTOMATIC_INSTALL='true')
+    result = subprocess.run(['cmd.exe', '/d', '/c', 'Setup.cmd', '--check'],
+                            cwd=project, input='\n', text=True, capture_output=True, env=env, timeout=30)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert 'Python must be approved and installed separately' in result.stdout
+    assert 'not a valid Win32' not in result.stderr
+    assert not (project / '.venv').exists()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell 5.1 required')
+@pytest.mark.parametrize('selection', ['', 'python', 'alias'])
+def test_real_ps_rejects_missing_or_alias_runtime_without_invocation(project, selection):
+    alias = project / 'python.exe'
+    alias.write_text('not an executable')
+    selected = str(alias) if selection == 'alias' else selection
+    env = dict(os.environ, WORKBENCH_PYTHON=selected,
+               PYLAUNCHER_ALLOW_INSTALL='1', PYLAUNCHER_ALWAYS_INSTALL='1',
+               PYTHON_MANAGER_AUTOMATIC_INSTALL='true')
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
+                             '-File', str(ROOT / 'scripts/Setup-Windows.ps1'), '-ProjectRoot', str(project),
+                             '-CheckOnly'], capture_output=True, text=True, env=env, timeout=30)
+    assert result.returncode != 0
+    expected = 'actual standard CPython installation' if selection == 'alias' else 'Python must be approved and installed separately'
+    assert expected in result.stderr
+    assert not (project / '.venv').exists()

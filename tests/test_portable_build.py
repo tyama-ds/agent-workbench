@@ -1,4 +1,4 @@
-"""Packaging contracts run everywhere; no executable is built by these tests."""
+"""Retired-builder rejection and historical helpers; no executable is built."""
 import ast
 import importlib.util
 import json
@@ -30,7 +30,7 @@ def test_source_version_rejects_mismatch_without_importing(tmp_path):
         builder.source_version(tmp_path)
 
 
-def test_locks_are_separate_hash_pinned_and_compatible():
+def test_historical_build_lock_is_separate_from_source_dependencies():
     runtime = builder.lock_versions(ROOT / "requirements.lock")
     build = builder.lock_versions(ROOT / "requirements-build.lock")
     assert not (set(runtime) & set(build))
@@ -53,11 +53,29 @@ def test_non_windows_build_is_explicitly_rejected(monkeypatch):
     assert builder.main(["--evaluation-only"]) == 1
 
 
-def test_evaluation_only_requires_explicit_opt_in(monkeypatch):
-    monkeypatch.setattr(builder, "validate_host", lambda: pytest.fail("Must reject before starting build"))
-    assert builder.main([]) == 1
-    with pytest.raises(RuntimeError, match="evaluation-only"):
-        builder.assemble(Path("unused"), Path("unused"), "a" * 40)
+@pytest.mark.parametrize("arguments", [[], ["--help"], ["--evaluation-only"],
+    ["--evaluation-only", "--_assemble", "--_source-sha", "a" * 40], ["--unknown-option"]])
+def test_every_former_cli_mode_rejected_without_build_side_effects(tmp_path, monkeypatch, capsys, arguments):
+    import subprocess
+    import venv
+    def forbidden(*args, **kwargs):
+        pytest.fail("Disabled builder must not invoke processes, install packages or create a venv")
+    monkeypatch.setattr(builder, "validate_host", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(venv.EnvBuilder, "create", forbidden)
+    assert builder.main([*arguments, "--output-dir", str(tmp_path / "output"),
+                         "--work-dir", str(tmp_path / "work")]) == 1
+    assert "Python bundling is disabled" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("evaluation_only", [False, True])
+def test_direct_assembly_always_rejected_before_host_probe(tmp_path, monkeypatch, evaluation_only):
+    monkeypatch.setattr(builder, "validate_host", lambda: pytest.fail("Must reject before host probe"))
+    with pytest.raises(RuntimeError, match="Python bundling is disabled"):
+        builder.assemble(tmp_path / "out", tmp_path / "work", "a" * 40, evaluation_only=evaluation_only)
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("version,bits,machine", [((3, 12), 8, "AMD64"), ((3, 13), 4, "AMD64"),
@@ -269,23 +287,16 @@ def test_zip_keeps_onedir_and_checksum(tmp_path):
         builder.archive_bundle(bundle, tmp_path, "0.1.1.dev5")
 
 
-def test_spec_contract_and_bootstrap_have_no_onefile_or_upx():
+def test_direct_spec_fails_before_import_or_build():
     spec = (ROOT / "tools" / "portable.spec").read_text()
-    ast.parse(spec)
-    assert "COLLECT(exe, a.binaries, a.datas" in spec
-    assert "exclude_binaries=True" in spec and "console=True" in spec
-    assert spec.count("upx=False") == 2
-    assert 'contents_directory="_internal"' in spec
-    assert '"portable_workbench.py"' in spec
-    assert '"static"' in spec and '"docs"' in spec
-    assert 'for package in ("docx", "pptx")' in spec
-    source = (ROOT / "tools" / "build_portable.py").read_text()
-    assert 'venv.EnvBuilder(with_pip=True)' in source
-    assert '"--require-hashes"' in source
-    assert '"--only-binary=:all:"' in source
-    assert source.index('for filename in ("requirements.lock", "requirements-build.lock")') >= 0
-    assert '"--evaluation-only",' in source
-    assert "EVALUATION ONLY: NOT FOR DISTRIBUTION" in source
+    tree = ast.parse(spec)
+    assert len(tree.body) == 1 and isinstance(tree.body[0], ast.Raise)
+    with pytest.raises(SystemExit, match="Python bundling is disabled"):
+        exec(compile(tree, "portable.spec", "exec"), {})
+    source = ast.parse((ROOT / "tools" / "build_portable.py").read_text())
+    imports = {alias.name for node in ast.walk(source) if isinstance(node, ast.Import)
+               for alias in node.names}
+    assert not imports & {"subprocess", "venv", "PyInstaller"}
 
 
 def test_checksum_pinned_notices_disable_checkout_line_ending_conversion():

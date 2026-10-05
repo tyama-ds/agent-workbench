@@ -1,8 +1,18 @@
 # Native redistribution: evidence correction and remaining requirements
 
-Current source revision: **0.1.1.dev18**, reviewed 2026-10-05. This is an engineering
-record, **not legal clearance**. Portable builds remain **evaluation-only / blocked**;
-CI uploads reports, screenshots and manifests only. Source installation is unchanged.
+## Current policy (0.1.1.dev23)
+
+Python-bundled prototypes, builds and distribution preparation are discontinued,
+including internal evaluation. The builder, direct assembly and PyInstaller spec
+reject execution; the portable CI job is removed. Python must be approved and
+installed separately by the organization. The following historical engineering
+record does not authorize or plan future bundled builds.
+
+## Historical dev18 evidence (reviewed 2026-10-05)
+
+This is an engineering record, **not legal clearance**. At dev18, portable builds
+were evaluation-only and binary distribution was blocked; CI uploaded only reports,
+screenshots and manifests. Those historical results retain their original scope.
 
 ## What was corrected
 

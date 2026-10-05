@@ -4,6 +4,26 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev23 — source-only installation (2026-10-05)
+
+- Follow the requirement that Python is separately approved and installed by the
+  organization. Discontinue bundled prototypes/builds/distribution preparation,
+  including evaluation-only mode, and remove the portable CI job.
+- Make the former builder CLI, direct assembly API and PyInstaller spec fail before
+  downloads, subprocesses or build output. Keep historical evidence and offline
+  synthetic notice helpers without treating them as current distribution support.
+- Preserve source Setup/Launch and approved 64-bit CPython 3.11–3.13 support. Require
+  the explicit local path of an existing approved interpreter, avoiding install-capable
+  launcher aliases rather than relying on environment switches that manager settings
+  can override. Do not change the caller's persistent settings.
+- The [legacy launcher documentation](https://docs.python.org/3.13/using/windows.html#install-on-demand)
+  and [install manager configuration](https://docs.python.org/3/using/windows.html#configuration)
+  describe why aliases cannot guarantee read-only discovery. Python itself is not
+  installed or upgraded by this change. Hosted CI supplies its own test runtime.
+- Based on verified dev21. No unpublished dev22 changes are included. Application
+  security behavior, dependencies, frozen compatibility helpers and UI are unchanged.
+  Test results apply only to the named source head and are recorded at handoff.
+
 ## Cycle 1 — browser acceptance v1 (2026-10-05)
 
 Based on PR #1 head `9067567388d659b4d00109f0d5cb3ecc7b5e7f71`.

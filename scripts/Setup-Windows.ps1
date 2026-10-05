@@ -15,28 +15,28 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { $ProjectRoot = Split-Path -Parent $PSScriptRoot }
 $ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).ProviderPath
-$launcherArgs = @()
-if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
-    $launcher = Get-Command 'py.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($launcher) {
-        foreach ($version in @('-3.13', '-3.12', '-3.11')) {
-            try { & $launcher.Source $version -c 'import sys; raise SystemExit(0 if sys.maxsize > 2**32 else 1)' 2>$null }
-            catch { continue }
-            if ($LASTEXITCODE -eq 0) { $PythonExecutable = $launcher.Source; $launcherArgs = @($version); break }
-        }
+# Never invoke install-capable py/python aliases or discover a runtime by launching them.
+if ([string]::IsNullOrWhiteSpace($PythonExecutable)) { $PythonExecutable = $env:WORKBENCH_PYTHON }
+if ([string]::IsNullOrWhiteSpace($PythonExecutable) -or $PythonExecutable -notmatch '^[A-Za-z]:[\\/]') {
+    throw 'Python must be approved and installed separately. Set -PythonExecutable or WORKBENCH_PYTHON to the full local path of the actual approved python.exe, not a launcher alias.'
+}
+$PythonExecutable = (Resolve-Path -LiteralPath $PythonExecutable).ProviderPath
+if (-not (Test-Path -LiteralPath $PythonExecutable -PathType Leaf) -or [IO.Path]::GetFileName($PythonExecutable) -ine 'python.exe') {
+    throw 'Specify the existing, organization-approved python.exe. Setup never downloads or installs Python.'
+}
+# A standard installed CPython layout is required before any executable is invoked.
+$pythonHome = Split-Path -Parent $PythonExecutable
+foreach ($relative in @('Lib\os.py', 'Lib\venv\__init__.py', 'Lib\ensurepip\__init__.py')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $pythonHome $relative) -PathType Leaf)) {
+        throw 'Specify the actual standard CPython installation, not a launcher alias or a copied virtual environment. Ask IT for the approved interpreter path.'
     }
-    if ([string]::IsNullOrWhiteSpace($PythonExecutable)) {
-        $command = Get-Command 'python.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $command) { throw 'Use approved 64-bit Python 3.11-3.13, or specify -PythonExecutable.' }
-        $PythonExecutable = $command.Source
-    }
-} else { $PythonExecutable = (Resolve-Path -LiteralPath $PythonExecutable).ProviderPath }
+}
 $arguments = @((Join-Path $PSScriptRoot 'setup_windows.py'), '--project-root', $ProjectRoot, '--timeout', [string]$TimeoutSeconds, '--retries', [string]$Retries)
 if ($ProxyUrl) { $arguments += @('--proxy', $ProxyUrl) }
 if ($CertificatePath) { $arguments += @('--certificate', $CertificatePath) }
 if ($Wheelhouse) { $arguments += @('--wheelhouse', $Wheelhouse) }
 if ($CheckOnly) { $arguments += '--check' }
-& $PythonExecutable @launcherArgs @arguments
+& $PythonExecutable @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Setup failed. Review the preceding error and docs\WINDOWS_SETUP.md.' }
 if ($CreateDesktopShortcut -and -not $CheckOnly) {
     & (Join-Path $PSScriptRoot 'Create-DesktopShortcut.ps1') -ProjectRoot $ProjectRoot

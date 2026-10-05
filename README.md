@@ -11,20 +11,21 @@ Codex CLI / Claude Code / WSL / Docker / Microsoft Office のインストール�
 必要なもの: Windows 11、承認済みの通常版 **64-bit CPython 3.11〜3.13**（3.13 推奨）、Edge または Chrome。
 
 1. ソース ZIP を、自分が書き込めるローカルフォルダーにすべて展開します。
-2. **`Setup.cmd` をダブルクリック**し、`Setup complete` を確認します。
+2. 展開先のコマンドプロンプトで、IT 担当が指定した実際の Python のフルパスを `WORKBENCH_PYTHON` に設定し、`Setup.cmd` を実行します。`Setup complete` を確認します。
 3. **`Launch.cmd` をダブルクリック**します。起動したコンソールで Ctrl+C を押すと停止します。
 
-通常のセットアップ・起動に PowerShell、管理者権限、Git、ビルドツールは不要です。Python 本体は会社で承認された方法で用意してください。社内ポリシーによる実行禁止やセキュリティ警告を回避する設定は行いません。
+通常のセットアップ・起動に PowerShell、管理者権限、Git、ビルドツールは不要です。**Python は同梱しません。組織の認可を受け、アプリとは別にインストールしてください。** アプリが Python 本体をダウンロード・インストールすることはありません。社内ポリシーによる実行禁止やセキュリティ警告を回避する設定は行いません。
 
 コマンドプロンプトから診断・プロキシ・オフラインインストールも指定できます。
 
 ```bat
+set "WORKBENCH_PYTHON=C:\Approved Python\python.exe"
 Setup.cmd --check
 Setup.cmd --proxy "http://proxy.example.local:8080"
 Setup.cmd --wheelhouse "C:\Approved Packages\wheelhouse"
 ```
 
-上のプロキシは例です。会社の指定値を使ってください。証明書は `--certificate "C:\Certificates\company-ca.pem"` で指定できます。通常モードは既存 pip / proxy 設定を引き継ぎます。パッケージはハッシュを確認した wheel のみ利用し、依存のソースビルドや TLS 検証無効化は行いません。
+上の Python パスとプロキシは例です。会社の指定値を使ってください。`py` / `python` の自動探索は行いません。証明書は `--certificate "C:\Certificates\company-ca.pem"` で指定できます。通常モードは既存 pip / proxy 設定を引き継ぎます。パッケージはハッシュを確認した wheel のみ利用し、依存のソースビルドや TLS 検証無効化は行いません。
 
 `0.1.1.dev10` では、失敗したセットアップ段階と対処先を表示します。別の Python / インストール先へ切り替える pip 設定と TLS 検証を省く設定は、依存インストール前に停止します。通常の社内 proxy / CA / ミラーは引き続き使えます。詳しくは [Windows セットアップガイド](docs/WINDOWS_SETUP.md) の「どの段階で止まったか」を参照してください。
 
@@ -32,11 +33,11 @@ Setup.cmd --wheelhouse "C:\Approved Packages\wheelhouse"
 
 **詳しい手順・Python の指定・社内 CA・オフライン wheel の準備・エラー対処は [Windows 11 セットアップガイド](docs/WINDOWS_SETUP.md) を参照してください。**
 
-### Python 同梱版の開発状況
+### ソース版のみを提供
 
-Windows x64 向け ONEDIR のビルド・検証機能は内部評価限定です。ネイティブ依存の再配布確認が未完了なため、**ポータブル EXE / ZIP は配布していません**。従来のソース版を利用してください。[評価状況と保留理由](docs/WINDOWS_SETUP.md#評価限定-python-同梱ポータブルの開発状況)を記載しています。
+`0.1.1.dev23` から、Python 同梱版の試作・ビルド・配布準備を終了しました。評価用も含め、旧ビルド入口は停止し、同梱版を作る CI ジョブを削除しています。利用するのは、別途認可された Python と `Setup.cmd` / `Launch.cmd` によるソース版です。
 
-`0.1.1.dev18` は、評価用ビルドの通知文・ネイティブファイルを、確認済みの公式 CPython 3.13.15 の SHA-256 と照合します。名前の記載がないだけでライセンス本文が欠けているとは判断しません。対応する版・バイト列以外は未確認のままとし、再配布の保留は維持します。[照合内容と残る要件](docs/NATIVE_REDISTRIBUTION.md)を参照してください。
+過去のビルド・検証記録は履歴として残しています。それらは現在の配布物、今後の同梱版の計画、再配布の許可を意味しません。
 
 ## 最初の設定
 
