@@ -55,6 +55,7 @@ const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行
 const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
 const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,selectionGeneration:0,compactState:false,loadedDetail:null,loadedEventsRun:null,detailError:false,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,pollAgain:false,drafts:new Map(),conversationViews:new Map(),logContext:'',logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
+Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map()});
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -83,7 +84,11 @@ function localTime(value) {
 function getRun() { return ui.state.runs.find(run=>run.id===ui.selectedRun)||null; }
 function getAgent() { return ui.state.agents.find(agent=>agent.id===ui.selectedAgent&&agent.run_id===ui.selectedRun)||null; }
 function errorText(error) { return error&&error.message?error.message:String(error||'処理に失敗しました'); }
-function notice(text,error=false) { $('globalNotice').hidden=!text;$('globalNotice').textContent=text;$('globalNotice').classList.toggle('error',error); }
+function notice(text,error=false) { ui.noticeGeneration++;$('globalNotice').hidden=!text;$('globalNotice').textContent=text;$('globalNotice').classList.toggle('error',error); }
+function actionNotice(action,text,error=false) {
+  if(action.noticeGeneration!==ui.noticeGeneration)return;
+  notice(text,error);action.noticeGeneration=ui.noticeGeneration;
+}
 function inlineStatus(node,text,error=false) { node.textContent=text;node.classList.toggle('error',error); }
 function setConnection(online,text) { $('connectionDot').classList.toggle('online',online);$('connectionDot').classList.toggle('error',!online);$('connectionStatus').textContent=text; }
 
@@ -92,11 +97,15 @@ async function api(path,options={}) {
   if(options.body!==undefined)headers['Content-Type']='application/json';
   let response;
   try { response=await fetch(path,{cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(30000),...options,headers,body:options.body===undefined?undefined:JSON.stringify(options.body)}); }
-  catch (error) { throw new Error(error.name==='TimeoutError'?'応答を確認できませんでした。再送信する前に、実行一覧と作業の状態を確認してください。':'接続できません。Agent Workbench のサーバーが起動しているか確認してください。'); }
-  let data={};try { data=await response.json(); } catch (_) { /* report the HTTP status below */ }
+  catch (error) { const failure=new Error(error.name==='TimeoutError'?'応答を確認できませんでした。再送信する前に、実行一覧と作業の状態を確認してください。':'接続できません。Agent Workbench のサーバーが起動しているか確認してください。');failure.outcomeUnknown=true;throw failure; }
+  let data;try { data=await response.json(); } catch (_) { /* report the HTTP status below */ }
+  if(!data||typeof data!=='object'||Array.isArray(data)){
+    if(response.ok){const failure=new Error('応答の形式を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
+    data={};
+  }
   if(!response.ok||data.ok===false) {
     if(response.status===401) { ui.authenticated=false;setConnection(false,'認証が必要です');throw new Error('起動時に表示された専用リンクから開き直してください。'); }
-    throw new Error(String(data.error||`リクエストに失敗しました（${response.status}）`));
+    const failure=new Error(String(data.error||`リクエストに失敗しました（${response.status}）`));failure.outcomeUnknown=response.status>=500;throw failure;
   }
   return data;
 }
@@ -217,15 +226,40 @@ function renderProfileChoices() {
   if(profiles.some(profile=>profile.id===previous))$('pmProfile').value=previous;
   profiles.forEach(profile=>{const label=element('label','choice'),input=element('input');input.type='checkbox';input.value=profile.id;input.checked=checked.size?checked.has(profile.id):profile.id===$('pmProfile').value;label.append(input,element('span','',profile.label||profile.id));$('workerProfiles').appendChild(label);});
   const limit=Number(ui.config.limits?.max_workers??3);$('maxWorkers').max=String(limit);$('maxWorkers').value=String(Math.min(Number($('maxWorkers').value),limit));
-  $('policyPreview').textContent=ui.config.system_policy||'設定された共通方針はありません。';$('startRun').disabled=!profiles.length;
+  $('policyPreview').textContent=ui.config.system_policy||'設定された共通方針はありません。';trackTaskDraft();syncStartControl();
 }
 function showView(view) {
-  if(view==='settings') { if(!$('settingsDialog').open)$('settingsDialog').showModal(); }
-  else { if($('settingsDialog').open)$('settingsDialog').close(); }
+  if(view==='settings') { if(!$('settingsDialog').open){ui.workspaceGeneration++;$('settingsDialog').showModal();} }
+  else { if($('settingsDialog').open){ui.workspaceGeneration++;$('settingsDialog').close();} }
 }
 function runPayload() {
   return {task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value)};
 }
+function trackTaskDraft() {
+  const key=JSON.stringify(runPayload());
+  if(key!==ui.taskDraftKey){ui.taskDraftKey=key;ui.taskDraftGeneration++;}
+  showPendingStart();
+}
+function syncStartControl() { $('startRun').disabled=Boolean(ui.startingRun)||!$('pmProfile').value; }
+function ownsTaskDialog(action) {
+  return $('taskDialog').open&&!$('settingsDialog').open&&action.dialogGeneration===ui.taskDialogGeneration&&
+    action.draftGeneration===ui.taskDraftGeneration&&action.navigationGeneration===ui.navigationGeneration&&action.workspaceGeneration===ui.workspaceGeneration;
+}
+function acceptedStartText(action) { return `作業 ${action.runId} の開始は受け付けられました。実行一覧への表示を確認しています。再送信は不要です。`; }
+function showPendingStart() {
+  const action=ui.startOperation;if(!action||!$('taskDialog').open)return;
+  inlineStatus($('runFormStatus'),(action.runId?acceptedStartText(action):'送信済みの開始要求の応答を待っています。')+(ownsTaskDialog(action)?'':' 現在の下書きは送信していません。'));
+}
+function reconcileStartedRun() {
+  const action=ui.startOperation;
+  if(!action?.runId||!ui.state.runs.some(run=>run.id===action.runId))return;
+  const owned=ownsTaskDialog(action);
+  ui.startOperation=null;ui.startingRun=false;syncStartControl();
+  if(owned){inlineStatus($('runFormStatus'),'チームを開始しました。');selectRun(action.runId);}
+  else if($('taskDialog').open)inlineStatus($('runFormStatus'),`作業 ${action.runId} を開始しました。実行一覧から確認できます。現在の下書きは送信していません。`);
+  actionNotice(action,`作業 ${action.runId} を開始しました。実行一覧から確認できます。`);
+}
+function canStopRun(run) { return Boolean(run)&&ACTIVE_STATUSES.has(run.status)&&run.status!=='stopping'&&!ui.stoppingRuns.has(run.id); }
 function schedulePreflight() {
   if(!$('taskDialog').open)return;
   const key=JSON.stringify([runPayload(),ui.settingsRevision,ui.settingsDirty]);
@@ -273,7 +307,7 @@ async function refreshPreflight(request) {
   finally{if(current()){$('preflightStatus').setAttribute('aria-busy','false');$('preflightPending').textContent='';}}
 }
 function setBriefOpen(open) {
-  if(open) { if(!$('taskDialog').open)$('taskDialog').showModal();schedulePreflight(); }
+  if(open) { if(!$('taskDialog').open){ui.taskDialogGeneration++;$('taskDialog').showModal();}showPendingStart();syncStartControl();schedulePreflight(); }
   else if($('taskDialog').open)$('taskDialog').close();
 }
 function needsHuman(agent) { return agent.status_reason==='human_input'||(Boolean(agent.question)&&['waiting','waiting_human','needs_input'].includes(agent.status)); }
@@ -317,8 +351,8 @@ function changeSelection(runId,id) {
   $('messageInput').value=ui.drafts.get(id)||'';inlineStatus($('messageStatus'),'');inlineStatus($('resultActionStatus'),'');
   return true;
 }
-function selectAgent(id) { if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;const changed=changeSelection(ui.selectedRun,id);renderRun();if(changed)void pollState(); }
-function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;const agents=ui.state.agents.filter(agent=>agent.run_id===id),changed=changeSelection(id,agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null);inlineStatus($('messageStatus'),'');showView('work');setBriefOpen(false);renderState();if(changed)void pollState(); }
+function selectAgent(id) { if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;ui.navigationGeneration++;const changed=changeSelection(ui.selectedRun,id);renderRun();if(changed)void pollState(); }
+function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;ui.navigationGeneration++;const agents=ui.state.agents.filter(agent=>agent.run_id===id),changed=changeSelection(id,agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null);inlineStatus($('messageStatus'),'');showView('work');setBriefOpen(false);renderState();if(changed)void pollState(); }
 
 function renderRunList() {
   const signature=JSON.stringify([ui.selectedRun,ui.state.runs.map(run=>[run.id,run.task,run.status,run.status_reason,run.created_at])]);if(signature===ui.runsSignature)return;ui.runsSignature=signature;
@@ -508,7 +542,7 @@ function renderRunContent() {
   const collaborationBlocked=run.collaboration_limit_reached===true;
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
-  $('stopRun').disabled=!ACTIVE_STATUSES.has(run.status)||run.status==='stopping';
+  $('stopRun').disabled=!canStopRun(run);
   const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0]],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderAgents(agents);renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
@@ -523,6 +557,8 @@ function resourceLabel(resources,gpuIndex=0) {
   return parts.join(' · ')||'リソース情報を取得済み';
 }
 function renderState() {
+  // Reconcile before automatic initial selection can change the navigation epoch.
+  reconcileStartedRun();
   const runId=ui.state.runs.some(run=>run.id===ui.selectedRun)?ui.selectedRun:ui.state.runs.at(-1)?.id||null,agents=ui.state.agents.filter(agent=>agent.run_id===runId);
   const agentId=agents.some(agent=>agent.id===ui.selectedAgent)?ui.selectedAgent:agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null;
   changeSelection(runId,agentId);
@@ -573,10 +609,10 @@ async function initialize() {
   window.addEventListener('pointerup',releaseStartPointer);
   window.addEventListener('pointercancel',releaseStartPointer);
   window.addEventListener('blur',releaseStartPointer);
-  $('runForm').addEventListener('input',schedulePreflight);
-  $('runForm').addEventListener('change',schedulePreflight);
-  $('taskDialog').addEventListener('close',()=>{releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
-  $('settingsDialog').addEventListener('close',()=>{invalidateDiagnostics();schedulePreflight();});
+  $('runForm').addEventListener('input',()=>{trackTaskDraft();schedulePreflight();});
+  $('runForm').addEventListener('change',()=>{trackTaskDraft();schedulePreflight();});
+  $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
+  $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;invalidateDiagnostics();schedulePreflight();});
   $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
   $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));
   for(const id of ['newRun','launchTask','emptyNewRun'])$(id).addEventListener('click',()=>setBriefOpen(true));
@@ -600,11 +636,32 @@ async function initialize() {
     event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun)return;
     const workerProfiles=[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value);
     if(!workerProfiles.length&&Number($('maxWorkers').value)>0){inlineStatus($('runFormStatus'),'作業者に使ってよいプロファイルを1つ以上選んでください。',true);return;}
-    ui.startingRun=true;$('startRun').disabled=true;inlineStatus($('runFormStatus'),'チームを準備しています…');
-    try {const response=await api('/api/runs',{method:'POST',body:{task,pm_profile:$('pmProfile').value,worker_profiles:workerProfiles,max_workers:Number($('maxWorkers').value)}});const id=response.run?.id||response.id||response.run_id;await pollState(true);if(id)selectRun(id);inlineStatus($('runFormStatus'),'チームを開始しました。');notice('');}
-    catch(error){inlineStatus($('runFormStatus'),errorText(error),true);}finally{ui.startingRun=false;$('startRun').disabled=!$('pmProfile').value;}
+    trackTaskDraft();notice('');
+    const action={navigationGeneration:ui.navigationGeneration,dialogGeneration:ui.taskDialogGeneration,draftGeneration:ui.taskDraftGeneration,workspaceGeneration:ui.workspaceGeneration,noticeGeneration:ui.noticeGeneration,runId:null};
+    ui.startOperation=action;ui.startingRun=true;syncStartControl();inlineStatus($('runFormStatus'),'チームを準備しています…');
+    try {
+      const response=await api('/api/runs',{method:'POST',body:{task,pm_profile:$('pmProfile').value,worker_profiles:workerProfiles,max_workers:Number($('maxWorkers').value)}});
+      const id=response.run?.id||response.id||response.run_id;
+      if(typeof id!=='string'||!id){const failure=new Error('開始応答の実行 ID を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
+      action.runId=id;
+      // A successful mutation remains accepted even if observing its state fails.
+      // Polling may discover it later; it must never repeat the creation request.
+      showPendingStart();
+      actionNotice(action,acceptedStartText(action));reconcileStartedRun();await pollState(true);
+    }catch(error){
+      const message=errorText(error)+(error.outcomeUnknown?' 開始したかどうかは未確認です。実行一覧と接続状態を確認してから、再送信が必要か判断してください。':'');
+      if($('taskDialog').open)inlineStatus($('runFormStatus'),(ownsTaskDialog(action)?'':'以前に送信した開始要求: ')+message+(ownsTaskDialog(action)?'':' 現在の下書きは送信していません。'),true);
+      actionNotice(action,'送信した開始要求: '+message,true);
+      if(ui.startOperation===action){ui.startOperation=null;ui.startingRun=false;}
+    }finally{syncStartControl();}
   });
-  $('stopRun').addEventListener('click',async()=>{const run=getRun();if(!run)return;$('stopRun').disabled=true;try{await api(`/api/runs/${encodeURIComponent(run.id)}/stop`,{method:'POST',body:{}});await pollState(true);notice('チームに停止を要求しました。');}catch(error){notice(errorText(error),true);$('stopRun').disabled=false;}});
+  $('stopRun').addEventListener('click',async()=>{
+    const run=getRun();if(!canStopRun(run))return;notice('');const action={noticeGeneration:ui.noticeGeneration};
+    ui.stoppingRuns.set(run.id,action);renderRun();
+    try{await api(`/api/runs/${encodeURIComponent(run.id)}/stop`,{method:'POST',body:{}});await pollState(true);actionNotice(action,`作業 ${run.id} の停止を受け付けました。現在の状態は実行一覧で確認できます。`);}
+    catch(error){actionNotice(action,`作業 ${run.id} の停止要求: ${errorText(error)}`,true);}
+    finally{if(ui.stoppingRuns.get(run.id)===action)ui.stoppingRuns.delete(run.id);renderRun();}
+  });
   $('messageInput').addEventListener('input',saveAgentDraft);
   $('messageForm').addEventListener('submit',async event=>{
     event.preventDefault();const agent=getAgent(),text=$('messageInput').value;if(!agent||!text.trim()||ui.busyMessage)return;ui.busyMessage=true;$('sendMessage').disabled=true;

@@ -131,7 +131,7 @@ def test_dialog_repeated_open_close_preserves_drafts_and_focus():
     result = run_javascript("""
 const nodes={taskDialog:{open:false,opens:0,closes:0,showModal(){this.open=true;this.opens++},close(){this.open=false;this.closes++}},settingsDialog:{open:false,opens:0,closes:0,showModal(){this.open=true;this.opens++},close(){this.open=false;this.closes++}}};const $=id=>nodes[id];
 """ + source + """
-const ui={preflightRequest:0};schedulePreflight=()=>{};
+const ui={preflightRequest:0,taskDialogGeneration:0,workspaceGeneration:0};schedulePreflight=()=>{};syncStartControl=()=>{};
 setBriefOpen(true);setBriefOpen(true);setBriefOpen(false);setBriefOpen(false);
 showView('settings');showView('settings');showView('work');showView('work');
 console.log(JSON.stringify(Object.fromEntries(Object.entries(nodes).map(([k,v])=>[k,{open:v.open,opens:v.opens,closes:v.closes}]))));

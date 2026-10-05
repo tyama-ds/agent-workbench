@@ -512,3 +512,49 @@ confirms Windows pipes use the ANSI code page. Give captured Python subprocesses
 private UTF-8 output/decoding contract, retain ordinary console behavior and caller
 environment, and keep the original strict config-rejection assertion. This is a real
 source-installer path fix; the failing run is not final acceptance evidence.
+
+## 0.1.1.dev11 — Start/Stop response ownership and accepted-run recovery (2026-10-05)
+
+- Reproduced a successful creation followed by failed state refresh leaving the
+  original form enabled, and delayed creation overriding a newer navigation choice.
+  Keep the accepted run ID until ordinary polling observes it, with no automatic
+  creation replay. Disable Start while that accepted result remains unobserved.
+- Distinguish accepted creation from an unknown response. A transport/server failure
+  or malformed successful response does not prove no team was created. Explain the
+  uncertainty before any user-directed retry; no server idempotency or persistence
+  is claimed. Independent review caught successful JSON `null` bypassing that copy;
+  validate response object shape and regress null/arrays/primitives/invalid JSON.
+- Give user navigation, task-dialog lifecycle, draft edits, and settings navigation
+  their own generations. A late result cannot regain authority after A → B → A or
+  close a newly opened dialog. Automatic initial state selection is not a user
+  navigation, so state observed before the POST response still reconciles correctly.
+- Reproduced a late Stop failure enabling Stop on another completed team. Use one
+  current-state predicate in both rendering and the action, with per-run pending
+  guards across polling and independent concurrent Stops. Re-render after responses;
+  never enable whichever shared button happens to be visible. Feedback names the
+  affected run and cannot replace a newer operation's notice.
+- Preserve the cockpit, drafts, focus, retained results/export, compact-state
+  ownership, server-side stop/write draining, credential handling and settings lock.
+
+Research decisions:
+- [W3C status-message guidance](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html):
+  use concise, programmatically exposed acceptance/waiting/error feedback without
+  forcing focus to follow a late response. Preserve the existing live regions and
+  avoid new modal alerts or verbose per-poll announcements.
+- [HTTP idempotency and retries](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2):
+  distinguish observing an accepted operation from repeating a non-idempotent POST.
+  Do not replay an uncertain creation or claim cross-reload exactly-once behavior;
+  a server-side idempotency contract is deferred to a separate design.
+- [Microsoft HAX correction guidance](https://www.microsoft.com/en-us/haxtoolkit/guideline/support-efficient-correction/):
+  adopt recoverable explicit state and retained drafts. Reject automatic retries
+  that can duplicate a team's work. These principles do not establish full WCAG
+  conformance or a model-quality guarantee.
+- Defer a separate confirmed credential-recovery improvement: the server can accept
+  a replacement memory-only key during a recoverable run error, but the UI settings
+  lock requires stopping first. Unlocking only the correct saved credential identity
+  needs its own review; no credential UI or authentication behavior changes here.
+
+Tests use deferred synthetic transport through actual frontend callbacks and real
+Windows Edge interactions. They retain all prior source/Engine/browser assertions.
+Exact-head six-job CI and screenshot acceptance belong to the final handoff. No
+live inference, user-PC operation, binary upload, release, merge or deployment.

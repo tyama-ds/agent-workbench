@@ -8,6 +8,7 @@ const path = require('node:path');
 const {spawn,spawnSync} = require('node:child_process');
 const {chromium} = require('node:module').createRequire(path.join(__dirname,'browser-tests','package.json'))('playwright');
 const {retainedRedactionAcceptance} = require('./browser-tests/redaction_acceptance.cjs');
+const {lifecycleAcceptance} = require('./browser-tests/lifecycle_acceptance.cjs');
 
 async function assertLayout(page,label) {
   const metrics=await page.evaluate(()=>{
@@ -468,6 +469,7 @@ async function main() {
     await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow stopped notice');
     await page.screenshot({path:path.join(artifacts,'workbench-mobile.png'),fullPage:true,animations:'disabled'});
     report.checks.push('desktop 1366x768, tablet 820x768, narrow 390x844: no document horizontal overflow, no sidebar/workspace overlap, input and send inside unclipped panels, long Japanese questions and stop notice');
+    await lifecycleAcceptance({page,agentContract,artifacts,report,assertLayout,assertDialogLayout});
     // Remove only the UI-state fixtures: the following flow uses real app endpoints
     // and Engine with an injected test client, including real serialization.
     await page.unroute('**/api/state*');await page.unroute('**/api/runs');

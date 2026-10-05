@@ -315,3 +315,26 @@ reference changes through real loopback APIs, synthetic response continuations,
 full/selected responses, UI text, clipboard and downloaded report/receipt attribution.
 Consult the exact-head CI JSON/screenshots for results. The evidence-only artifact
 allowlist remains unchanged; no packaged binaries are uploaded.
+
+## Start/Stop response ownership (0.1.1.dev11)
+
+`test_run_action_frontend.py` exercises the actual registered callbacks with a
+deferred synthetic transport: accepted creation across failed/missing observations,
+state arriving before the POST response, first-run selection, independent dialog,
+draft and settings A → B → A generations, explicit retries, unknown and malformed
+responses, per-run Stop guards across polls, concurrent Stops, changed terminal
+states, target-labelled notices and retained draft/focus. It also calls the real
+`api()` function against synthetic timeout/HTTP/malformed-JSON responses.
+
+The separate `lifecycle_acceptance.cjs` phase uses real Windows Edge DOM actions and
+routed synthetic responses. It checks pointer and keyboard submissions, delayed
+responses and state failures, regular-poll recovery without replay, dialog/draft/
+navigation ownership and Stop eligibility, and records desktop/narrow screenshots.
+The existing real loopback Engine, authentication, receipts, stop-draining, settings,
+privacy and model-attribution phases still run afterward. No live model is called.
+
+An accepted run ID is held only in this page's memory. Unknown creation responses
+are not turned into proof of rejection. There is no durable operation queue, server
+idempotency key, automatic creation retry or cross-reload exactly-once guarantee.
+Final full-suite, exact-head Windows and screenshot results are recorded in the
+cycle handoff; DOM-only tests do not establish actual browser layout or focus.
