@@ -170,8 +170,12 @@ def test_real_cmd_check_with_unicode_and_spaces(tmp_path):
     project = tmp_path / '会社 project & spaces !'
     shutil.copytree(ROOT, project, ignore=shutil.ignore_patterns('.git', '.venv', '__pycache__', 'runtime'))
     env = dict(os.environ, WORKBENCH_PYTHON=sys.executable)
-    result = subprocess.run(['cmd.exe', '/d', '/c', str(project / 'Setup.cmd'), '--check'],
-                            input='\n', text=True, capture_output=True, env=env, timeout=30)
+    # Launch as a user would from the extracted project directory. Passing a
+    # quoted batch path as a subprocess argument invokes cmd's special /c
+    # quote stripping, before the batch file itself can protect its paths.
+    result = subprocess.run(['cmd.exe', '/d', '/c', 'Setup.cmd', '--check'],
+                            cwd=project, input='\n', text=True, capture_output=True,
+                            env=env, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'Preflight complete' in result.stdout
 

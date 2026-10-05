@@ -152,3 +152,62 @@ def test_nvidia_discovery_never_searches_current_or_project_directory(tmp_path, 
 
 def test_resource_bounds_match_settings_interface():
     assert retry_settings({'retry_backoff_seconds': 60}) == (0, 60)
+
+
+@pytest.mark.asyncio
+async def test_interval_rechecks_after_early_timer_wakeup(monkeypatch):
+    from types import SimpleNamespace
+    import workbench.resources as resources
+    now = 10.0
+    sleeps = []
+    async def early_sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += min(delay, 0.01)
+    monkeypatch.setattr(resources, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(resources.asyncio, "sleep", early_sleep)
+    gate = ResourceGate()
+    async with gate.slot({"min_interval_seconds": 0.04}):
+        first = now
+    async with gate.slot({"min_interval_seconds": 0.04}):
+        assert now >= first + 0.04
+    assert len(sleeps) >= 4
+    assert gate.snapshot()["active"] == gate.snapshot()["queued"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_interval_wait_releases_slot_and_start_lock(monkeypatch):
+    import workbench.resources as resources
+    gate = ResourceGate()
+    async with gate.slot():
+        pass
+    waiting = asyncio.Event()
+    async def blocked_sleep(delay):
+        waiting.set()
+        await asyncio.Future()
+    monkeypatch.setattr(resources.asyncio, "sleep", blocked_sleep)
+    async def request():
+        async with gate.slot({"min_interval_seconds": 60}):
+            pytest.fail("Cancelled wait entered")
+    task = asyncio.create_task(request())
+    await waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert gate.snapshot()["active"] == gate.snapshot()["queued"] == 0
+    async with gate.slot({"min_interval_seconds": 0}):
+        assert gate.snapshot()["active"] == 1
+    assert not gate._start_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_zero_interval_never_sleeps(monkeypatch):
+    import workbench.resources as resources
+    async def unexpected_sleep(delay):
+        pytest.fail("Zero interval should not sleep")
+    monkeypatch.setattr(resources.asyncio, "sleep", unexpected_sleep)
+    gate = ResourceGate()
+    for _ in range(3):
+        async with gate.slot({"min_interval_seconds": 0}):
+            pass
+    assert gate.snapshot()["active"] == gate.snapshot()["queued"] == 0
