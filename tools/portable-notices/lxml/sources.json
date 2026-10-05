@@ -18,7 +18,7 @@
       "component_version": null,
       "license_version": "LGPL-2.1",
       "source": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
-      "provenance": "Copied verbatim from the installed canonical license text at /usr/share/common-licenses/LGPL-2.1. The canonical GNU URL timed out during retrieval on 2026-10-05. lxml 6.1.3 LICENSES.txt identifies the bundled iconv license as LGPL 2.1 but does not identify the bundled iconv version."
+      "provenance": "Copied verbatim from the installed canonical license text at /usr/share/common-licenses/LGPL-2.1. The canonical GNU URL timed out during retrieval on 2026-10-05. lxml 6.1.3 LICENSES.txt identifies the bundled iconv license as LGPL 2.1 but does not identify the bundled iconv version. Follow-up verification on 2026-10-05 during dev18 successfully retrieved the official GNU URL; its SHA-256 exactly matched this unchanged file. The license text alone does not establish corresponding-source or relinking compliance."
     },
     {
       "path": "zlib.txt",

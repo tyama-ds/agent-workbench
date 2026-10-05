@@ -29,6 +29,9 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "AgentWorkbench"
 LABEL = "experimental-unsigned"
+CPYTHON_EVIDENCE = ROOT / "tools" / "portable-notices" / "cpython-3.13.15" / "evidence.json"
+# Pin the reviewed index itself: editing archive identities or spans requires review.
+CPYTHON_EVIDENCE_SHA256 = "5d3295aa3243bac164afac0e5a29760902aa051eaecbdf847d6c54795f048b68"
 NOTICE_PREFIXES = ("license", "licence", "copying", "notice", "copyright", "authors")
 NATIVE_COMPONENTS = {
     "OpenSSL": ("libssl*.dll", "libcrypto*.dll", "_ssl.pyd", "_hashlib.pyd"),
@@ -37,7 +40,7 @@ NATIVE_COMPONENTS = {
     "bzip2": ("*bz2*.dll", "_bz2.pyd"),
     "liblzma/XZ": ("*lzma*.dll", "_lzma.pyd"),
     "SQLite": ("sqlite*.dll", "_sqlite3.pyd"),
-    "Microsoft CRT": ("vcruntime*.dll", "msvcp*.dll", "ucrtbase.dll"),
+    "Microsoft CRT": ("vcruntime*.dll", "msvcp*.dll", "ucrtbase.dll", "api-ms-win-*.dll"),
 }
 DISTRIBUTION_BLOCKERS = [
     "lxml Windows native binaries indicate static GNU libiconv linkage; exact native-source "
@@ -204,6 +207,10 @@ def collect_notices(destination: Path, runtime: list[str], build: list[str],
     import zlib
 
     inventory["cpython"] = {"version": platform.python_version(),
+                            "implementation": platform.python_implementation(),
+                            "platform": sys.platform,
+                            "architecture": "x64" if struct.calcsize("P") == 8 and
+                            platform.machine().lower() in {"amd64", "x86_64"} else platform.machine(),
                             "notice": {"path": copied.name, "sha256": sha256(copied)},
                             "notice_provenance": "Unmodified LICENSE.txt from this build interpreter's base installation.",
                             "review_status": "unresolved; copied notice is not proof of native-component coverage",
@@ -235,6 +242,84 @@ def record_native_bundle(inventory: dict, bundle: Path) -> None:
         component["bundled_files"] = matches
         if not matches:
             component["status"] = "not_observed_in_bundle; not proof of absence from other binaries"
+
+
+def record_reviewed_cpython_evidence(inventory: dict, notices: Path) -> None:
+    """Compare original bytes to a reviewed reference; never decide distribution status.
+
+    No network, archive download, binary execution or legal inference. The reference
+    describes an archive verified during review, not an archive fetched by this build.
+    A match of one file does not attest other files, linkage, or all license obligations.
+    """
+    raw_index = CPYTHON_EVIDENCE.read_bytes()
+    if hashlib.sha256(raw_index).hexdigest() != CPYTHON_EVIDENCE_SHA256:
+        raise RuntimeError("Changed reviewed CPython evidence index; review its identity and hashes")
+    reference = json.loads(raw_index)
+    if reference["schema_version"] != 1:
+        raise RuntimeError("Unsupported reviewed CPython evidence schema")
+    copied_index = notices / "CPython-evidence.json"
+    copied_index.write_bytes(raw_index)
+    python = inventory["cpython"]
+    identity_match = all(python.get(key) == value for key, value in reference["identity"].items())
+    observations_match = python.get("runtime_observations") == reference["runtime_observations"]
+    applicable = identity_match and observations_match
+    actual_notice = (notices / python["notice"]["path"]).read_bytes()
+    notice_match = (applicable and len(actual_notice) == reference["notice"]["size"]
+                    and hashlib.sha256(actual_notice).hexdigest() == reference["notice"]["sha256"]
+                    and python["notice"]["sha256"] == reference["notice"]["sha256"])
+    evidence = {
+        "index": {"path": copied_index.name, "sha256": CPYTHON_EVIDENCE_SHA256},
+        "scope": reference["scope"],
+        "reference_archive": reference["archive"],
+        "archive_verification": "Previously SHA-256-verified during review; not fetched by this build.",
+        "runtime_identity_match": identity_match,
+        "runtime_observations_match": observations_match,
+        "copied_notice_match": notice_match,
+    }
+    python["reviewed_evidence"] = evidence
+    expected_files = {item["bundle_path"].casefold(): item for item in reference["native_files"]}
+    observed_paths = {}
+    for item in inventory["native_files"]:
+        observed_paths.setdefault(item["path"].casefold(), []).append(item)
+
+    def compare_native(actual: dict) -> dict:
+        expected = expected_files.get(actual["path"].casefold())
+        status = "unresolved_runtime_identity" if not applicable else "not_in_reference_archive"
+        if applicable and expected is not None:
+            status = "exact_archive_file_match" if (
+                len(observed_paths[actual["path"].casefold()]) == 1
+                and actual["size"] == expected["size"]
+                and actual["sha256"] == expected["sha256"]
+            ) else "unresolved_file_mismatch"
+        return {"path": actual["path"], "status": status, "expected": expected,
+                "observed_sha256": actual["sha256"], "observed_size": actual["size"]}
+
+    evidence["native_files"] = [compare_native(item) for item in inventory["native_files"]
+                                if item["path"].casefold() in expected_files]
+    evidence["native_file_scope"] = "Observed paths indexed in the reference archive only; no claim about other binaries or absent files."
+    for component in python["component_review"]:
+        source = reference["components"].get(component["component"])
+        notice = {"status": "unresolved_no_component_reference"}
+        if source is not None:
+            notice.update({"reference_component_version": source["component_version"],
+                           "source_notice": source["source_notice"]})
+            notice["status"] = "unresolved_notice_identity"
+            if notice_match:
+                span = source.get("notice_span")
+                if span is not None:
+                    start, length = span["byte_start"], span["byte_length"]
+                    matched = (0 <= start < len(actual_notice) and length > 0
+                               and start + length <= len(actual_notice)
+                               and hashlib.sha256(actual_notice[start:start + length]).hexdigest() == span["sha256"])
+                    notice["status"] = "verified_content_match" if matched else "unresolved_content_mismatch"
+                    notice["span"] = span
+                else:
+                    notice["status"] = source["notice_observation"]
+            if "interpretation" in source:
+                notice["interpretation"] = source["interpretation"]
+        component["notice_evidence"] = notice
+        component["native_provenance"] = [compare_native(item) for item in component["bundled_files"] or []]
+        # Existing component status, review_status and distribution blockers stay unchanged.
 
 
 def copy_supplementary_notices(source: Path, destination: Path, distribution: str) -> dict:
@@ -358,6 +443,7 @@ def assemble(output: Path, work: Path, source_sha: str, *, evaluation_only: bool
         if not (bundle / "_internal" / required).is_file():
             raise RuntimeError(f"Missing bundled application resource: {required}")
     record_native_bundle(notice_inventory, bundle)
+    record_reviewed_cpython_evidence(notice_inventory, notices)
     (notices / "inventory.json").write_text(json.dumps(notice_inventory, indent=2) + "\n", encoding="utf-8")
     shutil.copytree(notices, bundle / notices.name)
     shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")

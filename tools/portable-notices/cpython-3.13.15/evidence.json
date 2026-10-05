@@ -1,0 +1,296 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-10-05",
+  "scope": "Previously reviewed byte identities and notice content only. Not a linkage attestation, exhaustive native-component inventory, legal determination, or distribution clearance.",
+  "identity": {
+    "implementation": "CPython",
+    "version": "3.13.15",
+    "platform": "win32",
+    "architecture": "x64"
+  },
+  "runtime_observations": {
+    "OpenSSL": "OpenSSL 3.0.21 9 Jun 2026",
+    "zlib_compiled": "1.3.1",
+    "zlib_runtime": "1.3.1"
+  },
+  "archive": {
+    "url": "https://www.python.org/ftp/python/3.13.15/python-3.13.15-embed-amd64.zip",
+    "sha256": "d1f04d990aee1253d8569e8e5104e30fa9f5fa830899f14843448872d936a2cf",
+    "verification_source": "https://www.python.org/downloads/release/python-31315/"
+  },
+  "source_archive": {
+    "url": "https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tar.xz",
+    "sha256": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76"
+  },
+  "build_sources": [
+    {
+      "url": "https://github.com/python/cpython/blob/v3.13.15/PCbuild/regen.targets",
+      "lines": "150-157, 168-178",
+      "role": "License input concatenation in the verified source archive"
+    },
+    {
+      "url": "https://github.com/python/cpython/blob/v3.13.15/PCbuild/python.props",
+      "lines": "73-83",
+      "role": "Windows native dependency versions"
+    },
+    {
+      "url": "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe.spdx.json",
+      "role": "Source-dependency URLs and hashes; dependency licenseConcluded values are NOASSERTION, not clearance"
+    }
+  ],
+  "notice": {
+    "archive_path": "LICENSE.txt",
+    "sha256": "62bec384df47b0328307db41455ff6ea2559e5546b394ac69148561b21703120",
+    "size": 33861
+  },
+  "components": {
+    "OpenSSL": {
+      "component_version": "3.0.21",
+      "source_notice": {
+        "url": "https://raw.githubusercontent.com/python/cpython-source-deps/openssl-3.0.21/LICENSE.txt",
+        "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+      },
+      "notice_observation": "content_present",
+      "notice_span": {
+        "byte_start": 18936,
+        "byte_length": 10315,
+        "sha256": "e48fe94942b6b3022126430dd20621867ad29943252aad1e49488e3a12c995c5",
+        "review_method": "Full source notice text matched after UTF-8 decoding, CRLF-to-LF conversion and trimming outer whitespace. Runtime checks this recorded original-byte span; the copied file is never normalized.",
+        "normalized_source_text_sha256": "be6b16de6a2fd56cac2880dd93094c14458500c7415bd21b3c8387ae331a29d8"
+      }
+    },
+    "libffi": {
+      "component_version": "3.4.4",
+      "source_notice": {
+        "url": "https://raw.githubusercontent.com/python/cpython-source-deps/libffi-3.4.4/LICENSE",
+        "sha256": "2c9c2acb9743e6b007b91350475308aee44691d96aa20eacef8e199988c8c388"
+      },
+      "notice_observation": "content_present",
+      "notice_span": {
+        "byte_start": 17767,
+        "byte_length": 1131,
+        "sha256": "b544cbd4d392daaeefb89bac9b6610fe32243f1dbbfedebe70ab3a96a2a38d50",
+        "review_method": "Full source notice text matched after UTF-8 decoding, CRLF-to-LF conversion and trimming outer whitespace. Runtime checks this recorded original-byte span; the copied file is never normalized.",
+        "normalized_source_text_sha256": "b544cbd4d392daaeefb89bac9b6610fe32243f1dbbfedebe70ab3a96a2a38d50"
+      }
+    },
+    "bzip2": {
+      "component_version": "1.0.8",
+      "source_notice": {
+        "url": "https://raw.githubusercontent.com/python/cpython-source-deps/bzip2-1.0.8/LICENSE",
+        "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3"
+      },
+      "notice_observation": "content_present",
+      "notice_span": {
+        "byte_start": 15870,
+        "byte_length": 1894,
+        "sha256": "702826200cdc44979a2a4b00deaf1df46180bef02ef9c1edde6209883ead3752",
+        "review_method": "Full source notice text matched after UTF-8 decoding, CRLF-to-LF conversion and trimming outer whitespace. Runtime checks this recorded original-byte span; the copied file is never normalized.",
+        "normalized_source_text_sha256": "702826200cdc44979a2a4b00deaf1df46180bef02ef9c1edde6209883ead3752"
+      }
+    },
+    "zlib": {
+      "component_version": "1.3.1",
+      "source_notice": {
+        "url": "https://raw.githubusercontent.com/python/cpython-source-deps/zlib-1.3.1/LICENSE",
+        "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243"
+      },
+      "notice_observation": "not_in_copied_notice",
+      "interpretation": "The source license requires retaining this notice in source distributions; product acknowledgment is appreciated, not required. Keep this CPython 1.3.1 instance separate from lxml native zlib."
+    },
+    "liblzma/XZ": {
+      "component_version": "5.2.5",
+      "source_notice": {
+        "url": "https://raw.githubusercontent.com/python/cpython-source-deps/xz-5.2.5/COPYING",
+        "sha256": "bcb02973ef6e87ea73d331b3a80df7748407f17efdb784b61b47e0e610d3bb5c"
+      },
+      "notice_observation": "not_in_copied_notice",
+      "interpretation": "COPYING distinguishes public-domain liblzma from differently licensed tools/build files. Compiler/runtime additions require separate review; absence of this text does not establish a binary-license violation."
+    },
+    "Microsoft CRT": {
+      "component_version": null,
+      "source_notice": {
+        "url": "https://raw.githubusercontent.com/python/cpython/v3.13.15/PC/crtlicense.txt",
+        "sha256": "3c71b3ae243121f6f227374cd1ef7c59ed07b1969b330d0e947f91a3a1b3fd73"
+      },
+      "notice_observation": "content_present",
+      "notice_span": {
+        "byte_start": 14092,
+        "byte_length": 1771,
+        "sha256": "b64312dab8f6751d7d8fc7a6c2edbf3d3fa2482f0b1687a8dd6966e50a94890a",
+        "review_method": "Full source notice text matched after UTF-8 decoding, CRLF-to-LF conversion and trimming outer whitespace. Runtime checks this recorded original-byte span; the copied file is never normalized.",
+        "normalized_source_text_sha256": "e1c3f7327503bae86aacbe5ff5c12d26ce2160673e248fb0dd8284b878c5724a"
+      }
+    }
+  },
+  "native_files": [
+    {
+      "bundle_path": "_internal/_asyncio.pyd",
+      "archive_path": "_asyncio.pyd",
+      "size": 72928,
+      "sha256": "6941e2aeed3aad1a4658774ecb60309170066a040c2118a5efd16458ac3bed00"
+    },
+    {
+      "bundle_path": "_internal/_bz2.pyd",
+      "archive_path": "_bz2.pyd",
+      "size": 86752,
+      "sha256": "261545bd24f15a783fc0c82568b766a4ab569dde14507a81701cccf5293e6e54"
+    },
+    {
+      "bundle_path": "_internal/_ctypes.pyd",
+      "archive_path": "_ctypes.pyd",
+      "size": 134368,
+      "sha256": "9d6dccb4cd84a44a107f9b06b91c0a44e85766d9bf4debb6abbde8fda7494c2c"
+    },
+    {
+      "bundle_path": "_internal/_decimal.pyd",
+      "archive_path": "_decimal.pyd",
+      "size": 286944,
+      "sha256": "1e6a5707163d3c103e0eb4695eefedbea4b855fb227c61cc265b168970d6c6f0"
+    },
+    {
+      "bundle_path": "_internal/_elementtree.pyd",
+      "archive_path": "_elementtree.pyd",
+      "size": 135904,
+      "sha256": "26c5c2f3f2b8dac1499f07a50d7afd14315c20a6a541abbe4e306bcd9df404f1"
+    },
+    {
+      "bundle_path": "_internal/_hashlib.pyd",
+      "archive_path": "_hashlib.pyd",
+      "size": 69344,
+      "sha256": "79a26289aef0d92545a082507c7021f10e219621d137cb726c4d0fbbfd4b46ae"
+    },
+    {
+      "bundle_path": "_internal/_lzma.pyd",
+      "archive_path": "_lzma.pyd",
+      "size": 159456,
+      "sha256": "ee224aacf5cf9c9974a1b842aac8d89d5d9b7eeebbf4d76619ae0ce4da8ecd96"
+    },
+    {
+      "bundle_path": "_internal/_multiprocessing.pyd",
+      "archive_path": "_multiprocessing.pyd",
+      "size": 38112,
+      "sha256": "db19972cf033b598f5826f8219bc2608412b84061d294f5972b43c2ab95f7af5"
+    },
+    {
+      "bundle_path": "_internal/_overlapped.pyd",
+      "archive_path": "_overlapped.pyd",
+      "size": 57568,
+      "sha256": "9db08b5449e18088754ce57e315657d00b46575e0151cd379efef8847488a606"
+    },
+    {
+      "bundle_path": "_internal/_queue.pyd",
+      "archive_path": "_queue.pyd",
+      "size": 35552,
+      "sha256": "4404c2569443ffb54e7cfffdca8ddf58c9a609175305970728ec12bc1c147b43"
+    },
+    {
+      "bundle_path": "_internal/_socket.pyd",
+      "archive_path": "_socket.pyd",
+      "size": 86752,
+      "sha256": "ccbd0f83df3784da08147b8e8765e28c978de28b5c0eddcfba5567b59d43fef9"
+    },
+    {
+      "bundle_path": "_internal/_sqlite3.pyd",
+      "archive_path": "_sqlite3.pyd",
+      "size": 131296,
+      "sha256": "4c5fa9341a76ac525fd36e2cb23260934ad9b9f6825725ff139b26c8dc72436d"
+    },
+    {
+      "bundle_path": "_internal/_ssl.pyd",
+      "archive_path": "_ssl.pyd",
+      "size": 181984,
+      "sha256": "8d2f51fa1dc929073a2ad8d1c7c0c911e8f695870dcf4dda2846f4b75a7f77fb"
+    },
+    {
+      "bundle_path": "_internal/_uuid.pyd",
+      "archive_path": "_uuid.pyd",
+      "size": 27872,
+      "sha256": "b93832742a2348d6659fd62e8a8aff061594693fc537da74c7d2d1cdf83a8475"
+    },
+    {
+      "bundle_path": "_internal/_wmi.pyd",
+      "archive_path": "_wmi.pyd",
+      "size": 39648,
+      "sha256": "db45362354fd4965329cb14bd974e60b26525045d09fb4fdfb1674a93b79d60c"
+    },
+    {
+      "bundle_path": "_internal/_zoneinfo.pyd",
+      "archive_path": "_zoneinfo.pyd",
+      "size": 50912,
+      "sha256": "6650db91accc05e625d3c5d8a40e15127a040ea1135e40e875fd78d8a7665a84"
+    },
+    {
+      "bundle_path": "_internal/libcrypto-3.dll",
+      "archive_path": "libcrypto-3.dll",
+      "size": 5238520,
+      "sha256": "09499e186cf0e434ffa17ad153aa9a66d6048c54a2c03b823e2a06c49d9affe4"
+    },
+    {
+      "bundle_path": "_internal/libffi-8.dll",
+      "archive_path": "libffi-8.dll",
+      "size": 39696,
+      "sha256": "eff52743773eb550fcc6ce3efc37c85724502233b6b002a35496d828bd7b280a"
+    },
+    {
+      "bundle_path": "_internal/libssl-3.dll",
+      "archive_path": "libssl-3.dll",
+      "size": 794872,
+      "sha256": "28c395290279fa4f4f54a57b85cd66d853895f925fefb8f6fdebc0d8b1cdd07c"
+    },
+    {
+      "bundle_path": "_internal/pyexpat.pyd",
+      "archive_path": "pyexpat.pyd",
+      "size": 221920,
+      "sha256": "b9c9c5a9f52af559a7eb4e8ddfd60558185bfc7794f32840bed1747d1ec9026a"
+    },
+    {
+      "bundle_path": "_internal/python3.dll",
+      "archive_path": "python3.dll",
+      "size": 72416,
+      "sha256": "76e7fd69a01081726308317d6e502721c2ba6792b48880dc1ef649c755788db7"
+    },
+    {
+      "bundle_path": "_internal/python313.dll",
+      "archive_path": "python313.dll",
+      "size": 6135008,
+      "sha256": "e820bf024efd2b56bb2b82791e6b6ddc7303f070f8e72cba7637482a8a906238"
+    },
+    {
+      "bundle_path": "_internal/select.pyd",
+      "archive_path": "select.pyd",
+      "size": 32992,
+      "sha256": "024f955349fe46cf1bb2c22c6b57fcf38cf5755d46166fbf63e7e5b92433b111"
+    },
+    {
+      "bundle_path": "_internal/sqlite3.dll",
+      "archive_path": "sqlite3.dll",
+      "size": 1584864,
+      "sha256": "c6812eaf0f8605df273b9bf7e359b83fd65038ecc66455c3f7a933768cb92f3f"
+    },
+    {
+      "bundle_path": "_internal/unicodedata.pyd",
+      "archive_path": "unicodedata.pyd",
+      "size": 712928,
+      "sha256": "111e0fdfeef9887c04f6ebf1972ce1ccbec55b226012e4a288c2d4a0b17b216b"
+    },
+    {
+      "bundle_path": "_internal/vcruntime140.dll",
+      "archive_path": "vcruntime140.dll",
+      "size": 178616,
+      "sha256": "d1f4225df2cd877dbf130d5668a021dce3f94118455ff5ec952061c30afc9ce7"
+    },
+    {
+      "bundle_path": "_internal/vcruntime140_1.dll",
+      "archive_path": "vcruntime140_1.dll",
+      "size": 50112,
+      "sha256": "a7146c08f89fe5b04541ab507cdb59ff7b44534d4ba3c668a426c6450a03434e"
+    },
+    {
+      "bundle_path": "_internal/winsound.pyd",
+      "archive_path": "winsound.pyd",
+      "size": 31968,
+      "sha256": "b078b7f5c53efd3c4201b63fa34a17c6747142e37298293f52c3a9ad643e69e2"
+    }
+  ]
+}

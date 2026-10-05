@@ -828,3 +828,33 @@ Stop and started-save draining. Direct guards cover every filesystem tool before
 path access. Full local validation, independent review, exact-head six-job CI,
 Windows Edge and evaluation-only package evidence are required for the handoff.
 No live inference, user-PC action, browser retry, binary distribution, merge or release.
+
+
+## 0.1.1.dev18 — Hash-bound native notice and provenance evidence (2026-10-05)
+
+- Correct the interpretation of cycle 5's keyword flags. The exact reviewed CPython
+  3.13.15 LICENSE contains unlabeled OpenSSL Apache 2.0 text and Microsoft Distributable
+  Code conditions, plus libffi/bzip2 text with mixed original line endings. Record
+  checked original-byte spans without changing or normalizing the copied notice.
+- Pin a small offline reference index to its own SHA-256. Bind comparison to exact
+  Python implementation/version/platform/architecture, OpenSSL/zlib observations,
+  notice size/hash and individual native paths/sizes/hashes from the previously
+  verified official embed archive. Unknown or changed identities remain unresolved.
+- Keep keyword observations, notice evidence and native-file provenance separate
+  from component and distribution-review statuses. Case-insensitive Windows paths
+  preserve VCRUNTIME matches; ambiguous case duplicates do not match. UCRT/API-set
+  files absent from this archive reference remain explicitly unindexed.
+- Keep zlib 1.3.1 and XZ 5.2.5 source references precise. Their missing text in the
+  copied notice is an observation, not an automatic legal violation. Do not conflate
+  CPython zlib with lxml's separate native copy. Reconfirm the existing LGPL text's
+  exact hash against GNU without treating notice possession as source/relink compliance.
+
+Research decisions and remaining requirements are in
+[NATIVE_REDISTRIBUTION](NATIVE_REDISTRIBUTION.md). Preserve historical PR snapshots;
+link this correction rather than rewriting their original observations. Defer native
+rebuilds, library substitution and release decisions. No dependency changes, feature
+removal, new downloads during builds, legal acceptance or binary uploads are added.
+
+The evaluated build remains explicitly evaluation-only and distribution-blocked even
+when every available reference comparison matches. Full local tests, independent
+review and fresh exact-head six-job CI / Windows evidence are required for the handoff.

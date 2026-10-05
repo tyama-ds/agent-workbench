@@ -5,7 +5,30 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
-## Current revision — queued filesystem deadlines (2026-10-05)
+## Current revision — native evidence comparison (2026-10-05)
+
+Version **0.1.1.dev18** adds an offline comparison of the evaluation build's original
+CPython notice bytes and actual native-file inventory against a checksum-pinned,
+reviewed CPython 3.13.15 Windows x64 reference. Keyword observations, notice-content
+matches, per-file archive matches and unresolved distribution review are separate.
+The reference was checked against the official archive during review; builds do not
+download it, execute its binaries, or infer whole-bundle provenance from one match.
+
+Synthetic tests cover unlabeled notices, original-byte and manifest-hash changes,
+name-only false positives, version/platform/architecture and observed-version drift,
+invalid spans, native path/hash/size mismatches, case ambiguity, unindexed UCRT/API-set
+files, reference-index tampering and unchanged distribution/upload gates. A source
+notice's absence is not automatically a finding of noncompliance. See the
+[current correction and remaining requirements](NATIVE_REDISTRIBUTION.md).
+
+Local aggregate: **1055 passed, 6 platform-specific skips**, including **28 new
+evidence cases**. Dependency consistency, Python compilation, JavaScript syntax and
+whitespace checks pass. Independent review, exact-head six-job CI and fresh Windows
+Edge / evaluation-only package evidence belong to the cycle handoff. Runtime dependencies,
+locks, application behavior and source-install flow are unchanged. No binary release,
+source-offer commitment, license acceptance or legal clearance is included.
+
+## Prior revision — queued filesystem deadlines (2026-10-05)
 
 Version **0.1.1.dev17** rejects file operations that expire while waiting for the
 shared filesystem lock, before path resolution or executor dispatch. The existing
