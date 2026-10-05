@@ -697,3 +697,45 @@ reload/tab reopen, explicit exports, keyboard and desktop/tablet/narrow geometry
 exact-head six-job CI and independent screenshots belong to the final handoff. Local
 browser launch remains blocked. No live inference, user-PC work, binary distribution,
 release, merge or deployment is included.
+
+## 0.1.1.dev15 — Tool-result integrity after ordinary failures (2026-10-05)
+
+- Reproduced a normal merged A1:B1 workbook edit targeting B1 that raised an
+  uncaught AttributeError. Earlier writes and receipts survived, but the failed
+  call and remaining calls had no results. An admitted human continuation replayed
+  unmatched calls through all three provider adapters.
+- Reject non-anchor merged-cell destinations with an instructive validation error
+  before saving the XLSX request. Preserve the existing merge and workbook bytes;
+  an explicitly requested top-left edit remains supported. No automatic unmerge,
+  destination substitution or whole-file retry is introduced.
+- Unexpected ordinary tool exceptions now close the attempted call and unexecuted
+  remainder before entering the existing agent-error state. Preserve successful
+  earlier results/receipts, native provider history and existing human admission.
+  Keep the ambiguous attempted outcome explicit: a file may already be committed,
+  even if its receipt was not recorded. No rollback or no-effects guarantee.
+- Independent review expanded the same boundary through result-shape inspection,
+  strict JSON serialization and tool-log preparation. These failures also append
+  exactly one result per call; a failed logger is not retried. Nonfinite output is
+  rejected rather than sent as nonstandard JSON. Fixed errors omit private exception
+  details. Cancellation/draining and redaction-capacity fail-closed paths stay separate.
+
+Research decisions:
+- [OpenAI function calling](https://developers.openai.com/api/docs/guides/function-calling):
+  adopt explicit call-ID-linked result strings that can describe failure; preserve
+  native output/reasoning replay. Reject dropping history to hide unmatched calls.
+- [Claude tool-result handling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls):
+  preserve immediate tool-result placement and results before human text. Keep the
+  current adapters; defer an SDK/tool-runner migration and optional wire refinements.
+- [openpyxl merged-cell implementation](https://openpyxl.readthedocs.io/en/stable/_modules/openpyxl/cell/cell.html):
+  treat non-anchor MergedCell instances as invalid write destinations. Do not infer
+  user intent to alter merges or target a different cell.
+- Reject automatic batch retry, fabricated success/rollback results, broader file
+  permissions and UI redesign. This is bounded failure recovery, not a transaction
+  manager or a promise that external tools have no side effects.
+
+Real temporary Office files and synthetic loopback providers test every adapter,
+partial committed mutations, exact result ordering, explicit continuation and
+all-or-none admission of malformed provider batches. Existing stop/drain, budget,
+pause/finish, redaction and receipt tests remain. Final exact-head six-job CI,
+Windows Edge evidence and evaluation-only package checks belong to the handoff;
+no live inference, user-PC action, binary distribution, merge or release is included.

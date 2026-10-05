@@ -37,6 +37,29 @@ The app does not force a fixed number of agents on every request. PM decides whe
 
 Snapshots contain bounded display logs. Full protocol history remains in process memory, bounded at the next model request by the context character limit. There is no silent truncation of tool history and no hidden summarizer; budget exhaustion is surfaced as an error. The UI can receive another instruction, but spent run/turn budgets are not reset.
 
+### Tool-result closure (0.1.1.dev15)
+
+Expected validation/access errors remain ordinary failed tool results. XLSX writes
+to non-anchor merged cells now fail validation before saving the workbook; the
+caller must explicitly select its existing top-left cell. No unmerge or redirected
+write is performed, and earlier in-memory changes from that same request are not saved.
+
+Unexpected ordinary exceptions during tool execution, result-shape inspection,
+strict JSON serialization or tool-log preparation close the current provider batch.
+The attempted call receives a fixed error saying completion was not confirmed;
+each later call receives an unexecuted result without consuming another tool call.
+Each result is appended once, after preparation. The agent then enters its existing
+error state and waits for explicit human direction under unchanged admission limits.
+Other agents and ordinary worker-error notification retain their existing behavior.
+
+Successful earlier results and save receipts remain intact. An unexpected failure
+can occur after a file was committed, including before a receipt was recorded, so
+no rollback/no-effects claim or automatic replay is made. Private exception text,
+arguments and tracebacks are not included in this fixed unexpected-error message.
+Cancellation still drains in-flight file operations; redaction-capacity failure
+still takes its dedicated fail-closed path. Neither is treated as an ordinary
+recoverable batch exception. Provider-native response/reasoning history is preserved.
+
 ## Adding tools
 
 Implement narrowly scoped operations through `ToolExecutor` or a similarly validated subsystem. Validate every model argument independently of schema declarations, check folder scope before I/O, bound output, provide a result for every call, and test cancellation. Do not add raw `subprocess`, unrestricted Python/PowerShell, arbitrary HTTP requests, or filesystem APIs callable by model text; these would bypass the current security model.

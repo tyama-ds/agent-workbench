@@ -1,6 +1,24 @@
 # Validation scope
 
-## Current revision — contextual history lifetime (2026-10-05)
+## Current revision — tool-result integrity after failures (2026-10-05)
+
+Version **0.1.1.dev15** rejects non-anchor merged-cell writes without saving that
+XLSX request and closes provider batches after unexpected ordinary execution or
+result-preparation failures. Real loopback HTTP fixtures exercise Local Chat,
+OpenAI Responses and Anthropic Messages with exact call/result pairing and ordering,
+explicit human continuation, and preserved actual writes/receipts. Tests distinguish
+failure before execution, after commit but before receipt, after receipt, invalid
+result shapes, cyclic/nonserializable/nonfinite output and tool-log exceptions.
+Mixed malformed/duplicate/unknown call batches execute no earlier valid operation.
+Cancellation/draining and redaction-capacity special paths remain covered.
+
+These fixtures validate application behavior and wire structure, not live-provider
+acceptance. No UI, provider destination, permission or automatic retry is added.
+Local aggregate: **884 passed, 6 platform-specific skips**, including **42 new
+integrity cases**. Exact-head six-job CI, Windows Edge and evaluation-only packaged
+acceptance evidence are recorded in the draft PR handoff.
+
+## Prior revision — contextual history lifetime (2026-10-05)
 
 Version **0.1.1.dev14** explains the lifetime of retained history, the 20-run boundary
 and explicit selected-record exports. Same-cookie page reload/tab reopen and team Stop

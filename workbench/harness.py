@@ -576,6 +576,7 @@ class ToolExecutor:
 
     def _xlsx(self, name: str, args: dict) -> dict:
         import openpyxl
+        from openpyxl.cell.cell import MergedCell
         from openpyxl.utils.cell import range_boundaries
         path = args["path"]
         _office_kind(path, ".xlsx")
@@ -631,7 +632,10 @@ class ToolExecutor:
                         if not allow or not value.startswith("="):
                             raise HarnessError("Formula-like values require explicit allow_formulas")
                         _safe_formula(value)
-                workbook[item["sheet"]][ref] = value
+                cell = workbook[item["sheet"]][ref]
+                if isinstance(cell, MergedCell):
+                    raise HarnessError("Cannot write to a non-anchor merged cell; explicitly target the merged range's top-left cell")
+                cell.value = value
             return self._save(workbook, args, ".xlsx")
         finally:
             workbook.close()

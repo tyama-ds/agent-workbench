@@ -476,34 +476,64 @@ class Engine:
                         break
                     stop = False
                     exhausted = ''
+                    unexpected_error = None
                     for call in reply.tool_calls:
                         if agent.closing:
                             break
-                        if not exhausted and (run['tool_calls'] >= limits['max_tool_calls'] or time.time() - run['created_at'] >= limits['max_run_seconds']):
+                        if unexpected_error is None and not exhausted and (run['tool_calls'] >= limits['max_tool_calls'] or time.time() - run['created_at'] >= limits['max_run_seconds']):
                             exhausted = 'ツール実行回数または実行時間の上限です'
                         if stop or exhausted:
                             agent.conversation.append({'role': 'tool', 'tool_call_id': call['id'], 'name': call['name'],
-                                'content': json.dumps({'ok': False, 'error': exhausted or 'Not executed: this turn is paused or finished.'})})
+                                'content': json.dumps({'ok': False, 'error': exhausted or (
+                                    'Not executed: an earlier tool raised an unexpected error.' if unexpected_error is not None
+                                    else 'Not executed: this turn is paused or finished.')})})
                             continue
                         run['tool_calls'] += 1
                         name, args = call['name'], call['arguments']
                         try:
-                            if not isinstance(args, dict):
-                                raise ValueError('ツール引数は JSON object が必要です')
-                            result = await self.execute_tool(run, agent, name, args)
-                        except CollaborationLimitError as exc:
-                            result = {'ok': False, 'error': str(exc), 'collaboration_limit_reached': True}
+                            try:
+                                if not isinstance(args, dict):
+                                    raise ValueError('ツール引数は JSON object が必要です')
+                                result = await self.execute_tool(run, agent, name, args)
+                            except CollaborationLimitError as exc:
+                                result = {'ok': False, 'error': str(exc), 'collaboration_limit_reached': True}
+                                stop = True
+                            except RedactionCapacityError:
+                                raise
+                            except (ValueError, OSError, TypeError, KeyError) as exc:
+                                result = {'ok': False, 'error': self.redact(str(exc))[:1000]}
+                            if not isinstance(result, dict):
+                                raise TypeError('Tool result must be an object')
+                            encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
+                            finished = result.get('ok') is not False and name in {'finish_work', 'ask_user'}
+                            self.log(agent, 'tool', name + '\n' + encoded[:12000])
+                        except RedactionCapacityError:
+                            # The outer fixed-text handler must remain fail-closed.
+                            raise
+                        except Exception as exc:
+                            # Ordinary unexpected failures must not orphan this
+                            # batch's tool calls. A mutation may already have
+                            # committed: preserve receipts, never claim rollback,
+                            # and require human direction before another request.
+                            # Include result serialization/logging in this boundary.
+                            unexpected_error = exc
                             stop = True
-                        except (ValueError, OSError, TypeError, KeyError) as exc:
-                            result = {'ok': False, 'error': self.redact(str(exc))[:1000]}
-                        self.log(agent, 'tool', name + '\n' + json.dumps(result, ensure_ascii=False)[:12000])
+                            finished = False
+                            encoded = json.dumps({'ok': False, 'error': 'Unexpected tool error; completion was not confirmed. '
+                                                  'Check saved-file receipts and current file state before retrying.'})
+                        # Append exactly once, after execution and output preparation
+                        # settle. Never retry a failed logger to repair private history.
                         agent.conversation.append({'role': 'tool', 'tool_call_id': call['id'], 'name': name,
-                                                   'content': json.dumps(result, ensure_ascii=False)})
-                        if result.get('ok') is not False and name in {'finish_work', 'ask_user'}:
+                                                   'content': encoded})
+                        if finished:
                             stop = True
                             summary = args.get('summary', summary)
                     if exhausted:
                         raise ValueError(exhausted)
+                    if unexpected_error is not None:
+                        raise RuntimeError('ツール処理で予期しないエラーが発生したため、このターンを停止しました。'
+                                           '処理の完了は確認できません。保存記録とファイルの現状を確認し、追加指示を送ってください。'
+                                           '後続のツールは実行していません') from unexpected_error
                     if stop:
                         break
                 self._release(agent)
