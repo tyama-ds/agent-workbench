@@ -138,3 +138,20 @@ selection races, pending-copy rejection, draft retention and desktop/narrow layo
 Local Chromium could not start under this container's socket restriction, so these real
 browser assertions require the exact-head Windows Edge CI run and its screenshots.
 No real model service, billable inference or private user files are used.
+
+## Run readiness revision (0.1.1.dev4)
+
+Local Linux/CPython 3.12 verification: **451 passed, 4 Windows-only checks skipped**.
+`pip check`, JavaScript syntax, `git diff --check`, and optional jsdom smoke pass.
+Mocked diagnostics cover bounded/chunked bodies, strict JSON/schema validation,
+HTTP/network/TLS errors, redirects, pagination, manual aliases, output truncation,
+and credential echoes. Admission tests exercise preflight/start parity, PM-only
+unused workers, empty/denied/missing roots, unusable environment keys, Web state,
+potential destinations, and repeated no-network/no-state-change checks.
+
+Windows Edge acceptance adds saved-vs-unsaved setup, exact admission recovery,
+manual aliases, profile/selection/navigation late-response races, desktop/narrow
+scope previews, and PM-only text work while preserving prior results and drafts.
+This browser evidence requires the exact-head CI artifact; DOM shims are not visual
+verification. No installed model, paid inference, external scan, user PC, or corporate
+network configuration is exercised by these synthetic tests.

@@ -18,6 +18,12 @@ from .resources import ResourceGate
 from .webtools import WebTools
 
 
+class AdmissionError(ValueError):
+    def __init__(self, code, message, *, field='', profile_id=''):
+        super().__init__(message)
+        self.code, self.field, self.profile_id = code, field, profile_id
+
+
 def schema(name, description, properties=None, required=()):
     return {'name': name, 'description': description, 'parameters': {
         'type': 'object', 'properties': properties or {}, 'required': list(required), 'additionalProperties': False}}
@@ -167,24 +173,28 @@ class Engine:
         self.event(run['id'], ident, 'created', f'{name} / {profile}')
         return agent
 
-    async def start_run(self, payload):
+    def _prepare_run(self, payload):
         if self.closed or len(self.runs) >= 20:
-            raise ValueError('実行履歴の上限です。作業完了後にアプリを再起動してください')
+            raise AdmissionError('engine_unavailable', '実行履歴の上限または停止中です。作業完了後にアプリを再起動してください')
         if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'worker_profiles', 'max_workers'}:
-            raise ValueError('実行設定が不正です')
+            raise AdmissionError('invalid_payload', '実行設定が不正です')
         task = text(payload.get('task'), 'task', 16000, False)
         config = copy.deepcopy(self.settings.value)
         profiles = {p['id']: p for p in config['providers'] if p['enabled']}
         pm = payload.get('pm_profile')
         workers = payload.get('worker_profiles', [pm])
         count = number(payload.get('max_workers', config['limits']['max_workers']), '最大 worker 数', 0, config['limits']['max_workers'], integer=True)
-        if not isinstance(pm, str) or pm not in profiles or not isinstance(workers, list) or (count and not workers) or any(not isinstance(w, str) or w not in profiles for w in workers):
-            raise ValueError('PM と worker の利用可能な API を選択してください')
-        for p in [profiles[k] for k in {pm, *workers}]:
+        if not isinstance(pm, str) or pm not in profiles or not isinstance(workers, list) or (count and not workers) or any(not isinstance(w, str) for w in workers) or (count and any(w not in profiles for w in workers)):
+            raise AdmissionError('invalid_selection', 'PM と worker の利用可能な API を選択してください', field='profiles')
+        workers = workers if count else []
+        for p in [profiles[k] for k in dict.fromkeys([pm, *workers])]:
             if not p['model'].strip():
-                raise ValueError(f'{p["label"]}: モデル名を設定してください')
+                raise AdmissionError('model_missing', f'{p["label"]}: モデル名を設定してください', field='model', profile_id=p['id'])
+            key = self.settings.key(p)
+            if any(ord(c) < 32 or ord(c) == 127 for c in key):
+                raise AdmissionError('key_invalid', f'{p["label"]}: API キーの形式を確認してください', field='api_key', profile_id=p['id'])
             if p['kind'] != 'local' and not self.settings.key(p):
-                raise ValueError(f'{p["label"]}: API キーが未設定です')
+                raise AdmissionError('key_missing', f'{p["label"]}: API キーが未設定です', field='api_key', profile_id=p['id'])
         # App implementation, settings, and secret storage cannot become agent
         # workspaces even if a broad user-selected ancestor contains them.
         deny = [*config['paths']['deny_roots'], str(ROOT), str(self.settings.directory)]
@@ -192,6 +202,21 @@ class Engine:
                               max_file_bytes=config['limits']['max_file_bytes'])
         search = copy.deepcopy(config['search'])
         search['api_key'] = self.settings.secrets.get('search') or os.environ.get(search['api_key_env'], '')
+        web_tools = WebTools({'search': search})
+        return task, config, pm, workers, count, harness, web_tools
+
+    def preflight(self, payload):
+        from .readiness import summarize
+        try:
+            prepared = self._prepare_run(payload)
+        except (ValueError, OSError) as exc:
+            return self._redact_tree({'ok': True, 'can_start': False, 'blockers': [{'code': getattr(exc, 'code', 'admission_failed'),
+                'field': getattr(exc, 'field', ''), 'profile_id': getattr(exc, 'profile_id', ''),
+                'message': self.redact(str(exc))}], 'warnings': [], 'inference_tested': False, 'tools_tested': False})
+        return self._redact_tree(summarize(prepared))
+
+    async def start_run(self, payload):
+        task, config, pm, workers, count, harness, web_tools = self._prepare_run(payload)
         run_id = 'r-' + secrets.token_hex(8)
         run = {'id': run_id, 'task': task, 'pm_profile': pm, 'worker_profiles': list(dict.fromkeys(workers)),
                'max_workers': count, 'status': 'running', 'created_at': time.time(), 'model_calls': 0,
@@ -199,7 +224,7 @@ class Engine:
                'max_auto_collaborations': config['limits']['max_auto_collaborations'],
                'collaboration_limit_reached': False, '_collaboration_blocked': False,
                'agent_ids': [], '_config': config, '_harness': harness,
-               '_executor': ToolExecutor(harness), '_web': WebTools({'search': search})}
+               '_executor': ToolExecutor(harness), '_web': web_tools}
         self.runs[run_id] = run
         lead = self._new_agent(run, pm, 'pm', assignment=task)
         self.enqueue(lead, task, human=True)

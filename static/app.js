@@ -7,7 +7,7 @@ const FIELD_GROUPS = {
     ['deny_roots','アクセスを拒否する場所','paths','例：C:\\Users\\you\\.ssh'],
   ],
   search: [
-    ['enabled','Web 検索を使う','checkbox'],
+    ['enabled','Web 検索・ページ取得を使う','checkbox'],
     ['provider','検索エンジン','select',[['searxng','SearXNG'],['brave','Brave Search']]],
     ['endpoint','検索の接続先 URL','url'],
     ['api_key_env','API キーの環境変数名','text','BRAVE_SEARCH_API_KEY'],
@@ -44,7 +44,7 @@ const FIELD_GROUPS = {
 };
 const PROFILE_FIELDS = [
   ['id','プロファイル ID','text','local-model'], ['label','表示名','text','Local LLM'],
-  ['kind','接続方式','select',[['local','Local / OpenAI 互換'],['openai','OpenAI'],['anthropic','Anthropic']]],
+  ['kind','接続方式','select',[['local','Local / Chat Completions'],['openai','OpenAI / Responses'],['anthropic','Anthropic / Messages']]],
   ['base_url','API の接続先 URL','url','http://127.0.0.1:11434/v1'],
   ['model','モデル名','text','サーバー上のモデル名をそのまま入力'],
   ['api_key_env','API キーの環境変数名','text','OPENAI_API_KEY'],
@@ -54,7 +54,7 @@ const PROFILE_FIELDS = [
 const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機'};
 const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
-const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,drafts:new Map(),logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:''};
+const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,drafts:new Map(),logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null};
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -113,7 +113,8 @@ function inputValue(input) {
   if(input.classList.contains('path-input'))return lines(input.value);
   return input.value.trim();
 }
-function markSettingsDirty() { ui.settingsDirty=true;inlineStatus($('settingsStatus'),'未保存の変更があります。'); }
+function invalidateDiagnostics() { ui.settingsRevision++;document.querySelectorAll('[data-probe-result]').forEach(node=>{node.textContent='設定または画面が変わりました。必要ならモデル一覧を再確認してください。';node.classList.remove('error');}); }
+function markSettingsDirty() { invalidateDiagnostics();ui.settingsDirty=true;inlineStatus($('settingsStatus'),'未保存の変更があります。'); }
 
 function appendProfile(profile,index,expanded=true) {
   const card=element('section','profile-editor');card.dataset.index=String(index);card._original={...profile};
@@ -121,7 +122,7 @@ function appendProfile(profile,index,expanded=true) {
   const title=element('h3','profile-title',profile.label||profile.id||'新しいプロファイル');
   const enabled=makeField(['enabled','使用する','checkbox'],profile.enabled!==false,`profile-${index}`);enabled.classList.add('choice');
   heading.append(title,enabled);toolbar.appendChild(heading);
-  const actions=element('div','profile-actions'),toggle=element('button','button minor',expanded?'閉じる':'編集'),probe=element('button','button minor','接続確認'),remove=element('button','button minor remove','削除');
+  const actions=element('div','profile-actions'),toggle=element('button','button minor',expanded?'閉じる':'編集'),probe=element('button','button minor','モデル一覧を確認'),remove=element('button','button minor remove','削除');
   toggle.type='button';toggle.dataset.readonly='true';toggle.setAttribute('aria-expanded',String(expanded));probe.type='button';remove.type='button';actions.append(toggle,probe,remove);toolbar.appendChild(actions);card.appendChild(toolbar);
   const content=element('div','profile-content');content.hidden=!expanded;card.classList.toggle('collapsed',!expanded);content.id=`profile-content-${index}`;toggle.setAttribute('aria-controls',content.id);
   toggle.addEventListener('click',()=>{content.hidden=!content.hidden;card.classList.toggle('collapsed',content.hidden);toggle.textContent=content.hidden?'編集':'閉じる';toggle.setAttribute('aria-expanded',String(!content.hidden));});
@@ -136,22 +137,30 @@ function appendProfile(profile,index,expanded=true) {
   const saveSecret=element('button','button secondary','キーをセット');saveSecret.type='button';
   const secretState=element('p','secret-status',ui.secretStatus[profile.id]?'キー設定あり。値は画面に取得しません。':'キーは設定ファイルに保存されません。再起動するとメモリ内のキーは消えます。');
   secretRow.append(secretField,saveSecret,secretState);content.appendChild(secretRow);
-  const result=element('p','inline-status');result.setAttribute('role','status');card.appendChild(result);
+  const result=element('p','inline-status');result.dataset.probeResult='true';result.setAttribute('role','status');card.appendChild(result);
   const kind=card.querySelector('[data-key="kind"]'),proxy=card.querySelector('[data-key="proxy_url"]');
   const updateKind=()=>{proxy.disabled=ui.settingsLocked||kind.value==='local';proxy.title=kind.value==='local'?'Local はプロキシを使わず直接接続します':'';};
   kind.addEventListener('change',()=>{if(kind.value==='local')proxy.value='';updateKind();});updateKind();
   remove.addEventListener('click',()=>{card.remove();markSettingsDirty();});
   probe.addEventListener('click',async()=>{
-    if(ui.settingsDirty){inlineStatus(result,'接続確認の前に、設定を保存してください。',true);return;}
-    probe.disabled=true;inlineStatus(result,'接続先を確認しています…');
-    try { const response=await api('/api/provider-test',{method:'POST',body:{provider_id:card.querySelector('[data-key="id"]').value}});const models=Array.isArray(response.models)?response.models.slice(0,8).join(', '):'';inlineStatus(result,response.message||response.detail||`接続先から応答がありました。モデル実行は行っていません。${models?' モデル: '+models:''}`); }
-    catch(error){inlineStatus(result,errorText(error),true);}finally{probe.disabled=ui.settingsLocked;}
+    if(ui.settingsDirty){inlineStatus(result,'モデル一覧の確認前に、設定を保存してください。',true);return;}
+    const revision=ui.settingsRevision,profileId=card.querySelector('[data-key="id"]').value;
+    const current=()=>revision===ui.settingsRevision&&card.isConnected&&$('settingsDialog').open&&card.querySelector('[data-key="id"]').value===profileId;
+    probe.disabled=true;inlineStatus(result,'保存済み接続先のモデル一覧を確認しています。推論は実行しません…');
+    try {
+      const response=await api('/api/provider-test',{method:'POST',body:{provider_id:profileId}});
+      if(!current())return;
+      const models=Array.isArray(response.models)?response.models.slice(0,8).join(', '):'';
+      const observed=response.selected_model==='observed'?'指定モデルが一覧にあります。':'指定モデルの利用可否は一覧だけでは判断できません。手入力の別名も使用できます。';
+      inlineStatus(result,`モデル一覧を取得しました。${models?' モデル: '+models:' 一覧は空です。'} ${observed}${response.list_incomplete?' 一覧には続き・省略がある可能性があります。':''} 推論・ツール動作は未確認です。`);
+    } catch(error){if(current())inlineStatus(result,errorText(error)+' 推論・ツール動作は未確認です。',true);}
+    finally{probe.disabled=ui.settingsLocked;}
   });
   saveSecret.addEventListener('click',async()=>{
     if(ui.settingsDirty){inlineStatus(result,'先にプロファイルの設定を保存してください。',true);return;}
     if(!secret.value){inlineStatus(result,'セットする API キーを入力してください。',true);return;}
-    const key=secret.value,id=card.querySelector('[data-key="id"]').value;secret.value='';saveSecret.disabled=true;
-    try { await api('/api/secrets',{method:'POST',body:{id,key}});ui.secretStatus[id]=true;secretState.textContent='今回の起動中に使うキーをセットしました。値は保存・再表示しません。';inlineStatus(result,'キーをセットしました。'); }
+    const key=secret.value,id=card.querySelector('[data-key="id"]').value;invalidateDiagnostics();secret.value='';saveSecret.disabled=true;
+    try { await api('/api/secrets',{method:'POST',body:{id,key}});ui.secretStatus[id]=true;invalidateDiagnostics();secretState.textContent='今回の起動中に使うキーをセットしました。値は保存・再表示しません。';inlineStatus(result,'キーをセットしました。'); }
     catch(error){inlineStatus(result,errorText(error),true);}finally{saveSecret.disabled=ui.settingsLocked;}
   });
   $('profilesEditor').appendChild(card);
@@ -199,8 +208,40 @@ function showView(view) {
   if(view==='settings') { if(!$('settingsDialog').open)$('settingsDialog').showModal(); }
   else { if($('settingsDialog').open)$('settingsDialog').close(); }
 }
+function runPayload() {
+  return {task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value)};
+}
+function schedulePreflight() {
+  const request=++ui.preflightRequest;clearTimeout(ui.preflightTimer);
+  if(!$('taskDialog').open)return;
+  $('preflightDetails').replaceChildren();inlineStatus($('preflightStatus'),'保存済み設定を確認しています…');
+  ui.preflightTimer=setTimeout(()=>refreshPreflight(request),180);
+}
+async function refreshPreflight(request) {
+  const revision=ui.settingsRevision;
+  const current=()=>request===ui.preflightRequest&&revision===ui.settingsRevision&&$('taskDialog').open;
+  try {
+    const response=await api('/api/run-preflight',{method:'POST',body:runPayload()});if(!current())return;
+    const parts=[];
+    parts.push(ui.settingsDirty?'未保存の変更は含みません。開始には保存済み設定を使います。':'保存済み設定の確認です。外部通信・推論テストは行っていません。');
+    for(const issue of [...(response.blockers||[]),...(response.warnings||[])])parts.push(issue.message);
+    inlineStatus($('preflightStatus'),(response.can_start?'開始に必要な設定を確認しました。推論・ツール動作は未確認です。':'開始前に修正が必要です。')+' '+parts.join(' '),!response.can_start);
+    const target=$('preflightDetails');target.replaceChildren();
+    if(response.destinations){
+      target.append(element('p','small','送信される可能性のある接続先（実際の呼び出し記録ではありません）'));
+      for(const p of response.destinations)target.append(element('p','readiness-destination',`${p.role} · ${p.label} · ${p.model} — ${p.endpoint}${p.proxy?' · proxy: '+p.proxy:''}`));
+      const scope=response.scope||{};
+      const details=element('details','readiness-scope');details.append(element('summary','','許可・拒否するフォルダーを確認'));
+      for(const [key,label] of [['read_roots','読み取り'],['write_roots','書き込み'],['deny_roots','拒否（アプリ・設定保存先の自動保護を含む）']])details.append(element('p','small',`${label}: ${(scope[key]||[]).join(' / ')||'なし'}`));
+      details.append(element('p','small','拒否が優先されます。読み取りと書き込みは独立した権限です。各ファイルの操作時にも確認します。'));target.append(details);
+      const web=response.web||{};
+      target.append(element('p','small',`Web 検索: ${web.search_configured?'設定あり（未接続確認）':'使用不可'} · 公開ページ取得: ${web.fetch_enabled?'有効':'無効'}${web.enabled?' · 検索先: '+web.search_endpoint+' · ページ取得先: モデルが選ぶ公開 HTTP(S) サイト'+(web.proxy?' · proxy: '+web.proxy:''):''}`));
+      target.append(element('p','small','依頼・会話・作業方針・許可パスと、必要に応じたファイル内容やツール結果は、選択したモデル接続先へ送られます。Web 有効時は検索語・取得 URL も各接続先へ送られます。'));
+    }
+  }catch(error){if(current())inlineStatus($('preflightStatus'),errorText(error)+' 開始時にも設定を再確認します。',true);}
+}
 function setBriefOpen(open) {
-  if(open) { if(!$('taskDialog').open)$('taskDialog').showModal(); }
+  if(open) { if(!$('taskDialog').open)$('taskDialog').showModal();schedulePreflight(); }
   else if($('taskDialog').open)$('taskDialog').close();
 }
 function needsHuman(agent) { return agent.status_reason==='human_input'||(Boolean(agent.question)&&['waiting','waiting_human','needs_input'].includes(agent.status)); }
@@ -414,7 +455,7 @@ async function pollState(fresh=false) {
   if(!ui.authenticated)return;
   if(ui.polling){await ui.pollPromise;if(fresh)return pollState();return;}
   ui.polling=true;ui.pollPromise=(async()=>{
-    try {const state=await api('/api/state');ui.state={runs:Array.isArray(state.runs)?state.runs:[],agents:Array.isArray(state.agents)?state.agents:[],events:Array.isArray(state.events)?state.events:[],resources:state.resources||{}};renderState();setConnection(true,'接続中');}
+    try {const state=await api('/api/state');ui.state={runs:Array.isArray(state.runs)?state.runs:[],agents:Array.isArray(state.agents)?state.agents:[],events:Array.isArray(state.events)?state.events:[],resources:state.resources||{}};renderState();setConnection(true,'Workbench 接続中');}
     catch(error){setConnection(false,'接続を確認してください');if(!ui.authenticated)notice(errorText(error),true);}
     finally{ui.polling=false;}
   })();return ui.pollPromise;
@@ -423,6 +464,11 @@ async function initialize() {
   $('resultSelection').addEventListener('change',()=>{ui.outputSelections.set(outputOwner(),$('resultSelection').value);renderResults(getAgent());$('resultText').scrollTop=0;});
   $('copyResult').addEventListener('click',copySelectedOutput);$('exportResult').addEventListener('click',exportSelectedOutput);
   $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',()=>showView('settings'));
+  $('runForm').addEventListener('input',schedulePreflight);
+  $('runForm').addEventListener('change',schedulePreflight);
+  $('taskDialog').addEventListener('close',()=>{ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
+  $('settingsDialog').addEventListener('close',()=>{invalidateDiagnostics();schedulePreflight();});
+  $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
   $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));
   for(const id of ['newRun','launchTask','emptyNewRun'])$(id).addEventListener('click',()=>setBriefOpen(true));
   $('emptySettings').addEventListener('click',()=>showView('settings'));
@@ -438,7 +484,7 @@ async function initialize() {
   $('settingsForm').addEventListener('submit',async event=>{
     event.preventDefault();if(ui.settingsLocked||ui.settingsSaving)return;
     ui.settingsSaving=true;setSettingsLock(true);inlineStatus($('settingsStatus'),'保存しています…');
-    try {const config=collectConfig();const response=await api('/api/config',{method:'PUT',body:config});ui.config=response.config||config;ui.settingsDirty=false;renderProfileChoices();inlineStatus($('settingsStatus'),'設定を保存しました。');notice('');}
+    try {const config=collectConfig();const response=await api('/api/config',{method:'PUT',body:config});ui.config=response.config||config;invalidateDiagnostics();ui.settingsDirty=false;renderProfileChoices();inlineStatus($('settingsStatus'),'設定を保存しました。');notice('');}
     catch(error){inlineStatus($('settingsStatus'),errorText(error),true);}finally{ui.settingsSaving=false;setSettingsLock(true);}
   });
   $('runForm').addEventListener('submit',async event=>{
@@ -456,12 +502,12 @@ async function initialize() {
     try {await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,{method:'POST',body:{text}});if(ui.drafts.get(agent.id)===text)ui.drafts.delete(agent.id);if(ui.selectedAgent===agent.id&&$('messageInput').value===text)$('messageInput').value='';if(ui.selectedAgent===agent.id)inlineStatus($('messageStatus'),'送信しました。');await pollState(true);}
     catch(error){if(ui.selectedAgent===agent.id)inlineStatus($('messageStatus'),errorText(error),true);}finally{ui.busyMessage=false;renderConversation(getAgent());}
   });
-  $('setSearchSecret').addEventListener('click',async()=>{const key=$('searchSecret').value;if(!key)return;$('searchSecret').value='';$('setSearchSecret').disabled=true;try{await api('/api/secrets',{method:'POST',body:{id:'search',key}});inlineStatus($('searchSecretStatus'),'今回の起動中に使うキーをセットしました。');}catch(error){inlineStatus($('searchSecretStatus'),errorText(error),true);}finally{$('setSearchSecret').disabled=ui.settingsLocked;}});
+  $('setSearchSecret').addEventListener('click',async()=>{const key=$('searchSecret').value;if(!key)return;$('searchSecret').value='';$('setSearchSecret').disabled=true;try{await api('/api/secrets',{method:'POST',body:{id:'search',key}});invalidateDiagnostics();inlineStatus($('searchSecretStatus'),'今回の起動中に使うキーをセットしました。');}catch(error){inlineStatus($('searchSecretStatus'),errorText(error),true);}finally{$('setSearchSecret').disabled=ui.settingsLocked;}});
   try {
     const fragment=new URLSearchParams(location.hash.slice(1)),token=fragment.get('token');
     if(token){history.replaceState(null,'',location.pathname+location.search);await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}});}
     const response=await api('/api/config');ui.config=response.config;ui.secretStatus=response.secret_status||{};ui.authenticated=true;renderSettings();renderProfileChoices();await pollState();
-  }catch(error){notice(errorText(error),true);setConnection(false,'接続待ち');$('startRun').disabled=true;}
+  }catch(error){notice(errorText(error),true);setConnection(false,'Workbench 接続待ち');$('startRun').disabled=true;}
   window.setInterval(()=>pollState(),1000);
 }
 document.addEventListener('DOMContentLoaded',initialize,{once:true});

@@ -165,27 +165,11 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         profile = next((p for p in settings.value['providers'] if p['id'] == value.get('provider_id')), None)
         if profile is None:
             raise ValueError('未知のプロファイルです')
-        headers = {}
-        key = settings.key(profile)
-        if key:
-            headers = {'x-api-key': key, 'anthropic-version': '2023-06-01'} if profile['kind'] == 'anthropic' else {'Authorization': 'Bearer ' + key}
-        endpoint = profile['base_url'].rstrip('/') + '/models'
-        proxy = None if profile['kind'] == 'local' else profile['proxy_url'] or None
-        try:
-            async with ClientSession(trust_env=False, timeout=ClientTimeout(total=15)) as session:
-                async with session.get(endpoint, headers=headers, proxy=proxy, allow_redirects=False) as response:
-                    if response.status != 200:
-                        return web.json_response({'ok': False, 'error': f'モデル一覧 API: HTTP {response.status}。推論は実行していません。'})
-                    raw = bytearray()
-                    async for chunk in response.content.iter_chunked(65536):
-                        raw.extend(chunk)
-                        if len(raw) > 1024 * 1024:
-                            raise ValueError('モデル一覧が大きすぎます')
-                    data = json.loads(raw)
-                    models = [str(m.get('id', m.get('name', '')))[:200] for m in data.get('data', data.get('models', []))[:200] if isinstance(m, dict)]
-                    return web.json_response({'ok': True, 'models': models, 'inference_tested': False})
-        except (asyncio.TimeoutError, __import__('aiohttp').ClientError):
-            return web.json_response({'ok': False, 'error': 'API 接続に失敗しました。URL・認証・proxy を確認してください。推論は実行していません。'})
+        from .diagnostics import diagnose_provider
+        return web.json_response(engine._redact_tree(await diagnose_provider(profile, settings.key(profile))))
+
+    async def preflight(request):
+        return web.json_response(engine.preflight(await body(request)))
 
     app.router.add_get('/', static)
     app.router.add_post('/api/bootstrap', auth.bootstrap)
@@ -194,6 +178,7 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_post('/api/secrets', secret)
     app.router.add_get('/api/state', state)
     app.router.add_post('/api/runs', start)
+    app.router.add_post('/api/run-preflight', preflight)
     app.router.add_post('/api/runs/{id}/stop', stop)
     app.router.add_post('/api/agents/{id}/message', message)
     app.router.add_post('/api/provider-test', provider_test)

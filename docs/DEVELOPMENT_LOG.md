@@ -168,3 +168,18 @@ The first Edge run reached real result export and path copy, then exposed a test
 assumption: Windows temporary paths may use an 8.3 user-directory alias while the path
 guard returns the canonical long path. Compare the copied path with native realpath;
 keep exact path verification and leave production permission/receipt behavior unchanged.
+
+## 0.1.1.dev4 — Local preflight and honest provider evidence (2026-10-05)
+
+- Added local-only run admission preview reusing start admission, with potential model/proxy/Web destinations and independent canonical read/write roots plus overriding automatic/app-state exclusions. Empty scope remains usable for text-only tasks; unused worker profiles do not block PM-only work.
+- Kept configuration validity, app connectivity, model-list response, inference, and structured tool execution as distinct evidence. Header says Workbench / LOCAL APP. Explicit per-profile list checks are bounded and safely typed; no automatic discovery, inference, paid tests, capability guessing, or credential-persistence change.
+- Kept the existing cockpit, results/copy/export, runtime status/reply contract, and task drafts. Preview and diagnostic feedback is invalidated on relevant edits, newer requests, and modal dismissal.
+
+Primary-source research and decisions:
+- [LM Studio tool support](https://lmstudio.ai/docs/developer/openai-compat/tools): native support combines model/template and server parsing; default support also exists with varying quality. Adopt uncertainty and structured-call-only execution; reject model-name allowlists and executing raw text as tools.
+- [LM Studio models](https://lmstudio.ai/docs/developer/openai-compat/models): JIT can list downloaded rather than loaded models. Do not label listed models as loaded or ready.
+- [OpenAI model listing](https://developers.openai.com/api/reference/resources/models/methods/list) and [Claude model listing](https://platform.claude.com/docs/en/api/models/list): list metadata is not an inference test; Claude is paginated. Preserve incomplete-list uncertainty and manual aliases.
+- [Open WebUI compatible-provider setup](https://docs.openwebui.com/getting-started/quick-start/connect-a-provider/starting-with-openai-compatible/) explains that a failing models endpoint need not mean incompatible inference. Adopt manual IDs and protocol clarity; do not add protocol adapters in this cycle.
+- [Open WebUI connection troubleshooting](https://docs.openwebui.com/troubleshooting/connection-error/) explains slow/unreachable endpoints blocking list loading. Keep checks explicit per profile, bounded, and separate from local admission.
+- [Microsoft HAX G1](https://www.microsoft.com/en-us/haxtoolkit/guideline/make-clear-what-the-system-can-do/) and [G2](https://www.microsoft.com/en-us/haxtoolkit/guideline/make-clear-how-well-the-system-can-do-what-it-can-do/): separately explain scope and confidence. Adopt a compact task-dialog preview rather than a new onboarding wizard.
+- Defer explicit optional inference/tool probes, automatic model loading/downloading, provider expansion, and persistent capability scores. Reject silent cloud fallback, network scanning, credential logging, and TLS/proxy bypasses.

@@ -26,6 +26,39 @@ async function assertLayout(page,label) {
   }
 }
 
+// Await the actual preview for the edited form, rather than a prior debounced request.
+async function preflightAfter(page,action,matches) {
+  const responsePromise=page.waitForResponse(response=>response.url().endsWith('/api/run-preflight')&&
+    response.request().method()==='POST'&&matches(response.request().postDataJSON()));
+  await action();const response=await responsePromise;assert.equal(response.status(),200);
+  const result=await response.json();
+  assert.equal(result.inference_tested,false);assert.equal(result.tools_tested,false);
+  await page.locator('#preflightStatus').filter({hasText:result.can_start?'開始に必要な設定を確認しました':'開始前に修正が必要です'}).waitFor();
+  return result;
+}
+
+// Keep one response pending until the test deliberately changes or closes its UI.
+async function holdNextRequest(page,pattern,action) {
+  let captured;const pending=new Promise(resolve=>{captured=resolve;});
+  await page.route(pattern,route=>captured(route),{times:1});
+  const requested=page.waitForRequest(pattern);await action();await requested;
+  return pending;
+}
+async function releaseResponse(page,route,body) {
+  const responded=page.waitForResponse(response=>response.request()===route.request());
+  await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body)});
+  await (await responded).finished();
+  // Let the fetch JSON continuation and the next UI paint finish before asserting absence.
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+}
+async function assertDialogLayout(page,id,label) {
+  const size=await page.locator(id).evaluate(dialog=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,
+    clientWidth:dialog.clientWidth,contentWidth:dialog.scrollWidth,left:dialog.getBoundingClientRect().left,right:dialog.getBoundingClientRect().right}));
+  assert(size.scrollWidth<=size.width,label+': document horizontal overflow');
+  assert(size.contentWidth<=size.clientWidth+1,label+': dialog horizontal overflow');
+  assert(size.left>=0&&size.right<=size.width+1,label+': dialog clipped horizontally');
+}
+
 async function main() {
   const root=path.resolve(__dirname,'..'),sandbox=fs.mkdtempSync(path.join(os.tmpdir(),'workbench-ui-'));
   const workspace=path.join(sandbox,'project'),stateDir=path.join(sandbox,'state');
@@ -61,7 +94,7 @@ async function main() {
     page.on('pageerror',error=>report.pageErrors.push(error.message));
     page.on('console',message=>{if(/Content Security Policy|violates.*directive/i.test(message.text()))report.cspErrors.push(message.text());});
     page.on('request',request=>{const url=new URL(request.url());if(url.protocol.startsWith('http')&&url.origin!==origin)report.externalRequests.push(url.origin+url.pathname);});
-    await page.goto(launch);await page.getByText('接続中',{exact:true}).waitFor({state:'attached'});
+    await page.goto(launch);await page.getByText('Workbench 接続中',{exact:true}).waitFor({state:'attached'});
     assert.equal(new URL(page.url()).hash,'');
     assert.equal(await page.locator('#startRun').isDisabled(),true);
     report.checks.push('real one-use bootstrap, cookie session, fragment removal, same-origin assets');
@@ -73,7 +106,10 @@ async function main() {
     await page.keyboard.press('Tab');
     await page.locator('#newRun').evaluate(button=>button.focus());
     assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true,'Modal background must stay inert');
-    await page.locator('#taskInput').fill('閉じても残る下書き');await page.keyboard.press('Escape');
+    const incomplete=await preflightAfter(page,()=>page.locator('#taskInput').fill('閉じても残る下書き'),data=>data.task==='閉じても残る下書き');
+    assert.equal(incomplete.can_start,false);assert.equal(incomplete.blockers.length>0,true);
+    assert.deepEqual(providerRequests,[],'Opening preflight cannot probe any provider');
+    await page.keyboard.press('Escape');
     assert.equal(await page.locator('#newRun').evaluate(button=>button===document.activeElement),true);
     assert.equal(await page.locator('#taskDialog').isVisible(),false);await page.locator('#newRun').click();assert.equal(await page.locator('#taskInput').inputValue(),'閉じても残る下書き');await page.locator('#toggleBrief').click();
     await page.locator('#navSettings').click();await page.keyboard.press('Escape');assert.equal(await page.locator('#settingsDialog').isVisible(),false);
@@ -86,8 +122,10 @@ async function main() {
     await page.locator('.profile-editor').nth(1).getByRole('button',{name:'編集',exact:true}).click();
     await page.locator('.profile-editor').nth(2).getByRole('button',{name:'編集',exact:true}).click();
     await page.locator('#profile-1-model').fill('arbitrary-cloud-model');await page.locator('#profile-2-model').fill('arbitrary-anthropic-model');
+    // Never inherit an API key from the CI environment: absence must be deterministic.
+    await page.locator('#profile-1-api_key_env').clear();await page.locator('#profile-2-api_key_env').clear();
     await page.locator('#addProfile').click();
-    await page.locator('#profile-3-label').fill('ローカル検証担当');await page.locator('#profile-3-base_url').fill(providerUrl);await page.locator('#profile-3-model').fill('second-local-model');
+    await page.locator('#profile-3-enabled').uncheck();await page.locator('#profile-3-label').fill('ローカル検証担当');await page.locator('#profile-3-base_url').fill(providerUrl);await page.locator('#profile-3-model').fill('second-local-model');
     await page.locator('#paths-read_roots').fill(workspace);await page.locator('#paths-write_roots').fill(workspace);await page.locator('#paths-deny_roots').fill(path.join(workspace,'private'));
     await page.locator('#search-enabled').check();await page.locator('#search-endpoint').fill(providerUrl+'/search');
     await page.locator('#local-max_concurrent_requests').fill('1');await page.locator('#limits-max_workers').fill('3');
@@ -98,19 +136,100 @@ async function main() {
     const persisted=JSON.parse(fs.readFileSync(path.join(stateDir,'settings.json'),'utf8'));
     assert.equal(persisted.providers.length,4);assert.equal(persisted.local.max_concurrent_requests,1);assert.equal(persisted.limits.max_workers,3);assert.equal(persisted.limits.max_auto_collaborations,7);assert.equal(persisted.system_policy,policy);
     assert.deepEqual(persisted.paths.deny_roots,[path.join(workspace,'private')]);
-    await page.reload();await page.getByText('接続中',{exact:true}).waitFor({state:'attached'});await page.locator('#navSettings').click();
+    await page.reload();await page.getByText('Workbench 接続中',{exact:true}).waitFor({state:'attached'});await page.locator('#navSettings').click();
     assert.equal(await page.locator('#limits-max_auto_collaborations').inputValue(),'7');
     for(const index of [1,2,3])await page.locator('.profile-editor').nth(index).getByRole('button',{name:'編集',exact:true}).click();
     report.checks.push('automatic collaboration limit defaults to 24, accepts 0–1000, persists edited value across reload');
+    assert.equal(await page.locator('#pmProfile option[value="profile-4"]').count(),0,'Disabled profiles are not offered as PM');
+    assert.equal(await page.locator('#workerProfiles input[value="profile-4"]').count(),0,'Disabled profiles are not offered to workers');
+    await page.locator('#closeSettings').click();await page.locator('#newRun').click();
+    await page.locator('#pmProfile').selectOption('anthropic');await page.locator('#maxWorkers').fill('0');
+    for(const checkbox of await page.locator('#workerProfiles input').all())await checkbox.uncheck();
+    const missingKey=await preflightAfter(page,()=>page.locator('#taskInput').fill('[SYNTHETIC] Missing cloud key.'),data=>data.task==='[SYNTHETIC] Missing cloud key.');
+    assert.equal(missingKey.can_start,false);assert.equal(missingKey.blockers[0].code,'key_missing');assert.match(missingKey.blockers[0].message,/API キーが未設定/);
+    const rejectedStart=page.waitForResponse(response=>response.url().endsWith('/api/runs')&&response.request().method()==='POST');
+    await page.locator('#startRun').click();const rejected=await rejectedStart;assert.equal(rejected.status(),400);
+    assert.equal((await rejected.json()).error,missingKey.blockers[0].message,'Preview and actual admission reject the same missing key');
+    await page.locator('#runFormStatus').filter({hasText:'API キーが未設定'}).waitFor();
+    assert.equal(await page.locator('#runList .run-link').count(),0);assert.deepEqual(providerRequests,[]);
+    await page.locator('#preflightSettings').click();assert.equal(await page.locator('#taskDialog').isVisible(),false);
+    assert.equal(await page.locator('#settingsDialog').isVisible(),true);
+    assert.equal(await page.locator('#taskInput').inputValue(),'[SYNTHETIC] Missing cloud key.');
+    report.checks.push('real preflight blocks incomplete selection and a deterministic missing cloud key; disabled profiles are excluded; start rechecks the same blocker; settings shortcut retains task draft; no provider traffic');
     await page.locator('#profile-1-secret').fill('fixture-memory-secret');
     await page.locator('.profile-editor').nth(1).getByRole('button',{name:'キーをセット',exact:true}).click();
     await page.locator('.profile-editor').nth(1).locator('.inline-status').filter({hasText:'キーをセットしました'}).waitFor();
     assert.equal(await page.locator('#profile-1-secret').inputValue(),'');
     assert(!fs.readFileSync(path.join(stateDir,'settings.json'),'utf8').includes('fixture-memory-secret'));
-    await page.locator('.profile-editor').nth(0).getByRole('button',{name:'接続確認',exact:true}).click();
+    await page.locator('.profile-editor').nth(0).getByRole('button',{name:'モデル一覧を確認',exact:true}).click();
     await page.locator('.profile-editor').nth(0).locator('.inline-status').filter({hasText:'fixture-local-model'}).waitFor();
     assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'}]);
     report.checks.push('real config persistence, four arbitrary model profiles, file scopes, separate local slots, memory-only key, models-only connection test');
+    const localCard=page.locator('.profile-editor').nth(0),localProbe=localCard.getByRole('button',{name:'モデル一覧を確認',exact:true});
+    const probeResult=localCard.locator('[data-probe-result]');
+    assert.match(await probeResult.textContent(),/指定モデルが一覧にあります/);
+    assert.match(await probeResult.textContent(),/推論・ツール動作は未確認/);
+    const delayedProbe={ok:true,models:['STALE-PROVIDER-SUCCESS'],selected_model:'observed',list_incomplete:false};
+    const editProbe=await holdNextRequest(page,'**/api/provider-test',()=>localProbe.click());
+    await page.locator('#profile-0-model').fill('manual-unlisted-alias');
+    await releaseResponse(page,editProbe,delayedProbe);
+    assert.match(await probeResult.textContent(),/設定または画面が変わりました/);
+    assert.doesNotMatch(await probeResult.textContent(),/STALE-PROVIDER-SUCCESS|モデル一覧を取得しました/);
+    await localProbe.click();await probeResult.filter({hasText:'設定を保存してください'}).waitFor();
+    assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'}],'Dirty settings cannot trigger provider network');
+    await page.locator('#closeSettings').click();await page.locator('#newRun').click();await page.locator('#pmProfile').selectOption('local');
+    const savedOnly=await preflightAfter(page,()=>page.locator('#taskInput').fill('[SYNTHETIC] Unsaved edit preview.'),data=>data.task==='[SYNTHETIC] Unsaved edit preview.');
+    assert.equal(savedOnly.can_start,true);assert.equal(savedOnly.destinations[0].model,'fixture-local-model');
+    assert.match(await page.locator('#preflightStatus').textContent(),/未保存の変更は含みません/);
+    await page.keyboard.press('Escape');await page.locator('#navSettings').click();
+    assert.equal(await page.locator('#profile-0-model').inputValue(),'manual-unlisted-alias','Preview leaves unsaved settings intact');
+    await page.locator('#saveSettings').click();await page.locator('#settingsStatus').filter({hasText:'設定を保存しました'}).waitFor();
+    await localProbe.click();await probeResult.filter({hasText:'手入力の別名も使用できます'}).waitFor();
+    assert.match(await probeResult.textContent(),/利用可否は一覧だけでは判断できません/);
+    assert.equal(await page.locator('#profile-0-model').inputValue(),'manual-unlisted-alias','Listing cannot replace a manual model alias');
+    const closeProbe=await holdNextRequest(page,'**/api/provider-test',()=>localProbe.click());
+    await page.keyboard.press('Escape');await page.locator('#navSettings').click();
+    await releaseResponse(page,closeProbe,delayedProbe);
+    assert.match(await probeResult.textContent(),/設定または画面が変わりました/);
+    assert.doesNotMatch(await probeResult.textContent(),/STALE-PROVIDER-SUCCESS|モデル一覧を取得しました/);
+    report.checks.push('models-only diagnostics identify observed versus unlisted manual aliases, never replace the model, refuse unsaved edits, preview only saved configuration, and ignore delayed success after settings edits or close/reopen');
+
+    await page.locator('#closeSettings').click();await page.locator('#newRun').click();
+    await page.locator('#pmProfile').selectOption('local');await page.locator('#maxWorkers').fill('1');
+    await page.locator('#workerProfiles input[value="local"]').check();await page.locator('#workerProfiles input[value="openai"]').check();
+    const ready=await preflightAfter(page,()=>page.locator('#taskInput').fill('[SYNTHETIC] Preflight overview.'),data=>data.task==='[SYNTHETIC] Preflight overview.');
+    assert.equal(ready.can_start,true);assert.equal(ready.destinations.length,2);
+    assert.equal(ready.destinations.find(item=>item.profile_id==='local').model,'manual-unlisted-alias');
+    assert.equal(ready.destinations.find(item=>item.profile_id==='local').endpoint,providerUrl+'/chat/completions');
+    assert.equal(ready.destinations.find(item=>item.profile_id==='openai').protocol,'/responses');
+    assert(ready.scope.deny_roots.includes(fs.realpathSync.native(path.join(workspace,'private'))));
+    assert(ready.scope.deny_roots.includes(fs.realpathSync.native(stateDir)));
+    assert.equal(ready.web.search_endpoint,providerUrl+'/search');
+    assert.match(await page.locator('#preflightStatus').textContent(),/外部通信・推論テストは行っていません/);
+    assert.match(await page.locator('#preflightDetails').textContent(),/実際の呼び出し記録ではありません/);
+    assert.doesNotMatch(await page.locator('#preflightDetails').textContent(),/fixture-memory-secret/);
+    await page.locator('.readiness-scope summary').click();await assertDialogLayout(page,'#taskDialog','desktop readiness');
+    await page.locator('#preflightStatus').scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(artifacts,'workbench-readiness-desktop.png'),fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:390,height:844});await assertDialogLayout(page,'#taskDialog','narrow readiness');
+    await page.locator('#preflightStatus').scrollIntoViewIfNeeded();
+    await page.screenshot({path:path.join(artifacts,'workbench-readiness-narrow.png'),fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:1366,height:768});
+    const stalePreflight={...ready,warnings:[{code:'synthetic_stale',message:'STALE-PREFLIGHT-SUCCESS'}]};
+    const olderPreflight=await holdNextRequest(page,'**/api/run-preflight',()=>page.locator('#taskInput').fill('[SYNTHETIC] Older selection.'));
+    await preflightAfter(page,()=>page.locator('#pmProfile').selectOption('anthropic'),data=>data.pm_profile==='anthropic');
+    await releaseResponse(page,olderPreflight,stalePreflight);
+    assert.match(await page.locator('#preflightStatus').textContent(),/API キーが未設定/);
+    assert.doesNotMatch(await page.locator('#preflightStatus').textContent(),/STALE-PREFLIGHT-SUCCESS|開始に必要な設定を確認しました/);
+    const closingPreflight=await holdNextRequest(page,'**/api/run-preflight',()=>page.locator('#taskInput').fill('[SYNTHETIC] Closing preview.'));
+    await page.keyboard.press('Escape');
+    await preflightAfter(page,()=>page.locator('#newRun').click(),data=>data.task==='[SYNTHETIC] Closing preview.');
+    await releaseResponse(page,closingPreflight,stalePreflight);
+    assert.match(await page.locator('#preflightStatus').textContent(),/API キーが未設定/);
+    assert.doesNotMatch(await page.locator('#preflightStatus').textContent(),/STALE-PREFLIGHT-SUCCESS|開始に必要な設定を確認しました/);
+    await page.keyboard.press('Escape');await page.locator('#navSettings').click();
+    assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'},{method:'GET',path:'/v1/models'}]);
+    report.checks.push('real admission preview shows saved model/protocol destinations, protected folders, web exposure and untested capability limits without provider calls; old selection and closed/reopened dialog responses cannot overwrite newer blockers; desktop/narrow screenshots');
     for(const index of [1,2,3])await page.locator('.profile-editor').nth(index).getByRole('button',{name:'閉じる',exact:true}).click();
     await page.evaluate(()=>window.scrollTo(0,0));
     await page.locator('#settingsDialog').evaluate(dialog=>{dialog.scrollTop=0;});
@@ -209,7 +328,7 @@ async function main() {
     // and Engine with an injected test client, including real serialization.
     await page.unroute('**/api/state');await page.unroute('**/api/runs');
     await page.unroute('**/api/agents/*/message');await page.unroute('**/api/runs/*/stop');
-    await page.reload();await page.getByText('接続中',{exact:true}).waitFor({state:'attached'});
+    await page.reload();await page.getByText('Workbench 接続中',{exact:true}).waitFor({state:'attached'});
     await page.locator('#newRun').click();await page.locator('#taskInput').fill('[SYNTHETIC] Real engine browser integration.');
     await page.locator('#pmProfile').selectOption('local');
     for(const checkbox of await page.locator('#workerProfiles input').all())await checkbox.uncheck();
@@ -293,7 +412,51 @@ async function main() {
     assert.equal(await page.locator('#resultActionStatus').textContent(),'','Late copy cannot follow run selection');
     await page.evaluate(()=>delete navigator.clipboard.writeText);
     report.checks.push('real engine file receipt and terminal response; actual clipboard text/path, exact UTF-8 downloads, repeated export, draft preservation, selected-record/run races, latest-copy failure wins, desktop/narrow result screenshots; no reasoning/protocol export');
-    assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'}]);
+    // A fresh text-only PM can start without file scopes, even with an unused
+    // cloud worker selected. Preview/settings must preserve earlier outputs.
+    await page.locator('#runList .run-link').filter({hasText:'[SYNTHETIC] Save result.'}).click();
+    await page.locator('#resultSelection').selectOption(resultOption);
+    const retainedDraft=await page.locator('#messageInput').inputValue();
+    const retainedRecords=await page.locator('#resultSelection option').evaluateAll(options=>options.map(option=>option.value));
+    const storedOutputs=()=>page.evaluate(async()=>{
+      const response=await fetch('/api/state',{credentials:'same-origin',cache:'no-store'});const state=await response.json();
+      return {runs:state.runs.map(run=>({id:run.id,model_calls:run.model_calls,tool_calls:run.tool_calls})),
+        agents:state.agents.map(agent=>({id:agent.id,results:agent.results,output_receipts:agent.output_receipts}))};
+    });
+    const beforePreview=await storedOutputs();
+    await page.locator('#navSettings').click();
+    await page.locator('#paths-read_roots').clear();await page.locator('#paths-write_roots').clear();await page.locator('#search-enabled').uncheck();
+    await page.locator('#saveSettings').click();await page.locator('#settingsStatus').filter({hasText:'設定を保存しました'}).waitFor();
+    await page.keyboard.press('Escape');await page.locator('#newRun').click();
+    await page.locator('#pmProfile').selectOption('local');await page.locator('#maxWorkers').fill('0');
+    for(const checkbox of await page.locator('#workerProfiles input').all())await checkbox.uncheck();
+    await page.locator('#workerProfiles input[value="anthropic"]').check();
+    const textOnly=await preflightAfter(page,()=>page.locator('#taskInput').fill('[SYNTHETIC] Complete immediately.'),data=>data.task==='[SYNTHETIC] Complete immediately.'&&data.max_workers===0&&data.worker_profiles.length===1&&data.worker_profiles[0]==='anthropic');
+    assert.equal(textOnly.can_start,true);assert.equal(textOnly.destinations.length,1);
+    assert.equal(textOnly.destinations[0].profile_id,'local');assert.equal(textOnly.destinations[0].model,'manual-unlisted-alias');
+    assert.deepEqual(textOnly.scope.read_roots,[]);assert.deepEqual(textOnly.scope.write_roots,[]);assert.equal(textOnly.web.enabled,false);
+    assert(textOnly.warnings.some(warning=>warning.code==='read_scope_empty'));
+    assert(textOnly.warnings.some(warning=>warning.code==='write_scope_empty'));
+    assert.match(await page.locator('#preflightStatus').textContent(),/文章だけの作業は開始できます/);
+    assert.deepEqual(await storedOutputs(),beforePreview,'Settings and read-only preview cannot create a run, call a model, or change saved outputs');
+    const pmStartResponse=page.waitForResponse(response=>response.url().endsWith('/api/runs')&&response.request().method()==='POST');
+    await page.locator('#startRun').click();const pmStarted=await (await pmStartResponse).json();
+    assert.equal(pmStarted.ok,true);assert.deepEqual(pmStarted.run.worker_profiles,[]);assert.equal(pmStarted.run.max_workers,0);
+    await page.locator(`#runList .run-link.selected[data-focus-key="run:${pmStarted.run.id}"]`).waitFor();
+    await page.locator('#activeRunStatus').filter({hasText:'完了'}).waitFor();
+    assert.equal(await page.locator('.agent-card').count(),1,'PM-only admission does not create workers');
+    const afterTextRun=await storedOutputs(),textRun=afterTextRun.runs.find(run=>run.id===pmStarted.run.id);
+    assert.equal(textRun.model_calls,1);assert.equal(textRun.tool_calls,0);
+    assert.deepEqual(afterTextRun.runs.filter(run=>run.id!==textRun.id),beforePreview.runs);
+    assert.deepEqual(afterTextRun.agents.filter(agent=>beforePreview.agents.some(prior=>prior.id===agent.id)),beforePreview.agents);
+    await page.locator('#runList .run-link').filter({hasText:'[SYNTHETIC] Save result.'}).click();
+    assert.deepEqual(await page.locator('#resultSelection option').evaluateAll(options=>options.map(option=>option.value)),retainedRecords);
+    assert.equal(await page.locator('#resultSelection').inputValue(),resultOption);
+    assert.equal(await page.locator('#messageInput').inputValue(),retainedDraft);
+    assert.match(await page.locator('#resultText').textContent(),/Terminal answer 日本語/);
+    assert.equal(fs.readFileSync(path.join(workspace,'browser-result.txt'),'utf8'),'[SYNTHETIC] Saved text 日本語.');
+    report.checks.push('real PM-only text run accepts no file roots and an unlisted alias; unused missing-key worker does not block or become a destination; preflight/settings preserve prior report, receipt, selected record, draft and file bytes without model calls');
+    assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'},{method:'GET',path:'/v1/models'}]);
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
     assert.deepEqual(report.pageErrors,[]);assert.deepEqual(report.cspErrors,[]);assert.deepEqual(report.externalRequests,[]);
     report.checks.push('stop, settings unlock, narrow-screen layout, zero browser storage and zero external page requests');report.ok=true;

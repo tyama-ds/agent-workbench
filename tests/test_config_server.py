@@ -174,7 +174,10 @@ async def test_model_list_waits_for_chunked_response_without_inference(tmp_path)
             app[APP_KEY].settings.value['providers'][0]['base_url'] = f'http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/v1'
             response = await client.post(auth.origin + '/api/provider-test', json={'provider_id': 'local'}, headers={'Origin': auth.origin})
             result = await response.json()
-            assert result == {'ok': True, 'models': ['fixture-qwen'], 'inference_tested': False}
+            assert result['ok'] and result['models'] == ['fixture-qwen']
+            assert result['inference_tested'] is False and result['tools_tested'] is False
+            assert result['code'] == 'models_listed' and result['checked_at']
+            assert result['selected_model'] == 'unknown' and result['list_incomplete'] is False
             assert paths == ['/v1/models']
     finally:
         await runner.cleanup()

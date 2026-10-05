@@ -12,3 +12,11 @@ dialog{color:var(--ink);background:#131921;border:1px solid #54504a;border-radiu
 
 .results-panel{border-bottom:1px solid #514431;background:#171b21;flex:0 1 auto;min-height:36px;max-height:min(34dvh,300px);overflow:auto;scrollbar-gutter:stable}.results-panel>summary{cursor:pointer;padding:10px 14px;font-size:11px;line-height:16px;color:#dec08a;position:sticky;top:0;background:#171b21;z-index:1}.results-panel>summary>.count{margin-left:12px;white-space:nowrap}.results-content{padding:0 14px 12px}.result-toolbar{display:flex;flex-wrap:wrap;align-items:end;gap:8px}.result-picker{flex:1 1 210px;min-width:0}.result-picker label{display:block;font-size:10px;color:#adb6c2;margin-bottom:5px}.result-picker select{min-width:0;max-width:100%;font-size:11px;padding:5px 8px}.result-actions{display:flex;flex-wrap:wrap;gap:6px}.result-meta{font:9px/1.7 var(--mono);color:#c3b18d;margin-top:10px;overflow-wrap:anywhere}.result-notice{font-size:10px;line-height:1.7;color:#a4b0be;margin-top:5px}.result-warning{font-size:10px;line-height:1.7;color:#dec08a;margin-top:8px}.result-text{font:11px/1.8 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:170px;overflow:auto;margin:9px 0 0;padding:10px;background:#0d1219;border:1px solid #323944;border-radius:4px}.result-text:focus-visible{outline:2px solid #e3bc79;outline-offset:1px}
 @media(max-width:600px){.results-panel{flex:none;max-height:360px}.results-content{padding:0 10px 10px}.result-text{max-height:190px}.result-toolbar{align-items:stretch}.result-picker{flex-basis:100%}.result-actions{justify-content:flex-start}.results-panel>summary{padding:10px}}
+
+/* Admission guidance stays in the existing task dialog, not a new wizard. */
+.readiness-panel{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0;background:#151a20}
+.readiness-panel h3{margin:0 0 8px;font-size:14px}
+.readiness-panel p{overflow-wrap:anywhere;margin:8px 0}
+.readiness-destination{font-size:12px;line-height:1.5}
+.readiness-scope{margin:10px 0}
+.readiness-scope summary{cursor:pointer;font-size:12px}
