@@ -23,7 +23,8 @@ jobs:
       - run: python -m pytest -q
       - name: Prepare locked Windows offline wheels
         if: runner.os == 'Windows'
-        run: python -m pip download --only-binary=:all: --require-hashes -r requirements.lock -d "${{ runner.temp }}/workbench-wheels"
+        run: |
+          python -m pip download --only-binary=:all: --require-hashes -r requirements.lock -d "${{ runner.temp }}/workbench-wheels"
       - name: Exercise real offline installer and repeated install
         if: runner.os == 'Windows'
         run: |
