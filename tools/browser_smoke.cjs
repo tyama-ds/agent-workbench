@@ -17,7 +17,7 @@ async function main() {
   const contractResult=spawnSync(python,['-m','tools.browser_fixture','--agent-contract'],{cwd:root,encoding:'utf8'});
   assert.equal(contractResult.status,0,contractResult.stderr);
   const agentContract=JSON.parse(contractResult.stdout);
-  const providerRequests=[],report={schemaVersion:1,fixture:'SYNTHETIC: no inference or user data',checks:[],pageErrors:[],externalRequests:[],cspErrors:[]};
+  const providerRequests=[],report={schemaVersion:1,fixture:'SYNTHETIC: no inference or user data',commit:process.env.GITHUB_SHA||null,runId:process.env.GITHUB_RUN_ID||null,checks:[],pageErrors:[],externalRequests:[],cspErrors:[]};
   const provider=http.createServer((request,response)=>{
     providerRequests.push({method:request.method,path:request.url});
     response.writeHead(request.url==='/v1/models'?200:400,{'Content-Type':'application/json'});
@@ -43,7 +43,7 @@ async function main() {
     page.on('pageerror',error=>report.pageErrors.push(error.message));
     page.on('console',message=>{if(/Content Security Policy|violates.*directive/i.test(message.text()))report.cspErrors.push(message.text());});
     page.on('request',request=>{const url=new URL(request.url());if(url.protocol.startsWith('http')&&url.origin!==origin)report.externalRequests.push(url.origin+url.pathname);});
-    await page.goto(launch);await page.getByText('接続中',{exact:true}).waitFor();
+    await page.goto(launch);await page.getByText('接続中',{exact:true}).waitFor({state:'attached'});
     assert.equal(new URL(page.url()).hash,'');
     assert.equal(await page.locator('#startRun').isDisabled(),true);
     report.checks.push('real one-use bootstrap, cookie session, fragment removal, same-origin assets');
@@ -80,7 +80,7 @@ async function main() {
     const persisted=JSON.parse(fs.readFileSync(path.join(stateDir,'settings.json'),'utf8'));
     assert.equal(persisted.providers.length,4);assert.equal(persisted.local.max_concurrent_requests,1);assert.equal(persisted.limits.max_workers,3);assert.equal(persisted.limits.max_auto_collaborations,7);assert.equal(persisted.system_policy,policy);
     assert.deepEqual(persisted.paths.deny_roots,[path.join(workspace,'private')]);
-    await page.reload();await page.getByText('接続中',{exact:true}).waitFor();await page.locator('#navSettings').click();
+    await page.reload();await page.getByText('接続中',{exact:true}).waitFor({state:'attached'});await page.locator('#navSettings').click();
     assert.equal(await page.locator('#limits-max_auto_collaborations').inputValue(),'7');
     for(const index of [1,2,3])await page.locator('.profile-editor').nth(index).getByRole('button',{name:'編集',exact:true}).click();
     report.checks.push('automatic collaboration limit defaults to 24, accepts 0–1000, persists edited value across reload');
@@ -164,7 +164,7 @@ async function main() {
     // and Engine with an injected test client, including real serialization.
     await page.unroute('**/api/state');await page.unroute('**/api/runs');
     await page.unroute('**/api/agents/*/message');await page.unroute('**/api/runs/*/stop');
-    await page.reload();await page.getByText('接続中',{exact:true}).waitFor();
+    await page.reload();await page.getByText('接続中',{exact:true}).waitFor({state:'attached'});
     await page.locator('#newRun').click();await page.locator('#taskInput').fill('[SYNTHETIC] Real engine browser integration.');
     await page.locator('#pmProfile').selectOption('local');
     for(const checkbox of await page.locator('#workerProfiles input').all())await checkbox.uncheck();
