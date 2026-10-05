@@ -401,3 +401,49 @@ Research decisions:
 
 Final local/exact-head Windows and six-job CI results belong to the cycle handoff.
 The source PR remains draft; no merge, release or binary distribution is included.
+## 0.1.1.dev9 — Bounded credential-mask lifetime (2026-10-05)
+
+- Reproduced old-key exposure in retained tasks, assignments, names, roles,
+  questions and mail metadata after replacing/removing a credential reference.
+  Existing capture-redacted reports survived, but late responses, errors and
+  successful save receipts could be retained raw. Completed-run continuation could
+  also re-emit raw private conversation text after the original key was forgotten.
+- Keep recognized values in a private, process-lifetime output-only registry,
+  capped at 512 distinct values and 2 MiB UTF-8 payload. Preflight key/config changes
+  atomically and reject overflow without dropping old masks or changing settings.
+  Preserve exact-value matching, raw private protocol and workspace files.
+- Separate masks from auth. Resolve new provider/diagnostic/search requests with
+  current credentials; keep already-dispatched headers stable. Search uses a
+  per-dispatch copy rather than a retained authenticating key. Remove memory auth
+  when a provider ID disappears or its kind/endpoint/env source changes; likewise
+  for search identity changes. Reserve `search` to remove the namespace collision.
+- Independent review found that a large escaped regex alternation still stalled
+  on mixed shared-prefix near-matches. Replace it with literal searches and a heap
+  bounded by key count. Longest at the earliest match wins; emitted mask markers
+  never become new input. Add the exact 512-key/2-MiB counterexample as a regression.
+- Preserve full/selected state contracts, compact-history ownership, UI layout,
+  strict web decoding, provider transport and the no-binary-distribution gates.
+
+Research decisions:
+- [OWASP Logging](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html#data-to-exclude):
+  adopt consistent masking of recognized credentials across public output sinks,
+  safe failure handling and lifecycle regression tests. Do not add remote logging,
+  arbitrary sensitive-data classification or new persistence.
+- [OWASP Secrets Management](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html):
+  keep credential use distinct from retired output masks. Document the increased
+  process-memory lifetime and zeroization limit instead of claiming old secrets
+  have been erased. No vault, background rotation or new credentials are added.
+- [Python literal string search](https://docs.python.org/3/library/stdtypes.html#str.find)
+  and [heap queues](https://docs.python.org/3/library/heapq.html): reuse standard
+  library primitives and bound pending matches to the registry size. Reject regex
+  alternation after the measured stall and a per-character Python trie because
+  payload limits would not adequately bound its object overhead.
+- Defer retroactive browser/clipboard/download recall and redaction of editable
+  config metadata; those cannot be represented as harmless read-only projection
+  changes. Explicitly narrow the public guarantee. No source can certify transformed
+  secrets or arbitrary private data have been removed by an exact-value matcher.
+
+Synthetic full/selected HTTP benchmarks now include ordinary and near-count-cap
+registries, with a separate maximum-payload adversarial CLI. Exact-head Windows Edge
+and all six CI jobs remain required evidence; local tests are not browser verification.
+Source stays in draft PR2. No merge, release, binary upload or live inference is added.

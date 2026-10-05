@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {spawn,spawnSync} = require('node:child_process');
 const {chromium} = require('node:module').createRequire(path.join(__dirname,'browser-tests','package.json'))('playwright');
+const {retainedRedactionAcceptance} = require('./browser-tests/redaction_acceptance.cjs');
 
 async function assertLayout(page,label) {
   const metrics=await page.evaluate(()=>{
@@ -69,6 +70,9 @@ async function main() {
   const contractResult=spawnSync(python,['-m','tools.browser_fixture','--agent-contract'],{cwd:root,encoding:'utf8'});
   assert.equal(contractResult.status,0,contractResult.stderr);
   const agentContract=JSON.parse(contractResult.stdout);
+  const redactionResult=spawnSync(python,['-m','tools.browser_fixture','--redaction-contract'],{cwd:root,encoding:'utf8'});
+  assert.equal(redactionResult.status,0,redactionResult.stderr);
+  const redactionCases=JSON.parse(redactionResult.stdout);
   const providerRequests=[],report={schemaVersion:1,fixture:'SYNTHETIC: no inference or user data',commit:process.env.GITHUB_SHA||null,runId:process.env.GITHUB_RUN_ID||null,checks:[],pageErrors:[],externalRequests:[],cspErrors:[]};
   const provider=http.createServer((request,response)=>{
     providerRequests.push({method:request.method,path:request.url});
@@ -77,7 +81,9 @@ async function main() {
   });
   await new Promise(resolve=>provider.listen(0,'127.0.0.1',resolve));
   const providerUrl=`http://127.0.0.1:${provider.address().port}/v1`;
-  const server=spawn(python,['-m','tools.browser_fixture','--state-dir',stateDir],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  const server=spawn(python,['-m','tools.browser_fixture','--state-dir',stateDir],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe'],
+    env:{...process.env,[redactionCases.environment.old_env]:redactionCases.environment.old,
+      [redactionCases.environment.new_env]:redactionCases.environment.new}});
   let stdout='',stderr='',browser,page,context;
   server.stdout.on('data',chunk=>{stdout+=chunk;});server.stderr.on('data',chunk=>{stderr+=chunk;});
   try {
@@ -637,6 +643,7 @@ async function main() {
     await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow historical profile');
     await page.screenshot({path:path.join(artifacts,'workbench-attribution-narrow.png'),fullPage:true,animations:'disabled'});
     report.checks.push('real run-scoped configured identity survives profile rename/model change/removal; new run captures new model; old report and receipt exports remain byte-identical with run/agent attribution; labels distinguish configuration from verified response model; desktop/narrow screenshots');
+    await retainedRedactionAcceptance({page,context,origin,workspace,stateDir,artifacts,cases:redactionCases,report});
     assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'},{method:'GET',path:'/v1/models'}]);
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
     assert.deepEqual(report.pageErrors,[]);assert.deepEqual(report.cspErrors,[]);assert.deepEqual(report.externalRequests,[]);
@@ -644,7 +651,8 @@ async function main() {
     fs.writeFileSync(path.join(artifacts,'browser-smoke.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
   } catch(error) {
     if(page)await page.screenshot({path:path.join(artifacts,'workbench-failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{});
-    report.ok=false;const redact=value=>String(value).replace(/(#token=|X-Workbench-Bootstrap[=: ]+)[A-Za-z0-9_-]+/gi,'$1[REDACTED]').replaceAll('fixture-memory-secret','[REDACTED]');
+    report.ok=false;const redact=value=>[...Object.values(redactionCases).flatMap(item=>[item.old,item.new]),'fixture-memory-secret']
+      .reduce((text,key)=>text.replaceAll(key,'[REDACTED]'),String(value).replace(/(#token=|X-Workbench-Bootstrap[=: ]+)[A-Za-z0-9_-]+/gi,'$1[REDACTED]'));
     report.error=redact(error.stack||error.message);report.serverError=redact(stderr);
     fs.writeFileSync(path.join(artifacts,'browser-smoke.json'),JSON.stringify(report,null,2));
     console.error(JSON.stringify(report,null,2));process.exitCode=1;

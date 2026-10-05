@@ -11,11 +11,12 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import Settings, ROOT, number, text
+from .config import Settings, ROOT, number, text, validate_settings
 from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
 from .providers import ProviderClient
 from .resources import ResourceGate
+from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .webtools import WebTools
 
 
@@ -107,6 +108,9 @@ class Engine:
         self.sequence = 0
         self.closed = False
         self.lock = asyncio.Lock()
+        # Output-only masks: never consulted by Settings.key or an API request.
+        # Like retained conversations, these live until this Engine is discarded.
+        self._redaction = SecretRedactor()
 
     def event(self, run, agent, kind, message, **extra):
         self.sequence += 1
@@ -115,27 +119,61 @@ class Engine:
         self.events.append(record)
         return record
 
+    def _secret_values(self, *, config=None, secrets=None):
+        config = self.settings.value if config is None else config
+        secrets = self.settings.secrets if secrets is None else secrets
+        return [*(secrets.get(profile['id']) or os.environ.get(profile.get('api_key_env', ''), '')
+                  for profile in config['providers']), *secrets.values(),
+                os.environ.get(config['search']['api_key_env'], '')]
+
+    def _redactor(self):
+        # Also fail closed on unexpected in-process configuration mutation.
+        self._redaction.remember(self._secret_values())
+        return self._redaction.redact
+
     def redact(self, value):
-        for profile in self.settings.value['providers']:
-            key = self.settings.key(profile)
-            if key:
-                value = value.replace(key, '[redacted]')
-        for key in self.settings.secrets.values():
-            if key:
-                value = value.replace(key, '[redacted]')
-        key = os.environ.get(self.settings.value['search']['api_key_env'], '')
+        return self._redactor()(value)
+
+    def save_settings(self, raw):
+        config = validate_settings(raw)
+        old_profiles = {profile['id']: profile for profile in self.settings.value['providers']}
+        identity = ('kind', 'base_url', 'api_key_env')
+        allowed = {profile['id'] for profile in config['providers']
+                   if profile['id'] in old_profiles and all(profile.get(key) == old_profiles[profile['id']].get(key)
+                                                            for key in identity)}
+        if all(config['search'].get(key) == self.settings.value['search'].get(key)
+               for key in ('provider', 'endpoint', 'api_key_env')):
+            allowed.add('search')
+        secrets = {ident: key for ident, key in self.settings.secrets.items() if ident in allowed}
+        prepared = self._redaction.prepare([*self._secret_values(), *self._secret_values(config=config, secrets=secrets)])
+        # No await between preparation, persistence and commit. A validation,
+        # capacity or disk failure leaves both active settings and masks intact.
+        self.settings.save(config)
+        self.settings.secrets = secrets
+        self._redaction.commit(prepared)
+        return self.settings.public()
+
+    def set_secret(self, ident, key):
+        prospective = dict(self.settings.secrets)
         if key:
-            value = value.replace(key, '[redacted]')
-        return value
+            prospective[ident] = key
+        else:
+            prospective.pop(ident, None)
+        prepared = self._redaction.prepare([*self._secret_values(), *self._secret_values(secrets=prospective)])
+        self.settings.secrets = prospective
+        self._redaction.commit(prepared)
 
     def _redact_tree(self, value):
-        if isinstance(value, str):
-            return self.redact(value)
-        if isinstance(value, list):
-            return [self._redact_tree(item) for item in value]
-        if isinstance(value, dict):
-            return {key: self._redact_tree(item) for key, item in value.items()}
-        return value
+        redact = self._redactor()
+        def visit(item):
+            if isinstance(item, str):
+                return redact(item)
+            if isinstance(item, list):
+                return [visit(child) for child in item]
+            if isinstance(item, dict):
+                return {key: visit(child) for key, child in item.items()}
+            return item
+        return visit(value)
 
     def log(self, agent, kind, value, thinking=''):
         self.sequence += 1
@@ -269,6 +307,9 @@ class Engine:
         # No URLs, proxies, key references, policy or file scopes enter this map.
         configured_profiles = {p['id']: self._redact_tree({key: p.get(key, '') for key in ('id', 'label', 'kind', 'model')})
                                for p in config['providers'] if p['id'] in {pm, *workers}}
+        # Preflight needs temporary key readiness, but a retained run must not
+        # keep a stale authenticating key. Search credentials are per dispatch.
+        web_tools.api_key = ''
         run = {'id': run_id, 'task': task, 'pm_profile': pm, 'worker_profiles': list(dict.fromkeys(workers)),
                'max_workers': count, 'status': 'running', 'created_at': time.time(), 'model_calls': 0,
                'tool_calls': 0, 'auto_collaborations': 0,
@@ -411,6 +452,7 @@ class Engine:
                         raise ValueError('会話の長さの上限です。成果を保存し、新しい仕事で続けてください')
                     profile = dict(next(p for p in run['_config']['providers'] if p['id'] == agent.profile_id))
                     profile['api_key'] = self.settings.key(profile)
+                    self._redaction.remember([*self._secret_values(), profile['api_key']])
                     tools = [*TEAM_TOOLS, *run['_executor'].schemas()]
                     if run['_config']['search']['enabled']:
                         tools += run['_web'].schemas()
@@ -485,9 +527,20 @@ class Engine:
         except asyncio.CancelledError:
             agent.status = 'stopped'
             raise
+        except RedactionCapacityError:
+            # Never retry redact/log/mail with a saturated unknown key set.
+            # Public projections fail closed until the configuration is safe.
+            agent.status = 'error'
+            agent.last_error = REDACTION_CAPACITY_MESSAGE
+            self._release(agent)
         except Exception as exc:
             agent.status = 'error'
-            agent.last_error = self.redact(str(exc) or type(exc).__name__)[:1000]
+            try:
+                agent.last_error = self.redact(str(exc) or type(exc).__name__)[:1000]
+            except RedactionCapacityError:
+                agent.last_error = REDACTION_CAPACITY_MESSAGE
+                self._release(agent)
+                return
             self.log(agent, 'error', agent.last_error)
             self.event(run['id'], agent.id, 'error', agent.last_error)
             self._release(agent)
@@ -600,6 +653,14 @@ class Engine:
         if name in {'web_search', 'web_fetch'}:
             if not run['_config']['search']['enabled']:
                 raise ValueError('Web 検索は無効です')
+            if name == 'web_search':
+                # A run freezes destinations/policy, not authentication. Already
+                # dispatched requests keep their headers; new ones use this key.
+                key = self.settings.secrets.get('search') or os.environ.get(self.settings.value['search']['api_key_env'], '')
+                self._redaction.remember([*self._secret_values(), key])
+                web_tools = copy.copy(run['_web'])
+                web_tools.api_key = key
+                return await web_tools.execute(name, args)
             return await run['_web'].execute(name, args)
         # Serialize file tool operations to make optimistic hashes + reservations
         # meaningful for cooperating agents; no arbitrary shell is available.

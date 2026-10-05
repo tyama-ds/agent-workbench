@@ -22,6 +22,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from .config import Settings, ROOT, text
 from .engine import Engine
+from .redaction import RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .runtime_paths import FROZEN
 
 APP_KEY = web.AppKey('engine', Engine)
@@ -84,8 +85,16 @@ class BrowserAuth:
             response = await handler(request)
         except web.HTTPException as exc:
             response = web.json_response({'ok': False, 'error': exc.text}, status=exc.status)
+        except RedactionCapacityError:
+            response = web.json_response({'ok': False, 'error': REDACTION_CAPACITY_MESSAGE,
+                                          'code': 'redaction_capacity'}, status=409)
         except (ValueError, KeyError, TypeError) as exc:
-            response = web.json_response({'ok': False, 'error': str(exc)[:1000]}, status=400)
+            try:
+                message = request.app[APP_KEY].redact(str(exc))[:1000]
+                response = web.json_response({'ok': False, 'error': message}, status=400)
+            except RedactionCapacityError:
+                response = web.json_response({'ok': False, 'error': REDACTION_CAPACITY_MESSAGE,
+                                              'code': 'redaction_capacity'}, status=409)
         except OSError:
             response = web.json_response({'ok': False, 'error': 'ファイルまたはネットワーク操作に失敗しました'}, status=503)
         response.headers.update({'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
@@ -131,9 +140,10 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
 
     async def config(request):
         if request.method == 'PUT':
+            value = await body(request)
             if engine.active():
                 raise web.HTTPConflict(text='設定変更は実行中のチームを停止してから行ってください')
-            return web.json_response(settings.save(await body(request)))
+            return web.json_response(engine.save_settings(value))
         return web.json_response(settings.public())
 
     async def secret(request):
@@ -144,10 +154,7 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         key = text(value.get('key'), 'key', 4096)
         if any(ord(c) < 32 or ord(c) == 127 for c in key):
             raise ValueError('API キーに制御文字は使用できません')
-        if key:
-            settings.secrets[ident] = key
-        else:
-            settings.secrets.pop(ident, None)
+        engine.set_secret(ident, key)
         return web.json_response({'ok': True, 'configured': bool(key)})
 
     async def state(request):
@@ -177,7 +184,9 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         if profile is None:
             raise ValueError('未知のプロファイルです')
         from .diagnostics import diagnose_provider
-        return web.json_response(engine._redact_tree(await diagnose_provider(profile, settings.key(profile))))
+        key = settings.key(profile)
+        engine._redaction.remember([*engine._secret_values(), key])
+        return web.json_response(engine._redact_tree(await diagnose_provider(profile, key)))
 
     async def preflight(request):
         return web.json_response(engine.preflight(await body(request)))

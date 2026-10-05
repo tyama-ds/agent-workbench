@@ -83,6 +83,8 @@ def validate_settings(raw):
             raise ValueError('プロファイルには公開設定のみ保存できます。API キーは環境変数またはメモリ欄を使ってください')
         if not isinstance(profile.get('id'), str) or not ID.fullmatch(profile['id']) or profile['id'] in seen:
             raise ValueError('プロファイル ID は重複しない英数字を指定してください')
+        if profile['id'] == 'search':
+            raise ValueError('プロファイル ID search は検索用に予約されています。別の ID を指定してください')
         seen.add(profile['id'])
         if profile.get('kind') not in {'local', 'openai', 'anthropic'}:
             raise ValueError('provider kind が不正です')
@@ -159,7 +161,8 @@ class Settings:
 
     def public(self):
         return {'config': copy.deepcopy(self.value),
-                'secret_status': {p['id']: bool(self.key(p)) for p in self.value['providers']},
+                'secret_status': {p['id']: bool(self.key(p)) for p in self.value['providers']} |
+                    {'search': bool(self.secrets.get('search') or os.environ.get(self.value['search']['api_key_env'], ''))},
                 'capabilities': {'office': ['docx', 'xlsx', 'pptx'], 'shell': False,
                     'gpu_hard_limit': False, 'gpu_admission_guard': True, 'state_persistence': False}}
 

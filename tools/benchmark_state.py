@@ -25,7 +25,9 @@ from unittest.mock import patch
 from aiohttp import ClientSession, ClientTimeout, CookieJar, web
 
 import workbench.engine as engine_module
+from workbench.config import Settings
 from workbench.engine import Agent
+from workbench.redaction import MAX_REDACTION_BYTES, MAX_REDACTION_VALUES, SecretRedactor
 from workbench.server import APP_KEY, BrowserAuth, create_app
 
 
@@ -55,6 +57,92 @@ FIXTURES = (
     Fixture('medium', 5, 5, 120, 800, 10, 6000, 24, 500),
     Fixture('report_cap', 1, 5, 200, 800, 20, 24000, 64, 200),
 )
+REDACTION_MODES = ('normal', 'near_capacity')
+
+
+def adversarial_registry_benchmark():
+    """Opt-in mixed-prefix 2 MiB stress; run the CLI under an external timeout.
+
+    One different leading character prevents a regex common-prefix fast path.
+    Payload limits alone do not bound compiled matcher/Python allocation or CPU.
+    """
+    width = min(4096, MAX_REDACTION_BYTES // MAX_REDACTION_VALUES)
+    keys = tuple('a' * (width - 4) + f'{index:04x}' for index in range(MAX_REDACTION_VALUES - 1)) + ('b' * width,)
+    value = 'a' * 24000
+    redactor = SecretRedactor()
+    started = time.perf_counter_ns()
+    redactor.remember(keys)
+    registration_ms = (time.perf_counter_ns() - started) / 1_000_000
+    started = time.perf_counter_ns()
+    masked = redactor.redact(value)
+    no_match_ms = (time.perf_counter_ns() - started) / 1_000_000
+    if masked != value:
+        raise AssertionError('An almost-matching report must not be altered')
+    matching = value + keys[0] + keys[-1]
+    started = time.perf_counter_ns()
+    masked = redactor.redact(matching)
+    matching_ms = (time.perf_counter_ns() - started) / 1_000_000
+    if masked != value + '[redacted][redacted]':
+        raise AssertionError('Mixed-prefix synthetic exact matches must be masked')
+    report = {
+        'benchmark': 'synthetic_redaction_mixed_prefix_stress',
+        'python': platform.python_version(), 'platform': platform.platform(),
+        'value_count': redactor.value_count, 'byte_count': redactor.byte_count,
+        'value_capacity': MAX_REDACTION_VALUES, 'byte_capacity': MAX_REDACTION_BYTES,
+        'key_chars': width, 'report_chars': len(value),
+        'registration_ms': round(registration_ms, 6),
+        'no_match_ms': round(no_match_ms, 6), 'matching_ms': round(matching_ms, 6),
+        'assumptions': 'One measurement each, no model or network. Almost all 4 KiB keys share a repeated prefix; one has a different leading character. A 24 KiB repeated-prefix report contains no full match; a second adds two exact matches. Payload limits do not measure compiled matcher/Python memory. Run in a disposable process with an external timeout.',
+    }
+    try:
+        import resource
+        maximum = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        report['peak_process_rss_bytes'] = maximum if sys.platform == 'darwin' else maximum * 1024
+    except (ImportError, AttributeError):
+        report['peak_process_rss_bytes'] = None
+    return report
+
+
+def registry_keys(mode):
+    """Deterministic synthetic exact values; never consult operator credentials."""
+    if mode not in REDACTION_MODES:
+        raise ValueError('Unknown redaction registry benchmark mode')
+    count = 4 if mode == 'normal' else MAX_REDACTION_VALUES - 1
+    return tuple(f'synthetic-state-key-{index:04d}-exact-value-only' for index in range(count))
+
+
+def populate_registry(engine, mode):
+    """Exercise retained and current credentials across every public record kind."""
+    keys = registry_keys(mode)
+    engine._redaction.remember(keys[:-1])  # Previously accepted, now retired values.
+    engine.settings.secrets['local'] = keys[-1]  # The sole current credential.
+    run, agent = engine.runs['r-0'], engine.agents['a-0-0']
+
+    def marked(value, key):
+        # Preserve the fixture's documented character lengths.
+        return key + value[len(key):]
+
+    run['task'] = marked(run['task'], keys[0])
+    agent.assignment = marked(agent.assignment, keys[-1])
+    agent.name = 'Synthetic worker ' + keys[0]
+    agent.question = 'Synthetic historical question ' + keys[1]
+    agent.logs[0]['text'] = marked(agent.logs[0]['text'], keys[0])
+    agent.results[0]['text'] = marked(agent.results[0]['text'], keys[-1])
+    agent.output_receipts[0]['path'] = '/synthetic/' + keys[1] + '/result.txt'
+    engine.events[0]['text'] = marked(engine.events[0]['text'], keys[-2])
+    # The first projection includes current credentials and prepares the matcher.
+    encoded = json.dumps(engine.snapshot())
+    if any(key in encoded for key in keys) or '[redacted]' not in encoded:
+        raise AssertionError('Synthetic credential escaped the public projection')
+    return {
+        'mode': mode, 'value_count': engine._redaction.value_count,
+        'byte_count': engine._redaction.byte_count,
+        'value_capacity': MAX_REDACTION_VALUES, 'byte_capacity': MAX_REDACTION_BYTES,
+        'current_values': 1, 'retired_values': len(keys) - 1,
+        'capacity_scope': 'Near capacity refers to value count, not byte count.',
+        'records_checked': ['task', 'assignment', 'name', 'question', 'logs', 'results',
+                            'output_receipts', 'events'],
+    }
 
 
 class NoModelClient:
@@ -151,6 +239,13 @@ async def serving(directory):
         listener.setblocking(False)
         auth = BrowserAuth(listener.getsockname()[1])
         model = NoModelClient()
+        # Clear default references before Engine construction as well as populate(),
+        # so eager credential registration cannot read the operator's environment.
+        settings = Settings(directory)
+        for profile in settings.value['providers']:
+            profile['api_key_env'] = ''
+        settings.value['search']['api_key_env'] = ''
+        settings.save(settings.value)
         app = create_app(directory, auth, client=model)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
@@ -200,15 +295,17 @@ async def measure_endpoint(client, url):
     return body, statistics.median(measurements)
 
 
-async def benchmark_fixture(directory, fixture):
+async def benchmark_fixture(directory, fixture, *, registry_mode=None):
     with patch.object(engine_module, 'time', SimpleNamespace(time=lambda: CREATED_AT)):
-        return await _benchmark_fixture(directory, fixture)
+        return await _benchmark_fixture(directory, fixture, registry_mode=registry_mode)
 
 
-async def _benchmark_fixture(directory, fixture):
+async def _benchmark_fixture(directory, fixture, *, registry_mode=None):
     async with serving(directory) as (engine, client, origin, model):
         populate(engine, fixture)
         result = {'fixture': asdict(fixture), 'agents_total': len(engine.agents), 'views': {}}
+        if registry_mode is not None:
+            result['redaction_registry'] = populate_registry(engine, registry_mode)
         selections = (
             ('full', '/api/state', engine.snapshot),
             ('selected', '/api/state?view=selected&run_id=r-0&agent_id=a-0-0',
@@ -221,6 +318,8 @@ async def _benchmark_fixture(directory, fixture):
             encoded = json.dumps(snapshot).encode('utf-8')
             if body != encoded:
                 raise AssertionError('Measured JSON serialization differs from actual HTTP body')
+            if registry_mode is not None and any(key.encode() in body for key in registry_keys(registry_mode)):
+                raise AssertionError('Synthetic credential escaped an authenticated state endpoint')
             state = json.loads(body)
             result['views'][name] = {
                 'endpoint': path,
@@ -261,12 +360,14 @@ def limit_address_space():
     return report
 
 
-async def run_benchmark(fixtures=FIXTURES):
+async def run_benchmark(fixtures=FIXTURES, registry_modes=REDACTION_MODES):
     # Fixed fixtures and bounded iterations avoid allocating a theoretical global maximum.
     async with asyncio.timeout(30):
         with tempfile.TemporaryDirectory(prefix='workbench-state-benchmark-') as directory:
             results = [await benchmark_fixture(Path(directory) / fixture.name, fixture)
                        for fixture in fixtures]
+            registry_results = [await benchmark_fixture(Path(directory) / ('registry-' + mode),
+                                FIXTURES[0], registry_mode=mode) for mode in registry_modes]
     return {
         'benchmark': 'synthetic_state_projection', 'iterations': ITERATIONS, 'warmups': 1,
         'python': platform.python_version(), 'platform': platform.platform(),
@@ -289,8 +390,10 @@ async def run_benchmark(fixtures=FIXTURES):
             'fixture_storage': 'In-memory synthetic records; temporary real Settings, no saved user settings.',
             'network': '127.0.0.1 only; proxy environment ignored; no live model client or model calls.',
             'scope': 'Three bounded fixtures, not global worst-case capacity, production latency, or memory usage.',
+            'redaction_registry': 'Two additional small fixtures compare 4 versus value-capacity-minus-1 synthetic exact values; one current value, the rest retained. Timings exclude initial registration/preparation. This is not a worst-case prefix or byte-capacity claim.',
         },
         'results': results,
+        'redaction_registry_results': registry_results,
     }
 
 
@@ -298,11 +401,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--fixture', choices=[fixture.name for fixture in FIXTURES],
                         help='Run one bounded fixture instead of all three')
+    parser.add_argument('--redaction-registry', choices=['both', 'none', *REDACTION_MODES],
+                        default='both', help='Additional small registry fixtures (default: both)')
+    parser.add_argument('--adversarial-redaction', action='store_true',
+                        help='Only run opt-in mixed-prefix byte-capacity stress; use an external process timeout')
     args = parser.parse_args()
     memory_limit = limit_address_space()
     fixtures = tuple(fixture for fixture in FIXTURES if not args.fixture or fixture.name == args.fixture)
     try:
-        report = asyncio.run(run_benchmark(fixtures))
+        modes = REDACTION_MODES if args.redaction_registry == 'both' else (() if args.redaction_registry == 'none' else (args.redaction_registry,))
+        report = adversarial_registry_benchmark() if args.adversarial_redaction else asyncio.run(run_benchmark(fixtures, modes))
     except (MemoryError, TimeoutError) as error:
         print(json.dumps({'error': type(error).__name__, 'memory_limit': memory_limit}), file=sys.stderr)
         return 1

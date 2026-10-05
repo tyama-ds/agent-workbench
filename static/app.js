@@ -124,6 +124,12 @@ function inputValue(input) {
 }
 function invalidateDiagnostics() { ui.settingsRevision++;document.querySelectorAll('[data-probe-result]').forEach(node=>{node.textContent='設定または画面が変わりました。必要ならモデル一覧を再確認してください。';node.classList.remove('error');}); }
 function markSettingsDirty() { invalidateDiagnostics();ui.settingsDirty=true;inlineStatus($('settingsStatus'),'未保存の変更があります。'); }
+function secretStatusText(configured) { return configured?'キー設定あり。値は画面に取得しません。':'キー未設定。必要ならキーを入力するか、環境変数の参照先を確認してください。'; }
+function refreshSecretStatus(status) {
+  ui.secretStatus=status||{};
+  $('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{const id=card.querySelector('[data-key="id"]').value.trim();card.querySelector('.secret-status').textContent=secretStatusText(ui.secretStatus[id]);});
+  inlineStatus($('searchSecretStatus'),secretStatusText(ui.secretStatus.search));
+}
 
 function appendProfile(profile,index,expanded=true) {
   const card=element('section','profile-editor');card.dataset.index=String(index);card._original={...profile};
@@ -144,7 +150,7 @@ function appendProfile(profile,index,expanded=true) {
   const secret=element('input');secret.type='password';secret.autocomplete='new-password';secret.id=`profile-${index}-secret`;secretLabel.htmlFor=secret.id;
   secret.placeholder='未入力のままなら、指定した環境変数を使用';secretField.append(secretLabel,secret);
   const saveSecret=element('button','button secondary','キーをセット');saveSecret.type='button';
-  const secretState=element('p','secret-status',ui.secretStatus[profile.id]?'キー設定あり。値は画面に取得しません。':'キーは設定ファイルに保存されません。再起動するとメモリ内のキーは消えます。');
+  const secretState=element('p','secret-status',secretStatusText(ui.secretStatus[profile.id]));
   secretRow.append(secretField,saveSecret,secretState);content.appendChild(secretRow);
   const result=element('p','inline-status');result.dataset.probeResult='true';result.setAttribute('role','status');card.appendChild(result);
   const kind=card.querySelector('[data-key="kind"]'),proxy=card.querySelector('[data-key="proxy_url"]');
@@ -178,7 +184,7 @@ function renderSettings() {
   $('profilesEditor').replaceChildren();(ui.config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
   const containers={paths:'pathFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
   for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]);container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,ui.config[group]?.[spec[0]],group)));}
-  $('systemPolicy').value=ui.config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');setSettingsLock(true);
+  $('systemPolicy').value=ui.config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
 }
 function collectConfig() {
   const config=structuredClone(ui.config);
@@ -587,7 +593,7 @@ async function initialize() {
   $('settingsForm').addEventListener('submit',async event=>{
     event.preventDefault();if(ui.settingsLocked||ui.settingsSaving)return;
     ui.settingsSaving=true;setSettingsLock(true);inlineStatus($('settingsStatus'),'保存しています…');
-    try {const config=collectConfig();const response=await api('/api/config',{method:'PUT',body:config});ui.config=response.config||config;invalidateDiagnostics();ui.settingsDirty=false;renderProfileChoices();inlineStatus($('settingsStatus'),'設定を保存しました。');notice('');}
+    try {const config=collectConfig();const response=await api('/api/config',{method:'PUT',body:config});ui.config=response.config||config;refreshSecretStatus(response.secret_status);invalidateDiagnostics();ui.settingsDirty=false;renderProfileChoices();inlineStatus($('settingsStatus'),'設定を保存しました。');notice('');}
     catch(error){inlineStatus($('settingsStatus'),errorText(error),true);}finally{ui.settingsSaving=false;setSettingsLock(true);}
   });
   $('runForm').addEventListener('submit',async event=>{
@@ -605,7 +611,7 @@ async function initialize() {
     try {await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,{method:'POST',body:{text}});if(ui.drafts.get(agent.id)===text)ui.drafts.delete(agent.id);if(ui.selectedAgent===agent.id&&$('messageInput').value===text)$('messageInput').value='';if(ui.selectedAgent===agent.id)inlineStatus($('messageStatus'),'送信しました。');await pollState(true);}
     catch(error){if(ui.selectedAgent===agent.id)inlineStatus($('messageStatus'),errorText(error),true);}finally{ui.busyMessage=false;renderConversation(getAgent());}
   });
-  $('setSearchSecret').addEventListener('click',async()=>{const key=$('searchSecret').value;if(!key)return;$('searchSecret').value='';$('setSearchSecret').disabled=true;try{await api('/api/secrets',{method:'POST',body:{id:'search',key}});invalidateDiagnostics();inlineStatus($('searchSecretStatus'),'今回の起動中に使うキーをセットしました。');}catch(error){inlineStatus($('searchSecretStatus'),errorText(error),true);}finally{$('setSearchSecret').disabled=ui.settingsLocked;}});
+  $('setSearchSecret').addEventListener('click',async()=>{const key=$('searchSecret').value;if(!key)return;$('searchSecret').value='';$('setSearchSecret').disabled=true;try{await api('/api/secrets',{method:'POST',body:{id:'search',key}});ui.secretStatus.search=true;invalidateDiagnostics();inlineStatus($('searchSecretStatus'),'今回の起動中に使うキーをセットしました。');}catch(error){inlineStatus($('searchSecretStatus'),errorText(error),true);}finally{$('setSearchSecret').disabled=ui.settingsLocked;}});
   try {
     const fragment=new URLSearchParams(location.hash.slice(1)),token=fragment.get('token');
     if(token){history.replaceState(null,'',location.pathname+location.search);await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}});}

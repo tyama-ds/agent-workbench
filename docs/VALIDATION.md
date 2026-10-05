@@ -1,6 +1,15 @@
 # Validation scope
 
-## Current revision — strict web text decoding (2026-10-05)
+## Current revision — credential-mask lifecycle (2026-10-05)
+
+Version **0.1.1.dev9** adds bounded process-local masking across credential changes,
+late outputs and continued conversations, with atomic capacity rejection and distinct
+current authentication. Synthetic regressions and registry benchmarks are detailed
+below. The real Windows Edge flow adds historical-state, clipboard and text-export
+checks through actual loopback APIs. Exact-head six-job results and artifact hashes
+belong to the draft PR handoff; no live inference or binary distribution is implied.
+
+## Prior revision — strict web text decoding (2026-10-05)
 
 Version **0.1.1.dev8** adds strict declaration-aware text decoding with actual codec,
 selection-source and UTF-8-assumption metadata. Pure fixtures cover supported codec
@@ -256,3 +265,40 @@ The Edge acceptance script edits and removes a real saved profile after actual
 synthetic engine runs, starts a new configured-model run, and verifies old report and
 receipt exports stay byte-identical. New desktop/narrow attribution screenshots must
 be reviewed with the exact-head report. No server alias or live API is verified.
+## Credential-mask lifecycle revision (0.1.1.dev9)
+
+Synthetic regressions cover memory replacement/removal, environment-reference and
+provider identity changes, old and newly recognized retained text, late replies,
+thinking/errors/receipts/diagnostics, completed-run continuation, full/selected/
+summary projections, atomic count/UTF-8 saturation and fixed safe error branches.
+Request recorders verify current auth with stable in-flight headers, current search
+credentials with frozen run destinations, and no stale memory-key inheritance when
+IDs or credential destinations are changed. No real keys or model APIs are used.
+
+The normal `python -m tools.benchmark_state` report retains its original fixture
+results and adds small-fixture registry measurements with four and 511 short values.
+These stress distinct-count lookup work, not maximum credential payload. The opt-in
+`python -m tools.benchmark_state --adversarial-redaction` uses 512 values occupying
+exactly 2 MiB: 511 near-4-KiB shared-prefix strings and one different-prefix string.
+It records registration, 24-KiB near-match masking, exact-match masking and whole-
+process peak RSS where available. A local Linux/CPython 3.12 run under a 256-MiB
+virtual-memory ceiling observed approximately 1.7 ms registration, 22 ms near-match
+masking and 35 MB peak whole-process RSS. These are synthetic observations, not a
+worst-case production-throughput or total-registry-memory guarantee.
+
+On the same local run, the four-value small fixture measured full/selected projection
+medians of approximately 0.76/0.46 ms; the 511-value fixture measured 30.50/16.98 ms.
+Authenticated HTTP medians were 1.81/1.42 ms and 31.16/18.15 ms respectively. Values,
+fixtures and initial-registration exclusions are recorded in the benchmark JSON.
+The additional masks have measurable cost; selected-state work remains proportional
+to the selected retained histories rather than all agents' heavy records.
+
+Independent review additionally compared 5,000 deterministic overlapping/literal
+cases against the intended leftmost-longest semantics. The previous regex candidate
+failed the mixed-prefix timeout probe and was removed; it is not the released design.
+
+Actual Windows Edge acceptance exercises credential replacement and environment-
+reference changes through real loopback APIs, synthetic response continuations,
+full/selected responses, UI text, clipboard and downloaded report/receipt attribution.
+Consult the exact-head CI JSON/screenshots for results. The evidence-only artifact
+allowlist remains unchanged; no packaged binaries are uploaded.

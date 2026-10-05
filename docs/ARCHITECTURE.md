@@ -173,3 +173,19 @@ of a publisher's declaration. No replacement text or alternate-codec retry is us
 Python legacy codecs are not claimed to be byte-identical to WHATWG decoders, and
 this extractor is neither a complete browser parser nor a universal encoding detector.
 No new dependency, remote detection service or model/browser call is added.
+## Credential-mask lifecycle (0.1.1.dev9)
+
+`Engine` owns an output-only `SecretRedactor`; authentication still comes from
+current `Settings` and explicitly resolved per-request keys. Config/secret routes
+prepare the union of current and prospective masks before mutating anything, then
+commit synchronously. Settings persistence failure does not commit masks or change
+memory credentials. Removing/changing a provider identity retires its memory auth;
+search uses a fresh per-dispatch tool copy with current auth and frozen run policy.
+
+The registry has count/payload limits and no eviction. Public tree projections take
+one current redactor and still omit unselected heavy histories before traversal.
+Literal `str.find` plus a bounded min-heap implements leftmost-longest substitution
+without regex-prefix stalls, unbounded match lists or replacement-marker rematching.
+Capacity errors use a fixed safe branch, including nested agent-error handling.
+No fallback serializes an unmasked state. See SECURITY.md for retained-memory,
+editable-config, private-conversation, file and previously-delivered-data exclusions.
