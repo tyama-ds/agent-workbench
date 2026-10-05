@@ -36,6 +36,10 @@ TEAM_TOOLS = [
     schema('release_paths', 'Release your own file reservations.', {'paths': {'type': 'array', 'items': STRING}}),
 ]
 TEAM_NAMES = {t['name'] for t in TEAM_TOOLS}
+WRITE_TOOLS = frozenset({'write_text', 'patch_text', 'docx_write', 'docx_edit', 'xlsx_write', 'pptx_write', 'pptx_edit'})
+RESULT_LIMIT = 20
+RECEIPT_LIMIT = 64
+RESULT_TEXT_LIMIT = 24000
 
 
 class CollaborationLimitError(ValueError):
@@ -60,11 +64,19 @@ class Agent:
     task: asyncio.Task | None = None
     closing: bool = False
     assignment: str = ''
+    results: deque = field(default_factory=lambda: deque(maxlen=RESULT_LIMIT))
+    output_receipts: deque = field(default_factory=lambda: deque(maxlen=RECEIPT_LIMIT))
+    results_omitted: int = 0
+    receipts_omitted: int = 0
+    result_revision: int = 0
 
     def public(self, *, message_eligibility=None, status_reason=None):
         return {k: getattr(self, k) for k in ('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id',
                                               'status', 'question', 'last_error', 'turns', 'assignment')} | {
                     'logs': list(self.logs),
+                    'results': list(self.results), 'output_receipts': list(self.output_receipts),
+                    'results_omitted': self.results_omitted, 'receipts_omitted': self.receipts_omitted,
+                    'result_revision': self.result_revision,
                     'status_reason': status_reason or ('human_input' if self.status == 'waiting' and self.question else self.status),
                     'message_eligibility': message_eligibility or {
                         'allowed': False, 'reason': 'unavailable', 'message': '実行情報を取得できません。'},
@@ -117,6 +129,25 @@ class Engine:
         self.sequence += 1
         agent.logs.append({'id': self.sequence, 'kind': kind, 'text': self.redact(str(value))[:24000],
                            'thinking': self.redact(thinking)[:50000], 'at': time.time()})
+
+    def record_result(self, agent, source, value, *, revision=None):
+        value = self.redact(value)
+        if not value:
+            return
+        self.sequence += 1
+        agent.results_omitted += int(len(agent.results) == RESULT_LIMIT)
+        agent.results.append({'id': self.sequence, 'source': source,
+                              'text': value[:RESULT_TEXT_LIMIT], 'truncated': len(value) > RESULT_TEXT_LIMIT,
+                              'at': time.time(), 'turn': agent.turns,
+                              'revision': agent.result_revision if revision is None else revision})
+
+    def record_receipt(self, agent, tool, result):
+        # Only the trusted executor's successful mutation return reaches here.
+        self.sequence += 1
+        agent.receipts_omitted += int(len(agent.output_receipts) == RECEIPT_LIMIT)
+        agent.output_receipts.append({'id': self.sequence, 'tool': tool, 'at': time.time(),
+                                     'turn': agent.turns, **self._redact_tree({key: result[key] for key in
+                                     ('path', 'bytes', 'sha256', 'operation')})})
 
     def active(self):
         return any(a.task and not a.task.done() for a in self.agents.values()) or any(r['status'] in {'running', 'waiting', 'stopping'} for r in self.runs.values())
@@ -182,6 +213,7 @@ class Engine:
 
     def enqueue(self, agent, content, *, human=False):
         self._check_queue(agent, human=human)
+        agent.result_revision += 1
         if human:
             position = next((i for i, (_, is_human) in enumerate(agent.pending) if not is_human), len(agent.pending))
             agent.pending.insert(position, (content, True))
@@ -292,6 +324,9 @@ class Engine:
                 self.log(agent, 'user' if human else 'mail', content)
                 agent.conversation.append({'role': 'user', 'content': content})
                 summary = ''
+                terminal_response = None
+                turn_revision = agent.result_revision
+                agent._turn_revision = turn_revision
                 while not agent.closing:
                     elapsed = time.time() - run['created_at']
                     if elapsed >= limits['max_run_seconds'] or run['model_calls'] >= limits['max_model_calls']:
@@ -317,6 +352,7 @@ class Engine:
                                                 'tool_calls': reply.tool_calls, 'provider_raw': reply.raw})
                     summary = reply.text or summary
                     if not reply.tool_calls:
+                        terminal_response = reply.text
                         break
                     stop = False
                     exhausted = ''
@@ -358,6 +394,8 @@ class Engine:
                     break
                 children = [self.agents[a] for a in run['agent_ids'] if self.agents[a].parent_id == agent.id]
                 agent.status = 'idle' if children and any(a.status not in {'done', 'stopped'} for a in children) else 'done'
+                if terminal_response:
+                    self.record_result(agent, 'assistant_response', terminal_response, revision=turn_revision)
                 if agent.parent_id:
                     parent = self.agents[agent.parent_id]
                     if not parent.closing:
@@ -468,6 +506,7 @@ class Engine:
                     for x in run['agent_ids'] if x != agent.id):
                 raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
             self.log(agent, 'result', summary)
+            self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
             return {'ok': True, 'summary': summary}
         if name in {'reserve_paths', 'release_paths'}:
             paths = args.get('paths', [])
@@ -490,9 +529,11 @@ class Engine:
         # meaningful for cooperating agents; no arbitrary shell is available.
         async with self.lock:
             if isinstance(args.get('path'), str):
-                writing = name in {'write_text', 'patch_text', 'docx_write', 'docx_edit', 'xlsx_write', 'pptx_write', 'pptx_edit'}
+                writing = name in WRITE_TOOLS
                 candidate = run['_harness'].resolve(args['path'], write=writing, must_exist=False)
                 self._check_reservation(agent, candidate)
+            if name in WRITE_TOOLS:
+                return await run['_executor'].execute(name, args, on_complete=lambda result: self.record_receipt(agent, name, result))
             return await run['_executor'].execute(name, args)
 
     def _reservation_path(self, run, value, write=True):

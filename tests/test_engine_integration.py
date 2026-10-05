@@ -229,6 +229,9 @@ async def test_real_engine_stop_drains_file_write_before_releasing_reservation(t
             assert run["status"] == "stopped" and engine.reservations == {} and not engine.lock.locked()
             assert path.read_text(encoding="utf-8") == "Settled before stopped"
             assert len(requests) == 1
+            pm = engine.agents[run['agent_ids'][0]]
+            assert len(pm.output_receipts) == 1 and pm.output_receipts[0]['path'] == str(path)
+            assert not pm.results
         finally:
             release.set()
             if stopping:

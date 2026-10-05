@@ -54,7 +54,7 @@ const PROFILE_FIELDS = [
 const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機'};
 const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
-const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,drafts:new Map(),logSignature:'',busyMessage:false};
+const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,drafts:new Map(),logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:''};
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -253,7 +253,97 @@ function renderAgents(agents) {
     card.addEventListener('click',()=>selectAgent(agent.id));$('agentCards').appendChild(card);
   });
 }
+function outputRecords(agent) {
+  const reports=Array.isArray(agent?.results)?agent.results:[],receipts=Array.isArray(agent?.output_receipts)?agent.output_receipts:[];
+  return [...reports.slice().reverse().map(record=>({key:`result:${record.id}`,kind:'result',record})),...receipts.slice().reverse().map(record=>({key:`receipt:${record.id}`,kind:'receipt',record}))];
+}
+function outputOwner() { return JSON.stringify([ui.selectedRun,ui.selectedAgent]); }
+function selectedOutput() { return outputRecords(getAgent()).find(item=>item.key===ui.outputSelections.get(outputOwner()))||null; }
+function historicalResult(agent,result) {
+  return result.revision!==agent.result_revision||result.turn!==agent.turns||['queued','working','running','waiting','waiting_human','needs_input','stopping'].includes(agent.status);
+}
+function resultSource(result) { return result.source==='finish_work'?'完了報告':'最終応答'; }
+function resultSourceTag(result) { return result.source==='finish_work'?'finish_work':'assistant_response'; }
+function resultPosition(agent,result) { return historicalResult(agent,result)?'過去の報告':'このターンの報告'; }
+function outputTimestamp(value) {
+  const date=new Date(typeof value==='number'?(value<1e12?value*1000:value):value);
+  return value===undefined||value===null||Number.isNaN(date.getTime())?'時刻なし':date.toISOString();
+}
+function receiptText(receipt) {
+  return [`パス: ${receipt.path??''}`,`保存操作: ${receipt.operation==='updated'?'更新':'新規作成'}`,`ツール: ${receipt.tool??''}`,`保存時のサイズ: ${receipt.bytes??'不明'} bytes`,`保存時の SHA-256: ${receipt.sha256??'不明'}`].join('\n');
+}
+function exportOutputText(agent,item) {
+  const record=item.record,heading=item.kind==='result'?'モデルの報告':'ファイル保存記録';
+  const meta=[heading,`時刻: ${outputTimestamp(record.at)}`,`ターン: ${record.turn??'不明'}`];
+  if(item.kind==='result')meta.push(`出典: ${resultSource(record)}（${resultSourceTag(record)}）`,`状態: ${resultPosition(agent,record)}`,`本文の省略: ${record.truncated?'あり（保持された範囲のみ）':'なし'}`,'モデルによる報告です。内容の正しさや作業の完了を検証したものではありません。');
+  else meta.push('保存時点の記録です。現在のファイルの存在・内容は未確認です。ファイル本体は含みません。');
+  return meta.join('\n')+'\n\n'+(item.kind==='result'?String(record.text??''):receiptText(record))+'\n';
+}
+function syncOutputContext(item) {
+  const context=JSON.stringify([ui.selectedRun,ui.selectedAgent,item?.key??null]);
+  if(context!==ui.outputContext){ui.outputContext=context;ui.outputRequest++;inlineStatus($('resultActionStatus'),'');}
+}
+function renderResults(agent) {
+  const records=outputRecords(agent),owner=outputOwner();
+  if(!records.some(item=>item.key===ui.outputSelections.get(owner)))ui.outputSelections.set(owner,records[0]?.key??null);
+  const selected=records.find(item=>item.key===ui.outputSelections.get(owner))||null;
+  const previousContext=ui.outputContext;syncOutputContext(selected);
+  $('resultsPanel').hidden=!agent;
+  const signature=JSON.stringify([owner,selected?.key,agent?.result_revision,agent?.turns,agent?.status,records,agent?.results_omitted,agent?.receipts_omitted]);
+  if(signature===ui.outputSignature)return;ui.outputSignature=signature;
+  const results=records.filter(item=>item.kind==='result'),receipts=records.filter(item=>item.kind==='receipt');
+  $('resultsCount').textContent=`報告 ${results.length} · 保存 ${receipts.length}`;
+  const select=$('resultSelection'),scroll=previousContext===ui.outputContext?$('resultText').scrollTop:0,panelScroll=$('resultsPanel').scrollTop;
+  select.replaceChildren();
+  for(const [label,items] of [['モデルの報告（新しい順）',results],['ファイル保存記録（新しい順）',receipts]]) {
+    if(!items.length)continue;
+    const group=element('optgroup');group.label=label;
+    for(const item of items){const record=item.record,title=item.kind==='result'?`${resultPosition(agent,record)} · ${resultSource(record)}${record.truncated?' · 本文省略あり':''}`:`保存時の記録 · ${record.path??''}`;const option=element('option','',`${title} · turn ${record.turn??'?'}${localTime(record.at)?' · '+localTime(record.at):''}`);option.value=item.key;group.appendChild(option);}
+    select.appendChild(group);
+  }
+  if(!selected){const option=element('option','','まだ報告・保存記録はありません');option.value='';select.appendChild(option);}
+  select.value=selected?.key??'';select.disabled=!selected;$('copyResult').disabled=!selected;$('exportResult').disabled=!selected;
+  $('copyResult').textContent=selected?.kind==='receipt'?'パスをコピー':'本文をコピー';
+  $('exportResult').textContent=selected?.kind==='receipt'?'記録を .txt 保存':'報告を .txt 保存';
+  const omissions=[];
+  if(Number(agent?.results_omitted)>0)omissions.push(`古い報告 ${agent.results_omitted} 件`);
+  if(Number(agent?.receipts_omitted)>0)omissions.push(`古い保存記録 ${agent.receipts_omitted} 件`);
+  $('resultsOmitted').textContent=omissions.length?`保持上限により省略: ${omissions.join('、')}`:'';$('resultsOmitted').hidden=!omissions.length;
+  const record=selected?.record;
+  $('resultMeta').textContent=!selected?'':selected.kind==='result'?`${resultPosition(agent,record)} · ${resultSource(record)}（${resultSourceTag(record)}） · turn ${record.turn??'?'} · ${outputTimestamp(record.at)}${record.truncated?' · 本文省略あり（保持された範囲のみ）':''}`:`保存時の記録 · turn ${record.turn??'?'} · ${outputTimestamp(record.at)}`;
+  $('resultNotice').textContent=!selected?'報告や対応ツールによる保存記録が届くと、ここで確認できます。':selected.kind==='result'?'モデルによる報告です。内容の正しさや作業の完了を検証したものではありません。':'保存時点の記録です。現在のファイルの存在・内容は未確認です。ファイル本体のダウンロードはできません。';
+  $('resultText').textContent=!selected?'':selected.kind==='result'?String(record.text??''):receiptText(record);
+  $('resultText').hidden=!selected;
+  $('resultText').scrollTop=scroll;$('resultsPanel').scrollTop=panelScroll;
+}
+function beginOutputAction(item) {
+  return {run:ui.selectedRun,agent:ui.selectedAgent,key:item.key,request:++ui.outputRequest};
+}
+function outputActionCurrent(action) {
+  return action.request===ui.outputRequest&&action.run===ui.selectedRun&&action.agent===ui.selectedAgent&&action.key===selectedOutput()?.key;
+}
+function outputFeedback(action,text,error=false) { if(outputActionCurrent(action))inlineStatus($('resultActionStatus'),text,error); }
+async function copySelectedOutput() {
+  const item=selectedOutput();if(!item)return;const action=beginOutputAction(item),path=item.kind==='receipt';
+  outputFeedback(action,'コピーしています…');
+  try {
+    if(!navigator.clipboard?.writeText)throw new Error('Clipboard API unavailable');
+    await navigator.clipboard.writeText(String(path?item.record.path??'':item.record.text??''));
+    outputFeedback(action,path?'パスをコピーしました。':'本文をコピーしました。');
+  }catch(_){outputFeedback(action,'コピーできませんでした。表示されたテキストを選択してコピーするか、.txt 保存を使ってください。',true);}
+}
+function downloadPlainText(text,filename) {
+  const blob=new Blob([text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob);let link;
+  try {link=element('a');link.href=url;link.download=filename;link.hidden=true;document.body.appendChild(link);link.click();}
+  finally {link?.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
+}
+function exportSelectedOutput() {
+  const item=selectedOutput(),agent=getAgent();if(!item||!agent)return;const action=beginOutputAction(item);
+  try {downloadPlainText(exportOutputText(agent,item),item.kind==='receipt'?'workbench-save-receipt.txt':'workbench-result.txt');outputFeedback(action,'選択した記録の .txt ダウンロードを開始しました（UTF-8）。');}
+  catch(_){outputFeedback(action,'.txt ダウンロードを開始できませんでした。表示されたテキストを選択してコピーしてください。',true);}
+}
 function renderConversation(agent) {
+  renderResults(agent);
   const available=Boolean(agent),run=getRun();$('messageForm').hidden=!available;
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
   $('conversationMeta').textContent=agent?`${!agent.parent_id?'PM':'作業者'} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
@@ -330,6 +420,8 @@ async function pollState(fresh=false) {
   })();return ui.pollPromise;
 }
 async function initialize() {
+  $('resultSelection').addEventListener('change',()=>{ui.outputSelections.set(outputOwner(),$('resultSelection').value);renderResults(getAgent());$('resultText').scrollTop=0;});
+  $('copyResult').addEventListener('click',copySelectedOutput);$('exportResult').addEventListener('click',exportSelectedOutput);
   $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',()=>showView('settings'));
   $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));
   for(const id of ['newRun','launchTask','emptyNewRun'])$(id).addEventListener('click',()=>setBriefOpen(true));

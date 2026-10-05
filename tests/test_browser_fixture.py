@@ -37,3 +37,28 @@ async def test_browser_fixture_exercises_real_engine(tmp_path):
         assert not engine.active()
     finally:
         await engine.close()
+
+
+async def test_browser_fixture_has_actual_saved_receipt_and_terminal_response(tmp_path):
+    settings = Settings(tmp_path / 'state')
+    workspace = tmp_path / 'files'
+    workspace.mkdir()
+    settings.value['providers'][0]['model'] = 'synthetic-no-network'
+    settings.value['paths']['write_roots'] = [str(workspace)]
+    engine = Engine(settings, client=SyntheticClient())
+    try:
+        await engine.start_run({'task': '[SYNTHETIC] Save result.', 'pm_profile': 'local',
+                                'worker_profiles': ['local'], 'max_workers': 0})
+        for _ in range(100):
+            await asyncio.sleep(.01)
+            if not engine.active():
+                break
+        agent = engine.snapshot()['agents'][0]
+        assert len(agent['results']) == len(agent['output_receipts']) == 1
+        assert agent['results'][0]['source'] == 'assistant_response'
+        assert agent['results'][0]['text'] == '[SYNTHETIC] Terminal answer 日本語.'
+        assert 'PRIVATE' not in str(agent['results'])
+        assert agent['output_receipts'][0]['path'] == str(workspace / 'browser-result.txt')
+        assert (workspace / 'browser-result.txt').read_text(encoding='utf-8') == '[SYNTHETIC] Saved text 日本語.'
+    finally:
+        await engine.close()

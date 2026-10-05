@@ -121,3 +121,43 @@ assertion cover the combined stopped/limit state.
 Final exact-head CI and screenshot evidence is recorded in the cycle handoff. Historical
 cycle 1 browser evidence above remains tied to its named commits and is not reused as
 proof for this cycle's changes.
+
+## Cycle 3 — Current-session results and save receipts (0.1.1.dev3)
+
+### Implemented scope
+
+- Keep terminal no-tool assistant responses separate from explicit `finish_work` reports.
+  Both are model-authored text, not factual verification. Intermediate narration,
+  questions, cancelled turns and errors do not become terminal responses.
+- Keep the latest 20 reports (24,000 characters each) and 64 actual file-save receipts
+  per agent, separately from the existing 200 log entries. Show retention omissions
+  and text truncation explicitly. Records remain in memory for this server session.
+- Save receipts come only from successful text/Office tool operations and include the
+  actual path, saved byte count, SHA-256, tool, agent/turn, timestamp and create/update
+  mode from the validated preimage. The completion observer runs on the event loop,
+  including successful writes drained during Stop. Receipt observer failure cannot
+  turn a committed save into an apparent save failure.
+- A saved hash identifies bytes at save time, not the current path contents or factual
+  correctness. No file existence/readability/download promise and no new filesystem
+  route. Write-only scope remains write-only. Resume makes prior responses historical.
+- Copy/export is an explicit action on selected redacted public text/receipt metadata.
+  Exports are plain UTF-8 text, with no hidden reasoning, provider protocol, settings,
+  automatic persistence, backups or telemetry. Async clipboard feedback is selection-
+  and request-scoped. No Office bytes are copied or downloaded by this feature.
+
+### Research decisions
+
+[W3C PROV-DM](https://www.w3.org/TR/2013/REC-prov-dm-20130430/): adopt the small relationship
+between output identity, producing activity and responsible agent. Provenance informs
+trust assessment; it does not certify content. Record create/update from successful
+operations and preserve save-time hashes. Defer RDF/PROV serialization and source graphs.
+
+Defer file retrieval: a later feature needs opaque receipt IDs, fresh allowed-read and
+path/link checks plus hash validation of the exact bytes returned, with changed,
+missing and inaccessible states distinguished. Reject arbitrary filesystem path routes,
+model-inferred file receipts, automatic archives and persistent history.
+
+### Verification
+
+Final tests, exact-head Windows/Edge CI and screenshot review are recorded in the cycle
+handoff. Earlier cycle evidence does not prove this feature's implementation.

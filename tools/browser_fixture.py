@@ -28,7 +28,14 @@ class SyntheticClient:
         count = self.calls.get(ident, 0)
         self.calls[ident] = count + 1
         calls = []
-        if messages and messages[0].get('content') == '[SYNTHETIC] Complete immediately.':
+        if messages and messages[0].get('content') == '[SYNTHETIC] Save result.':
+            if count == 0:
+                calls = [('write_text', {'path': str(Path(identity['write_roots'][0]) / 'browser-result.txt'),
+                                        'text': '[SYNTHETIC] Saved text 日本語.', 'expected_sha256': 'missing'})]
+            else:
+                return ModelReply(text='[SYNTHETIC] Terminal answer 日本語.', thinking='PRIVATE-REASONING-FIXTURE',
+                                  tool_calls=[], usage={}, raw={'protocol': 'PRIVATE-PROTOCOL-FIXTURE'})
+        elif messages and messages[0].get('content') == '[SYNTHETIC] Complete immediately.':
             calls = []
         elif identity['parent_id']:
             calls = [('finish_work', {'summary': '[SYNTHETIC] Worker review complete.'})]

@@ -119,3 +119,22 @@ Verified locally on Linux / CPython 3.12.14 after the cockpit revision:
 - Independent review additionally passed 34 synthetic file-boundary/race checks. This conservative known-format guard is not a universal file-format classifier; keep important originals read-only.
 
 The DOM smoke uses simulated dialog APIs and is not visual/browser acceptance. Real browser rendering and real Windows execution were not rerun for this file-safety-only revision; the limits recorded in `GUI_REDESIGN.md` still apply. No live model services, user-PC changes, GitHub push, merge or release were performed.
+
+## Current-session results revision (0.1.1.dev3)
+
+Local Linux verification: **312 passed, 4 Windows-only checks skipped**. Added tests cover
+actual receipts for all seven writing tools, create/update identity, failed-write
+exclusion, write-only isolation, bounded/redacted retention, terminal replies versus
+intermediate narration, resumed response history, idle PM replies, and successful or
+failed cancellation-drained writes. Observer failure does not change saved-file success.
+Frontend tests cover text-only rendering/export, omissions, historical status,
+selection preservation, latest-request clipboard feedback and failed-download cleanup.
+`pip check`, JavaScript syntax, compileall, `git diff --check` and the optional jsdom
+smoke pass. DOM shims are not browser rendering evidence.
+
+The Edge acceptance script additionally checks actual engine-produced save receipts and
+terminal answers, native clipboard copy, downloaded UTF-8 text, repeated exports,
+selection races, pending-copy rejection, draft retention and desktop/narrow layouts.
+Local Chromium could not start under this container's socket restriction, so these real
+browser assertions require the exact-head Windows Edge CI run and its screenshots.
+No real model service, billable inference or private user files are used.
