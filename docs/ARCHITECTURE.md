@@ -73,3 +73,27 @@ may subsequently hit a limit. Existing permission checks and loop budget checks 
 Tool-budget exhaustion permits a text-only answer and is shown as a warning. Automatic
 collaboration exhaustion also permits human direction; neither kind of reply refills any
 budget. Starting a new run is required for changed configuration or fresh hard budgets.
+
+### Selected-detail state projection (0.1.1.dev6)
+
+`GET /api/state` retains the complete original snapshot contract. The cockpit uses
+`GET /api/state?view=selected&run_id=...&agent_id=...`. Every run and every agent's
+public metadata remains present; only the selected agent includes `logs`, `results`
+and `output_receipts`. Omission means unloaded, never an empty retained history.
+`selection` explicitly identifies the requested run/agent and `detail_loaded` state.
+Without IDs the response contains summaries; run-only selection includes activity.
+Unknown or mismatched IDs are rejected. Activity is filtered to the selected run
+before taking its last 100 events, in chronological transport order.
+
+Both projections independently redact the data they expose. Unselected histories
+are not materialized or visited; conversation context remains private. All metadata
+and message eligibility are freshly evaluated, including deadline changes without
+new events. Authentication, origin checks, `no-store`, and the public configuration
+endpoint are unchanged. The compact view is not an authorization boundary between
+agents: the authenticated user can still request the full snapshot.
+
+Frontend response ownership includes a monotonically changing selection generation.
+Returning to the same IDs does not authorize an older request. Polling remains
+single-flight and refreshes the current selection after superseded work completes.
+A new selection displays a loading state and cannot copy/export another owner's
+content. Successful unchanged refreshes preserve existing detail and control nodes.

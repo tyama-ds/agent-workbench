@@ -22,3 +22,6 @@ dialog{color:var(--ink);background:#131921;border:1px solid #54504a;border-radiu
 .readiness-scope summary{cursor:pointer;font-size:12px}
 .readiness-pending{display:inline-block;width:4em;margin-left:8px;font-size:11px;font-weight:400;color:var(--muted)}
 #preflightStatus[aria-busy="true"]{opacity:.65}
+
+.detail-status{flex:none;padding:9px 14px;color:#c7bb9e;background:#1d2025;border-bottom:1px solid var(--line);font-size:11px;line-height:1.8;overflow-wrap:anywhere}
+.detail-loading{padding:20px 13px;color:#b8b2a3;font-size:11px;line-height:1.9}

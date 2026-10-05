@@ -94,7 +94,6 @@ def test_run_and_reply_preserve_exact_visible_text_and_default_thinking_is_colla
     assert "detail.open=expanded.has(id)" in APP
     assert "$('messageInput').value===text" in APP
     assert "ui.drafts.get(id)||''" in APP
-    assert "if(ui.polling){await ui.pollPromise;if(fresh)return pollState();return;}" in APP
 
 
 def test_cockpit_has_unique_targets_and_original_local_assets():

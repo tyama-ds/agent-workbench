@@ -183,3 +183,46 @@ The native redistribution review is unresolved. Evaluation-only mode explicitly
 records that blocker and incomplete interpreter-native notice/provenance review; it
 does not weaken available-file checksum checks or establish distribution readiness.
 Both success and failure uploads use an explicit non-binary evidence allowlist.
+
+## Selected-detail polling revision (0.1.1.dev6)
+
+The unchanged full endpoint and the new selected endpoint are measured through a
+real authenticated loopback HTTP server by `python -m tools.benchmark_state`.
+Fixtures use the repeating seven-character text `調査abcde`, empty thinking,
+160-character tasks/assignments/events, and a private 20,000-character conversation
+per agent. Agents are done, not stopped, with turn 10 below limit 100 and a frozen
+fresh creation clock below the 86,400-second budget. Both projections therefore
+perform real conversation eligibility serialization; no earlier blocker skips it.
+Receipts are deterministic synthetic metadata. No model client is constructed.
+
+Measured on local Linux/CPython 3.12, seven warmed repetitions per operation:
+
+| Fixture | Full body bytes | Selected body bytes | Reduction | Snapshot ms, full / selected | JSON ms, full / selected | HTTP ms, full / selected |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Small: 1 run × 3 agents; each 40 logs × 400 chars, 2 reports × 2,000 chars, 4 receipts; 60 events | 190,294 | 84,795 | 55.440% | 3.302 / 1.420 | 0.331 / 0.158 | 4.541 / 2.609 |
+| Medium: 5 runs × 5 agents; each 120 logs × 800 chars, 10 reports × 6,000 chars, 24 receipts; 500 events | 10,143,889 | 465,882 | 95.407% | 60.184 / 6.992 | 27.120 / 1.110 | 117.619 / 8.707 |
+| Report cap: 1 run × 5 agents; each 200 logs × 800 chars, 20 reports × 24,000 chars, 64 receipts; 200 events | 8,037,187 | 1,639,950 | 79.595% | 17.494 / 4.731 | 13.611 / 2.475 | 51.811 / 9.628 |
+
+Body sizes are actual uncompressed JSON response bytes, including aiohttp's default
+ASCII escapes, excluding headers/TCP. Snapshot time includes fresh metadata,
+eligibility and redaction; JSON time serializes a prebuilt projection and excludes
+UTF-8 encoding. HTTP timing includes projection/serialization and full response
+read, excluding JSON parsing or browser rendering. Medians are independent samples,
+not values that must sum. The standalone CLI applied a 256 MiB virtual address-space
+ceiling, not a claim that it measured peak memory. These bounded synthetic results
+are not global worst-case or Windows production-performance guarantees. Slight byte
+differences from the earlier planning estimates reflect fixed reproducible fixtures.
+
+Regression coverage includes selected/full field parity, omitted-history traversal
+sentinels, event filtering before the visible limit, redaction, unchanged default
+API/authentication/no-store, time-only eligibility transitions, explicit loading,
+deferred selection ownership, and DOM stability. Windows Edge acceptance must run
+against the exact published head; local Chromium launch in this container was blocked
+by its socket restrictions, including after an approved launch attempt. DOM shims
+are not a substitute for browser layout evidence.
+
+Local aggregate: **547 passed, 6 Windows-only skips**, plus dependency consistency,
+JavaScript syntax, whitespace and optional DOM smoke. Independent review additionally
+ran focused API and deferred-frontend suites without a source blocker. The Windows
+browser job also records its own bounded benchmark JSON beside screenshots; consult
+that exact-head artifact rather than extrapolating the Linux timing table.

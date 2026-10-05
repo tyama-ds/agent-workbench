@@ -54,7 +54,7 @@ const PROFILE_FIELDS = [
 const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機'};
 const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
-const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,drafts:new Map(),logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
+const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,selectionGeneration:0,compactState:false,loadedDetail:null,loadedEventsRun:null,detailError:false,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,pollAgain:false,drafts:new Map(),conversationViews:new Map(),logContext:'',logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -72,7 +72,7 @@ function localTime(value) {
   return Number.isNaN(date.getTime())?'':date.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});
 }
 function getRun() { return ui.state.runs.find(run=>run.id===ui.selectedRun)||null; }
-function getAgent() { return ui.state.agents.find(agent=>agent.id===ui.selectedAgent)||null; }
+function getAgent() { return ui.state.agents.find(agent=>agent.id===ui.selectedAgent&&agent.run_id===ui.selectedRun)||null; }
 function errorText(error) { return error&&error.message?error.message:String(error||'処理に失敗しました'); }
 function notice(text,error=false) { $('globalNotice').hidden=!text;$('globalNotice').textContent=text;$('globalNotice').classList.toggle('error',error); }
 function inlineStatus(node,text,error=false) { node.textContent=text;node.classList.toggle('error',error); }
@@ -288,8 +288,22 @@ function renderAgentTabs(agents) {
   agents.forEach(agent=>{const button=element('button','agent-tab'+(agent.id===ui.selectedAgent?' active':''),`${!agent.parent_id?'◉':'○'} ${agent.name||agent.id}`);button.type='button';button.dataset.focusKey=`tab:${agent.id}`;button.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));button.addEventListener('click',()=>selectAgent(agent.id));tabs.appendChild(button);});
 }
 function saveAgentDraft() { if(ui.selectedAgent)ui.drafts.set(ui.selectedAgent,$('messageInput').value); }
-function selectAgent(id) { if(ui.selectedAgent!==id){saveAgentDraft();ui.selectedAgent=id;$('messageInput').value=ui.drafts.get(id)||'';ui.logSignature='';inlineStatus($('messageStatus'),'');}renderRun(); }
-function selectRun(id) { saveAgentDraft();ui.selectedRun=id;const agents=ui.state.agents.filter(agent=>agent.run_id===id);ui.selectedAgent=agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null;$('messageInput').value=ui.drafts.get(ui.selectedAgent)||'';ui.logSignature='';inlineStatus($('messageStatus'),'');showView('work');setBriefOpen(false);renderState(); }
+function rememberConversationView() {
+  if(!ui.logContext)return;
+  const container=$('conversationLog');
+  ui.conversationViews.set(ui.logContext,{scroll:container.scrollTop,atBottom:container.scrollHeight-container.scrollTop-container.clientHeight<70,expanded:new Set([...container.querySelectorAll('details[open]')].map(node=>node.dataset.logId))});
+}
+function changeSelection(runId,id) {
+  if(ui.selectedRun===runId&&ui.selectedAgent===id)return false;
+  saveAgentDraft();rememberConversationView();ui.selectedRun=runId;ui.selectedAgent=id;
+  // An epoch, rather than an ID comparison, also rejects an old A response after A → B → A.
+  ui.selectionGeneration++;ui.loadedDetail=null;ui.detailError=false;ui.logContext='';ui.logSignature='';ui.outputRequest++;
+  if(ui.polling)ui.pollAgain=true;
+  $('messageInput').value=ui.drafts.get(id)||'';inlineStatus($('messageStatus'),'');inlineStatus($('resultActionStatus'),'');
+  return true;
+}
+function selectAgent(id) { if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;const changed=changeSelection(ui.selectedRun,id);renderRun();if(changed)void pollState(); }
+function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;const agents=ui.state.agents.filter(agent=>agent.run_id===id),changed=changeSelection(id,agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null);inlineStatus($('messageStatus'),'');showView('work');setBriefOpen(false);renderState();if(changed)void pollState(); }
 
 function renderRunList() {
   const signature=JSON.stringify([ui.selectedRun,ui.state.runs.map(run=>[run.id,run.task,run.status,run.status_reason,run.created_at])]);if(signature===ui.runsSignature)return;ui.runsSignature=signature;
@@ -301,7 +315,7 @@ const REASON_LABELS = {human_input:'回答待ち',teammates:'作業者待ち',te
 function stateLabel(item) { return REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
 function badge(status,reason) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),REASON_LABELS[reason]||statusLabel(status)); }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(({logs,...agent})=>agent),ui.config?.providers]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.status,agent.status_reason,agent.assignment,agent.question,agent.last_error]),ui.config?.providers]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   filteredAgents(agents).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
@@ -315,8 +329,11 @@ function outputRecords(agent) {
   const reports=Array.isArray(agent?.results)?agent.results:[],receipts=Array.isArray(agent?.output_receipts)?agent.output_receipts:[];
   return [...reports.slice().reverse().map(record=>({key:`result:${record.id}`,kind:'result',record})),...receipts.slice().reverse().map(record=>({key:`receipt:${record.id}`,kind:'receipt',record}))];
 }
+function agentDetailLoaded(agent) {
+  return Boolean(agent)&&(!ui.compactState||(ui.loadedDetail?.generation===ui.selectionGeneration&&ui.loadedDetail.run===ui.selectedRun&&ui.loadedDetail.agent===agent.id));
+}
 function outputOwner() { return JSON.stringify([ui.selectedRun,ui.selectedAgent]); }
-function selectedOutput() { return outputRecords(getAgent()).find(item=>item.key===ui.outputSelections.get(outputOwner()))||null; }
+function selectedOutput() { const agent=getAgent();return agentDetailLoaded(agent)?outputRecords(agent).find(item=>item.key===ui.outputSelections.get(outputOwner()))||null:null; }
 function historicalResult(agent,result) {
   return result.revision!==agent.result_revision||result.turn!==agent.turns||['queued','working','running','waiting','waiting_human','needs_input','stopping'].includes(agent.status);
 }
@@ -338,10 +355,17 @@ function exportOutputText(agent,item) {
   return meta.join('\n')+'\n\n'+(item.kind==='result'?String(record.text??''):receiptText(record))+'\n';
 }
 function syncOutputContext(item) {
-  const context=JSON.stringify([ui.selectedRun,ui.selectedAgent,item?.key??null]);
+  const context=JSON.stringify([ui.selectedRun,ui.selectedAgent,ui.selectionGeneration,item?.key??null]);
   if(context!==ui.outputContext){ui.outputContext=context;ui.outputRequest++;inlineStatus($('resultActionStatus'),'');}
 }
 function renderResults(agent) {
+  if(agent&&!agentDetailLoaded(agent)) {
+    syncOutputContext(null);$('resultsPanel').hidden=false;
+    const signature=JSON.stringify([outputOwner(),ui.selectionGeneration,'loading']);if(signature===ui.outputSignature)return;ui.outputSignature=signature;
+    $('resultsCount').textContent='読み込み中';const option=element('option','','成果・保存記録を読み込み中…');option.value='';$('resultSelection').replaceChildren(option);$('resultSelection').disabled=true;
+    $('copyResult').disabled=true;$('exportResult').disabled=true;$('resultMeta').textContent='';$('resultText').textContent='';$('resultText').hidden=true;$('resultsOmitted').textContent='';$('resultsOmitted').hidden=true;
+    $('resultNotice').textContent='選択したエージェントの成果・保存記録を取得しています。';return;
+  }
   const records=outputRecords(agent),owner=outputOwner();
   if(!records.some(item=>item.key===ui.outputSelections.get(owner)))ui.outputSelections.set(owner,records[0]?.key??null);
   const selected=records.find(item=>item.key===ui.outputSelections.get(owner))||null;
@@ -375,10 +399,10 @@ function renderResults(agent) {
   $('resultText').scrollTop=scroll;$('resultsPanel').scrollTop=panelScroll;
 }
 function beginOutputAction(item) {
-  return {run:ui.selectedRun,agent:ui.selectedAgent,key:item.key,request:++ui.outputRequest};
+  return {run:ui.selectedRun,agent:ui.selectedAgent,generation:ui.selectionGeneration,key:item.key,request:++ui.outputRequest};
 }
 function outputActionCurrent(action) {
-  return action.request===ui.outputRequest&&action.run===ui.selectedRun&&action.agent===ui.selectedAgent&&action.key===selectedOutput()?.key;
+  return action.request===ui.outputRequest&&action.generation===ui.selectionGeneration&&action.run===ui.selectedRun&&action.agent===ui.selectedAgent&&action.key===selectedOutput()?.key;
 }
 function outputFeedback(action,text,error=false) { if(outputActionCurrent(action))inlineStatus($('resultActionStatus'),text,error); }
 async function copySelectedOutput() {
@@ -403,6 +427,11 @@ function exportSelectedOutput() {
 function renderConversation(agent) {
   renderResults(agent);
   const available=Boolean(agent),run=getRun();$('messageForm').hidden=!available;
+  const loaded=agentDetailLoaded(agent),loading=available&&!loaded,detailStatus=$('detailStatus');
+  detailStatus.hidden=!loading;
+  const detailMessage=loading?(ui.detailError?'詳細を取得できませんでした。接続を確認しながら再試行しています。':'選択したエージェントのログと成果を読み込み中…'):'';
+  if(detailStatus.textContent!==detailMessage)detailStatus.textContent=detailMessage;
+  $('conversationLog').setAttribute('aria-busy',String(loading));$('resultsPanel').setAttribute('aria-busy',String(loading));
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
   $('conversationMeta').textContent=agent?`${!agent.parent_id?'PM':'作業者'} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
   $('conversationStatus').hidden=!agent;
@@ -414,10 +443,12 @@ function renderConversation(agent) {
   $('sendMessage').disabled=!agent||ui.busyMessage||blocked;$('messageInput').disabled=!agent||blocked;
   $('messageEligibility').textContent=eligibility?.message||(stopping?'停止したチームは再開できません。新しい仕事を開始してください':'');
   $('messageEligibility').hidden=!$('messageEligibility').textContent;
-  const logs=Array.isArray(agent?.logs)?agent.logs:[],signature=JSON.stringify([agent?.id,logs]);
+  const logs=loaded&&Array.isArray(agent?.logs)?agent.logs:[],signature=JSON.stringify([ui.selectedRun,agent?.id,loading,logs]);
   if(signature===ui.logSignature)return;ui.logSignature=signature;
-  const container=$('conversationLog'),atBottom=container.scrollHeight-container.scrollTop-container.clientHeight<70;
-  const expanded=new Set([...container.querySelectorAll('details[open]')].map(node=>node.dataset.logId));container.replaceChildren();
+  rememberConversationView();
+  const container=$('conversationLog'),context=outputOwner(),view=ui.conversationViews.get(context),atBottom=view?.atBottom??true,expanded=view?.expanded||new Set();container.replaceChildren();
+  ui.logContext=loaded?context:'';
+  if(loading){container.appendChild(element('div','detail-loading','作業ログを読み込み中…'));return;}
   if(!logs.length){container.appendChild(element('div','empty-small',agent?'まだログはありません。作業が進むとここに表示されます。':'エージェントを選ぶと、作業の経過が表示されます。'));return;}
   logs.forEach((log,index)=>{
     const id=String(log.id??index),kind=String(log.kind||'assistant');
@@ -427,16 +458,20 @@ function renderConversation(agent) {
     meta.append(element('span','log-role',({user:'あなた',assistant:agent.name||'エージェント',tool:'ツール',system:'システム',error:'エラー'})[kind]||kind),element('span','',localTime(log.at)));
     entry.append(meta,element('pre','log-text',log.text));container.appendChild(entry);
   });
-  if(atBottom)container.scrollTop=container.scrollHeight;
+  container.scrollTop=atBottom?container.scrollHeight:(view?.scroll||0);
 }
 function renderActivity(run) {
-  const feed=$('activityFeed'),events=ui.state.events.filter(event=>event.run_id===run.id).slice(-100).reverse();feed.replaceChildren();
+  const feed=$('activityFeed'),loading=Boolean(run)&&ui.compactState&&ui.loadedEventsRun!==run.id,events=!run||loading?[]:ui.state.events.filter(event=>event.run_id===run.id).slice(-100).reverse();
+  const signature=JSON.stringify([run?.id,loading,events]);if(signature===ui.activitySignature)return;ui.activitySignature=signature;
+  const scroll=ui.activityRun===run?.id?feed.scrollTop:0;ui.activityRun=run?.id;feed.replaceChildren();feed.setAttribute('aria-busy',String(loading));
+  if(loading){feed.appendChild(element('p','detail-loading','チームのメールと進捗を読み込み中…'));return;}
   if(!events.length){feed.appendChild(element('p','empty-small','エージェント同士の連絡や作業の進捗がここに表示されます。'));return;}
   events.forEach(event=>{const row=element('article','activity-item'),content=element('div');let title;
     if(event.kind==='mail')title=`${event.from||'エージェント'} → ${Array.isArray(event.to)?event.to.join(', '):event.to||'チーム'}`;
     else title=({spawn:'作業者が参加',question:'人への質問',error:'エラー',done:'作業完了',stopped:'作業を停止',tool:'ツール実行',collaboration_limit:'自動連携が上限に到達'})[event.kind]||event.kind||'進捗';
     content.append(element('div','activity-title',title),element('div','activity-body',event.text||''));row.append(element('time','activity-time',localTime(event.at)),content);feed.appendChild(row);
   });
+  feed.scrollTop=scroll;
 }
 function preserveControlFocus(render) {
   const key=document.activeElement?.dataset.focusKey;
@@ -445,14 +480,14 @@ function preserveControlFocus(render) {
 }
 function renderRun() { preserveControlFocus(renderRunContent); }
 function renderRunContent() {
-  const run=getRun();$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id);const waiting=agents.filter(agent=>needsHuman(agent)).length;$('needsYou').textContent=`回答待ち ${waiting}`;if(!run){renderAgents(agents);renderTeamMap(agents);renderAgentTabs(agents);$('activityFeed').replaceChildren(element('p','empty-small','エージェント同士のメールと進捗を表示します。'));return;}
+  const run=getRun();$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id);const waiting=agents.filter(agent=>needsHuman(agent)).length;$('needsYou').textContent=`回答待ち ${waiting}`;if(!run){renderAgents(agents);renderTeamMap(agents);renderAgentTabs(agents);renderConversation(null);renderActivity(null);return;}
   $('activeRunTitle').textContent='チームの作業';$('activeRunStatus').className='status-badge '+(Object.hasOwn(STATUS_LABELS,run.status)?run.status:'');$('activeRunStatus').textContent=stateLabel(run);$('activeRunTask').textContent=run.task||'';
   const collaborationBlocked=run.collaboration_limit_reached===true;
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!ACTIVE_STATUSES.has(run.status)||run.status==='stopping';
-  const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of [['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0]]){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}
-  if(!agents.some(agent=>agent.id===ui.selectedAgent)){saveAgentDraft();ui.selectedAgent=agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null;$('messageInput').value=ui.drafts.get(ui.selectedAgent)||'';inlineStatus($('messageStatus'),'');}
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0]],metricSignature=JSON.stringify([run.id,metricValues]);
+  if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderAgents(agents);renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }
 function resourceLabel(resources,gpuIndex=0) {
@@ -465,16 +500,46 @@ function resourceLabel(resources,gpuIndex=0) {
   return parts.join(' · ')||'リソース情報を取得済み';
 }
 function renderState() {
-  if(!ui.state.runs.some(run=>run.id===ui.selectedRun))ui.selectedRun=ui.state.runs.at(-1)?.id||null;
+  const runId=ui.state.runs.some(run=>run.id===ui.selectedRun)?ui.selectedRun:ui.state.runs.at(-1)?.id||null,agents=ui.state.agents.filter(agent=>agent.run_id===runId);
+  const agentId=agents.some(agent=>agent.id===ui.selectedAgent)?ui.selectedAgent:agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null;
+  changeSelection(runId,agentId);
   preserveControlFocus(()=>{renderRunList();renderRun();});setSettingsLock();$('resourceSummary').textContent=resourceLabel(ui.state.resources,ui.config?.local?.gpu_index||0);
+}
+function selectedStatePath(selection) {
+  const query=new URLSearchParams({view:'selected'});
+  if(selection.run)query.set('run_id',selection.run);
+  if(selection.run&&selection.agent)query.set('agent_id',selection.agent);
+  return '/api/state?'+query.toString();
+}
+function applyState(state,request) {
+  const compact=Object.hasOwn(state,'selection'),selection=state.selection;
+  // Legacy full-state fixtures remain supported; compact detail must name its exact request owner.
+  if(compact&&(!selection||selection.run_id!==request.run||selection.agent_id!==request.agent||selection.detail_loaded!==Boolean(request.agent)))throw new Error('選択した詳細の応答を確認できませんでした。');
+  const next={...state,runs:Array.isArray(state.runs)?state.runs:[],agents:Array.isArray(state.agents)?state.agents:[],events:Array.isArray(state.events)?state.events:[],resources:state.resources||{}};
+  if(compact&&request.agent&&!next.agents.some(agent=>agent.run_id===request.run&&agent.id===request.agent&&['logs','results','output_receipts'].every(key=>Array.isArray(agent[key]))))throw new Error('選択した詳細の応答を確認できませんでした。');
+  ui.state=next;ui.compactState=compact;ui.detailError=false;
+  ui.loadedDetail=compact&&selection.detail_loaded?{...request}:null;ui.loadedEventsRun=compact?request.run:null;
 }
 async function pollState(fresh=false) {
   if(!ui.authenticated)return;
   if(ui.polling){await ui.pollPromise;if(fresh)return pollState();return;}
   ui.polling=true;ui.pollPromise=(async()=>{
-    try {const state=await api('/api/state');ui.state={runs:Array.isArray(state.runs)?state.runs:[],agents:Array.isArray(state.agents)?state.agents:[],events:Array.isArray(state.events)?state.events:[],resources:state.resources||{}};renderState();setConnection(true,'Workbench 接続中');}
-    catch(error){setConnection(false,'接続を確認してください');if(!ui.authenticated)notice(errorText(error),true);}
-    finally{ui.polling=false;}
+    try {
+      do {
+        ui.pollAgain=false;
+        const request={run:ui.selectedRun,agent:ui.selectedAgent,generation:ui.selectionGeneration};
+        try {
+          const state=await api(selectedStatePath(request));
+          if(request.generation!==ui.selectionGeneration){ui.pollAgain=true;continue;}
+          applyState(state,request);renderState();setConnection(true,'Workbench 接続中');
+        } catch(error) {
+          if(request.generation!==ui.selectionGeneration){ui.pollAgain=true;continue;}
+          setConnection(false,'接続を確認してください');ui.detailError=true;renderConversation(getAgent());if(!ui.authenticated)notice(errorText(error),true);
+        }
+        // Initial summary or a removed selection can choose the latest run/root during renderState.
+        if(request.generation!==ui.selectionGeneration)ui.pollAgain=true;
+      } while(ui.pollAgain&&ui.authenticated);
+    } finally {ui.polling=false;}
   })();return ui.pollPromise;
 }
 async function initialize() {

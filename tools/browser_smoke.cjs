@@ -312,7 +312,15 @@ async function main() {
 
     const sentRuns=[],sentMessages=[],stopped=[];let messageDelay=300,messageFailure=false;
     const fixture={runs:[],agents:[],events:[],resources:{active:1,queued:1,gpu_readings:[{index:0,used_mb:7168,total_mb:24576,utilization_percent:35}]}};
-    await page.route('**/api/state',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixture)}));
+    const compactFixture=request=>{
+      const query=new URL(request.url()).searchParams;
+      if(query.get('view')!=='selected')return structuredClone(fixture);
+      const runId=query.get('run_id'),agentId=query.get('agent_id');
+      return {...structuredClone(fixture),agents:fixture.agents.map(agent=>{
+        const value=structuredClone(agent);if(agent.id!==agentId)for(const key of ['logs','results','output_receipts'])delete value[key];return value;
+      }),events:fixture.events.filter(event=>event.run_id===runId).slice(-100),selection:{run_id:runId,agent_id:agentId,detail_loaded:Boolean(agentId)}};
+    };
+    await page.route('**/api/state*',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(compactFixture(route.request()))}));
     await page.route('**/api/runs',async route=>{
       const data=route.request().postDataJSON();sentRuns.push(data);const at=1791169200;
       const run={id:'fixture-run',...data,status:'running',created_at:at,model_calls:4,tool_calls:6,auto_collaborations:3,max_auto_collaborations:7,collaboration_limit_reached:false,agent_ids:['fixture-pm','fixture-worker-1','fixture-worker-2']};fixture.runs=[run];
@@ -349,6 +357,34 @@ async function main() {
     await page.locator('#agentSearch').fill('Unique assignment search phrase');assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#agentSearch').clear();
     await page.locator('#agentCards [data-agent-id="fixture-pm"]').focus();await page.waitForTimeout(1300);assert.equal(await page.evaluate(()=>document.activeElement.dataset.agentId),'fixture-pm');
     report.checks.push('cockpit roster search, answer-wait filter, true team map, agent tabs, poll-stable keyboard focus, modal Escape/close/reopen and task draft retention');
+    // Polling must preserve unchanged DOM and ignore an obsolete A response even
+    // when the user has returned A → B → A before it arrives.
+    await page.locator('#conversationLog .log-entry').waitFor();
+    await page.evaluate(()=>{window.stableNodes={roster:document.querySelector('#agentCards').firstChild,
+      log:document.querySelector('#conversationLog').firstChild,activity:document.querySelector('#activityFeed').firstChild,
+      metric:document.querySelector('#runMetrics').firstChild};});
+    await page.waitForTimeout(1200);
+    assert.equal(await page.evaluate(()=>Object.entries(window.stableNodes).every(([key,node])=>node===document.querySelector(
+      {roster:'#agentCards',log:'#conversationLog',activity:'#activityFeed',metric:'#runMetrics'}[key]).firstChild)),true,'No-change polling retains nodes');
+    const heldState=await holdNextRequest(page,'**/api/state*',async()=>{});
+    assert.equal(new URL(heldState.request().url()).searchParams.get('view'),'selected');
+    const obsoleteState=compactFixture(heldState.request());
+    obsoleteState.agents.find(agent=>agent.id==='fixture-pm').logs[0].text='[SYNTHETIC] OBSOLETE A RESPONSE';
+    await page.evaluate(()=>{window.sawObsoleteState=false;window.stateObserver=new MutationObserver(()=>{
+      if(document.querySelector('#conversationLog').textContent.includes('OBSOLETE A RESPONSE'))window.sawObsoleteState=true;
+    });window.stateObserver.observe(document.querySelector('#conversationLog'),{subtree:true,childList:true,characterData:true});});
+    await page.locator('#messageInput').fill('[SYNTHETIC] Selection race draft');
+    await page.locator('#agentTabs [data-focus-key="tab:fixture-worker-1"]').click();
+    assert.equal(await page.locator('#copyResult').isDisabled(),true);
+    assert(!((await page.locator('#conversationLog').textContent()).includes('作業を2つに分けました')),'Loading cannot show prior owner content');
+    await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();
+    await releaseResponse(page,heldState,obsoleteState);
+    await page.locator('#conversationLog').filter({hasText:'作業を2つに分けました'}).waitFor();
+    assert.equal(await page.evaluate(()=>window.sawObsoleteState),false,'A → B → A requires a generation guard');
+    await page.evaluate(()=>window.stateObserver.disconnect());
+    assert.equal(await page.locator('#messageInput').inputValue(),'[SYNTHETIC] Selection race draft');
+    report.checks.push('compact polling omits unselected histories, retains no-change roster/log/activity/metric nodes, and rejects delayed A → B → A state without exposing prior-owner content or losing drafts');
+
     assert.equal(await page.locator('#runMetrics .metric').filter({hasText:'自動連携'}).locator('b').textContent(),'3 / 7');
     assert.equal(await page.locator('#collaborationLimitNotice').isVisible(),false);
     assert.equal(await page.locator('#conversationLog details[open]').count(),0);
@@ -401,7 +437,7 @@ async function main() {
     report.checks.push('desktop 1366x768, tablet 820x768, narrow 390x844: no document horizontal overflow, no sidebar/workspace overlap, input and send inside unclipped panels, long Japanese questions and stop notice');
     // Remove only the UI-state fixtures: the following flow uses real app endpoints
     // and Engine with an injected test client, including real serialization.
-    await page.unroute('**/api/state');await page.unroute('**/api/runs');
+    await page.unroute('**/api/state*');await page.unroute('**/api/runs');
     await page.unroute('**/api/agents/*/message');await page.unroute('**/api/runs/*/stop');
     await page.reload();await page.getByText('Workbench 接続中',{exact:true}).waitFor({state:'attached'});
     await page.locator('#newRun').click();await page.locator('#taskInput').fill('[SYNTHETIC] Real engine browser integration.');
@@ -525,6 +561,7 @@ async function main() {
     assert.deepEqual(afterTextRun.runs.filter(run=>run.id!==textRun.id),beforePreview.runs);
     assert.deepEqual(afterTextRun.agents.filter(agent=>beforePreview.agents.some(prior=>prior.id===agent.id)),beforePreview.agents);
     await page.locator('#runList .run-link').filter({hasText:'[SYNTHETIC] Save result.'}).click();
+    await page.waitForFunction(()=>!document.querySelector('#resultSelection').disabled);
     assert.deepEqual(await page.locator('#resultSelection option').evaluateAll(options=>options.map(option=>option.value)),retainedRecords);
     assert.equal(await page.locator('#resultSelection').inputValue(),resultOption);
     assert.equal(await page.locator('#messageInput').inputValue(),retainedDraft);

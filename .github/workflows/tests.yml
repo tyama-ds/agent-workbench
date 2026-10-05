@@ -65,6 +65,8 @@ jobs:
           $env:WORKBENCH_TEST_PYTHON = (Get-Command python).Source
           node tools/browser_smoke.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m tools.benchmark_state > runtime/verification/state-benchmark.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload synthetic screenshots and assertion report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -73,6 +75,7 @@ jobs:
           path: |
             runtime/verification/workbench-*.png
             runtime/verification/browser-smoke.json
+            runtime/verification/state-benchmark.json
           if-no-files-found: error
           retention-days: 14
   portable:

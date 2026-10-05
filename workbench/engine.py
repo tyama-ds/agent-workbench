@@ -77,11 +77,15 @@ class Agent:
     receipts_omitted: int = 0
     result_revision: int = 0
 
-    def public(self, *, message_eligibility=None, status_reason=None):
-        return {k: getattr(self, k) for k in ('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id',
-                                              'status', 'question', 'last_error', 'turns', 'assignment')} | {
-                    'logs': list(self.logs),
-                    'results': list(self.results), 'output_receipts': list(self.output_receipts),
+    def public(self, *, message_eligibility=None, status_reason=None, include_detail=True):
+        value = {k: getattr(self, k) for k in ('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id',
+                                             'status', 'question', 'last_error', 'turns', 'assignment')}
+        # Build summaries directly: unselected histories must not be copied or
+        # traversed for redaction just to discard them afterwards.
+        if include_detail:
+            value.update({'logs': list(self.logs), 'results': list(self.results),
+                          'output_receipts': list(self.output_receipts)})
+        return value | {
                     'results_omitted': self.results_omitted, 'receipts_omitted': self.receipts_omitted,
                     'result_revision': self.result_revision,
                     'status_reason': status_reason or ('human_input' if self.status == 'waiting' and self.question else self.status),
@@ -164,6 +168,40 @@ class Engine:
                          {'status_reason': self.run_status_reason(run)} for run in self.runs.values()],
                 'agents': [a.public(message_eligibility=self.message_eligibility(a), status_reason=self.agent_status_reason(a)) for a in self.agents.values()], 'events': list(self.events),
                 'resources': self.gate.snapshot()})
+
+    def selected_snapshot(self, *, run_id=None, agent_id=None):
+        """Live summaries plus the explicitly selected run/agent's display data.
+
+        The full snapshot remains the default API contract. Neither projection
+        is cached: reply eligibility may change when a deadline passes without
+        any new event or result revision.
+        """
+        if run_id is not None and (not isinstance(run_id, str) or run_id not in self.runs):
+            raise ValueError('選択した実行が見つかりません')
+        if agent_id is not None:
+            if not isinstance(agent_id, str) or agent_id not in self.agents:
+                raise ValueError('選択したエージェントが見つかりません')
+            if run_id is None or self.agents[agent_id].run_id != run_id:
+                raise ValueError('選択した実行とエージェントが一致しません')
+
+        events = []
+        if run_id is not None:
+            # Filter before limiting so other runs cannot crowd out activity.
+            for event in reversed(self.events):
+                if event['run_id'] == run_id:
+                    events.append(event)
+                    if len(events) == 100:
+                        break
+            events.reverse()
+        return self._redact_tree({
+            'runs': [{k: v for k, v in run.items() if not k.startswith('_')} |
+                     {'status_reason': self.run_status_reason(run)} for run in self.runs.values()],
+            'agents': [a.public(message_eligibility=self.message_eligibility(a),
+                                status_reason=self.agent_status_reason(a), include_detail=a.id == agent_id)
+                       for a in self.agents.values()],
+            'events': events, 'resources': self.gate.snapshot(),
+            'selection': {'run_id': run_id, 'agent_id': agent_id, 'detail_loaded': agent_id is not None},
+        })
 
     def _new_agent(self, run, profile, role, parent=None, *, assignment=''):
         ident = 'a-' + secrets.token_hex(8)

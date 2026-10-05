@@ -151,7 +151,14 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         return web.json_response({'ok': True, 'configured': bool(key)})
 
     async def state(request):
-        return web.json_response(engine.snapshot())
+        view = request.query.get('view')
+        if view is None:
+            return web.json_response(engine.snapshot())
+        if view != 'selected' or any(len(request.query.getall(key, [])) > 1
+                                     for key in ('view', 'run_id', 'agent_id')):
+            raise ValueError('状態表示の選択が不正です')
+        return web.json_response(engine.selected_snapshot(run_id=request.query.get('run_id'),
+                                                          agent_id=request.query.get('agent_id')))
 
     async def start(request):
         return web.json_response(await engine.start_run(await body(request)))

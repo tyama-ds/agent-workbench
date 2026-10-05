@@ -250,3 +250,41 @@ The acceptance driver then compared a Windows 8.3 temporary-directory alias with
 the server's canonical long path. Correct the test to compare native filesystem
 identities, keep exact protected-root assertions, and record synthetic preflight
 scope for diagnostics. No production deny boundary is weakened.
+
+## 0.1.1.dev6 — Selected-detail polling and stable navigation (2026-10-05)
+
+- Preserve the full `/api/state` default contract. Add an explicit selected view
+  retaining all public run/agent metadata and live reply eligibility while loading
+  full retained logs, reports and save receipts only for the selected agent.
+- Filter selected-run activity before the existing 100-item visible limit. Construct
+  summaries before history allocation/redaction; never serialize everything first.
+- Keep the cockpit layout, providers, configuration, file scopes, result provenance,
+  export behavior and experimental portable distribution gates unchanged.
+- Treat navigation as a generation, not merely an ID pair. A delayed response cannot
+  regain authority after A → B → A. Loading is distinct from an empty history, and
+  unchanged polling preserves existing controls and content nodes.
+- Benchmark bounded synthetic small/medium/report-retention profiles through the
+  real authenticated loopback endpoint. Keep conversation eligibility work in the
+  fixture and separate body bytes, snapshot time, JSON time and HTTP measurements.
+  These are development-machine observations, not production Windows guarantees.
+
+Research decisions:
+- [HTTP representation validators and conditional requests](https://www.rfc-editor.org/rfc/rfc9110.html#section-13):
+  defer ETags and 304 optimization. Eligibility can change at a time limit without
+  a new event or report; a sequence-only validator would hide a meaningful change.
+  Existing authenticated `no-store` responses remain unchanged.
+- [Fetch cancellation](https://developer.mozilla.org/en-US/docs/Web/API/AbortController/abort):
+  cancellation can reduce unnecessary fetch work, but cannot substitute for checking
+  which navigation owns a response. Adopt generation validation and a single-flight
+  follow-up request; defer extra cancellation/streaming machinery in this cycle.
+- [W3C status-message guidance](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html):
+  distinguish loading from a true empty result without moving keyboard focus. Keep
+  status updates separate from the agent's report and preserve stable DOM content.
+- Defer automatic persistence, history eviction and explicit session forgetting.
+  The 20-run admission limit still applies. A future manual forgetting feature needs
+  a clear confirmation and race-safe active/question/stop-drain guards; it must never
+  delete workspace files as a side effect.
+
+No live inference, user PC, credentials, external telemetry or new runtime dependency
+is required. Source changes remain in the existing draft PR; no merge or release is
+part of this cycle. Exact-head Windows Edge and all CI jobs remain required evidence.
