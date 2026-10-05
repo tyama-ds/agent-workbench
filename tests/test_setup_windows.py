@@ -33,12 +33,13 @@ def execute(project, *arguments, fail=None):
         calls.append((args, kwargs))
         if fail and fail(args):
             raise RuntimeError('simulated failure')
+        return setup.CONFIG_MARKER if kwargs.get('capture') else ''
     setup.install(options, runner=runner)
     return calls
 
 
 def installs(calls):
-    return [args for args, _ in calls if args[1:4] == ['-m', 'pip', 'install']]
+    return [args for args, _ in calls if args[1:3] == ['-m', 'pip'] and 'install' in args]
 
 
 def test_fresh_install_hashes_binaries_local_build_and_health_checks(project):
@@ -48,7 +49,8 @@ def test_fresh_install_hashes_binaries_local_build_and_health_checks(project):
     assert '--require-hashes' in dep and '--only-binary=:all:' in dep
     assert dep[dep.index('-r') + 1] == str(project / 'requirements.lock')
     assert all(item in app for item in ('--no-index', '--no-deps', '--no-build-isolation'))
-    assert calls[-2][0][1:] == ['-m', 'pip', 'check']
+    assert calls[-2][0][1:4] == ['-m', 'pip', '--python']
+    assert calls[-2][0][-1] == 'check'
     assert 'import workbench.server' in calls[-1][0][-1]
     assert all(kwargs['cwd'] == project for _, kwargs in calls)
 
@@ -98,7 +100,7 @@ def test_offline_ignores_external_find_links_and_config(project, monkeypatch):
     assert '--no-index' in dep and '--no-index' in app
     assert dep[dep.index('--find-links') + 1] == str(wheels)
     for args, kwargs in calls:
-        if args[1:4] == ['-m', 'pip', 'install']:
+        if args[1:3] == ['-m', 'pip'] and 'install' in args:
             assert 'PIP_FIND_LINKS' not in kwargs['env']
             assert kwargs['env']['PIP_CONFIG_FILE'] == os.devnull
     assert os.environ['PIP_FIND_LINKS'].startswith('https://')
@@ -150,7 +152,7 @@ def test_diagnostics_omit_proxy_values(project, monkeypatch, capsys):
     assert '"proxy_configured": true' in output
 
 
-@pytest.mark.parametrize('key', ['PIP_TARGET', 'PIP_PREFIX', 'PIP_USER'])
+@pytest.mark.parametrize('key', ['PIP_TARGET', 'PIP_PREFIX', 'PIP_USER', 'PIP_ROOT', 'PIP_PYTHON', 'PIP_TRUSTED_HOST'])
 def test_redirected_pip_install_refused(project, monkeypatch, key):
     monkeypatch.setenv(key, '1')
     with pytest.raises(ValueError, match=key):
@@ -203,14 +205,14 @@ def test_offline_removes_all_injected_pip_inputs(project, monkeypatch, key):
         assert key not in kwargs['env']
 
 
-@pytest.mark.parametrize('config', ["global.target='elsewhere'", "install.user='true'", "global.requirement='https://remote.example/requirements.txt'", "install.editable='https://remote.example/code.git'"])
+@pytest.mark.parametrize('config', ["global.target='elsewhere'", "install.user='true'", "global.requirement='https://remote.example/requirements.txt'", "install.editable='https://remote.example/code.git'", "global.python='elsewhere'", "install.root='elsewhere'", "global.trusted-host='internal.example'"])
 def test_online_rejects_extra_pip_config(project, config):
     options = setup.parser().parse_args(['--project-root', str(project)])
     calls = []
     def runner(args, **kwargs):
         calls.append(list(map(str, args)))
-        return config if kwargs.get('capture') else ''
-    with pytest.raises(ValueError, match='pip configuration'):
+        return setup.CONFIG_MARKER + '\n' + config if kwargs.get('capture') else ''
+    with pytest.raises(setup.SetupStageError, match='pip configuration'):
         setup.install(options, runner=runner)
     assert installs([(args, {}) for args in calls]) == []
 
@@ -225,3 +227,183 @@ def test_ps51_wrapper_check_with_explicit_python(project):
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'Preflight complete' in result.stdout
+
+
+@pytest.mark.parametrize('option', setup.FORBIDDEN_PIP_OPTIONS)
+def test_forbidden_environment_stops_before_any_child_and_omits_value(project, monkeypatch, capsys, option):
+    secret = 'secret-user:secret-password@internal.example'
+    monkeypatch.setenv('PIP_' + option, secret)
+    calls = []
+    with pytest.raises(ValueError) as error:
+        setup.install(setup.parser().parse_args(['--project-root', str(project)]),
+                      runner=lambda *args, **kwargs: calls.append(args))
+    assert calls == [] and not (project / '.venv').exists()
+    assert secret not in str(error.value) + capsys.readouterr().out
+    assert os.environ['PIP_' + option] == secret
+
+
+def test_every_pip_invocation_is_pinned_and_installs_require_venv(project):
+    calls = execute(project)
+    for args, _ in calls:
+        if args[1:3] == ['-m', 'pip']:
+            assert args[3:5] == ['--python', args[0]]
+    for args in installs(calls):
+        assert '--require-virtualenv' in args
+
+
+@pytest.mark.parametrize('stage', setup.STAGES)
+def test_stage_errors_never_echo_command_config_or_exception(stage, capsys):
+    secret = 'secret-password@internal.example'
+    def fail(*args, **kwargs):
+        raise OSError('blocked ' + secret)
+    with pytest.raises(setup.SetupStageError) as error:
+        setup.run_stage(stage, fail, [secret])
+    assert setup.STAGES[stage][0] in str(error.value)
+    assert secret not in str(error.value) + capsys.readouterr().out
+
+
+def test_approved_transport_configuration_is_preserved(project, monkeypatch):
+    monkeypatch.setenv('PIP_INDEX_URL', 'https://mirror.example/simple')
+    monkeypatch.setenv('PIP_CERT', 'approved.pem')
+    calls = []
+    def runner(args, **kwargs):
+        calls.append((list(map(str, args)), kwargs))
+        return setup.CONFIG_MARKER + "\nglobal.index-url='https://mirror.example/simple'\nglobal.proxy='http://proxy.example:8080'\nglobal.cert='approved.pem'" if kwargs.get('capture') else ''
+    setup.install(setup.parser().parse_args(['--project-root', str(project)]), runner=runner)
+    assert len(installs(calls)) == 2
+    assert all(kw['env']['PIP_INDEX_URL'] == 'https://mirror.example/simple' for _, kw in calls)
+    assert all(kw['env']['PIP_CERT'] == 'approved.pem' for _, kw in calls)
+
+
+def test_old_pip_fails_closed_without_installing_or_upgrading(project):
+    calls = []
+    def runner(args, **kwargs):
+        args = list(map(str, args)); calls.append((args, kwargs))
+        if '--version' in args:
+            raise RuntimeError('no such option: --python')
+    with pytest.raises(setup.SetupStageError, match='pip 22.3 or newer'):
+        setup.install(setup.parser().parse_args(['--project-root', str(project)]), runner=runner)
+    assert installs(calls) == []
+    assert not any('--upgrade' in args for args, _ in calls)
+
+
+def test_real_pip_config_probe_cannot_run_alternate_interpreter(tmp_path, monkeypatch):
+    # No packages or network: a hostile config targets a script that would leave
+    # evidence if executed. The explicit CLI target must win before config reads.
+    import importlib.util
+    if importlib.util.find_spec('pip') is None:
+        pytest.skip('pip required for read-only config probe')
+    config = tmp_path / 'pip.ini'
+    marker = tmp_path / 'unexpected-execution'
+    alternate = tmp_path / ('alternate.cmd' if os.name == 'nt' else 'alternate-python')
+    if os.name == 'nt':
+        alternate.write_text('@echo off\necho unexpected > "' + str(marker) + '"\nexit /b 91\n', encoding='utf-8')
+    else:
+        alternate.write_text('#!/bin/sh\nprintf unexpected > "' + str(marker) + '"\nexit 91\n', encoding='utf-8')
+        alternate.chmod(0o700)
+    config.write_text('[global]\npython = ' + str(alternate) + '\n', encoding='utf-8')
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('PIP_')}
+    env.update(PIP_CONFIG_FILE=str(config), PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_NO_INPUT='1')
+    result = subprocess.run([sys.executable, '-m', 'pip', '--python', sys.executable, 'config', 'list'],
+                            env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert 'global.python=' in result.stdout
+    assert not marker.exists()
+
+
+def test_interpreter_probe_rejects_supported_python_outside_expected_venv(project):
+    calls = execute(project)
+    args = next(args for args, _ in calls if '-c' in args)
+    # Execute only the fixed stdlib validation code with a mismatched expected prefix.
+    result = subprocess.run([sys.executable, '-c', args[args.index('-c') + 1], str(project / '.venv')],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize('hidden_output', ['', 'Usage: pip config [options]', "global.index-url='https://mirror.example'"])
+def test_unverified_config_output_fails_closed(project, hidden_output):
+    calls = []
+    def runner(args, **kwargs):
+        calls.append((list(map(str, args)), kwargs))
+        return hidden_output if kwargs.get('capture') else ''
+    with pytest.raises(setup.SetupStageError, match='Complete configuration output'):
+        setup.install(setup.parser().parse_args(['--project-root', str(project)]), runner=runner)
+    assert installs(calls) == []
+
+
+@pytest.mark.parametrize('selector', ['quiet', 'global', 'site', 'user', 'isolated'])
+def test_real_config_inspection_resists_selectors_quiet_and_logging(tmp_path, selector):
+    import importlib.util
+    if importlib.util.find_spec('pip') is None:
+        pytest.skip('pip required for read-only config probe')
+    secret = 'secret-user:secret-password@internal.example'
+    leak_log = tmp_path / 'unsafe-pip.log'
+    config = tmp_path / 'pip.ini'
+    config.write_text('[global]\nroot = ' + secret + '\nlog = ' + str(leak_log) +
+                      '\nquiet = 50\n[config]\n' + selector + ' = 1\n', encoding='utf-8')
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith('PIP_')}
+    env.update(PIP_CONFIG_FILE=str(config), PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_NO_INPUT='1')
+    env.update({'PIP_' + key: '0' for key in setup.INSPECTION_OPTIONS})
+    result = subprocess.run([sys.executable, '-m', 'pip', '--python', sys.executable,
+                             '--log', os.devnull, 'config', 'list'], env=env,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert setup.CONFIG_MARKER in result.stdout.splitlines()
+    assert 'global.root=' in result.stdout
+    assert not leak_log.exists()
+
+
+def test_inspection_controls_do_not_mutate_install_environment(project, monkeypatch):
+    monkeypatch.setenv('PIP_QUIET', '3')
+    monkeypatch.setenv('PIP_SITE', '1')
+    calls = execute(project)
+    inspection = next((args, kw) for args, kw in calls if args[-2:] == ['config', 'list'])
+    assert inspection[1]['env']['PIP_QUIET'] == '0'
+    assert inspection[1]['env']['PIP_SITE'] == '0'
+    assert inspection[0][inspection[0].index('--log') + 1] == os.devnull
+    for args in installs(calls):
+        kw = next(kw for call, kw in calls if call == args)
+        assert kw['env']['PIP_QUIET'] == '3' and kw['env']['PIP_SITE'] == '1'
+    assert os.environ['PIP_QUIET'] == '3' and os.environ['PIP_SITE'] == '1'
+
+
+
+def test_redirected_venv_folder_is_preserved_and_rejected(project, tmp_path):
+    outside = tmp_path / 'separate environment'
+    outside.mkdir()
+    marker = outside / 'existing.txt'
+    marker.write_text('preserve', encoding='utf-8')
+    try:
+        (project / '.venv').symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip('directory symlinks unavailable')
+    calls = []
+    with pytest.raises(ValueError, match='redirects'):
+        setup.install(setup.parser().parse_args(['--project-root', str(project)]),
+                      runner=lambda *args, **kwargs: calls.append(args))
+    assert not calls
+    assert marker.read_text(encoding='utf-8') == 'preserve'
+    assert (project / '.venv').is_symlink()
+
+
+
+def test_real_setup_rejects_hidden_redirect_before_dependency_install(project, monkeypatch, capsys):
+    secret = 'secret-password@internal.example'
+    config = project / 'approved-pip.ini'
+    leak_log = project / 'must-not-exist.log'
+    config.write_text('[global]\nroot = ' + secret + '\nquiet = 50\nlog = ' + str(leak_log) +
+                      '\n[config]\nsite = true\n', encoding='utf-8')
+    monkeypatch.setenv('PIP_CONFIG_FILE', str(config))
+    monkeypatch.setenv('PIP_QUIET', '1')
+    monkeypatch.setenv('PIP_SITE', '1')
+    calls = []
+    def runner(args, **kwargs):
+        args = list(map(str, args)); calls.append((args, kwargs))
+        assert not (args[1:3] == ['-m', 'pip'] and 'install' in args), 'must reject before dependency installation'
+        return setup.invoke(args, **kwargs)
+    with pytest.raises(setup.SetupStageError, match='pip setting redirects') as error:
+        setup.install(setup.parser().parse_args(['--project-root', str(project)]), runner=runner)
+    assert installs(calls) == []
+    assert secret not in str(error.value) + capsys.readouterr().out
+    assert not leak_log.exists()
+    assert config.read_text(encoding='utf-8').startswith('[global]\nroot = ' + secret)

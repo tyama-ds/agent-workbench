@@ -1,6 +1,19 @@
 # Validation scope
 
-## Current revision — credential-mask lifecycle (2026-10-05)
+## Current revision — contained corporate setup (2026-10-05)
+
+Version **0.1.1.dev10** pins every pip invocation to the expected private interpreter,
+rejects inherited install redirection and trusted-host settings, and reports safe
+stage-specific setup failures. Read-only real-pip probes verify that config inspection
+cannot execute an alternate interpreter, hide active settings through quiet/scope
+options, or write captured configuration to an inherited log. Positive output evidence
+is required. Stubbed failure tests prove dependencies are not installed after rejection.
+Older pip without `--python` fails closed; no automatic upgrade or user config edit is
+performed. Existing Windows repeated-offline/CMD tests and Edge/portable acceptance
+remain required. Exact-head CI evidence belongs to the draft PR handoff. Corporate
+endpoint policy, live proxy/CA connectivity and binary redistribution are not certified.
+
+## Prior revision — credential-mask lifecycle (2026-10-05)
 
 Version **0.1.1.dev9** adds bounded process-local masking across credential changes,
 late outputs and continued conversations, with atomic capacity rejection and distinct

@@ -463,3 +463,42 @@ API polling and return the exact satisfying snapshot. Regress delayed false/empt
 states and receipt readiness without a browser; retain every original assertion.
 Forty concurrent-polling loopback repetitions had passed because they already awaited
 their state reads correctly. Production redaction was not changed for this correction.
+
+
+## 0.1.1.dev10 — Contained corporate setup and actionable failures (2026-10-05)
+
+- Reproduced inherited `PIP_PYTHON` and `global.python` redirecting even a read-only
+  pip command into the base interpreter. Pin every pip invocation before config reads,
+  reject alternate roots/interpreters and trusted-host settings, and require the
+  expected real virtual-environment prefix before installing packages.
+- Independent review reproduced quiet/scope flags hiding active forbidden settings
+  and inherited pip logging writing captured configuration values elsewhere. Override
+  inspection-only output/scope controls and its log destination, require a positive
+  environment marker, and retain the original approved install transport settings.
+- Report fixed failure stages/recovery guidance without echoing captured config,
+  command arguments or raw runner exception strings. Preserve existing environments,
+  hash-locked binary dependencies, offline isolation and no-network local app install.
+- Add environment/config rejection, old-pip failure, private-prefix, stage privacy,
+  real pinned-pip, hidden-config and log-suppression regressions. Preserve basic GUI,
+  credential-mask lifetime/auth separation and all prior acceptance assertions.
+
+Research decisions:
+- [pip interpreter selection](https://pip.pypa.io/en/stable/topics/python-option/)
+  and [configuration precedence](https://pip.pypa.io/en/stable/topics/configuration/):
+  use explicit `--python` (introduced in pip 22.3), with safe failure for older pip.
+  Inspect effective configuration through the supported CLI, not pip's internal API.
+- [pip TLS certificates](https://pip.pypa.io/en/stable/topics/https-certificates/):
+  preserve approved PEM and system-store behavior; reject trusted-host bypasses.
+  System-store defaults depend on pip version, so do not silently upgrade pip or
+  promise that Windows CA registration alone always resolves installation errors.
+- [Python venv](https://docs.python.org/3.13/library/venv.html#how-venvs-work):
+  validate private environment identity and retain the documented recreate-after-move
+  recovery path. Do not delete environments or silently repair global Python.
+- [Microsoft App Control events](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/operations/event-id-explanations):
+  provide the failure time/file to IT for existing-event diagnosis. Reject security
+  bypasses, elevation, firewall changes and automated policy/log reconfiguration.
+- Defer Python auto-download, a new installer UI and binary distribution. Existing
+  approval, native-license and company-policy limits remain unchanged.
+
+Exact-head Windows matrix, real Edge and evaluation-only package evidence are required
+for the handoff. No live inference, binary uploads, release, merge or deployment.

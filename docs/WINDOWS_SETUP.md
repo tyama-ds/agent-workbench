@@ -55,6 +55,24 @@ Setup.cmd --proxy "http://proxy.example.local:8080" --certificate "C:\Certificat
 
 `--timeout 120 --retries 3` で待機を調整できます。接続先・認証の誤りは待機を延ばしても直りません。ダウンロードに失敗しても通常は `.venv` を消さず再実行できます。
 
+## どの段階で止まったか（0.1.1.dev10）
+
+コンソールの最後の `Setup step:` と `Setup stopped:` を確認してください。
+
+- `Create private environment`: Python 本体またはフォルダー権限を IT 担当へ確認。不完全な `.venv` は消さず、新しくソースを展開して再実行します。
+- `Validate private interpreter`: `.venv` の移動・破損・対応外 Python の可能性があります。元の `.venv` をコピーせず、新しい展開先で作り直します。
+- `Check private pip`: `--python` に対応する pip 22.3 以降が必要です。承認済み Python の修復を IT 担当へ依頼してください。セットアップは pip を自動更新しません。
+- `Check pip configuration`: 依存インストール先を変える設定、別の Python を使う設定、追加の入力、TLS 検証を省く設定を検出した場合は停止します。設定値は表示せず、既存の設定も変更しません。IT 担当による確認、または承認済み wheelhouse を利用してください。
+- `Install locked dependencies`: 上記のプロキシ・CA・対応 wheel を確認。接続エラーなら条件を直して同じセットアップを再実行できます。
+- `Install local application`: ソース一式と固定されたビルド用パッケージを確認。オンライン取得への切り替えはありません。
+- `Check package consistency` / `Check application imports`: 最終確認は未完了です。表示されたエラーを IT 担当へ確認し、成功するまでは `Setup complete` と見なしません。
+
+通常モードでは `PIP_PYTHON` / `PIP_ROOT` / `PIP_TRUSTED_HOST` と、それに相当する pip 設定も拒否します。承認済みの proxy / CA / パッケージミラーは引き続き利用できます。設定の検査中だけ、出力を隠す quiet や設定ファイル範囲の指定を無効化し、検査出力のファイル保存を止めます。ユーザーの設定ファイルは変更しません。既存 `.venv` が実際にそのフォルダーの仮想環境であることも確認します。
+
+新しい `.venv` を作る際は Python に同梱された ensurepip で pip を用意します。これはネット接続をしない標準の初期化です。その後、安全に読み取った pip 設定を確認してから依存パッケージを入れます。`--check` では環境変数の拒否設定までは調べますが、pip 設定ファイルと既存 `.venv` の健全性は検査しません。
+
+会社の実行制御で止まった場合は、失敗した時刻と画面のエラー、対象の Python / CMD / DLL 名を IT 担当へ伝えてください。IT 担当は既存の CodeIntegrity / AppLocker イベントで原因を調べられます。管理者実行や保護機能の変更で回避しないでください。pip 自身が出したログには秘密や社内情報が含まれる可能性があるので、外部共有前に内容を確認してください。
+
 ## オフライン / IT 配布用 wheel フォルダー
 
 IT 担当が、**対象と同じ Windows アーキテクチャ・Python minor 版**の通信可能な承認済み環境で、同じソース版の lock を使って準備します。
