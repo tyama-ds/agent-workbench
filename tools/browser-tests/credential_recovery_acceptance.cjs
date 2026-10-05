@@ -255,7 +255,8 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     const replacement=await submitKey(providerId,scenario.new);
     assert.equal(replacement.config_revision,saved.config_revision);
     await card(0).locator('.credential-result').scrollIntoViewIfNeeded();await screenshot('replacement-narrow');
-    await page.setViewportSize({width:1366,height:768});await screenshot('replacement-desktop');
+    await page.setViewportSize({width:1366,height:768});
+    await card(0).locator('.credential-result').scrollIntoViewIfNeeded();await screenshot('replacement-desktop');
     await poll(2);
     assert.deepEqual(budget(await waitForState(runId,'waiting','error')),beforeRecovery,'Replacement itself cannot retry, create results, or reset counters');
     const afterKey=await api('/api/config');assert.deepEqual(afterKey.config,saved.config);

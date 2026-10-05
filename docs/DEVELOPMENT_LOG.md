@@ -605,3 +605,12 @@ flows, explicit same-run recovery and unchanged quota/stop/redaction protections
 Exact-head six-job CI, visual review and evaluation-only package evidence belong to
 the final handoff. No live inference, real-key entry by the assistant, user-PC work,
 binary distribution, merge, release or deployment is included.
+
+The first dev12 push passed both Windows suites and real Edge; the PR Windows 3.11
+job exposed an older timing assumption in the provider timeout test. Its 20-ms total
+timeout expired before the loopback server observed any request. Preserve the exact
+one-request/output-cap assertions, wait for real server receipt and hold the response
+until the client's actual timeout instead of racing 20/100-ms sleeps. The bounded
+five-second total timeout follows [aiohttp's total-timeout semantics](https://docs.aiohttp.org/en/stable/client_reference.html#aiohttp.ClientTimeout.total).
+No provider production behavior changes. Fresh exact-head full CI remains required;
+a passing sibling job does not turn the failed first run into acceptance evidence.
