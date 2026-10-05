@@ -651,3 +651,49 @@ acceptance checks keyboard/native disclosure, draft/selection/expanded-state
 preservation, no hidden actions and desktop/tablet/narrow geometry. Final exact-head
 six-job CI and screenshot review belong to the handoff; local browser launch remains
 blocked. No live inference, user-PC work, binary distribution, release or merge.
+
+
+## 0.1.1.dev14 — Contextual history lifetime and safe restart guidance (2026-10-05)
+
+- Reproduced the 21st-run blocker recommending restart without explaining the loss
+  of reports, save receipts, conversations and memory-entered keys. Keep the same
+  20-run admission boundary and error code, but describe the consequence and existing
+  selected-record export first. Closed-server guidance no longer implies a full history.
+- Show startup run count against 20 and a compact lifetime reminder beside SESSIONS.
+  Keep detailed retention/exit distinctions in a native disclosure inside the existing
+  bounded results panel, rather than consuming more crew-list space or showing a modal.
+- Explain server lifetime separately from browser-tab close/reload and team Stop.
+  Stop retains history and does not free a run slot. A new server restores settings,
+  not conversations or memory-entered keys; environment keys use the next process's
+  environment. Do not promise draft restoration or authentication after browser exit.
+- Keep explicit one-record UTF-8 export, receipt/file separation, current-file-unverified
+  notices, redaction, omission counters and all retention enforcement unchanged. Normal
+  shutdown does not delete saved workspace files, but a historical receipt cannot
+  certify their current existence or content. Download-start feedback is not completion.
+- Independent review caught omitted-history wording implying in-memory deletion. Narrow
+  it to the display histories: private model conversation retention is separate, and
+  truncating a report does not prove the underlying full reply has been erased.
+
+Research decisions:
+- [Microsoft HAX feedforward](https://www.microsoft.com/en-us/haxtoolkit/pattern/g16-a-feedforward-convey-the-consequences-of-user-actions-before-the-user-takes-action/):
+  adopt concrete pre-action consequences and proportionate noninterrupting indicators.
+  Reject vague restart advice and automatic exports presented as safety guarantees.
+- [W3C contextual help](https://www.w3.org/WAI/WCAG22/Understanding/help.html)
+  and [status messages](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html):
+  keep help beside the operation without moving focus; preserve existing concise status
+  feedback rather than announcing lifetime text on every poll. This is not a complete
+  accessibility audit or a WCAG-conformance claim.
+- [GOV.UK native details guidance](https://design-system.service.gov.uk/components/details/):
+  keep essential lifetime information visible and optional distinctions in a disclosure.
+  Preserve the established cockpit styling and keyboard/scroll behavior.
+- Defer durable sessions, automatic backups, bulk export, workspace-file downloads,
+  beforeunload prompts and authentication recovery. A missing browser cookie prevents
+  authenticated access even while server history remains; no reauthentication promise
+  follows from tab-reopen tests in a retained browser context.
+
+Synthetic loopback tests distinguish reload/reconnect, team Stop, server cleanup and a
+fresh server at the same settings directory. Real Windows Edge checks same-context
+reload/tab reopen, explicit exports, keyboard and desktop/tablet/narrow geometry. Final
+exact-head six-job CI and independent screenshots belong to the final handoff. Local
+browser launch remains blocked. No live inference, user-PC work, binary distribution,
+release, merge or deployment is included.

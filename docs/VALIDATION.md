@@ -1,6 +1,16 @@
 # Validation scope
 
-## Current revision — truthful first-task guidance (2026-10-05)
+## Current revision — contextual history lifetime (2026-10-05)
+
+Version **0.1.1.dev14** explains the lifetime of retained history, the 20-run boundary
+and explicit selected-record exports. Same-cookie page reload/tab reopen and team Stop
+retain server history; a new server keeps settings and saved workspace files but starts
+without runs or memory-entered keys. Enforcement, export scope and authentication are
+unchanged. Final local and independent suites: **842 passed, 6 platform-specific skips**.
+Exact-head six-job CI, Windows Edge, packaged acceptance and independent screenshot
+evidence are recorded in the draft PR handoff.
+
+## Prior revision — truthful first-task guidance (2026-10-05)
 
 Version **0.1.1.dev13** explains fixed execution limits beside the task input and
 provides optional static examples for text, permitted files and configured public
@@ -404,3 +414,28 @@ geometry assertions, including reaching lower controls by ordinary dialog scroll
 Existing delayed-preflight, Start/Stop ownership, credential recovery and actual
 Engine flows remain in the same acceptance run. Exact-head artifact reports and
 independent pixel inspection are required before this cycle is called complete.
+
+
+## Contextual history lifetime guidance (0.1.1.dev14)
+
+- Static semantics: essential lifetime note is outside disclosures; optional detailed
+  help has no mutation handler; export help describes one selected record and excludes
+  file contents. Existing model-report/current-file warnings remain unchanged.
+- Synthetic admission: 20 mixed completed/stopped runs remain intact after 21st-run
+  preflight and Start rejection; no eviction, budget reset or additional model call.
+  Closed-engine and full-history explanations are distinct with the same error code.
+- Real loopback lifetime: page GET and same-cookie reconnect preserve exact run/agent
+  data; absent-cookie reads and replayed bootstrap remain rejected without clearing
+  history. Team Stop retains reports, receipts, memory key and written bytes. Server
+  cleanup clears memory-entered keys; a fresh app at the same state directory restores
+  settings and environment-key lookup, starts with no histories, and leaves the actual
+  saved file unchanged. Only settings.json is persisted in the state directory.
+- Windows Edge: actual synthetic retained reports/receipts survive reload and closing
+  and reopening a tab in the same browser context. Compare IDs, call counters, output
+  files and configuration; maintain instrumentation on every added page. Optional help
+  and ordinary polling must not issue new mutations, inference or downloads.
+- Desktop/tablet/narrow evidence checks visible warning, native disclosure keyboard,
+  selected record, result-panel and run-list reachability, focus/scroll preservation,
+  explicit single-record exports and no horizontal/sidebar overlap. No assertion of
+  full browser-restart recovery, crash durability, assistive-technology certification
+  or access to a saved file merely because its receipt is retained.

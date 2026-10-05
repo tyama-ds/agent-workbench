@@ -47,3 +47,6 @@ dialog{color:var(--ink);background:#131921;border:1px solid #54504a;border-radiu
 .task-example-list h3{font-size:11px;font-weight:600;margin-bottom:5px}
 .task-example-list p{font-size:11px;line-height:1.8}
 .task-example-list .field-help{font-size:10px;margin-top:5px}
+
+/* Compact lifetime guidance; optional depth stays inside the bounded result panel. */
+.history-retention{flex:none;margin:0;padding:0 14px 9px;font-size:10px;line-height:1.6;color:#adb6c2;overflow-wrap:anywhere}.sidebar-label-row{flex:none}.run-list{min-height:0}.history-details{margin-top:10px;color:#adb6c2;font-size:10px;line-height:1.7;overflow-wrap:anywhere}.history-details>summary{cursor:pointer;color:#dec08a}.history-details p{margin-top:8px}.history-details>summary:focus-visible{outline:2px solid #e3bc79;outline-offset:2px}

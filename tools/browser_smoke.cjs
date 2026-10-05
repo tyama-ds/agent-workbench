@@ -11,6 +11,7 @@ const {retainedRedactionAcceptance} = require('./browser-tests/redaction_accepta
 const {lifecycleAcceptance} = require('./browser-tests/lifecycle_acceptance.cjs');
 const {credentialRecoveryAcceptance} = require('./browser-tests/credential_recovery_acceptance.cjs');
 const {firstTaskAcceptance} = require('./browser-tests/first_task_acceptance.cjs');
+const {retentionAcceptance} = require('./browser-tests/retention_acceptance.cjs');
 
 async function assertLayout(page,label) {
   const metrics=await page.evaluate(()=>{
@@ -578,6 +579,8 @@ async function main() {
     assert.equal(await page.locator('#resultActionStatus').textContent(),'','Late copy cannot follow run selection');
     await page.evaluate(()=>delete navigator.clipboard.writeText);
     report.checks.push('real engine file receipt and terminal response; actual clipboard text/path, exact UTF-8 downloads, repeated export, draft preservation, selected-record/run races, latest-copy failure wins, desktop/narrow result screenshots; no reasoning/protocol export');
+    await retentionAcceptance({page,context,origin,workspace,stateDir,providerRequests,artifacts,report,assertLayout,
+      resultOption,receiptOption,exported,receiptExport});
     // A fresh text-only PM can start without file scopes, even with an unused
     // cloud worker selected. Preview/settings must preserve earlier outputs.
     await page.locator('#runList .run-link').filter({hasText:'[SYNTHETIC] Save result.'}).click();

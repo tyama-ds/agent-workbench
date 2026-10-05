@@ -258,8 +258,10 @@ class Engine:
         return agent
 
     def _prepare_run(self, payload):
-        if self.closed or len(self.runs) >= 20:
-            raise AdmissionError('engine_unavailable', '実行履歴の上限または停止中です。作業完了後にアプリを再起動してください')
+        if self.closed:
+            raise AdmissionError('engine_unavailable', 'サーバーは終了処理中です。終了後に起動し直してください。履歴と入力した API キーは引き継ぎません')
+        if len(self.runs) >= 20:
+            raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動すると履歴と入力した API キーは失われます')
         if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'worker_profiles', 'max_workers'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
         task = text(payload.get('task'), 'task', 16000, False)

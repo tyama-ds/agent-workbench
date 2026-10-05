@@ -431,7 +431,7 @@ function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;ui.navi
 
 function renderRunList() {
   const signature=JSON.stringify([ui.selectedRun,ui.state.runs.map(run=>[run.id,run.task,run.status,run.status_reason,run.created_at])]);if(signature===ui.runsSignature)return;ui.runsSignature=signature;
-  $('runCount').textContent=String(ui.state.runs.length);$('runList').replaceChildren();
+  $('runCount').textContent=`${ui.state.runs.length} / 20`;$('runList').replaceChildren();
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
   [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
