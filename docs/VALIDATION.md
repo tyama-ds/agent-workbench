@@ -5,7 +5,33 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
-## Current revision — native evidence comparison (2026-10-05)
+## Current revision — keyboard disclosure focus (2026-10-05)
+
+Version **0.1.1.dev19** preserves focus on the same native log disclosure when a
+loaded owner's log content changes. Stable keys include run, agent and unique log
+identity; missing/ambiguous identities are not inferred from list indexes. A focused
+record actually removed from that owner's retained history moves focus to the next
+surviving disclosure, then a preceding survivor, then a new disclosure or the existing
+conversation heading. Loading, navigation and obsolete responses do not request this
+fallback. Restoration occurs only if replacement left focus on the document body.
+An evicted record's fallback is revealed with a bounded pane adjustment, or nearest
+reveal when the heading or a clamped pane needs it; retained summaries keep their existing scroll position.
+
+While a disclosure owns focus, its pane retains the reading scroll position even
+near the usual auto-follow threshold. Ordinary bottom-follow, drafts, expanded state,
+native disclosure controls, dialogs, credentials, results and permissions are unchanged.
+Production callback tests model DOM focus removal; actual Windows Edge acceptance
+checks changing logs, Space/Enter, retention, owner/ABA races, other controls and
+desktop/narrow geometry. DOM-only checks do not establish layout or screen-reader
+behavior. Exact-head six-job CI, report hashes and independent pixel review belong
+to the final handoff. This is a bounded repair, not an accessibility-conformance claim.
+
+Local aggregate: **1085 passed, 6 platform-specific skips**, including **30 new
+disclosure-focus cases**. Dependency consistency, Python compilation, JavaScript
+syntax, existing DOM-only smoke and whitespace checks pass. These local checks do
+not substitute for fresh Windows Edge or evaluation-only packaged evidence.
+
+## Prior revision — native evidence comparison (2026-10-05)
 
 Version **0.1.1.dev18** adds an offline comparison of the evaluation build's original
 CPython notice bytes and actual native-file inventory against a checksum-pinned,

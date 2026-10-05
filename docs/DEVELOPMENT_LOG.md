@@ -858,3 +858,41 @@ removal, new downloads during builds, legal acceptance or binary uploads are add
 The evaluated build remains explicitly evaluation-only and distribution-blocked even
 when every available reference comparison matches. Full local tests, independent
 review and fresh exact-head six-job CI / Windows evidence are required for the handoff.
+
+
+## 0.1.1.dev19 — Keep keyboard focus on changing logs (2026-10-05)
+
+- Reproduced focus dropping to BODY when a new log replaces the currently focused
+  native thinking-detail summary. Unchanged polling and expanded-state retention
+  already worked; existing browser tests did not cover focus during changing logs.
+- Give summaries a stable run/agent/log focus key. Reuse conditional body-only
+  restoration with preventScroll, including direct conversation-render callbacks.
+  Missing and ambiguous IDs do not become guessed index-based focus identities.
+- If a focused record actually leaves the same owner's loaded retained history,
+  prefer the following surviving disclosure, then a preceding survivor, then a new
+  disclosure or the existing conversation heading. Loading/selection changes,
+  obsolete A→B→A responses and other focused controls never trigger this fallback.
+- Independent review identified near-bottom auto-follow as a second way to lose the
+  visible reading target. Preserve pane scroll while a disclosure owns focus; leave
+  ordinary bottom-follow unchanged when users are elsewhere. Reveal a genuinely
+  evicted record's fallback only as needed; a screenshot helper must not hide a
+  clipped fallback by scrolling it into view before its visibility assertion. Keep drafts and open
+  details, native keyboard behavior, the cockpit design and existing async ownership.
+
+Research decisions:
+- [W3C APG keyboard interface](https://www.w3.org/WAI/ARIA/apg/practices/keyboard-interface/#discernibleandpredictablekeyboardfocus):
+  adopt logical focus persistence after DOM replacement instead of allowing BODY to
+  silently become the active element. Reject unconditional refocusing after updates.
+- [WCAG focus-order guidance](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html):
+  keep the current reading context and an explicit nearby fallback when its actual
+  record is gone. Do not add positive tabindex values or a custom navigation mode.
+- [W3C disclosure pattern](https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/):
+  preserve native details/summary and verify Space/Enter after new content arrives.
+  Defer broad screen-reader/text-zoom certification, tablist conversion and redesign.
+
+Tests use actual production polling/render callbacks with synthetic focus-removal
+semantics, plus Windows Edge keyboard checks and desktop/narrow screenshots for
+independent visual review. Full local checks and exact-head source/PR six-job CI are
+required. Previous dev18 acceptance is retained in a versioned evidence record; the
+frozen original PR archive and dev15 source ZIP remain untouched. No live inference,
+new dependency, local browser retry, user-PC action, binary distribution, merge or release.

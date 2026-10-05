@@ -578,19 +578,55 @@ function renderConversation(agent) {
   const logs=loaded&&Array.isArray(agent?.logs)?agent.logs:[],signature=JSON.stringify([ui.selectedRun,agent?.id,loading,logs]);
   if(signature===ui.logSignature)return;ui.logSignature=signature;
   rememberConversationView();
-  const container=$('conversationLog'),context=outputOwner(),view=ui.conversationViews.get(context),atBottom=view?.atBottom??true,expanded=view?.expanded||new Set();container.replaceChildren();
+  const container=$('conversationLog'),context=outputOwner(),view=ui.conversationViews.get(context),atBottom=view?.atBottom??true,expanded=view?.expanded||new Set();
+  const fallback=evictedLogFocusFallback(container,context,logs,loaded);
+  const readingDisclosure=loaded&&ui.logContext===context&&[...container.querySelectorAll('details.thinking > summary')].includes(document.activeElement);
+  const idCounts=new Map();for(const log of logs){const id=logRecordId(log);if(id!==null)idCounts.set(id,(idCounts.get(id)||0)+1);}
+  preserveControlFocus(()=>{
+  container.replaceChildren();
   ui.logContext=loaded?context:'';
   if(loading){container.appendChild(element('div','detail-loading','作業ログを読み込み中…'));return;}
   if(!logs.length){container.appendChild(element('div','empty-small',agent?'まだログはありません。作業が進むとここに表示されます。':'エージェントを選ぶと、作業の経過が表示されます。'));return;}
   logs.forEach((log,index)=>{
     const id=String(log.id??index),kind=String(log.kind||'assistant');
-    if(log.thinking||kind==='thinking') {const detail=element('details','thinking');detail.dataset.logId=id;detail.open=expanded.has(id);detail.append(element('summary','',`モデルが返した思考の詳細${localTime(log.at)?' · '+localTime(log.at):''}`),element('pre','log-text',log.thinking||log.text||''));container.appendChild(detail);}
+    if(log.thinking||kind==='thinking') {const detail=element('details','thinking'),summary=element('summary','',`モデルが返した思考の詳細${localTime(log.at)?' · '+localTime(log.at):''}`);detail.dataset.logId=id;detail.open=expanded.has(id);const stableId=logRecordId(log);if(stableId!==null&&idCounts.get(stableId)===1)summary.dataset.focusKey=`log:${JSON.stringify([ui.selectedRun,agent.id,stableId])}`;detail.append(summary,element('pre','log-text',log.thinking||log.text||''));container.appendChild(detail);}
     if(kind==='thinking'||!log.text)return;
     const entry=element('article','log-entry '+(['user','tool'].includes(kind)?kind:'')),meta=element('div','log-meta');
     meta.append(element('span','log-role',({user:'あなた',assistant:agent.name||'エージェント',tool:'ツール',system:'システム',error:'エラー'})[kind]||kind),element('span','',localTime(log.at)));
     entry.append(meta,element('pre','log-text',log.text));container.appendChild(entry);
   });
-  container.scrollTop=atBottom?container.scrollHeight:(view?.scroll||0);
+  container.scrollTop=atBottom&&!readingDisclosure?container.scrollHeight:(view?.scroll||0);
+  },fallback);
+}
+function logRecordId(log) {
+  return typeof log.id==='string'&&log.id?log.id:Number.isSafeInteger(log.id)?String(log.id):null;
+}
+function evictedLogFocusFallback(container,context,logs,loaded) {
+  // Only a focused disclosure that actually left this owner's retained history
+  // needs a fallback. Loading/selection changes must never move the user's focus.
+  if(!loaded||ui.logContext!==context)return null;
+  const summaries=[...container.querySelectorAll('details.thinking > summary')],index=summaries.indexOf(document.activeElement);
+  if(index<0||!summaries[index].dataset.focusKey)return null;
+  const id=summaries[index].parentElement.dataset.logId;
+  if(logs.some(log=>logRecordId(log)===id))return null;
+  const generation=ui.selectionGeneration,nearby=[...summaries.slice(index+1),...summaries.slice(0,index).reverse()].map(node=>node.dataset.focusKey).filter(Boolean);
+  return ()=>{
+    if(generation!==ui.selectionGeneration||ui.logContext!==context||outputOwner()!==context)return null;
+    const available=[...container.querySelectorAll('details.thinking > summary')];
+    const target=nearby.map(key=>available.find(node=>node.dataset.focusKey===key)).find(Boolean)||available[0]||$('conversationHeading');
+    // A removed reading target cannot retain its old visual position. Reveal
+    // only its fallback; retained summaries never use this scroll adjustment.
+    if(target===$('conversationHeading'))target.scrollIntoView({block:'nearest',inline:'nearest'});
+    else {
+      const box=target.getBoundingClientRect(),paneTop=container.getBoundingClientRect().top+container.clientTop;
+      const top=Math.max(0,paneTop),bottom=Math.min(window.innerHeight,paneTop+container.clientHeight);
+      if(bottom>top&&box.top<top)container.scrollTop+=box.top-top;
+      else if(bottom>top&&box.bottom>bottom)container.scrollTop+=box.bottom-bottom;
+      const revealed=target.getBoundingClientRect();
+      if(bottom<=top||revealed.top<0||revealed.bottom>window.innerHeight)target.scrollIntoView({block:'nearest',inline:'nearest'});
+    }
+    return target;
+  };
 }
 function renderActivity(run) {
   const feed=$('activityFeed'),loading=Boolean(run)&&ui.compactState&&ui.loadedEventsRun!==run.id,events=!run||loading?[]:ui.state.events.filter(event=>event.run_id===run.id).slice(-100).reverse();
@@ -605,10 +641,13 @@ function renderActivity(run) {
   });
   feed.scrollTop=scroll;
 }
-function preserveControlFocus(render) {
+function preserveControlFocus(render,fallback=null) {
   const key=document.activeElement?.dataset.focusKey;
   render();
-  if(key&&document.activeElement===document.body) [...document.querySelectorAll('[data-focus-key]')].find(node=>node.dataset.focusKey===key)?.focus({preventScroll:true});
+  if(key&&document.activeElement===document.body) {
+    const replacement=[...document.querySelectorAll('[data-focus-key]')].find(node=>node.dataset.focusKey===key);
+    (replacement||fallback?.())?.focus({preventScroll:true});
+  }
 }
 function renderRun() { preserveControlFocus(renderRunContent); }
 function renderRunContent() {
