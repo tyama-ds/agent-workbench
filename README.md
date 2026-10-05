@@ -97,6 +97,14 @@ LAN 上の Local サーバーでは、この PC の GPU 値を代用できない
 
 HTTP(S) プロキシに対応します。SOCKS、PAC、URL に埋め込んだ認証情報、独自 CA の登録 UI は未対応です。Local はこれらの設定の影響を受けません。Web の取得対象は公開 HTTP(S) テキストのみで、JavaScript は実行しません。内部・メタデータアドレスや危険なリダイレクトを拒否します。明示した SearXNG 検索サーバーだけは内部の接続先も利用できます（LAN 内も HTTPS が必要）。
 
+### ページ本文の文字コード（0.1.1.dev8）
+
+UTF-8 に加え、宣言付きの Shift_JIS / Windows-31J（CP932）、EUC-JP、ISO-2022-JP、Windows-1252、ASCII、ISO-8859-1、UTF-16LE/BE に対応します。HTML の ASCII / Latin-1 系ラベルは Windows-1252 として扱います。取得結果には、実際のデコーダー `encoding` と選択根拠 `encoding_source` を本文より前に含めます。
+
+BOM、HTTP の charset、先頭の HTML meta（最初の1,024バイト内）の順で選びます。meta の検査は script / style / title / textarea / template 等に達すると止め、その後の宣言は使いません。宣言がない通常のテキストは UTF-8 と仮定し、`encoding_assumed: true` を返します。XHTML は HTML meta ではなく XML 宣言、JSON は常に UTF-8 を使います。JSON の先頭 UTF-8 BOM は除去します。
+
+選択した文字コードで読めない場合や未対応・曖昧な宣言は、置換文字や別の文字コードで推測せず、説明付きのエラーにします。元のページの誤りと断定するものではありません。明示した対応 charset のあるページ、または UTF-8 版を使ってください。ブラウザーと完全に同じ文字コード推定・HTML/XML 解析ではなく、正しい charset 宣言そのものも保証しません。最大20万文字の本文と省略有無を返し、取得内容は引き続き未信頼の資料として扱います。
+
 ## ファイルと Office
 
 | 形式 | 対応する操作 | 制限 |

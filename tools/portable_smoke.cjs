@@ -13,6 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
 const {createRequire} = require('node:module');
+const {CASES: WEB_CASES, WEB_TASK, WEB_FINAL, WebTextFixture} = require('./web_text_fixture.cjs');
 
 const MODEL = 'portable-synthetic-model';
 const OFFICE_TASK = '[PORTABLE SYNTHETIC] Office round-trip 日本語';
@@ -246,6 +247,7 @@ class OfficeFixture {
     this.stopRequests = 0;
     this.cancelledStops = 0;
     this.errors = [];
+    this.web = new WebTextFixture();
   }
 
   result(id) {
@@ -389,6 +391,10 @@ class OfficeFixture {
         res.end(JSON.stringify({data: [{id: MODEL}]}));
         return;
       }
+      if (req.method === 'GET' && req.url.startsWith('http://')) {
+        this.web.serve(req, res);
+        return;
+      }
       assert.equal(req.method, 'POST');
       assert.equal(req.url, '/v1/chat/completions', 'Only local synthetic inference is permitted');
       let raw = '';
@@ -410,8 +416,8 @@ class OfficeFixture {
         });
         return;
       }
-      assert.equal(task, OFFICE_TASK, 'Unexpected task cannot invoke fixture');
-      const response = this.answer(body);
+      assert([OFFICE_TASK, WEB_TASK].includes(task), 'Unexpected task cannot invoke fixture');
+      const response = task === WEB_TASK ? this.web.answer(body, call, completion) : this.answer(body);
       res.writeHead(200, {'Content-Type': 'application/json'});
       res.end(JSON.stringify(response));
     } catch (error) {
@@ -614,6 +620,31 @@ async function main() {
       method: 'POST', body: {text: 'Must be rejected after stop'}, headers: authHeaders})).status, 400);
     await api('/api/config', {method: 'PUT', body: config});
     report.checks.push('Real UI stop cancels a blocked HTTP provider request, settles agent/run, rejects later messages, is idempotent, and unlocks settings');
+
+    // Explicit proxy serves fixed synthetic bytes; the numeric public address
+    // passes normal SSRF validation but is never contacted by this fixture.
+    const originalSearch = structuredClone(config.search);
+    const fixtureOrigin = new URL(providerUrl).origin;
+    Object.assign(config.search, {enabled: true, provider: 'searxng', endpoint: fixtureOrigin + '/search',
+      proxy_url: fixtureOrigin});
+    await api('/api/config', {method: 'PUT', body: config});
+    const webStarted = await api('/api/runs', {method: 'POST', body: {...runPayload, task: WEB_TASK}});
+    const webCompleted = await until(async () => {
+      const snapshot = await api('/api/state');
+      const run = snapshot.runs.find(item => item.id === webStarted.run.id);
+      const agent = snapshot.agents.find(item => item.run_id === webStarted.run.id);
+      if (agent?.status === 'error') throw new Error('Packaged web decoding failed: ' + agent.last_error);
+      return run?.status === 'done' ? {run, agent} : null;
+    }, 'frozen EXE strict web decoding through synthetic loopback proxy');
+    assert.equal(webCompleted.agent.results[0].text, WEB_FINAL);
+    assert.equal(webCompleted.run.model_calls, 2);
+    assert.equal(webCompleted.run.tool_calls, WEB_CASES.length);
+    assert.equal(fixture.web.stage, 2);
+    report.webDecoding = {modelCalls: webCompleted.run.model_calls, toolCalls: webCompleted.run.tool_calls,
+      proxy: 'loopback fixed fixtures; no forwarding', requests: fixture.web.requests, results: fixture.web.results};
+    config.search = originalSearch;
+    await api('/api/config', {method: 'PUT', body: config});
+    report.checks.push('Actual frozen EXE decodes CP932/HTML meta, EUC-JP, ISO-2022-JP, UTF-8/BOM, UTF-16LE/BE, Windows-1252, Latin-1 and ASCII through a fixed loopback proxy; malformed UTF-8 fails without response-byte leakage');
 
     const settingsHash = sha256(path.join(state, 'settings.json'));
     report.duplicateDynamic = await duplicateLaunch(executable, state, environment, workspace, 0);

@@ -1,6 +1,24 @@
 # Validation scope
 
-## Current revision — truthful state v1 (2026-10-05)
+## Current revision — strict web text decoding (2026-10-05)
+
+Version **0.1.1.dev8** adds strict declaration-aware text decoding with actual codec,
+selection-source and UTF-8-assumption metadata. Pure fixtures cover supported codec
+families, BOM/header/meta/XML/JSON precedence, malformed declarations and bytes,
+raw/inert HTML decoys, Unicode label normalization, NUL-interleaved JSON, response
+privacy and exact cleaned-output bounds. A real local proxy covers redirect/header/
+CP932 integration without a third-party connection. Frozen-EXE acceptance additionally
+exercises every supported codec family through a fixed loopback proxy that never
+forwards to the requested numeric public address. This checks actual packaged codecs.
+
+The meta scan is deliberately conservative and stops at the first raw/inert element;
+strict decoding is not source-fidelity verification or full browser compatibility.
+The existing network transport/security tests and all prior UI acceptance assertions
+remain. Final exact-head six-job CI, artifact hashes and Windows evidence are reported
+in the draft PR handoff. No live model service, corporate-PC connectivity or binary
+redistribution clearance is implied. See [the versioned cycle record](DEVELOPMENT_LOG.md).
+
+## Prior revision — truthful state v1 (2026-10-05)
 
 Version **0.1.1.dev2** adds real assignment display/search, runtime-derived waiting reasons
 and shared snapshot/POST reply eligibility. New regression cases cover redaction and JSON

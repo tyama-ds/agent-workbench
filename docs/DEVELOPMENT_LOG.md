@@ -355,3 +355,49 @@ and make the full selected heading a bounded, keyboard-focusable scroll region.
 The original strict composer geometry assertion remains, with added maximum-length
 identity, keyboard-scroll persistence and narrow assignment-visibility checks.
 A fresh exact-head full CI and screenshot review is required after this correction.
+
+## 0.1.1.dev8 — Strict web text decoding with provenance (2026-10-05)
+
+- Fix the reproduced Shift_JIS corruption with explicit supported declarations and
+  CP932 compatibility labels; isolate decoding from the unchanged network transport.
+- Select BOM, HTTP charset and bounded early HTML meta in precedence order. XHTML
+  uses its own anchored XML declaration; JSON stays UTF-8. Report the actual codec,
+  selection source and any UTF-8 assumption before long tool text.
+- Fail visibly on selected unsupported/ambiguous declarations and malformed byte
+  sequences, without echoing response bytes/labels or claiming the source is corrupt.
+  Recommend an explicitly supported charset or UTF-8 export. Do not try another codec.
+- Keep strict size/security limits and untrusted status. Compute output truncation
+  after HTML extraction/control cleanup; flush trailing parser text before measuring.
+- Independent review found and regressed five ambiguity paths: Unicode label folding
+  (Kelvin sign), self-closing raw/inert HTML tags, double-escaped script content,
+  ASCII XML prologs claiming UTF-16 and BOM-less NUL-interleaved JSON. The conservative
+  meta scan now stops at the first raw/inert element instead of approximating browser
+  script parsing. UTF-32 signatures are rejected before overlapping UTF-16 signatures.
+- Add no-network declaration/error/boundary tests, a real local proxy/redirect fixture,
+  and frozen-EXE acceptance through a fixed loopback proxy for every supported codec
+  family plus malformed UTF-8. The proxy never forwards to the numeric public URL.
+
+Research decisions:
+- [WHATWG HTML encoding determination](https://html.spec.whatwg.org/multipage/parsing.html#determining-the-character-encoding):
+  adopt BOM/header/meta ordering and the 1,024-byte bound. Defer locale guessing,
+  full parsing/restarts and browser state-machine emulation. Stop before raw/inert
+  content, documenting the intentional compatibility boundary.
+- [WHATWG Encoding](https://encoding.spec.whatwg.org/#names-and-labels): adopt a closed
+  label map and HTML legacy-label semantics. Reject arbitrary Python codec lookup,
+  UTF-7/UTF-32 and byte transforms. Python legacy decoders are a bounded supported
+  subset, not a claim of complete WHATWG decoder parity.
+- [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259#section-8.1): keep application/json
+  UTF-8 regardless of charset parameters; tolerate only the UTF-8 BOM.
+- [RFC 7303](https://www.rfc-editor.org/rfc/rfc7303#section-3.2): keep XHTML separate
+  from HTML meta processing, with BOM/header priority and XML declaration/default.
+- [Python codec documentation](https://docs.python.org/3/library/codecs.html#standard-encodings):
+  use fixed built-in codec names. A local Python 3.12 probe found windows-31j absent
+  from runtime aliases despite newer documentation listing it; explicit aliases avoid
+  version-dependent behavior. CP932 is intentionally selected for Japanese Windows
+  compatibility, and actual frozen codec execution is tested rather than inferred.
+- Reject charset-detector dependencies, external services, replacement decoding and
+  silent retry guesses. A successful strict decode is not proof that a declaration
+  matches the publisher's intended characters. Preserve the baseline interface.
+
+Final local/exact-head Windows and six-job CI results belong to the cycle handoff.
+The source PR remains draft; no merge, release or binary distribution is included.
