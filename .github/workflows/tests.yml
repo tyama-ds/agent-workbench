@@ -75,3 +75,65 @@ jobs:
             runtime/verification/browser-smoke.json
           if-no-files-found: error
           retention-days: 14
+  portable:
+    name: Experimental portable Windows x64
+    needs: [tests, browser]
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      # Closed until actual native dependency redistribution obligations are reviewed.
+      WORKBENCH_PORTABLE_DISTRIBUTION_APPROVED: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Build fresh hash-locked ONEDIR and notice inventory
+        run: python tools/build_portable.py --output-dir dist
+      - name: Install locked acceptance driver (use existing Edge)
+        run: npm ci --prefix tools/browser-tests --ignore-scripts --no-audit --no-fund
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Extract ZIP and test actual EXE with clean child PATH
+        shell: pwsh
+        run: |
+          $zip = @(Get-ChildItem dist/AgentWorkbench-*-windows-x64-experimental.zip)
+          if ($zip.Count -ne 1) { throw 'Expected exactly one portable ZIP' }
+          $env:WORKBENCH_PORTABLE_ZIP = $zip[0].FullName
+          $env:WORKBENCH_PORTABLE_EXE = (Resolve-Path dist/AgentWorkbench/AgentWorkbench.exe).Path
+          node tools/portable_smoke.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $report = Get-Content runtime/verification/portable-smoke.json -Raw | ConvertFrom-Json
+          if (-not $report.passed) { throw 'Packaged acceptance did not pass' }
+          $env:WORKBENCH_PORTABLE_EXE = $report.application.executable
+          python tools/portable_console_smoke.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload packaged acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: portable-acceptance-${{ github.sha }}
+          path: |
+            runtime/verification/portable-smoke.json
+            runtime/verification/portable-console.json
+            runtime/verification/portable-workbench.png
+            dist/AgentWorkbench/build-manifest.json
+            dist/AgentWorkbench/THIRD-PARTY-NOTICES/inventory.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload experimental binary only after all acceptance gates
+        if: success() && env.WORKBENCH_PORTABLE_DISTRIBUTION_APPROVED == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: AgentWorkbench-windows-x64-experimental-${{ github.sha }}
+          path: |
+            dist/AgentWorkbench-*-windows-x64-experimental.zip
+            dist/AgentWorkbench-*-windows-x64-experimental.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

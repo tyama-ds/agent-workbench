@@ -10,11 +10,15 @@ from pathlib import Path
 import subprocess
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+FROZEN = bool(getattr(sys, 'frozen', False))
+ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parents[1]
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    if FROZEN:
+        from workbench import __version__
+        parser.add_argument('--version', action='version', version=__version__)
     parser.add_argument('--project-root', '-ProjectRoot', type=Path, default=ROOT)
     parser.add_argument('--port', '-Port', type=int, default=8818)
     parser.add_argument('--state-dir', '-StateDir', default='')
@@ -22,7 +26,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 0 <= args.port <= 65535:
         parser.error('port must be between 0 and 65535')
-    root = args.project_root.resolve()
+    root = ROOT if FROZEN else args.project_root.resolve()
     state = str(Path(args.state_dir).resolve()) if args.state_dir else 'default-state-directory'
     identity = f'{root}|{args.port}|{state}|{Path.home()}'.casefold()
     guard = None
@@ -46,6 +50,12 @@ def main(argv=None):
                     print('Agent Workbench is already running with a dynamic port. Use its existing console URL.')
                 print('If authentication was lost, stop the existing console with Ctrl+C and start again.')
                 return 0
+        if FROZEN:
+            import asyncio
+            from workbench.server import serve
+            print('Starting Agent Workbench. Keep this console open; Ctrl+C stops the server.', flush=True)
+            asyncio.run(serve(args))
+            return 0
         command = [sys.executable, '-m', 'workbench.server', '--port', str(args.port)]
         if args.no_browser:
             command.append('--no-browser')
@@ -55,6 +65,9 @@ def main(argv=None):
         return subprocess.call(command, cwd=root)
     except KeyboardInterrupt:
         return 130
+    except (ValueError, OSError, RuntimeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     finally:
         if guard and kernel:
             kernel.CloseHandle(guard)

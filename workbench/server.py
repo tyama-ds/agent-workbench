@@ -22,6 +22,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from .config import Settings, ROOT, text
 from .engine import Engine
+from .runtime_paths import FROZEN
 
 APP_KEY = web.AppKey('engine', Engine)
 STATIC = ROOT / 'static'
@@ -33,7 +34,10 @@ def private_directory(path):
         if item.exists() and (item.is_symlink() or getattr(item.lstat(), 'st_file_attributes', 0) & 0x400):
             raise ValueError('状態フォルダーに symlink / junction は使用できません')
     path.mkdir(parents=True, exist_ok=True)
-    if os.name == 'nt':
+    if os.name == 'nt' and FROZEN:
+        from .windows_runtime import harden_directory
+        harden_directory(path)
+    elif os.name == 'nt':
         system = Path(os.environ['SystemRoot']) / 'System32'
         result = subprocess.run([str(system / 'whoami.exe'), '/user', '/fo', 'csv', '/nh'], capture_output=True,
                                 text=True, timeout=10, creationflags=0x08000000, check=True)
@@ -201,14 +205,18 @@ async def serve(args):
     auth = BrowserAuth(listener.getsockname()[1])
     app = create_app(directory, auth)
     runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    await web.SockSite(runner, listener).start()
-    print('Agent Workbench started. Ctrl+C to stop.', flush=True)
-    if args.no_browser:
-        print(auth.launch_url, flush=True)
-    else:
-        await asyncio.to_thread(webbrowser.open, auth.launch_url)
     try:
+        await runner.setup()
+        await web.SockSite(runner, listener).start()
+        print('Agent Workbench started. Ctrl+C to stop.', flush=True)
+        if args.no_browser:
+            print(auth.launch_url, flush=True)
+        else:
+            if FROZEN and os.name == "nt":
+                from .windows_runtime import capture_helper
+                await capture_helper("browser", auth.launch_url, timeout=15)
+            else:
+                await asyncio.to_thread(webbrowser.open, auth.launch_url)
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()

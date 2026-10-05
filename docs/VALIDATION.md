@@ -157,3 +157,24 @@ verification. No installed model, paid inference, external scan, user PC, or cor
 network configuration is exercised by these synthetic tests.
 
 The first cycle-4 Edge run exposed a real textarea-blur/click race: redundant preflight refresh moved the Start button during a pointer action. The fix deduplicates unchanged payload/configuration previews, retains pending content, visibly marks pending checks, preserves expanded scope details, and defers preview layout changes through native Start pointer gestures. The exact failing narrow-screen click remains in acceptance coverage; fresh final-head CI is required after the fix.
+
+## Experimental ONEDIR revision (0.1.1.dev5)
+
+The portable CI job is separate from source-install validation and depends on the full
+source/Edge jobs. It uses official CPython 3.13 x64 on Windows and a fresh, hash-locked
+build environment. A successful freezer exit is insufficient: the development-only
+acceptance driver extracts the ZIP to Japanese/space/punctuation paths, verifies its
+checksum and manifest, launches the production EXE with a minimal system-only PATH,
+and supplies a deterministic loopback HTTP model through the real provider adapter.
+Office create/read/edit, real save receipts, result rendering, path exclusions,
+authentication and duplicate/port behavior must pass before binary artifact upload.
+
+The driver and CI build tools can use Node/Python; the application child cannot rely
+on them through its PATH or Python environment. No test model client or HTTP test route
+is added to the production app. Windows native Job lifecycle, output caps and utility
+timeouts have additional platform tests. GPU hardware and arbitrary company policy
+configurations are not established by a hosted runner.
+
+The build manifest explicitly says its own builder has not performed acceptance.
+Consult the exact commit's CI report/artifact for that separate evidence. An artifact
+checksum identifies bytes; it is not code signing or a corporate trust decision.

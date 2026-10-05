@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import Settings, ROOT, number, text
+from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
 from .providers import ProviderClient
 from .resources import ResourceGate
@@ -197,7 +198,7 @@ class Engine:
                 raise AdmissionError('key_missing', f'{p["label"]}: API キーが未設定です', field='api_key', profile_id=p['id'])
         # App implementation, settings, and secret storage cannot become agent
         # workspaces even if a broad user-selected ancestor contains them.
-        deny = [*config['paths']['deny_roots'], str(ROOT), str(self.settings.directory)]
+        deny = [*config['paths']['deny_roots'], *(str(path) for path in PROTECTED_ROOTS), str(self.settings.directory)]
         harness = PathHarness(config['paths']['read_roots'], config['paths']['write_roots'], deny_roots=deny,
                               max_file_bytes=config['limits']['max_file_bytes'])
         search = copy.deepcopy(config['search'])

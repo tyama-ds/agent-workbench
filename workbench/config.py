@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-ROOT = Path(__file__).resolve().parents[1]
+from .runtime_paths import RESOURCE_ROOT as ROOT
 DEFAULT = json.loads((ROOT / 'docs' / 'interface.json').read_text(encoding='utf-8'))['config']
 ID = re.compile(r'[a-zA-Z][a-zA-Z0-9_-]{0,63}\Z')
 ENV = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}\Z')

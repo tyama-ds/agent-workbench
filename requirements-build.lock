@@ -1,0 +1,31 @@
+# Build-only lock for Windows x64, CPython 3.13, PyInstaller ONEDIR.
+# Verified against official PyPI release metadata on 2026-10-05.
+# Install requirements.lock first; it supplies packaging==26.3 and setuptools==84.0.0.
+# Install: python -m pip install --only-binary=:all: --require-hashes -r requirements-build.lock
+# Only the intended Windows x64 / universal wheels are authorized below.
+# No source builds, non-Windows PyInstaller wheels, or optional extras are included.
+
+# https://pypi.org/project/altgraph/0.17.5/
+# altgraph-0.17.5-py2.py3-none-any.whl
+altgraph==0.17.5 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+
+# https://pypi.org/project/pefile/2024.8.26/
+# pefile-2024.8.26-py3-none-any.whl
+pefile==2024.8.26 \
+    --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+
+# https://pypi.org/project/pyinstaller/6.22.3/
+# pyinstaller-6.22.3-py3-none-win_amd64.whl
+pyinstaller==6.22.3 \
+    --hash=sha256:500bd58c7bf7e584a8435adccbd763a0b918d5c12b08d74ff50fd79b2915458b
+
+# https://pypi.org/project/pyinstaller-hooks-contrib/2026.8/
+# pyinstaller_hooks_contrib-2026.8-py3-none-any.whl
+pyinstaller-hooks-contrib==2026.8 \
+    --hash=sha256:6d21d65323ea4467753afc21f52d7d0e69416ae8101dd88269bf273ad48db084
+
+# https://pypi.org/project/pywin32-ctypes/0.2.3/
+# pywin32_ctypes-0.2.3-py3-none-any.whl
+pywin32-ctypes==0.2.3 \
+    --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8

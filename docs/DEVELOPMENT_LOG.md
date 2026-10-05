@@ -185,3 +185,46 @@ Primary-source research and decisions:
 - Defer explicit optional inference/tool probes, automatic model loading/downloading, provider expansion, and persistent capability scores. Reject silent cloud fallback, network scanning, credential logging, and TLS/proxy bypasses.
 
 Cycle-4 review correction: actual Edge testing found that native textarea change-on-blur could rebuild the preview and swallow a Start click. Deduplicating the effective preview request and retaining existing content avoids this layout mutation; expanded scope survives legitimate refreshes. Pointer/keyboard and delayed-response regression coverage is retained.
+
+## 0.1.1.dev5 — Experimental Python-bundled Windows ONEDIR (2026-10-05)
+
+- Preserve the source `Setup.cmd` / `Launch.cmd` route, existing cockpit, preflight,
+  results and privacy behavior. Add an optional unsigned Windows x64 console build,
+  built in a fresh CPython 3.13 environment using separate hash-locked build tools.
+- Frozen normal launch runs the server in-process under the existing duplicate-launch
+  mutex. Bundled resources and outer installation directory are independently protected
+  from agent file access, alongside the state directory. State stays in LOCALAPPDATA.
+- Fixed utility helpers isolate Windows DLL-search cleanup from concurrent server
+  imports. They accept no arbitrary commands, use bounded pipes and timeouts, and place
+  native descendants in a kill-on-close Job. Cancellation finishes acquiring the helper
+  handle before killing/reaping it. Browser launch validates the exact loopback bootstrap
+  URL and uses the Windows association, ignoring BROWSER command templates.
+- Build output includes source/runtime/tool identity, dependency and native notices,
+  per-file hashes, and ZIP checksum. CI uploads the binary only after source tests and
+  actual packaged-server acceptance; a packaging command alone is not release evidence.
+- Independent early review caught inherited BROWSER command templates and sanitization
+  after changing directory. Both were corrected, and browser startup now runs inside
+  server cleanup protection. Unit regressions cover those boundaries.
+
+Research decisions:
+- [PyInstaller operating model](https://pyinstaller.org/en/stable/operating-mode.html):
+  adopt inspectable ONEDIR with bundled Python and native Windows builds; defer one-file,
+  MSIX, installers, automatic updates and additional architecture support.
+- [PyInstaller runtime information](https://pyinstaller.org/en/stable/runtime-information.html):
+  distinguish `_internal` resources from outer EXE location and avoid interpreting
+  frozen `sys.executable` as a Python interpreter.
+- [PyInstaller external-program guidance](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html):
+  isolate DLL-search reset in short-lived helper processes rather than race global
+  state against background work. Browser helpers intentionally do not own the browser
+  in a kill-on-close Job.
+- [PyInstaller license exception](https://pyinstaller.org/en/stable/license.html) and
+  [CPython licensing](https://docs.python.org/3/license.html): retain actual interpreter,
+  wheel and native-library notices; inventory the distribution rather than assuming
+  a freezer removes dependency obligations.
+- [Microsoft app reputation guidance](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation):
+  Python-free startup does not establish company approval or universal compatibility.
+  Reject warning bypasses, self-signed trust changes and claims of unrestricted use.
+
+No live model service, user data, user PC or corporate security configuration is used
+for acceptance. Final exact-head CI, ZIP inspection and screenshots are recorded in
+handoff; until those pass, the portable binary remains unverified.
