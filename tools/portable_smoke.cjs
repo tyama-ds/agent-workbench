@@ -153,6 +153,12 @@ async function prepareBundle(sandbox, environment, report) {
   if (process.env.GITHUB_SHA) assert.equal(manifest.source_sha, process.env.GITHUB_SHA, 'Bundle source matches the tested CI commit');
   assert.equal(manifest.platform, 'windows'); assert.equal(manifest.architecture, 'x64');
   assert.equal(manifest.bundle_mode, 'onedir'); assert.equal(manifest.signed, false);
+  assert.equal(manifest.evaluation_only, true);
+  assert.equal(manifest.distribution_status, 'blocked');
+  assert(manifest.distribution_blockers.length > 0);
+  const notices = JSON.parse(fs.readFileSync(path.join(install, 'THIRD-PARTY-NOTICES', 'inventory.json'), 'utf8'));
+  assert.equal(notices.evaluation_only, true); assert.equal(notices.distribution_status, 'blocked');
+  assert(notices.native_files.length > 0 && notices.cpython.component_review.length > 0);
   assert(Array.isArray(manifest.files) && manifest.files.length > 0);
   for (const entry of manifest.files) {
     assert(entry.path && !path.isAbsolute(entry.path) && !entry.path.split(/[\\/]/).includes('..'), 'Safe manifest path');
@@ -177,7 +183,8 @@ async function prepareBundle(sandbox, environment, report) {
     'Archive file set must match the manifest exactly');
   assert(!actualFiles.some(file => /(^|\/)(node_modules|tests|\.venv)\//i.test(file)), 'No development dependency folders in bundle');
   report.manifest = {version: manifest.version, sourceSha: manifest.source_sha,
-    filesVerified: manifest.files.length, unsigned: true};
+    filesVerified: manifest.files.length, unsigned: true, evaluationOnly: true, distributionStatus: 'blocked',
+    distributionBlockers: manifest.distribution_blockers, nativeFilesInventoried: notices.native_files.length};
   return {install, executable, manifest};
 }
 

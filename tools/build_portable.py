@@ -1,8 +1,9 @@
-"""Build an experimental, unsigned Windows x64 ONEDIR app in a fresh venv.
+"""Build an evaluation-only, unsigned Windows x64 ONEDIR app in a fresh venv.
 
 Run with official CPython 3.13 x64 on Windows. No cross-compilation, signing,
-publishing, or smoke-test claim is performed here. CI must gate artifact upload
-on its separate frozen-app acceptance tests. See tools/portable.spec.
+publishing, or smoke-test claim is performed here. Native redistribution review
+is unresolved: no distribution mode exists. CI must not upload the binary.
+See tools/portable.spec.
 """
 from __future__ import annotations
 
@@ -29,6 +30,21 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "AgentWorkbench"
 LABEL = "experimental-unsigned"
 NOTICE_PREFIXES = ("license", "licence", "copying", "notice", "copyright", "authors")
+NATIVE_COMPONENTS = {
+    "OpenSSL": ("libssl*.dll", "libcrypto*.dll", "_ssl.pyd", "_hashlib.pyd"),
+    "zlib": ("zlib*.dll", "zlib*.pyd", "python3*.dll"),
+    "libffi": ("libffi*.dll", "_ctypes.pyd"),
+    "bzip2": ("*bz2*.dll", "_bz2.pyd"),
+    "liblzma/XZ": ("*lzma*.dll", "_lzma.pyd"),
+    "SQLite": ("sqlite*.dll", "_sqlite3.pyd"),
+    "Microsoft CRT": ("vcruntime*.dll", "msvcp*.dll", "ucrtbase.dll"),
+}
+DISTRIBUTION_BLOCKERS = [
+    "lxml Windows native binaries indicate static GNU libiconv linkage; exact native-source "
+    "provenance and applicable source/relinking obligations remain unresolved.",
+    "CPython native dependency notices/provenance and redistribution review remain unresolved "
+    "for OpenSSL, zlib, libffi, bzip2, liblzma/XZ, any bundled SQLite, and Microsoft CRT.",
+]
 
 
 def sha256(path: Path) -> str:
@@ -168,7 +184,8 @@ def copy_distribution_notices(name: str, destination: Path, role: str) -> dict:
 def collect_notices(destination: Path, runtime: list[str], build: list[str],
                     python_home: Path | None = None) -> dict:
     destination.mkdir(parents=True, exist_ok=False)
-    inventory = {"schema_version": 1, "distributions": []}
+    inventory = {"schema_version": 1, "distributions": [], "evaluation_only": True,
+                 "distribution_status": "blocked", "distribution_blockers": DISTRIBUTION_BLOCKERS}
     for name in sorted(set(runtime) | set(build)):
         inventory["distributions"].append(copy_distribution_notices(
             name, destination, "runtime" if name in runtime else "build-tool/bootloader"))
@@ -180,13 +197,44 @@ def collect_notices(destination: Path, runtime: list[str], build: list[str],
     if not python_license.is_file():
         raise RuntimeError("Missing CPython Windows LICENSE.txt; use the official Windows distribution")
     text = python_license.read_text(encoding="utf-8", errors="replace")
-    require_notice_terms(text, ("Python Software Foundation", "OpenSSL", "libffi", "zlib"), "CPython")
+    require_notice_terms(text, ("Python Software Foundation",), "CPython")
     copied = destination / "CPython-LICENSE.txt"
     shutil.copyfile(python_license, copied)
+    import ssl
+    import zlib
+
     inventory["cpython"] = {"version": platform.python_version(),
-                             "notice": {"path": copied.name, "sha256": sha256(copied)}}
+                            "notice": {"path": copied.name, "sha256": sha256(copied)},
+                            "notice_provenance": "Unmodified LICENSE.txt from this build interpreter's base installation.",
+                            "review_status": "unresolved; copied notice is not proof of native-component coverage",
+                            "runtime_observations": {"OpenSSL": ssl.OPENSSL_VERSION,
+                                                     "zlib_compiled": zlib.ZLIB_VERSION,
+                                                     "zlib_runtime": zlib.ZLIB_RUNTIME_VERSION},
+                            "component_review": [
+                                {"component": name, "status": "unresolved",
+                                 "notice_mentions_name": name.lower() in text.lower(),
+                                 "provenance": "Component-name search is informational, not license validation.",
+                                 "bundled_files": None}
+                                for name in NATIVE_COMPONENTS]}
     (destination / "inventory.json").write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
     return inventory
+
+
+def record_native_bundle(inventory: dict, bundle: Path) -> None:
+    """Record the actual collected files without asserting linkage or legal clearance."""
+    import fnmatch
+
+    files = [entry for entry in file_inventory(bundle)
+             if Path(entry["path"]).suffix.lower() in {".dll", ".pyd"}]
+    inventory["native_files"] = files
+    inventory["native_file_scope"] = "Actual bundled DLL/PYD files; component filename matching is not linkage attestation."
+    for component in inventory["cpython"]["component_review"]:
+        matches = [entry for entry in files if any(
+            fnmatch.fnmatchcase(Path(entry["path"]).name.lower(), pattern.lower())
+            for pattern in NATIVE_COMPONENTS[component["component"]])]
+        component["bundled_files"] = matches
+        if not matches:
+            component["status"] = "not_observed_in_bundle; not proof of absence from other binaries"
 
 
 def copy_supplementary_notices(source: Path, destination: Path, distribution: str) -> dict:
@@ -240,6 +288,9 @@ def write_manifest(bundle: Path, version: str, source_sha: str, runtime: list[st
                    build: list[str], root: Path = ROOT) -> dict:
     manifest = {"schema_version": 1, "product": APP_NAME, "version": version,
                 "label": LABEL, "source_sha": source_sha,
+                "evaluation_only": True, "distribution_status": "blocked",
+                "distribution_blockers": DISTRIBUTION_BLOCKERS,
+                "notice_inventory": "THIRD-PARTY-NOTICES/inventory.json",
                 "built_at_utc": datetime.now(timezone.utc).isoformat(),
                 "platform": "windows", "architecture": "x64", "bundle_mode": "onedir",
                 "console": True, "upx": False, "signed": False,
@@ -268,7 +319,9 @@ def archive_bundle(bundle: Path, output: Path, version: str) -> Path:
     return archive
 
 
-def assemble(output: Path, work: Path, source_sha: str) -> Path:
+def assemble(output: Path, work: Path, source_sha: str, *, evaluation_only: bool = False) -> Path:
+    if not evaluation_only:
+        raise RuntimeError("Only explicit --evaluation-only builds are supported; binary distribution is blocked")
     validate_host()
     if sys.prefix == sys.base_prefix:
         raise RuntimeError("Internal assembly requires the fresh build virtual environment")
@@ -285,7 +338,7 @@ def assemble(output: Path, work: Path, source_sha: str) -> Path:
     runtime = runtime_distributions()
     build = sorted(set(build_lock) | {"packaging", "setuptools"})
     notices = work / "THIRD-PARTY-NOTICES"
-    collect_notices(notices, runtime, build)
+    notice_inventory = collect_notices(notices, runtime, build)
     version_file = work / "version-resource.txt"
     write_version_resource(version_file, version)
     context = work / "context.json"
@@ -304,12 +357,18 @@ def assemble(output: Path, work: Path, source_sha: str) -> Path:
                      "docx/templates/default.docx", "pptx/templates/default.pptx"):
         if not (bundle / "_internal" / required).is_file():
             raise RuntimeError(f"Missing bundled application resource: {required}")
+    record_native_bundle(notice_inventory, bundle)
+    (notices / "inventory.json").write_text(json.dumps(notice_inventory, indent=2) + "\n", encoding="utf-8")
     shutil.copytree(notices, bundle / notices.name)
     shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
     shutil.copyfile(ROOT / "README.md", bundle / "README.md")
     shutil.copytree(ROOT / "docs", bundle / "docs")
     (bundle / "EXPERIMENTAL.txt").write_text(
+        "EVALUATION ONLY: NOT FOR DISTRIBUTION\n"
         "EXPERIMENTAL, UNSIGNED WINDOWS X64 BUILD\n"
+        "Native dependency notice, source-provenance, and redistribution review is unresolved.\n"
+        "Passing functional tests does not clear binary distribution.\n"
+        "See build-manifest.json and THIRD-PARTY-NOTICES/inventory.json for unresolved components.\n"
         "Extract the entire folder. Keep _internal beside AgentWorkbench.exe.\n"
         "This build has no installer, updater, tray integration, or code signature.\n"
         "Build success does not establish acceptance-test success.\n"
@@ -322,10 +381,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
     parser.add_argument("--work-dir", type=Path, default=ROOT / "build" / "portable")
+    parser.add_argument("--evaluation-only", action="store_true",
+                        help="Required: build only for internal evaluation; binary distribution remains blocked")
     parser.add_argument("--_assemble", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--_source-sha", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
+        if not args.evaluation_only:
+            raise RuntimeError("Explicit --evaluation-only is required; no distribution mode is available")
         validate_host()
         version = source_version()
         output = args.output_dir.resolve()
@@ -333,8 +396,8 @@ def main(argv: list[str] | None = None) -> int:
         if args._assemble:
             if not args._source_sha or not re.fullmatch(r"[0-9a-f]{40,64}", args._source_sha):
                 raise RuntimeError("Missing verified Git source SHA")
-            archive = assemble(output, work_root, args._source_sha)
-            print(f"Built unsigned experimental artifact: {archive}")
+            archive = assemble(output, work_root, args._source_sha, evaluation_only=True)
+            print(f"Built evaluation-only artifact; NOT FOR DISTRIBUTION: {archive}")
             return 0
         source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         status = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all"],
@@ -358,6 +421,7 @@ def main(argv: list[str] | None = None) -> int:
                             "--no-build-isolation", str(ROOT)], check=True, cwd=ROOT)
             subprocess.run([str(python), "-m", "pip", "check"], check=True, cwd=ROOT)
             subprocess.run([str(python), str(Path(__file__).resolve()), "--_assemble",
+                            "--evaluation-only",
                             "--_source-sha", source_sha, "--output-dir", str(output),
                             "--work-dir", str(work)], check=True, cwd=ROOT)
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:

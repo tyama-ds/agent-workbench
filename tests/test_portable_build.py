@@ -50,7 +50,14 @@ def test_non_windows_build_is_explicitly_rejected(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     with pytest.raises(RuntimeError, match="Windows"):
         builder.validate_host()
+    assert builder.main(["--evaluation-only"]) == 1
+
+
+def test_evaluation_only_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.setattr(builder, "validate_host", lambda: pytest.fail("Must reject before starting build"))
     assert builder.main([]) == 1
+    with pytest.raises(RuntimeError, match="evaluation-only"):
+        builder.assemble(Path("unused"), Path("unused"), "a" * 40)
 
 
 @pytest.mark.parametrize("version,bits,machine", [((3, 12), 8, "AMD64"), ((3, 13), 4, "AMD64"),
@@ -141,7 +148,7 @@ def test_cpython_native_notices_are_required(tmp_path):
         builder.collect_notices(tmp_path / "notices", [], [], tmp_path / "python")
     python = tmp_path / "python"
     python.mkdir()
-    (python / "LICENSE.txt").write_text("Python Software Foundation")
+    (python / "LICENSE.txt").write_text("Not an interpreter license")
     with pytest.raises(RuntimeError, match="CPython native notice"):
         builder.collect_notices(tmp_path / "incomplete", [], [], python)
 
@@ -154,6 +161,44 @@ def test_cpython_license_is_in_inventory(tmp_path):
     inventory = builder.collect_notices(destination, [], [], python)
     assert inventory["cpython"]["notice"]["sha256"] == builder.sha256(destination / "CPython-LICENSE.txt")
     assert json.loads((destination / "inventory.json").read_text()) == inventory
+
+
+def test_evaluation_preserves_actual_license_and_records_unresolved_components(tmp_path):
+    python = tmp_path / "python"
+    python.mkdir()
+    # Real installations need not mention every native component in this file.
+    text = "Python Software Foundation; libffi notice only in this synthetic fixture"
+    (python / "LICENSE.txt").write_text(text)
+    destination = tmp_path / "notices"
+    inventory = builder.collect_notices(destination, [], [], python)
+    assert (destination / "CPython-LICENSE.txt").read_text() == text
+    assert inventory["evaluation_only"] is True
+    assert inventory["distribution_status"] == "blocked"
+    assert inventory["distribution_blockers"]
+    assert inventory["cpython"]["runtime_observations"]["OpenSSL"]
+    assert inventory["cpython"]["runtime_observations"]["zlib_runtime"]
+    components = {item["component"]: item for item in inventory["cpython"]["component_review"]}
+    assert set(components) == set(builder.NATIVE_COMPONENTS)
+    assert all(item["status"] == "unresolved" for item in components.values())
+    assert not components["OpenSSL"]["notice_mentions_name"]
+    assert components["libffi"]["notice_mentions_name"]
+    assert components["SQLite"]["bundled_files"] is None
+
+
+def test_native_inventory_identifies_only_actual_bundled_files(tmp_path):
+    (tmp_path / "_internal").mkdir()
+    for filename in ("python313.dll", "libssl-3.dll", "_ssl.pyd", "vcruntime140.dll"):
+        (tmp_path / "_internal" / filename).write_bytes(b"Synthetic file, not a binary")
+    inventory = {"cpython": {"component_review": [
+        {"component": name, "status": "unresolved"} for name in builder.NATIVE_COMPONENTS]}}
+    builder.record_native_bundle(inventory, tmp_path)
+    components = {item["component"]: item for item in inventory["cpython"]["component_review"]}
+    assert len(components["OpenSSL"]["bundled_files"]) == 2
+    assert components["OpenSSL"]["status"] == "unresolved"
+    assert components["SQLite"]["bundled_files"] == []
+    assert components["SQLite"]["status"].startswith("not_observed_in_bundle")
+    for item in inventory["native_files"]:
+        assert item["sha256"] == builder.sha256(tmp_path / item["path"])
 
 
 def test_supplementary_notices_are_versioned_and_hash_verified(tmp_path, monkeypatch):
@@ -202,6 +247,8 @@ def test_manifest_covers_every_bundle_file_except_itself(tmp_path, monkeypatch):
     assert result["architecture"] == "x64" and result["bundle_mode"] == "onedir"
     assert result["console"] and not result["upx"] and not result["signed"]
     assert result["label"] == "experimental-unsigned"
+    assert result["evaluation_only"] is True and result["distribution_status"] == "blocked"
+    assert result["distribution_blockers"]
     assert {item["path"] for item in result["files"]} == {"AgentWorkbench.exe", "_internal/resource.txt"}
     for item in result["files"]:
         assert item["sha256"] == builder.sha256(bundle / item["path"])
@@ -237,6 +284,8 @@ def test_spec_contract_and_bootstrap_have_no_onefile_or_upx():
     assert '"--require-hashes"' in source
     assert '"--only-binary=:all:"' in source
     assert source.index('for filename in ("requirements.lock", "requirements-build.lock")') >= 0
+    assert '"--evaluation-only",' in source
+    assert "EVALUATION ONLY: NOT FOR DISTRIBUTION" in source
 
 
 def test_checksum_pinned_notices_disable_checkout_line_ending_conversion():

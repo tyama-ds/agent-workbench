@@ -88,28 +88,31 @@ Launch.cmd --state-dir "C:\Users\me\AppData\Local\AgentWorkbench-test"
 
 この手順は Python が必要なソース配布です。Python 同梱 EXE、署名済みインストーラー、会社の端末管理ツール向けパッケージではありません。依存パッケージは固定されていますが、会社ごとの通信許可、証明書、端末制御の検証は対象 PC で必要です。
 
-## 実験版: Python 同梱ポータブル ZIP (Windows x64)
+## 評価限定: Python 同梱ポータブルの開発状況
 
-`0.1.1.dev5` から、ソース版とは別に Windows CI で検証する実験版のビルド機能があります。
-**現時点ではネイティブ依存ライブラリーの再配布条件を確認中のため、バイナリー artifact のアップロードは無効です。**
-実行テストの成功と再配布許可は別の判定です。以下は配布ゲートを通過した場合の手順です。
-成功した CI の `AgentWorkbench-windows-x64-experimental-…` artifact にある ZIP が対象です。
-ソース ZIP と違い、Python の事前インストールと `Setup.cmd` は不要です。
-未検証・失敗したビルドはバイナリー artifact として配布しません。
+`0.1.1.dev5` には Windows x64 / CPython 3.13 の ONEDIR ビルドと実物の検証機能があります。
+**現在、利用者向けのポータブル ZIP は提供していません。** CI 内部で評価するだけで、
+成功時・失敗時とも EXE、DLL、ZIP を artifact にアップロードしません。
+この機能の追加は、社用 PC 用のダウンロードが完成したという意味ではありません。
+利用者は引き続き上記の承認済み Python と `Setup.cmd` によるソース版を使ってください。
 
-1. IT 担当が配布元、ZIP の SHA-256、同梱 `THIRD-PARTY-NOTICES` とビルド記録を確認し、実行を許可した場合だけ使用します。
-2. ZIP の**全内容**を承認済みローカルフォルダーに展開します。`AgentWorkbench.exe` と `_internal` を分離せず、ZIP 内から直接実行しないでください。
-3. `AgentWorkbench.exe` を通常のユーザー権限で起動します。コンソールは開いたまま使い、Ctrl+C で停止します。既定ポートはソース版と同じ `8818` です。
-4. 別ポートなら `AgentWorkbench.exe --port 8820`。ブラウザーが開けない場合は `AgentWorkbench.exe --no-browser` の起動リンクを使います。このリンクは認証情報を含むので共有しないでください。
+配布保留の理由は、lxml の Windows wheel に含まれる iconv の静的リンク・対応ソース・
+再リンク条件と、CPython に含まれるネイティブ依存の正確な通知・再配布条件の確認が未完了なためです。
+実行テストの成功、ライセンス文の同梱、SHA-256 一致だけではこの確認を代替できません。
+未確認事項は `build-manifest.json` と `THIRD-PARTY-NOTICES/inventory.json` に明記します。
+複数年のソース提供の約束やコード署名は作成していません。
 
-ここでの「ポータブル」は Python 同梱・展開して起動する意味です。設定は既定で
+開発者の内部評価に限り、承認済み Windows x64 CPython 3.13 環境のクリーンな checkout で
+`python tools/build_portable.py --evaluation-only --output-dir dist` を使用します。
+評価用 ZIP は全内容を展開し、`AgentWorkbench.exe` と `_internal` を分離しません。
+`--version`、`--port 8820`、`--no-browser` に対応します。コンソールを開いたまま使い、Ctrl+C で停止します。
+起動リンクには認証情報を含むため共有しないでください。
+
+評価用 EXE の起動自体に Python の事前導入は不要ですが、設定は既定で
 `%LOCALAPPDATA%\AgentWorkbench` に保存され、EXE と一緒には移動しません。
-アプリ本体、`_internal`、状態フォルダーは、親フォルダーを許可してもエージェントから読み書きできません。
-更新は停止後に新しい ZIP を別フォルダーへ展開します。動作中の EXE/DLL を上書きしないでください。
+本体、`_internal`、状態フォルダーは、親フォルダーを許可してもエージェントから読み書きできません。
 既存ソース版と設定場所・ポートを共有するため、同時起動を避けてください。
 
-**署名のない実験版です。会社 PC で必ず許可されるという意味ではありません。**
-SmartScreen、Smart App Control、WDAC/AppLocker、ウイルス対策の制約は残ります。
-ブロックされた場合は IT 担当へ確認し、警告の回避・保護機能の無効化・証明書の追加は行わないでください。
+署名のない評価ビルドなので、再配布確認後も会社の許可や SmartScreen、Smart App Control、
+WDAC/AppLocker、ウイルス対策の制約は別途残ります。警告の回避・保護機能の無効化・証明書の追加は行いません。
 Windows ARM64、32-bit、全企業ポリシー環境を検証したものではありません。
-従来の承認済み Python と `Setup.cmd` によるソース版も引き続き利用できます。

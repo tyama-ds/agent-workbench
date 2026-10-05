@@ -200,8 +200,8 @@ Cycle-4 review correction: actual Edge testing found that native textarea change
   handle before killing/reaping it. Browser launch validates the exact loopback bootstrap
   URL and uses the Windows association, ignoring BROWSER command templates.
 - Build output includes source/runtime/tool identity, dependency and native notices,
-  per-file hashes, and ZIP checksum. CI uploads the binary only after source tests and
-  actual packaged-server acceptance; a packaging command alone is not release evidence.
+  per-file hashes, and ZIP checksum. Native redistribution review later blocked all
+  binary uploads (see decision below); a packaging command is not release evidence.
 - Independent early review caught inherited BROWSER command templates and sanitization
   after changing directory. Both were corrected, and browser startup now runs inside
   server cleanup protection. Unit regressions cover those boundaries.
@@ -234,3 +234,13 @@ bytes of checksum-pinned third-party notice supplements. Mark those reviewed fil
 as binary-preserved in `.gitattributes`; do not weaken or normalize away their hash
 checks. The full source/install/Edge suite passed before the packaging gate caught
 this issue. Binary upload remains separately blocked on native redistribution review.
+
+Redistribution decision: actual Windows lxml wheel and matching build configuration
+indicate static iconv inclusion. Exact corresponding-source/relink obligations are
+not established. The setup-python CPython LICENSE also lacks expected native
+component labels, so interpreter dependency notices need build-specific review.
+Stop expanding legal packaging in this cycle: require an explicit evaluation-only
+build, inventory available notices and unresolved components honestly, retain exact
+hashes, and remove binary artifact upload entirely. Only internal execution tests,
+reports/screenshots and non-binary manifests may proceed. No source-offer commitment
+or distribution clearance is made.

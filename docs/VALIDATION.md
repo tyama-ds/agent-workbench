@@ -167,7 +167,7 @@ acceptance driver extracts the ZIP to Japanese/space/punctuation paths, verifies
 checksum and manifest, launches the production EXE with a minimal system-only PATH,
 and supplies a deterministic loopback HTTP model through the real provider adapter.
 Office create/read/edit, real save receipts, result rendering, path exclusions,
-authentication and duplicate/port behavior must pass before binary artifact upload.
+authentication and duplicate/port behavior are evaluated internally. No binary artifact upload is configured.
 
 The driver and CI build tools can use Node/Python; the application child cannot rely
 on them through its PATH or Python environment. No test model client or HTTP test route
@@ -178,3 +178,8 @@ configurations are not established by a hosted runner.
 The build manifest explicitly says its own builder has not performed acceptance.
 Consult the exact commit's CI report/artifact for that separate evidence. An artifact
 checksum identifies bytes; it is not code signing or a corporate trust decision.
+
+The native redistribution review is unresolved. Evaluation-only mode explicitly
+records that blocker and incomplete interpreter-native notice/provenance review; it
+does not weaken available-file checksum checks or establish distribution readiness.
+Both success and failure uploads use an explicit non-binary evidence allowlist.

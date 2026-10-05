@@ -76,13 +76,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   portable:
-    name: Experimental portable Windows x64
+    name: Evaluation-only portable Windows x64
     needs: [tests, browser]
     runs-on: windows-latest
     timeout-minutes: 25
-    env:
-      # Closed until actual native dependency redistribution obligations are reviewed.
-      WORKBENCH_PORTABLE_DISTRIBUTION_APPROVED: 'false'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -95,7 +92,7 @@ jobs:
         with:
           node-version: '22'
       - name: Build fresh hash-locked ONEDIR and notice inventory
-        run: python tools/build_portable.py --output-dir dist
+        run: python tools/build_portable.py --evaluation-only --output-dir dist
       - name: Install locked acceptance driver (use existing Edge)
         run: npm ci --prefix tools/browser-tests --ignore-scripts --no-audit --no-fund
         env:
@@ -127,13 +124,5 @@ jobs:
             dist/AgentWorkbench/THIRD-PARTY-NOTICES/inventory.json
           if-no-files-found: warn
           retention-days: 14
-      - name: Upload experimental binary only after all acceptance gates
-        if: success() && env.WORKBENCH_PORTABLE_DISTRIBUTION_APPROVED == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: AgentWorkbench-windows-x64-experimental-${{ github.sha }}
-          path: |
-            dist/AgentWorkbench-*-windows-x64-experimental.zip
-            dist/AgentWorkbench-*-windows-x64-experimental.zip.sha256
-          if-no-files-found: error
-          retention-days: 14
+      # Intentionally no EXE/DLL/ZIP artifact upload, on success or failure.
+      # Native dependency redistribution review remains unresolved.

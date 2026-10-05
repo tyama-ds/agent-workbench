@@ -28,9 +28,9 @@ Setup.cmd --wheelhouse "C:\Approved Packages\wheelhouse"
 
 **詳しい手順・Python の指定・社内 CA・オフライン wheel の準備・エラー対処は [Windows 11 セットアップガイド](docs/WINDOWS_SETUP.md) を参照してください。**
 
-### Python 同梱の実験版
+### Python 同梱版の開発状況
 
-Windows x64 向けの展開式 EXE のビルド・検証機能を開発しています。実物の動作テストと依存ライブラリーの再配布条件の両方を通過した場合だけ CI artifact として提供します。現在は再配布確認のためバイナリーのアップロードを保留しています。Python の事前導入は不要ですが、署名のない実験版であり会社の実行許可は別途必要です。従来のソース版も維持しています。[ポータブル ZIP の手順と制約](docs/WINDOWS_SETUP.md#実験版-python-同梱ポータブル-zip-windows-x64)を確認してください。
+Windows x64 向け ONEDIR のビルド・検証機能は内部評価限定です。ネイティブ依存の再配布確認が未完了なため、**ポータブル EXE / ZIP は配布していません**。従来のソース版を利用してください。[評価状況と保留理由](docs/WINDOWS_SETUP.md#評価限定-python-同梱ポータブルの開発状況)を記載しています。
 
 ## 最初の設定
 
