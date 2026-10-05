@@ -25,6 +25,10 @@ async def test_browser_fixture_exercises_real_engine(tmp_path):
         assert state['runs'][0]['status'] == 'waiting'
         assert any('Worker review complete.' in event['text'] for event in state['events'])
         assert all('task' not in agent for agent in state['agents'])
+        assert lead['assignment'] == '[SYNTHETIC] test'
+        assert next(a for a in state['agents'] if a['parent_id'])['assignment'] == '[SYNTHETIC] Review fixture only.'
+        assert lead['status_reason'] == state['runs'][0]['status_reason'] == 'human_input'
+        assert lead['message_eligibility']['allowed']
         await engine.human_message(lead['id'], '[SYNTHETIC] Continue.')
         await asyncio.sleep(.01)
         assert engine.snapshot()['runs'][0]['status'] == 'running'

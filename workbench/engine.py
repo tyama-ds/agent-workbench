@@ -59,10 +59,16 @@ class Agent:
     logs: deque = field(default_factory=lambda: deque(maxlen=200))
     task: asyncio.Task | None = None
     closing: bool = False
+    assignment: str = ''
 
-    def public(self):
+    def public(self, *, message_eligibility=None, status_reason=None):
         return {k: getattr(self, k) for k in ('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id',
-                                              'status', 'question', 'last_error', 'turns')} | {'logs': list(self.logs)}
+                                              'status', 'question', 'last_error', 'turns', 'assignment')} | {
+                    'logs': list(self.logs),
+                    'status_reason': status_reason or ('human_input' if self.status == 'waiting' and self.question else self.status),
+                    'message_eligibility': message_eligibility or {
+                        'allowed': False, 'reason': 'unavailable', 'message': '実行情報を取得できません。'},
+                }
 
 
 class Engine:
@@ -116,14 +122,15 @@ class Engine:
         return any(a.task and not a.task.done() for a in self.agents.values()) or any(r['status'] in {'running', 'waiting', 'stopping'} for r in self.runs.values())
 
     def snapshot(self):
-        return self._redact_tree({'runs': [{k: v for k, v in run.items() if not k.startswith('_')} for run in self.runs.values()],
-                'agents': [a.public() for a in self.agents.values()], 'events': list(self.events),
+        return self._redact_tree({'runs': [{k: v for k, v in run.items() if not k.startswith('_')} |
+                         {'status_reason': self.run_status_reason(run)} for run in self.runs.values()],
+                'agents': [a.public(message_eligibility=self.message_eligibility(a), status_reason=self.agent_status_reason(a)) for a in self.agents.values()], 'events': list(self.events),
                 'resources': self.gate.snapshot()})
 
-    def _new_agent(self, run, profile, role, parent=None):
+    def _new_agent(self, run, profile, role, parent=None, *, assignment=''):
         ident = 'a-' + secrets.token_hex(8)
         name = 'PM' if parent is None else f'Worker {len(run["agent_ids"])} · {role}'
-        agent = Agent(ident, run['id'], name, role, profile, parent)
+        agent = Agent(ident, run['id'], name, role, profile, parent, assignment=assignment)
         self.agents[ident] = agent
         run['agent_ids'].append(ident)
         self.event(run['id'], ident, 'created', f'{name} / {profile}')
@@ -163,7 +170,7 @@ class Engine:
                'agent_ids': [], '_config': config, '_harness': harness,
                '_executor': ToolExecutor(harness), '_web': WebTools({'search': search})}
         self.runs[run_id] = run
-        lead = self._new_agent(run, pm, 'pm')
+        lead = self._new_agent(run, pm, 'pm', assignment=task)
         self.enqueue(lead, task, human=True)
         return {'ok': True, 'run': self._redact_tree({k: v for k, v in run.items() if not k.startswith('_')})}
 
@@ -180,7 +187,8 @@ class Engine:
             agent.pending.insert(position, (content, True))
             agent.question = ''
             agent.last_error = ''
-            agent.status = 'queued'
+            if agent.status != 'working':
+                agent.status = 'queued'
         else:
             agent.pending.append((content, False))
             if not agent.question and agent.status not in {'working', 'error'}:
@@ -200,16 +208,66 @@ class Engine:
             raise ValueError('エージェントが見つかりません')
         text(content, '回答', 16000, False)
         run = self.runs[agent.run_id]
-        if run['status'] in {'stopped', 'stopping'}:
-            raise ValueError('停止したチームは再開できません。新しい仕事を開始してください')
-        if run['_config'] != self.settings.value:
-            raise ValueError('設定が変更されています。現在の権限・API 設定で新しい仕事を開始してください')
+        eligibility = self.message_eligibility(agent)
+        if not eligibility['allowed']:
+            raise ValueError(eligibility['message'])
         self.enqueue(agent, content, human=True)
         run['status'] = 'running'
         # A human may continue an individual agent, but cannot silently refill
         # the team's automatic handoff budget.
         run['_collaboration_blocked'] = False
         return {'ok': True}
+
+    def message_eligibility(self, agent):
+        """Read-only admission hint; the POST rechecks the same conditions.
+
+        Automatic handoff exhaustion is deliberately not a human-message ban.
+        No budget is refilled and no pending work is changed by this projection.
+        """
+        run = self.runs[agent.run_id]
+        reason, message = '', ''
+        limits = run['_config']['limits']
+        if run['status'] == 'stopping':
+            reason, message = 'stopping', '停止処理中です。実行中の処理の終了を待っています。完了後、新しい仕事を開始してください'
+        elif self.closed or agent.closing or run['status'] == 'stopped':
+            reason, message = 'stopped', '停止したチームは再開できません。新しい仕事を開始してください'
+        elif run['_config'] != self.settings.value:
+            reason, message = 'settings_changed', '設定が変更されています。現在の権限・API 設定で新しい仕事を開始してください'
+        elif len(agent.pending) >= 32:
+            reason, message = 'queue_full', '待機キューが満杯です。処理が進んでから送信してください'
+        elif agent.turns >= limits['max_turns_per_agent']:
+            reason, message = 'turn_limit', 'エージェントのターン上限です。新しい仕事で続けてください'
+        elif time.time() - run['created_at'] >= limits['max_run_seconds']:
+            reason, message = 'time_limit', '実行時間の上限です。新しい仕事で続けてください'
+        elif run['model_calls'] >= limits['max_model_calls']:
+            reason, message = 'model_limit', 'モデル呼び出し回数の上限です。新しい仕事で続けてください'
+        elif len(json.dumps(agent.conversation, ensure_ascii=False)) > limits['max_context_chars']:
+            reason, message = 'context_limit', '会話の長さの上限です。成果を確認し、新しい仕事で続けてください'
+        if not reason and run['tool_calls'] >= limits['max_tool_calls']:
+            message = 'ツール実行回数は上限に達しています。文章による追加回答は依頼できますが、ツールは実行できません。回数はリセットされません。'
+        return {'allowed': not reason, 'reason': reason, 'message': message}
+
+    def agent_status_reason(self, agent):
+        if agent.status == 'waiting' and agent.question:
+            return 'human_input'
+        if agent.status == 'idle':
+            children = [a for a in self.agents.values() if a.parent_id == agent.id]
+            if any(a.status == 'error' for a in children):
+                return 'teammate_error'
+            if any(a.status not in {'done', 'stopped'} for a in children):
+                return 'teammates'
+        return agent.status
+
+    def run_status_reason(self, run):
+        if run['status'] != 'waiting':
+            return run['status']
+        agents = [self.agents[ident] for ident in run['agent_ids']]
+        reasons = [bool(run.get('_collaboration_blocked')), any(a.status == 'error' for a in agents),
+                   any(a.question for a in agents)]
+        if sum(reasons) > 1:
+            return 'needs_attention'
+        return next((reason for present, reason in zip(reasons, ('collaboration_limit', 'error', 'human_input'))
+                     if present), 'waiting')
 
     def _policy(self, run, agent):
         config = run['_config']
@@ -390,7 +448,7 @@ class Engine:
             task = text(args['task'], 'worker task', 16000, False)
             role = text(args['role'], 'role', 80, False)
             self._check_collaboration(run, agent)
-            child = self._new_agent(run, profile, role, agent.id)
+            child = self._new_agent(run, profile, role, agent.id, assignment=task)
             self.enqueue(child, task)
             run['auto_collaborations'] += 1
             return {'ok': True, 'agent_id': child.id, 'name': child.name}

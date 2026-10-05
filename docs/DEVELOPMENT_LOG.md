@@ -65,3 +65,48 @@ A more-specific notice selector retained a viewport-fixed shell height on stacke
 - Waiting status labels can conflate human questions with error/budget waiting. The real
   human-question filter is tested; broader state semantics are a separate change.
 - No live model quality, target GPU behavior, company proxy or real user's desktop is tested.
+
+## Cycle 2 — truthful assignment and recovery v1 (2026-10-05)
+
+Application version **0.1.1.dev2**, based on cycle 1 head
+`8bf4cb830aef9675a1f902c39ba558dbe453108b`. Retains the same cockpit and scheduler.
+
+### Adopted
+
+- Expose the actual initial PM/worker brief as a distinct `assignment` string, redacted
+  by the existing snapshot boundary. Display and search this field. Replies and peer
+  messages remain conversation entries; they do not silently replace the original brief.
+  Never expose the internal asyncio `task`, pending queue, conversation or configuration.
+- Derive `status_reason` from runtime state: human questions, unfinished teammates,
+  teammate errors, failed runs, collaboration blocking and mixed attention. Generic
+  waiting no longer claims the human owes an answer. Stopped agents with an old question
+  are not counted as current human questions. No generated progress percentages.
+- Derive PM identity from the actual parent relationship, not a model-provided role name.
+  Queueing a human follow-up during inference retains the agent's working state.
+- Expose read-only `message_eligibility` with `allowed`, `reason` and explanatory `message`.
+  The POST rechecks the same predicate before changing queues/questions/errors/status.
+  Stopping, stopped, stale settings, a full queue and exhausted turn/time/model/context
+  budgets explain their recovery path. Stopping does not claim writes have finished.
+- Preserve allowed human direction after automatic collaboration exhaustion; no budget
+  resets. Exhausted tool calls still allow text-only model completion and show a warning.
+  Admission is a current-state hint, not a reservation or promise of future model success.
+- Extend contract, transition, frontend, DOM-only and real Edge tests. The real HTTP/engine
+  browser phase checks assignment search, a human question, hard-turn recovery and stale
+  configuration guidance. All inputs remain synthetic and no model endpoint is called.
+
+### Research decisions
+
+- [OpenTelemetry trace API](https://opentelemetry.io/docs/specs/otel/trace/api/): adopt the
+  limited principle of explicit operation identity, parent relationships and evidence-based
+  status. Reject a tracing SDK, exporter or collector: unnecessary for this in-memory UI.
+- [Microsoft Human-AI Interaction guidelines](https://www.microsoft.com/en-us/research/wp-content/uploads/2019/01/Guidelines-for-Human-AI-Interaction-camera-ready.pdf):
+  adopt clear capability/state feedback and an actionable recovery explanation. Reject
+  inferred completion/progress from model prose and automatic retries that consume budget.
+- Defer assignment revision/history, persisted activity, broad state-machine changes,
+  new providers, approval flows and telemetry to separate reviewed cycles.
+
+### Verification
+
+Final exact-head CI and screenshot evidence is recorded in the cycle handoff. Historical
+cycle 1 browser evidence above remains tied to its named commits and is not reused as
+proof for this cycle's changes.

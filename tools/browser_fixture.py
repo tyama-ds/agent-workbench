@@ -28,7 +28,9 @@ class SyntheticClient:
         count = self.calls.get(ident, 0)
         self.calls[ident] = count + 1
         calls = []
-        if identity['parent_id']:
+        if messages and messages[0].get('content') == '[SYNTHETIC] Complete immediately.':
+            calls = []
+        elif identity['parent_id']:
             calls = [('finish_work', {'summary': '[SYNTHETIC] Worker review complete.'})]
         elif count == 0:
             calls = [

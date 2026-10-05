@@ -48,3 +48,28 @@ Implement narrowly scoped operations through `ToolExecutor` or a similarly valid
 - [Anthropic extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
 
 The transport supports reasoning blocks that the provider actually returns. There is currently no UI to configure provider-specific thinking budgets or model-server loading parameters. Model availability and account permissions are supplied by the user, not hard-coded.
+
+### Public work state and reply admission (0.1.1.dev2)
+
+`Agent.assignment` is the original PM or worker brief. It is separate from the private
+asyncio `Agent.task`; later human replies and peer envelopes do not alter the brief.
+Snapshots apply the same recursive secret redaction to this field as to other strings.
+`parent_id`, not the free-text role, determines PM/worker identity in the UI.
+
+Scheduler `status` values are unchanged. The additive `status_reason` is a read-only
+projection: agents can explain human-input waiting, unfinished teammates or a teammate
+error; waiting runs explain human input, errors, collaboration limits or mixed attention.
+This is not a new source of scheduling authority. A working task remains working when
+another human instruction is queued. A completed worker can retain its completed status
+when automatic delivery of its result is blocked; the run separately explains the limit.
+
+Each snapshot agent also has `message_eligibility: {allowed, reason, message}`. The human
+message endpoint invokes the same current-state check before enqueueing. Closed/stopping/
+stopped runs, stale configuration, a full 32-message human queue, or exhausted per-agent
+turn, run-time, run-model or agent-context limits reject with an explanation. Rejection
+leaves pending work, questions, errors and status unchanged. A snapshot is only a hint:
+other work or elapsed time can change eligibility before POST, and an accepted message
+may subsequently hit a limit. Existing permission checks and loop budget checks remain.
+Tool-budget exhaustion permits a text-only answer and is shown as a warning. Automatic
+collaboration exhaustion also permits human direction; neither kind of reply refills any
+budget. Starting a new run is required for changed configuration or fresh hard budgets.

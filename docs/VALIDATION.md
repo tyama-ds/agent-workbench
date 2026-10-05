@@ -1,6 +1,17 @@
 # Validation scope
 
-## Current revision — browser acceptance v1 (2026-10-05)
+## Current revision — truthful state v1 (2026-10-05)
+
+Version **0.1.1.dev2** adds real assignment display/search, runtime-derived waiting reasons
+and shared snapshot/POST reply eligibility. New regression cases cover redaction and JSON
+serialization, unchanged original briefs, human follow-ups during active inference,
+question/error/mixed waiting, and non-mutating rejection for stale settings and hard
+limits. The real Edge flow additionally checks turn-budget and stale-setting recovery
+screens at desktop/narrow sizes. See the cycle 2 development record for adopted/deferred
+ideas. Final head-specific results are reported in the PR handoff; no live-model quality,
+real-user desktop, GPU, proxy or complete accessibility audit is implied.
+
+## Prior verified revision — browser acceptance v1 (2026-10-05)
 
 Version **0.1.1.dev1** adds a Windows Edge browser job and corrects narrow-layout
 clipping found by inspecting its actual screenshots. The implementation at

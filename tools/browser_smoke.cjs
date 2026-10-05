@@ -123,23 +123,23 @@ async function main() {
       const data=route.request().postDataJSON();sentRuns.push(data);const at=1791169200;
       const run={id:'fixture-run',...data,status:'running',created_at:at,model_calls:4,tool_calls:6,auto_collaborations:3,max_auto_collaborations:7,collaboration_limit_reached:false,agent_ids:['fixture-pm','fixture-worker-1','fixture-worker-2']};fixture.runs=[run];
       fixture.agents=[
-        {id:'fixture-pm',run_id:run.id,name:'PM',role:'pm',profile_id:'local',status:'waiting',question:'更新した社内FAQを共有する前に、確認対象のチームを指定してください。',turns:2,logs:[{id:1,kind:'assistant',text:'作業を2つに分けました。検索案の整理と、記載内容の確認を並行して進めています。',thinking:'参照する資料と、確認すべき観点を整理しています。',at}]},
-        {id:'fixture-worker-1',run_id:run.id,name:'資料・検索担当',role:'worker',profile_id:'openai',parent_id:'fixture-pm',status:'working',turns:3,logs:[{id:2,kind:'assistant',text:'資料を確認し、検索案をまとめています。',at}]},
-        {id:'fixture-worker-2',run_id:run.id,name:'レビュー担当',role:'worker',profile_id:'local',parent_id:'fixture-pm',status:'done',turns:2,logs:[{id:3,kind:'assistant',text:'確認を完了しました。結果をPMへ送信しました。',at}]},
+        {id:'fixture-pm',run_id:run.id,name:'PM',role:'pm',profile_id:'local',status:'waiting',assignment:data.task,question:'更新した社内FAQを共有する前に、確認対象のチームを指定してください。',turns:2,logs:[{id:1,kind:'assistant',text:'作業を2つに分けました。検索案の整理と、記載内容の確認を並行して進めています。',thinking:'参照する資料と、確認すべき観点を整理しています。',at}]},
+        {id:'fixture-worker-1',run_id:run.id,name:'資料・検索担当',role:'worker',profile_id:'openai',parent_id:'fixture-pm',status:'working',assignment:'[SYNTHETIC] Unique assignment search phrase',turns:3,logs:[{id:2,kind:'assistant',text:'資料を確認し、検索案をまとめています。',at}]},
+        {id:'fixture-worker-2',run_id:run.id,name:'レビュー担当',role:'worker',profile_id:'local',parent_id:'fixture-pm',status:'done',assignment:'[SYNTHETIC] Review sources',turns:2,logs:[{id:3,kind:'assistant',text:'確認を完了しました。結果をPMへ送信しました。',at}]},
       ];
       for(const agent of fixture.agents){
         for(const key of Object.keys(agent))assert(Object.hasOwn(agentContract,key),'Fixture drift: '+key);
-        Object.assign(agent,{...agentContract,...agent});
+        Object.assign(agent,{...agentContract,...agent,message_eligibility:{allowed:true,reason:'',message:''},status_reason:agent.question?'human_input':agent.status});
         agent.name='[SYNTHETIC] '+agent.name;
       }
       fixture.events=[{id:1,run_id:run.id,kind:'spawn',text:'PM が2人の作業者に担当を割り当てました。',at},{id:2,run_id:run.id,kind:'mail',from:'レビュー担当',to:'PM',text:'確認結果を共有します。参照先の変更は1件です。',at},{id:3,run_id:run.id,kind:'mail',from:'資料・検索担当',to:'PM',text:'<img src=x onerror="window.fixtureInjected=true">',at}];
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,run})});
     });
     await page.route('**/api/agents/*/message',async route=>{
-      const data=route.request().postDataJSON();sentMessages.push(data);fixture.agents[0].question='';fixture.agents[0].status='working';fixture.agents[0].logs.push({id:4,kind:'user',text:data.text,at:Date.now()/1000});
+      const data=route.request().postDataJSON();sentMessages.push(data);fixture.agents[0].question='';fixture.agents[0].status='working';fixture.agents[0].status_reason='working';fixture.agents[0].logs.push({id:4,kind:'user',text:data.text,at:Date.now()/1000});
       await new Promise(resolve=>setTimeout(resolve,300));await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});
     });
-    await page.route('**/api/runs/*/stop',async route=>{stopped.push(route.request().url());fixture.runs[0].status='stopped';fixture.agents.forEach(agent=>{agent.status='stopped';});await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});});
+    await page.route('**/api/runs/*/stop',async route=>{stopped.push(route.request().url());fixture.runs[0].status='stopped';fixture.runs[0].status_reason='stopped';fixture.agents.forEach(agent=>{agent.status='stopped';agent.status_reason='stopped';});await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});});
     await page.locator('#closeSettings').click();await page.locator('#newRun').click();await page.locator('#pmProfile').selectOption('local');
     await page.locator('#workerProfiles input[value="openai"]').check();await page.locator('#maxWorkers').fill('2');
     const task='  [SYNTHETIC] 社内FAQを整理し、検索案と検証結果をまとめてください。\n共有の前に対象チームを確認してください。  ';
@@ -150,6 +150,7 @@ async function main() {
     assert.equal(await page.locator('#agentTabs button').count(),3);assert.equal(await page.locator('#teamMap button').count(),3);
     await page.locator('#needsYou').click();assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#needsYou').click();
     await page.locator('#agentSearch').fill('レビュー');assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#agentSearch').clear();
+    await page.locator('#agentSearch').fill('Unique assignment search phrase');assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#agentSearch').clear();
     await page.locator('#agentCards [data-agent-id="fixture-pm"]').focus();await page.waitForTimeout(1300);assert.equal(await page.evaluate(()=>document.activeElement.dataset.agentId),'fixture-pm');
     report.checks.push('cockpit roster search, answer-wait filter, true team map, agent tabs, poll-stable keyboard focus, modal Escape/close/reopen and task draft retention');
     assert.equal(await page.locator('#runMetrics .metric').filter({hasText:'自動連携'}).locator('b').textContent(),'3 / 7');
@@ -176,7 +177,7 @@ async function main() {
     await page.locator('#messageStatus').filter({hasText:'送信しました'}).waitFor();
     assert.deepEqual(sentMessages,[{text:answer}]);assert.equal(await page.locator('#messageInput').inputValue(),'送信中に編集した次の指示');
     report.checks.push('simulated multi-provider team: exact visible task, editable policy, worker limit, mail escaping, collapsed model thinking, human reply, draft preservation and settings lock; no inference');
-    fixture.runs[0].auto_collaborations=7;fixture.runs[0].collaboration_limit_reached=true;fixture.runs[0].status='waiting';
+    fixture.runs[0].auto_collaborations=7;fixture.runs[0].collaboration_limit_reached=true;fixture.runs[0].status='waiting';fixture.runs[0].status_reason='collaboration_limit';
     await page.locator('#collaborationLimitNotice').waitFor({state:'visible'});
     assert.equal(await page.locator('#runMetrics .metric').filter({hasText:'自動連携'}).locator('b').textContent(),'7 / 7');
     assert.equal(await page.locator('#activeRunStatus').textContent(),'連携上限');
@@ -201,6 +202,10 @@ async function main() {
     await page.locator('#humanQuestion').filter({hasText:'[SYNTHETIC] Continue this test run?'}).waitFor();
     await page.waitForFunction(()=>document.querySelectorAll('.agent-card').length===2);
     await page.locator('#activityFeed').filter({hasText:'Worker review complete.'}).waitFor();
+    assert.equal(await page.locator('#conversationStatus').textContent(),'回答待ち');
+    assert.equal(await page.locator('#activeRunStatus').textContent(),'回答待ち');
+    await page.locator('#agentSearch').fill('Review fixture only.');assert.equal(await page.locator('.agent-card').count(),1);
+    assert((await page.locator('.agent-task').textContent()).includes('Review fixture only.'));await page.locator('#agentSearch').clear();
     await assertLayout(page,'narrow real engine');
     await page.screenshot({path:path.join(artifacts,'workbench-real-engine-narrow.png'),fullPage:true,animations:'disabled'});
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),true);await page.keyboard.press('Escape');
@@ -211,8 +216,24 @@ async function main() {
     await page.screenshot({path:path.join(artifacts,'workbench-real-engine-desktop.png'),fullPage:true,animations:'disabled'});
     await page.locator('#stopRun').click();await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();
     assert.equal(await page.locator('#messageInput').isDisabled(),true);
+    assert((await page.locator('#messageEligibility').textContent()).includes('新しい仕事'));
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.keyboard.press('Escape');
     report.checks.push('real HTTP+engine start, serialized agents, scripted worker spawn/completion mail, ask_user, human reply, actual cancellation and settings unlock at desktop/narrow sizes');
+    await page.locator('#navSettings').click();await page.locator('#limits-max_turns_per_agent').fill('1');
+    await page.locator('#saveSettings').click();await page.locator('#settingsStatus').filter({hasText:'設定を保存しました。'}).waitFor();await page.keyboard.press('Escape');
+    await page.locator('#newRun').click();await page.locator('#taskInput').fill('[SYNTHETIC] Complete immediately.');await page.locator('#maxWorkers').fill('0');await page.locator('#startRun').click();
+    await page.locator('#activeRunStatus').filter({hasText:'完了'}).waitFor();
+    assert.equal(await page.locator('#sendMessage').isDisabled(),true);
+    await page.locator('#messageEligibility').filter({hasText:'ターン上限'}).waitFor();
+    await assertLayout(page,'desktop exhausted budget');
+    await page.screenshot({path:path.join(artifacts,'workbench-recovery-budget.png'),fullPage:true,animations:'disabled'});
+    await page.locator('#navSettings').click();await page.locator('#limits-max_turns_per_agent').fill('2');
+    await page.locator('#saveSettings').click();await page.locator('#settingsStatus').filter({hasText:'設定を保存しました。'}).waitFor();await page.keyboard.press('Escape');
+    await page.locator('#messageEligibility').filter({hasText:'設定が変更'}).waitFor();
+    assert.equal(await page.locator('#sendMessage').isDisabled(),true);
+    await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow stale settings');
+    await page.screenshot({path:path.join(artifacts,'workbench-recovery-settings-narrow.png'),fullPage:true,animations:'disabled'});
+    report.checks.push('real assignment display/search and question status; completed run rejects exhausted turn budget, later settings changes show stale-config recovery without resetting budgets');
     assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'}]);
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
     assert.deepEqual(report.pageErrors,[]);assert.deepEqual(report.cspErrors,[]);assert.deepEqual(report.externalRequests,[]);
