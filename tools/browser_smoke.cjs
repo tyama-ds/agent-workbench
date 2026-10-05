@@ -5,15 +5,19 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const {spawn} = require('node:child_process');
-const {chromium} = require('playwright');
+const {spawn,spawnSync} = require('node:child_process');
+const {chromium} = require('node:module').createRequire(path.join(__dirname,'browser-tests','package.json'))('playwright');
 
 async function main() {
   const root=path.resolve(__dirname,'..'),sandbox=fs.mkdtempSync(path.join(os.tmpdir(),'workbench-ui-'));
   const workspace=path.join(sandbox,'project'),stateDir=path.join(sandbox,'state');
   fs.mkdirSync(workspace);fs.mkdirSync(path.join(workspace,'private'));
   const artifacts=path.join(root,'runtime','verification');fs.mkdirSync(artifacts,{recursive:true});
-  const providerRequests=[],report={checks:[],pageErrors:[],externalRequests:[],cspErrors:[]};
+  const python=process.env.WORKBENCH_TEST_PYTHON||path.join(root,'.venv',process.platform==='win32'?'Scripts':'bin',process.platform==='win32'?'python.exe':'python');
+  const contractResult=spawnSync(python,['-m','tools.browser_fixture','--agent-contract'],{cwd:root,encoding:'utf8'});
+  assert.equal(contractResult.status,0,contractResult.stderr);
+  const agentContract=JSON.parse(contractResult.stdout);
+  const providerRequests=[],report={schemaVersion:1,fixture:'SYNTHETIC: no inference or user data',checks:[],pageErrors:[],externalRequests:[],cspErrors:[]};
   const provider=http.createServer((request,response)=>{
     providerRequests.push({method:request.method,path:request.url});
     response.writeHead(request.url==='/v1/models'?200:400,{'Content-Type':'application/json'});
@@ -21,9 +25,8 @@ async function main() {
   });
   await new Promise(resolve=>provider.listen(0,'127.0.0.1',resolve));
   const providerUrl=`http://127.0.0.1:${provider.address().port}/v1`;
-  const python=process.env.WORKBENCH_TEST_PYTHON||path.join(root,'.venv',process.platform==='win32'?'Scripts':'bin',process.platform==='win32'?'python.exe':'python');
-  const server=spawn(python,['-m','workbench.server','--port','0','--state-dir',stateDir,'--no-browser'],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
-  let stdout='',stderr='',browser,page;
+  const server=spawn(python,['-m','tools.browser_fixture','--state-dir',stateDir],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  let stdout='',stderr='',browser,page,context;
   server.stdout.on('data',chunk=>{stdout+=chunk;});server.stderr.on('data',chunk=>{stderr+=chunk;});
   try {
     const deadline=Date.now()+25000;let launch;
@@ -33,7 +36,10 @@ async function main() {
     }
     const origin=new URL(launch).origin;
     browser=await chromium.launch({headless:true,...(process.env.WORKBENCH_BROWSER_EXECUTABLE?{executablePath:process.env.WORKBENCH_BROWSER_EXECUTABLE}:process.platform==='win32'?{channel:'msedge'}:{})});
-    const context=await browser.newContext({viewport:{width:1440,height:1040}});page=await context.newPage();
+    report.browserVersion=browser.version();report.platform=process.platform;
+    context=await browser.newContext({viewport:{width:1366,height:768},reducedMotion:'reduce',locale:'ja-JP',timezoneId:'UTC'});
+    await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort('blockedbyclient'));
+    page=await context.newPage();page.setDefaultTimeout(10000);
     page.on('pageerror',error=>report.pageErrors.push(error.message));
     page.on('console',message=>{if(/Content Security Policy|violates.*directive/i.test(message.text()))report.cspErrors.push(message.text());});
     page.on('request',request=>{const url=new URL(request.url());if(url.protocol.startsWith('http')&&url.origin!==origin)report.externalRequests.push(url.origin+url.pathname);});
@@ -42,7 +48,12 @@ async function main() {
     assert.equal(await page.locator('#startRun').isDisabled(),true);
     report.checks.push('real one-use bootstrap, cookie session, fragment removal, same-origin assets');
     await page.screenshot({path:path.join(artifacts,'workbench-empty.png'),fullPage:true,animations:'disabled'});
-    await page.locator('#newRun').click();await page.locator('#taskInput').fill('閉じても残る下書き');await page.keyboard.press('Escape');
+    await page.locator('#newRun').click();
+    assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true);
+    await page.keyboard.press('Shift+Tab');assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true);
+    await page.keyboard.press('Tab');
+    await page.locator('#taskInput').fill('閉じても残る下書き');await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#newRun').evaluate(button=>button===document.activeElement),true);
     assert.equal(await page.locator('#taskDialog').isVisible(),false);await page.locator('#newRun').click();assert.equal(await page.locator('#taskInput').inputValue(),'閉じても残る下書き');await page.locator('#toggleBrief').click();
     await page.locator('#navSettings').click();await page.keyboard.press('Escape');assert.equal(await page.locator('#settingsDialog').isVisible(),false);
     await page.locator('#navSettings').click();
@@ -87,13 +98,18 @@ async function main() {
     const fixture={runs:[],agents:[],events:[],resources:{active:1,queued:1,gpu_readings:[{index:0,used_mb:7168,total_mb:24576,utilization_percent:35}]}};
     await page.route('**/api/state',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixture)}));
     await page.route('**/api/runs',async route=>{
-      const data=route.request().postDataJSON();sentRuns.push(data);const at=Date.now()/1000;
-      const run={id:'fixture-run',...data,status:'working',created_at:at,model_calls:4,tool_calls:6,auto_collaborations:3,max_auto_collaborations:7,collaboration_limit_reached:false,agent_ids:['fixture-pm','fixture-worker-1','fixture-worker-2']};fixture.runs=[run];
+      const data=route.request().postDataJSON();sentRuns.push(data);const at=1791169200;
+      const run={id:'fixture-run',...data,status:'running',created_at:at,model_calls:4,tool_calls:6,auto_collaborations:3,max_auto_collaborations:7,collaboration_limit_reached:false,agent_ids:['fixture-pm','fixture-worker-1','fixture-worker-2']};fixture.runs=[run];
       fixture.agents=[
         {id:'fixture-pm',run_id:run.id,name:'PM',role:'pm',profile_id:'local',status:'waiting',question:'更新した社内FAQを共有する前に、確認対象のチームを指定してください。',turns:2,logs:[{id:1,kind:'assistant',text:'作業を2つに分けました。検索案の整理と、記載内容の確認を並行して進めています。',thinking:'参照する資料と、確認すべき観点を整理しています。',at}]},
-        {id:'fixture-worker-1',run_id:run.id,name:'資料・検索担当',role:'worker',profile_id:'openai',parent_id:'fixture-pm',status:'working',turns:3,task:'検索パターンと参照先を整理する',logs:[{id:2,kind:'assistant',text:'資料を確認し、検索案をまとめています。',at}]},
-        {id:'fixture-worker-2',run_id:run.id,name:'レビュー担当',role:'worker',profile_id:'local',parent_id:'fixture-pm',status:'done',turns:2,task:'変更点と検証結果を確認する',logs:[{id:3,kind:'assistant',text:'確認を完了しました。結果をPMへ送信しました。',at}]},
+        {id:'fixture-worker-1',run_id:run.id,name:'資料・検索担当',role:'worker',profile_id:'openai',parent_id:'fixture-pm',status:'working',turns:3,logs:[{id:2,kind:'assistant',text:'資料を確認し、検索案をまとめています。',at}]},
+        {id:'fixture-worker-2',run_id:run.id,name:'レビュー担当',role:'worker',profile_id:'local',parent_id:'fixture-pm',status:'done',turns:2,logs:[{id:3,kind:'assistant',text:'確認を完了しました。結果をPMへ送信しました。',at}]},
       ];
+      for(const agent of fixture.agents){
+        for(const key of Object.keys(agent))assert(Object.hasOwn(agentContract,key),'Fixture drift: '+key);
+        Object.assign(agent,{...agentContract,...agent});
+        agent.name='[SYNTHETIC] '+agent.name;
+      }
       fixture.events=[{id:1,run_id:run.id,kind:'spawn',text:'PM が2人の作業者に担当を割り当てました。',at},{id:2,run_id:run.id,kind:'mail',from:'レビュー担当',to:'PM',text:'確認結果を共有します。参照先の変更は1件です。',at},{id:3,run_id:run.id,kind:'mail',from:'資料・検索担当',to:'PM',text:'<img src=x onerror="window.fixtureInjected=true">',at}];
       await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({ok:true,run})});
     });
@@ -104,7 +120,7 @@ async function main() {
     await page.route('**/api/runs/*/stop',async route=>{stopped.push(route.request().url());fixture.runs[0].status='stopped';fixture.agents.forEach(agent=>{agent.status='stopped';});await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});});
     await page.locator('#closeSettings').click();await page.locator('#newRun').click();await page.locator('#pmProfile').selectOption('local');
     await page.locator('#workerProfiles input[value="openai"]').check();await page.locator('#maxWorkers').fill('2');
-    const task='  社内FAQを整理し、検索案と検証結果をまとめてください。\n共有の前に対象チームを確認してください。  ';
+    const task='  [SYNTHETIC] 社内FAQを整理し、検索案と検証結果をまとめてください。\n共有の前に対象チームを確認してください。  ';
     await page.locator('#taskInput').fill(task);await page.locator('#startRun').click();
     await page.locator('#humanQuestion').waitFor({state:'visible'});
     assert.deepEqual(sentRuns,[{task,pm_profile:'local',worker_profiles:['local','openai'],max_workers:2}]);
@@ -112,7 +128,7 @@ async function main() {
     assert.equal(await page.locator('#agentTabs button').count(),3);assert.equal(await page.locator('#teamMap button').count(),3);
     await page.locator('#needsYou').click();assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#needsYou').click();
     await page.locator('#agentSearch').fill('レビュー');assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#agentSearch').clear();
-    await page.locator('[data-agent-id="fixture-pm"]').focus();await page.waitForTimeout(1300);assert.equal(await page.evaluate(()=>document.activeElement.dataset.agentId),'fixture-pm');
+    await page.locator('#agentCards [data-agent-id="fixture-pm"]').focus();await page.waitForTimeout(1300);assert.equal(await page.evaluate(()=>document.activeElement.dataset.agentId),'fixture-pm');
     report.checks.push('cockpit roster search, answer-wait filter, true team map, agent tabs, poll-stable keyboard focus, modal Escape/close/reopen and task draft retention');
     assert.equal(await page.locator('#runMetrics .metric').filter({hasText:'自動連携'}).locator('b').textContent(),'3 / 7');
     assert.equal(await page.locator('#collaborationLimitNotice').isVisible(),false);
@@ -120,10 +136,11 @@ async function main() {
     await page.locator('#conversationLog summary').click();assert.equal(await page.locator('#conversationLog details[open]').count(),1);
     assert.equal(await page.locator('#activityFeed img').count(),0);assert.equal(await page.evaluate(()=>Boolean(window.fixtureInjected)),false);
     assert.equal(await page.locator('#runForm').isVisible(),false);await page.evaluate(()=>window.scrollTo(0,0));
-    await page.setViewportSize({width:1366,height:768});await page.screenshot({path:path.join(artifacts,'workbench-team.png'),fullPage:true,animations:'disabled'});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    await page.screenshot({path:path.join(artifacts,'workbench-team.png'),fullPage:true,animations:'disabled'});
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),true);assert.equal(await page.locator('#systemPolicy').isDisabled(),true);
     await page.locator('#closeSettings').click();
-    await page.locator('#messageInput').fill('PMに送る未送信メモ');await page.locator('[data-agent-id="fixture-worker-1"]').click();await page.locator('#messageInput').fill('担当者への未送信メモ');await page.locator('[data-agent-id="fixture-pm"]').click();assert.equal(await page.locator('#messageInput').inputValue(),'PMに送る未送信メモ');
+    await page.locator('#messageInput').fill('PMに送る未送信メモ');await page.locator('#agentTabs [data-focus-key="tab:fixture-worker-1"]').click();await page.locator('#messageInput').fill('担当者への未送信メモ');await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();assert.equal(await page.locator('#messageInput').inputValue(),'PMに送る未送信メモ');
     const answer='まず開発チームだけを対象にしてください。外部には共有しません。';
     await page.locator('#messageInput').fill(answer);await page.locator('#sendMessage').click();await page.locator('#messageInput').fill('送信中に編集した次の指示');
     await page.locator('#messageStatus').filter({hasText:'送信しました'}).waitFor();
@@ -140,17 +157,47 @@ async function main() {
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.locator('#closeSettings').click();
     await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
     await page.screenshot({path:path.join(artifacts,'workbench-mobile.png'),fullPage:true,animations:'disabled'});
+    // Remove only the UI-state fixtures: the following flow uses real app endpoints
+    // and Engine with an injected test client, including real serialization.
+    await page.unroute('**/api/state');await page.unroute('**/api/runs');
+    await page.unroute('**/api/agents/*/message');await page.unroute('**/api/runs/*/stop');
+    await page.reload();await page.getByText('接続中',{exact:true}).waitFor();
+    await page.locator('#newRun').click();await page.locator('#taskInput').fill('[SYNTHETIC] Real engine browser integration.');
+    await page.locator('#pmProfile').selectOption('local');
+    for(const checkbox of await page.locator('#workerProfiles input').all())await checkbox.uncheck();
+    await page.locator('#workerProfiles input[value="local"]').check();await page.locator('#maxWorkers').fill('1');
+    await page.locator('#startRun').click();
+    await page.locator('#humanQuestion').filter({hasText:'[SYNTHETIC] Continue this test run?'}).waitFor();
+    await page.waitForFunction(()=>document.querySelectorAll('.agent-card').length===2);
+    await page.locator('#activityFeed').filter({hasText:'Worker review complete.'}).waitFor();
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    await page.screenshot({path:path.join(artifacts,'workbench-real-engine-narrow.png'),fullPage:true,animations:'disabled'});
+    await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),true);await page.keyboard.press('Escape');
+    await page.locator('#messageInput').fill('[SYNTHETIC] Continue until cancellation.');await page.locator('#sendMessage').click();
+    await page.locator('#messageStatus').filter({hasText:'送信しました'}).waitFor();
+    await page.locator('#humanQuestion').waitFor({state:'hidden'});
+    await page.setViewportSize({width:1366,height:768});
+    await page.screenshot({path:path.join(artifacts,'workbench-real-engine-desktop.png'),fullPage:true,animations:'disabled'});
+    await page.locator('#stopRun').click();await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();
+    assert.equal(await page.locator('#messageInput').isDisabled(),true);
+    await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.keyboard.press('Escape');
+    report.checks.push('real HTTP+engine start, serialized agents, scripted worker spawn/completion mail, ask_user, human reply, actual cancellation and settings unlock at desktop/narrow sizes');
+    assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'}]);
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
     assert.deepEqual(report.pageErrors,[]);assert.deepEqual(report.cspErrors,[]);assert.deepEqual(report.externalRequests,[]);
     report.checks.push('stop, settings unlock, narrow-screen layout, zero browser storage and zero external page requests');report.ok=true;
     fs.writeFileSync(path.join(artifacts,'browser-smoke.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
   } catch(error) {
     if(page)await page.screenshot({path:path.join(artifacts,'workbench-failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{});
-    console.error(JSON.stringify({...report,ok:false,error:error.message,serverError:stderr},null,2));process.exitCode=1;
+    report.ok=false;const redact=value=>String(value).replace(/(#token=|X-Workbench-Bootstrap[=: ]+)[A-Za-z0-9_-]+/gi,'$1[REDACTED]').replaceAll('fixture-memory-secret','[REDACTED]');
+    report.error=redact(error.message);report.serverError=redact(stderr);
+    fs.writeFileSync(path.join(artifacts,'browser-smoke.json'),JSON.stringify(report,null,2));
+    console.error(JSON.stringify(report,null,2));process.exitCode=1;
   } finally {
     if(browser)await browser.close();
     if(server.exitCode===null){server.kill();await new Promise(resolve=>{server.once('close',resolve);setTimeout(resolve,4000);});}
     await new Promise(resolve=>provider.close(resolve));
+    fs.rmSync(sandbox,{recursive:true,force:true,maxRetries:5,retryDelay:200});
   }
 }
 main().catch(error=>{console.error(error.message);process.exitCode=1;});

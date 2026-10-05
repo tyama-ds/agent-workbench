@@ -1,5 +1,34 @@
 # Validation scope
 
+## Current revision — browser acceptance v1 (2026-10-05)
+
+This revision adds an always-running Windows Edge browser job with screenshots and a
+JSON assertion report attached to its exact GitHub Actions run. Previous browser claims
+below are historical; they are **not proof of this revision**. Until this revision's CI
+job passes, browser checks are pending, not verified. No runtime GUI behavior changed.
+
+The browser flow uses isolated temporary state. Its first phase uses contract-checked
+synthetic UI snapshots; its second uses real HTTP endpoints and the real engine with an
+injected deterministic model client. Neither phase invokes a live model service.
+Reports explicitly label synthetic data and record browser version. Artifacts contain
+only `workbench-*.png` and `browser-smoke.json`, not traces, HAR, session cookies or state.
+Screenshots support human review; this is not a pixel-baseline comparison suite.
+
+Local reproduction (Node 22+ is needed only for this developer check):
+
+```
+npm ci --prefix tools/browser-tests --ignore-scripts --no-audit --no-fund
+# Windows PowerShell; after normal Python dependency setup:
+$env:WORKBENCH_TEST_PYTHON = (Get-Command python).Source
+node tools/browser_smoke.cjs
+```
+
+Windows uses installed Edge. Other developer hosts may set
+`WORKBENCH_BROWSER_EXECUTABLE` to an installed Chromium executable. The application
+itself still requires no Node or browser-test dependency. See
+[the versioned cycle record](DEVELOPMENT_LOG.md) for scope, research and limitations.
+
+
 Local verification date: 2026-10-01. Environment: Windows, Python 3.13, Edge headless for UI tests.
 
 Recorded local result after adding the automatic collaboration budget: **159 passed, 1 skipped**. The initial setup also passed `pip check`, ran successfully through Windows PowerShell 5.1 and created the desktop shortcut. A separate launcher smoke test verified a Japanese/spaced state path and duplicate-launch handling without interrupting the running fixture server.
