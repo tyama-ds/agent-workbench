@@ -122,14 +122,16 @@ async function retainedRedactionAcceptance({page,context,origin,workspace,stateD
       await api(`/api/agents/${before.lead.id}/message`,'POST',{text:'[SYNTHETIC] Continue after replacement.'});
       const completed=await waitForRun(runId,'done');
       const lead=completed.agents.find(agent=>agent.id===before.lead.id);
-      assert(lead.results.some(result=>result.text.includes('current authentication verified.')));
+      assert(lead.results.some(result=>result.text.includes('current authentication verified.')),
+        JSON.stringify({scenario,run:completed.runs.find(run=>run.id===runId),status:lead.status,turns:lead.turns,results:lead.results,logs:lead.logs.slice(-3)}));
       assert(lead.results.every(result=>result.text.includes('[redacted]')));
       await page.reload();await outputs(runId,lead.id,['result']);
     } else {
       const replay=await api('/api/runs','POST',{task:`[SYNTHETIC] Retained replay ${scenario} ${item.old}`,
         pm_profile:'local',worker_profiles:[],max_workers:0});
       const state=await waitForRun(replay.run.id,'done'),lead=state.agents.find(agent=>agent.run_id===replay.run.id);
-      assert(lead.results.some(result=>result.text.includes('current authentication verified.')));
+      assert(lead.results.some(result=>result.text.includes('current authentication verified.')),
+        JSON.stringify({scenario,run:state.runs.find(run=>run.id===replay.run.id),status:lead.status,turns:lead.turns,results:lead.results,logs:lead.logs.slice(-3)}));
       await page.reload();await outputs(replay.run.id,lead.id);
     }
     assertMasked(fs.readFileSync(path.join(stateDir,'settings.json'),'utf8'),keys,'Persisted settings');

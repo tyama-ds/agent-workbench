@@ -168,7 +168,7 @@ async def test_delayed_committed_receipt_after_key_rotation(tmp_path):
         assert await asyncio.to_thread(entered.wait, 3)
         engine.set_secret('local', NEW); release.set(); await operation
         assert pm.output_receipts[-1]['path'].endswith('[redacted].txt')
-        assert (work / (OLD + '.txt')).read_text() == 'Synthetic content unchanged'
+        assert (work / (OLD + '.txt')).read_text(encoding='utf-8') == 'Synthetic content unchanged'
         assert_masked(engine, run, pm, OLD, NEW)
     finally:
         release.set(); await engine.close()
@@ -264,7 +264,7 @@ async def test_changed_provider_identity_does_not_inherit_memory_auth(tmp_path, 
     assert 'local' not in engine.settings.secrets
     assert engine.settings.key(engine.settings.value['providers'][0]) == ''
     assert engine.redact(OLD) == '[redacted]'
-    assert OLD not in engine.settings.path.read_text()
+    assert OLD not in engine.settings.path.read_text(encoding='utf-8')
     await engine.close()
 
 
@@ -287,7 +287,7 @@ def test_previously_saved_reserved_id_has_explicit_startup_migration_error(tmp_p
     settings.path.write_text(json.dumps(value), encoding='utf-8')
     with pytest.raises(ValueError, match='search.*予約.*別の ID'):
         Settings(tmp_path)
-    assert json.loads(settings.path.read_text())['providers'][0]['id'] == 'search'
+    assert json.loads(settings.path.read_text(encoding='utf-8'))['providers'][0]['id'] == 'search'
 
 
 def test_frontend_refreshes_credential_status_without_rebuilding_settings():

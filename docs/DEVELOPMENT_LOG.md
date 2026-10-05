@@ -447,3 +447,10 @@ Synthetic full/selected HTTP benchmarks now include ordinary and near-count-cap
 registries, with a separate maximum-payload adversarial CLI. Exact-head Windows Edge
 and all six CI jobs remain required evidence; local tests are not browser verification.
 Source stays in draft PR2. No merge, release, binary upload or live inference is added.
+
+The first dev9 Windows matrix exposed a test-only locale assumption: new assertions
+read the UTF-8 Japanese settings file using the runner's cp1252 default. Make every
+new text-fixture read explicitly UTF-8; production already used that encoding. Edge
+passed the memory-key scenario but stopped at the environment replay's expected
+synthetic authentication marker. Keep that assertion and add bounded, already-public
+diagnostics while investigating; the failed run is not final acceptance evidence.
