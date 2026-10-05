@@ -454,3 +454,12 @@ new text-fixture read explicitly UTF-8; production already used that encoding. E
 passed the memory-key scenario but stopped at the environment replay's expected
 synthetic authentication marker. Keep that assertion and add bounded, already-public
 diagnostics while investigating; the failed run is not final acceptance evidence.
+
+The next Windows matrix passed, while Edge failed earlier on an incomplete worker
+record. Review of the [locked Playwright 1.62.1 polling implementation](https://github.com/microsoft/playwright/blob/v1.62.1/packages/playwright-core/src/server/frames.ts#L1523-L1540)
+confirmed the shared test helper's async predicate returned a truthy Promise before
+the fetched state was ready. Replace that helper with bounded explicitly awaited
+API polling and return the exact satisfying snapshot. Regress delayed false/empty
+states and receipt readiness without a browser; retain every original assertion.
+Forty concurrent-polling loopback repetitions had passed because they already awaited
+their state reads correctly. Production redaction was not changed for this correction.

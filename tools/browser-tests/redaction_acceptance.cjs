@@ -9,6 +9,30 @@ function assertMasked(value,keys,label) {
   for(const key of keys)assert(!serialized.includes(key),label+': synthetic exact value leaked');
 }
 
+// Playwright 1.62.1 tests an async waitForFunction predicate's Promise for
+// truthiness before it resolves. Poll completed HTTP reads here instead, and
+// return the exact snapshot whose status/readiness was checked.
+async function waitForRunState(readState,runId,status,{timeoutMs=10000,pollMs=25}={}) {
+  const deadline=Date.now()+timeoutMs;let state;
+  const timeout=()=>new Error('Timed out waiting for synthetic run '+JSON.stringify({runId,status,
+    run:state?.runs.find(item=>item.id===runId),
+    agents:state?.agents.filter(item=>item.run_id===runId).map(item=>({id:item.id,status:item.status,
+      turns:item.turns,results:item.results?.slice(-2),output_receipts:item.output_receipts?.slice(-2),last_error:item.last_error}))}));
+  for(;;){
+    const remaining=deadline-Date.now();if(remaining<=0)throw timeout();
+    let timer;
+    try {
+      state=await Promise.race([Promise.resolve().then(readState),new Promise((resolve,reject)=>{
+        timer=setTimeout(()=>reject(timeout()),remaining);
+      })]);
+    } finally {clearTimeout(timer);}
+    const run=state.runs.find(item=>item.id===runId),agents=state.agents.filter(item=>item.run_id===runId);
+    if(run?.status===status&&(status!=='waiting'||agents.some(item=>item.parent_id&&item.results?.length&&item.output_receipts?.length)))return state;
+    const delay=Math.min(pollMs,deadline-Date.now());if(delay<=0)throw timeout();
+    await new Promise(resolve=>setTimeout(resolve,delay));
+  }
+}
+
 async function retainedRedactionAcceptance({page,context,origin,workspace,stateDir,artifacts,cases,report}) {
   const keys=Object.values(cases).flatMap(item=>[item.old,item.new]);
   const api=async(url,method='GET',body)=>{
@@ -21,14 +45,7 @@ async function retainedRedactionAcceptance({page,context,origin,workspace,stateD
     assertMasked(response.text,keys,method+' '+url);
     return JSON.parse(response.text);
   };
-  const waitForRun=async(runId,status)=>{
-    await page.waitForFunction(async({runId,status})=>{
-      const state=await (await fetch('/api/state',{credentials:'same-origin',cache:'no-store'})).json();
-      const run=state.runs.find(item=>item.id===runId),agents=state.agents.filter(item=>item.run_id===runId);
-      return run?.status===status&&(status!=='waiting'||agents.some(item=>item.parent_id&&item.results.length&&item.output_receipts.length));
-    },{runId,status});
-    return api('/api/state');
-  };
+  const waitForRun=(runId,status)=>waitForRunState(()=>api('/api/state'),runId,status);
   const select=async(runId,agentId,requireOutput=true)=>{
     await page.locator(`#runList .run-link[data-focus-key="run:${runId}"]`).click();
     await page.locator(`#agentCards [data-agent-id="${agentId}"]`).click();
@@ -36,8 +53,8 @@ async function retainedRedactionAcceptance({page,context,origin,workspace,stateD
       (!requireOutput||!document.querySelector('#resultSelection').disabled),{id:agentId,requireOutput});
     if(requireOutput&&!await page.locator('#resultsPanel').evaluate(element=>element.open))await page.locator('#resultsPanel > summary').click();
   };
-  const assertHistory=async(runId)=>{
-    const state=await api('/api/state'),run=state.runs.find(item=>item.id===runId);
+  const assertHistory=async(runId,state)=>{
+    state=state||await api('/api/state');const run=state.runs.find(item=>item.id===runId);
     const agents=state.agents.filter(item=>item.run_id===runId),lead=agents.find(item=>!item.parent_id),worker=agents.find(item=>item.parent_id);
     assert(run.task.includes('[redacted]'));
     assert(lead.assignment.includes('[redacted]'));assert(lead.question.includes('[redacted]'));
@@ -100,8 +117,8 @@ async function retainedRedactionAcceptance({page,context,origin,workspace,stateD
     const started=await api('/api/runs','POST',{task:`[SYNTHETIC] Retained credential ${scenario} ${item.old}`,
       pm_profile:'local',worker_profiles:['local'],max_workers:1});
     const runId=started.run.id;
-    await waitForRun(runId,'waiting');
-    const before=await assertHistory(runId);
+    const ready=await waitForRun(runId,'waiting');
+    const before=await assertHistory(runId,ready);
     await page.reload();await select(runId,before.lead.id,false);
     await page.locator('#humanQuestion').filter({hasText:'Historical question [redacted]'}).waitFor();
     assertMasked(await page.locator('body').innerText(),keys,'Before credential transition');
@@ -159,4 +176,4 @@ async function retainedRedactionAcceptance({page,context,origin,workspace,stateD
   await page.screenshot({path:path.join(artifacts,'workbench-retained-redaction-narrow.png'),fullPage:true,animations:'disabled'});
 }
 
-module.exports={retainedRedactionAcceptance};
+module.exports={retainedRedactionAcceptance,waitForRunState};
