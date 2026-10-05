@@ -37,6 +37,20 @@ The app does not force a fixed number of agents on every request. PM decides whe
 
 Snapshots contain bounded display logs. Full protocol history remains in process memory, bounded at the next model request by the context character limit. There is no silent truncation of tool history and no hidden summarizer; budget exhaustion is surfaced as an error. The UI can receive another instruction, but spent run/turn budgets are not reset.
 
+### Terminal batch precedence (0.1.1.dev21)
+
+Once a successful `finish_work` or `ask_user` closes a provider batch, its remaining
+calls receive one ordinary unexecuted result each. Those skipped calls do not
+recheck budgets and turn the already successful completion or pause into an error.
+The existing stop flag takes precedence over admission checks for work that cannot
+execute. Rejected terminal calls do not close the batch; genuine tool/deadline
+exhaustion still rejects subsequent work and preserves consumed counters.
+
+This does not extend deadlines, refund budgets, execute skipped tools or reopen
+expired runs. Already-started work, result retention, automatic handoff limits,
+human continuation eligibility and public statuses are unchanged. A text-only human
+continuation after tool exhaustion remains available under the existing other limits.
+
 ### Queued filesystem deadline admission (0.1.1.dev17)
 
 File tools recheck the existing run deadline immediately after acquiring the shared

@@ -947,3 +947,41 @@ and exact-head six-job CI belong to the final handoff. Preserve the previous com
 PR overview as a hash-bound historical record, along with all earlier evidence and
 the frozen original PR archive. No local browser retry, live inference, user-PC work,
 binary distribution, merge or release is included.
+
+
+## 0.1.1.dev21 — Preserve successful terminal batches at limits (2026-10-05)
+
+- A bounded transition audit first found no discrepancy across 32 seeded schedules
+  of 96 action-selection slots. A targeted terminal-state oracle then reproduced
+  `finish_work` followed by a skipped sibling at the one-tool limit: the report was
+  recorded successfully, but the skipped sibling changed the agent to an error.
+  Independent review reproduced the same issue for `ask_user` and for a deadline
+  crossed immediately after the successful terminal tool.
+- Let the existing closed-batch flag precede budget admission for remaining skipped
+  calls. Preserve one result per call, successful completion/question state, spent
+  counters, rejection of expired continuation and existing text-only continuation.
+  Invalid terminal arguments do not close the batch or bypass budget enforcement.
+- Keep four controlled legal-session schedules and a small fixed-seed model as
+  regression coverage. Use explicit events and task completion rather than sleeps,
+  independent expected acceptance/counters/configuration rather than copying the
+  engine's eligibility implementation, and readable normalized traces on failure.
+
+Research decisions:
+- [Hypothesis stateful-testing guidance](https://hypothesis.readthedocs.io/en/latest/stateful.html):
+  adopt composable actions, returned identities, preconditions and invariants checked
+  after each action. Keep a small standard-library scheduler instead of adding a new
+  dependency or replacing the existing targeted tests.
+- [TLA+ safety-property guidance](https://docs.tlapl.us/creating:safety): preserve
+  reachable action traces for counterexamples. Distinguish bounded safety checks
+  from exhaustive verification and liveness proofs; neither is claimed here.
+- Defer a general model checker, automatic trace minimizer, broad fuzzing framework
+  and runtime scheduler rewrite. The demonstrated false terminal error justifies a
+  narrow guard-order repair, not new budget semantics or a product feature.
+
+The 30 boundary cases use all three real loopback provider adapters; nine session
+cases cover queue saturation/human priority, Stop/completion ordering, captured
+gate-waiter credentials versus undispatched mailbox work, config-save ownership,
+and four bounded model traces. Full local checks, independent review and exact-head
+source/PR six-job CI belong to acceptance. UI design, permissions, runtime dependencies,
+historical evidence and the dev15 source ZIP remain unchanged. No local browser retry,
+live inference, user-PC action, binary upload, merge or release is included.

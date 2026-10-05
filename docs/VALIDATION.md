@@ -5,7 +5,36 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
-## Current revision — settings-save ownership (2026-10-05)
+## Current revision — terminal batch precedence (2026-10-05)
+
+Version **0.1.1.dev21** fixes a reachable boundary: a successful `finish_work` or
+`ask_user` followed by a skipped sibling at the exact tool limit, or after the run
+deadline, previously changed into an agent error. The existing closed-batch flag now
+precedes another budget check for those unexecuted siblings. Every call still gets
+one result; consumed counters and future admission remain unchanged. Invalid terminal
+arguments and expiry before the terminal tool still take the ordinary error path.
+
+Thirty synthetic loopback cases cover all three provider adapters, both terminal
+tools, exact tool/deadline and exceeded deadline boundaries, rejected terminals,
+pre-dispatch expiry, skipped writes, and explicit text-only continuation. Nine
+session-transition cases add four controlled schedules and four fixed seeds with
+40 bounded steps each. They use real HTTP auth/revisions, Engine and ResourceGate,
+explicit provider/cancellation events, and an independent small model of admission,
+counters, configuration, results and cleanup. Timeout watchdogs detect hangs;
+wall-clock sleeps do not choose schedules. No new test dependency is required.
+
+These are bounded reachable traces, not exhaustive model checking, live-provider
+acceptance or a liveness proof. The provider scheduler is synthetic; the separate
+boundary tests exercise actual wire adapters. No UI code or design changed. Fresh
+exact-head six-job CI and source/evidence review belong to the final handoff;
+existing browser checks do not become a new pixel or accessibility claim.
+
+Local aggregate: **1195 passed, 6 platform-specific skips**, including **39 new
+boundary/session cases**. Dependency consistency, Python compilation, JavaScript
+syntax, existing DOM-only smoke and whitespace checks pass. Exact-head acceptance
+and archived dev20 provenance are linked from the live draft PR and evidence index.
+
+## Prior revision — settings-save ownership (2026-10-05)
 
 Version **0.1.1.dev20** requires the current saved revision for every configuration
 PUT, after complete body arrival and before atomic mutation. Two stale browser

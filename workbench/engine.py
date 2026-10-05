@@ -480,7 +480,9 @@ class Engine:
                     for call in reply.tool_calls:
                         if agent.closing:
                             break
-                        if unexpected_error is None and not exhausted and (run['tool_calls'] >= limits['max_tool_calls'] or time.time() - run['created_at'] >= limits['max_run_seconds']):
+                        # Closed batches still need results for skipped siblings;
+                        # those siblings cannot introduce a new exhaustion error.
+                        if not stop and unexpected_error is None and not exhausted and (run['tool_calls'] >= limits['max_tool_calls'] or time.time() - run['created_at'] >= limits['max_run_seconds']):
                             exhausted = 'ツール実行回数または実行時間の上限です'
                         if stop or exhausted:
                             agent.conversation.append({'role': 'tool', 'tool_call_id': call['id'], 'name': call['name'],
