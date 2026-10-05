@@ -15,7 +15,13 @@
 <dialog id="taskDialog" aria-labelledby="newTaskTitle">        <section class="panel task-panel" aria-labelledby="newTaskTitle">
           <div class="panel-heading"><h2 id="newTaskTitle">新しい作業</h2><button id="toggleBrief" class="button minor" type="button" aria-label="新しい作業を閉じる">閉じる ×</button></div>
           <form id="runForm">
-            <label class="field-label" for="taskInput">チームへの依頼</label><textarea id="taskInput" name="task" rows="4" required maxlength="16000" placeholder="目的、作業する場所、完了の条件を伝えてください。&#10;例：このプロジェクトの検索機能を改善し、テスト結果と変更点をまとめる。"></textarea>
+            <label class="field-label" for="taskInput">チームへの依頼</label><textarea id="taskInput" name="task" rows="4" required maxlength="16000" aria-describedby="taskHelp" placeholder="目的、使う資料、完了の条件を伝えてください。&#10;例：次のメモを、決定事項・担当・期限に整理し、不明点を列挙してください。"></textarea>
+            <p id="taskHelp" class="field-help task-help">文章の整理や、許可したファイルの読み書きを依頼できます。コマンド・ビルド・テストは実行できません。</p>
+            <details id="taskExamples" class="task-examples"><summary>依頼例と必要な設定</summary><div class="task-example-list">
+              <section><h3>文章だけで始める</h3><p>例：次のメモを、決定事項・担当・期限に整理し、不明点を列挙してください。続けてメモ本文を貼り付けます。</p><p class="field-help">使うモデルの設定が必要です。ファイルの許可や Web の設定は不要です。作業者の上限を 0 にすると PM だけで作業します。</p></section>
+              <section><h3>許可したファイルを使う</h3><p>例：指定した入力フォルダーの資料を要約し、指定した出力フォルダーに summary.docx を作成してください。元資料は変更しないでください。</p><p class="field-help">既存フォルダーの絶対パスを依頼に書き、入力先の読み取り・出力先の書き込みを設定で許可します。UTF-8 テキストと対応する .docx / .xlsx / .pptx を扱えます。フォルダー作成・ファイル削除はできません。コードを編集した後のビルドやテストは、ユーザーが実行してください。</p></section>
+              <section><h3>公開 Web の資料を調べる</h3><p>例：指定したテーマを公開 Web で調べ、参照した URL と要点、確認できなかった点をまとめてください。</p><p class="field-help">設定で Web を有効にし、検索サービスの接続先と必要なキーを設定します。検索とページ取得の利用状態は「開始前の確認」で確認してください。ページ取得は公開 HTTP(S) テキストが対象で、ログインや JavaScript の実行はできません。</p></section>
+            </div></details>
             <div class="run-options"><div class="field"><label for="pmProfile">PM のプロファイル</label><select id="pmProfile" required><option value="">設定でプロファイルを追加してください</option></select></div><div class="field compact-field"><label for="maxWorkers">作業者の上限</label><input id="maxWorkers" type="number" min="0" max="16" step="1" value="3" required><small>0 は PM だけで作業</small></div></div>
             <fieldset class="worker-selection"><legend>作業者に使ってよいプロファイル</legend><div id="workerProfiles" class="choice-list"><span class="muted">まだプロファイルがありません</span></div></fieldset>
             <section class="readiness-panel" aria-labelledby="readinessTitle"><h3 id="readinessTitle">開始前の確認<span id="preflightPending" class="readiness-pending" aria-hidden="true"></span></h3><p id="preflightStatus" class="inline-status" role="status" aria-live="polite"></p><div id="preflightDetails"></div><button id="preflightSettings" type="button" class="button minor">設定を確認・修正</button></section>

@@ -614,3 +614,40 @@ until the client's actual timeout instead of racing 20/100-ms sleeps. The bounde
 five-second total timeout follows [aiohttp's total-timeout semantics](https://docs.aiohttp.org/en/stable/client_reference.html#aiohttp.ClientTimeout.total).
 No provider production behavior changes. Fresh exact-head full CI remains required;
 a passing sibling job does not turn the failed first run into acceptance evidence.
+
+## 0.1.1.dev13 — Truthful first-task guidance (2026-10-05)
+
+- Reproduced the task placeholder suggesting an edit-and-test workflow even though
+  the app has no command, build or test runner. Local preflight correctly admitted
+  its text, but the UI never explained this fixed execution boundary.
+- Replace that example with a text-only memo task, which needs a configured model
+  but no file or Web permissions. Keep essential capability/limit text beside the
+  textarea with an accessible description, visible after the user starts typing.
+- Offer three static examples in one native disclosure: text, permitted files and
+  configured public-Web research. Explain existing absolute folders, independent
+  read/write permissions, supported formats and non-browser page fetching.
+- Preserve task drafts, selections, native disclosure state and Start ownership.
+  Examples never fill a field, change settings, grant access or make a request.
+  No prompt classifier, engine/API change, provider probe or runtime dependency.
+- Align the README's first-use instructions with the current settings, task and
+  model-list control labels. Retention guidance remains a separate deferred change.
+
+Research decisions:
+- [Microsoft HAX input examples](https://www.microsoft.com/en-us/haxtoolkit/pattern/g1-d-demonstrate-possible-system-inputs/):
+  adopt examples grounded in available operations, avoiding its identified pitfall
+  of implying unsupported capabilities. Reject clickable recipes that overwrite
+  drafts or run tasks. No model-quality guarantee follows from showing an example.
+- [Microsoft HAX introductory explanations](https://www.microsoft.com/en-us/haxtoolkit/pattern/g1-a-introductory-blurb/):
+  use concise contextual help rather than a repeated onboarding tour or wizard.
+- [GOV.UK native disclosure guidance](https://design-system.service.gov.uk/components/details/):
+  collapse optional example depth, but keep essential execution limits visible.
+  Use the existing cockpit's appearance, not a new imported design system.
+- The HAX library's historical [Google Maps input example](https://www.microsoft.com/en-us/haxtoolkit/example/google-maps-demonstrate-possible-system-inputs/)
+  illustrates expectation-setting outside agent apps. Adopt the principle, not its
+  imagery or a claim about the current Maps interface.
+
+Static tests check semantics and admission without external calls. Real Windows Edge
+acceptance checks keyboard/native disclosure, draft/selection/expanded-state
+preservation, no hidden actions and desktop/tablet/narrow geometry. Final exact-head
+six-job CI and screenshot review belong to the handoff; local browser launch remains
+blocked. No live inference, user-PC work, binary distribution, release or merge.

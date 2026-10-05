@@ -38,3 +38,12 @@ dialog{color:var(--ink);background:#131921;border:1px solid #54504a;border-radiu
 /* Saved credential destinations remain readable on narrow settings dialogs. */
 .credential-target,.credential-result,#credentialNotice{overflow-wrap:anywhere}
 .settings-footer{flex-wrap:wrap}
+
+/* Optional task examples stay in native disclosure; essential limits stay visible. */
+.task-help{margin:8px 0 12px;color:#b6bdc7;overflow-wrap:anywhere}
+.task-examples{border:1px solid var(--line);border-radius:5px;padding:10px 12px;margin-bottom:18px;min-width:0}
+.task-examples>summary{cursor:pointer;color:#cbbb9d;font-size:11px;line-height:1.8}
+.task-example-list{display:grid;gap:14px;margin-top:12px;overflow-wrap:anywhere}
+.task-example-list h3{font-size:11px;font-weight:600;margin-bottom:5px}
+.task-example-list p{font-size:11px;line-height:1.8}
+.task-example-list .field-help{font-size:10px;margin-top:5px}

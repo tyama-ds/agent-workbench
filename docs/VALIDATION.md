@@ -1,6 +1,16 @@
 # Validation scope
 
-## Current revision — saved-destination credential recovery (2026-10-05)
+## Current revision — truthful first-task guidance (2026-10-05)
+
+Version **0.1.1.dev13** explains fixed execution limits beside the task input and
+provides optional static examples for text, permitted files and configured public
+Web research. No application JavaScript, engine, permissions or network behavior is
+changed. Local aggregate: **834 passed, 6 platform-specific skips**. Exact-head
+Windows Edge, four Python/OS jobs, evaluation-only packaging and independent pixel
+review remain required for final acceptance; consult the draft PR handoff for the
+final head and results. The focused validation scope appears below.
+
+## Prior revision — saved-destination credential recovery (2026-10-05)
 
 Version **0.1.1.dev12** permits memory-key correction for saved provider/Brave targets
 without unlocking active-run configuration. A mandatory server configuration revision
@@ -376,3 +386,21 @@ requests, delayed real acceptance/rejection, unchanged budgets/settings, and exp
 same-agent continuation. Desktop/narrow screenshots and no-external-request checks
 join the existing evidence-only artifact allowlist. The new stage must pass on the
 exact candidate head; syntax checks or fixture HTTP tests are not browser evidence.
+
+## First-task capability guidance (0.1.1.dev13)
+
+`test_task_guidance.py` verifies that the textarea's accessible description resolves
+outside the optional native disclosure, the essential execution limit is persistent,
+three examples are static and non-interactive, and file/Web prerequisites agree with
+the unchanged tool boundary. A synthetic local preflight confirms the text-only
+example needs neither file roots nor Web and starts no run or inference. These are
+source/contract checks, not browser or model-quality evidence.
+
+`first_task_acceptance.cjs` exercises the real Windows Edge native disclosure through
+keyboard interaction. It checks visible guidance after typing, unchanged task and
+profile selections across preflight/settings/close/reopen, and no hidden mutation or
+provider request. Collapsed/expanded desktop, tablet and narrow screenshots accompany
+geometry assertions, including reaching lower controls by ordinary dialog scrolling.
+Existing delayed-preflight, Start/Stop ownership, credential recovery and actual
+Engine flows remain in the same acceptance run. Exact-head artifact reports and
+independent pixel inspection are required before this cycle is called complete.

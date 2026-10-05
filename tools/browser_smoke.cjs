@@ -10,6 +10,7 @@ const {chromium} = require('node:module').createRequire(path.join(__dirname,'bro
 const {retainedRedactionAcceptance} = require('./browser-tests/redaction_acceptance.cjs');
 const {lifecycleAcceptance} = require('./browser-tests/lifecycle_acceptance.cjs');
 const {credentialRecoveryAcceptance} = require('./browser-tests/credential_recovery_acceptance.cjs');
+const {firstTaskAcceptance} = require('./browser-tests/first_task_acceptance.cjs');
 
 async function assertLayout(page,label) {
   const metrics=await page.evaluate(()=>{
@@ -118,13 +119,17 @@ async function main() {
     await page.keyboard.press('Tab');
     await page.locator('#newRun').evaluate(button=>button.focus());
     assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true,'Modal background must stay inert');
+    const firstTask=await firstTaskAcceptance({page,stateDir,providerRequests,artifacts,report,assertDialogLayout});
     const incomplete=await preflightAfter(page,()=>page.locator('#taskInput').fill('閉じても残る下書き'),data=>data.task==='閉じても残る下書き');
     assert.equal(incomplete.can_start,false);assert.equal(incomplete.blockers.length>0,true);
     assert.deepEqual(providerRequests,[],'Opening preflight cannot probe any provider');
+    await firstTask.capture('閉じても残る下書き');
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#newRun').evaluate(button=>button===document.activeElement),true);
-    assert.equal(await page.locator('#taskDialog').isVisible(),false);await page.locator('#newRun').click();assert.equal(await page.locator('#taskInput').inputValue(),'閉じても残る下書き');await page.locator('#toggleBrief').click();
+    assert.equal(await page.locator('#taskDialog').isVisible(),false);await page.locator('#newRun').click();assert.equal(await page.locator('#taskInput').inputValue(),'閉じても残る下書き');
+    await firstTask.assertPreserved('Task close/reopen');await page.locator('#toggleBrief').click();
     await page.locator('#navSettings').click();await page.keyboard.press('Escape');assert.equal(await page.locator('#settingsDialog').isVisible(),false);
+    await page.locator('#newRun').click();await firstTask.finish();await page.locator('#toggleBrief').click();
     await page.locator('#navSettings').click();
     assert.equal(await page.locator('#limits-max_auto_collaborations').inputValue(),'24');
     assert.equal(await page.locator('#limits-max_auto_collaborations').getAttribute('min'),'0');
@@ -209,6 +214,7 @@ async function main() {
     await page.locator('#closeSettings').click();await page.locator('#newRun').click();
     await page.locator('#pmProfile').selectOption('local');await page.locator('#maxWorkers').fill('1');
     await page.locator('#workerProfiles input[value="local"]').check();await page.locator('#workerProfiles input[value="openai"]').check();
+    const configuredGuidance=await firstTaskAcceptance({page,stateDir,providerRequests,artifacts,report,assertDialogLayout,phase:'configured'});
     const ready=await preflightAfter(page,()=>page.locator('#taskInput').fill('[SYNTHETIC] Preflight overview.'),data=>data.task==='[SYNTHETIC] Preflight overview.');
     assert.equal(ready.can_start,true);assert.equal(ready.destinations.length,2);
     assert.equal(ready.destinations.find(item=>item.profile_id==='local').model,'manual-unlisted-alias');
@@ -221,6 +227,7 @@ async function main() {
     assert.match(await page.locator('#preflightDetails').textContent(),/実際の呼び出し記録ではありません/);
     assert.doesNotMatch(await page.locator('#preflightDetails').textContent(),/fixture-memory-secret/);
     assert.equal(await page.locator('#preflightStatus').getAttribute('aria-busy'),'false');
+    await configuredGuidance.assertDraft('[SYNTHETIC] Preflight overview.');
     let redundantPreflights=0;
     const countBlurPreflights=request=>{if(request.url().endsWith('/api/run-preflight'))redundantPreflights++;};
     page.on('request',countBlurPreflights);
@@ -232,6 +239,15 @@ async function main() {
     assert.equal(redundantPreflights,0,'Unchanged textarea blur cannot restart preflight');
     assert.equal(await page.locator('#preflightStatus').getAttribute('aria-busy'),'false');
     assert.equal(await page.locator('.readiness-scope').evaluate(scope=>scope.open),true,'Expanded folder scope survives textarea blur');
+    await page.keyboard.press('Escape');
+    await preflightAfter(page,()=>page.locator('#newRun').click(),data=>data.task==='[SYNTHETIC] Preflight overview.');
+    await configuredGuidance.assertPreserved('Configured task close/reopen');
+    await page.locator('#preflightSettings').click();
+    assert.equal(await page.locator('#taskDialog').isVisible(),false);assert.equal(await page.locator('#settingsDialog').isVisible(),true);
+    await page.locator('#closeSettings').click();
+    await preflightAfter(page,()=>page.locator('#newRun').click(),data=>data.task==='[SYNTHETIC] Preflight overview.');
+    await configuredGuidance.finish();
+    assert.equal(await page.locator('.readiness-scope').evaluate(scope=>scope.open),true,'Guidance/settings round trip preserves the existing expanded readiness scope');
     await assertDialogLayout(page,'#taskDialog','desktop readiness');
     await page.locator('.readiness-scope').scrollIntoViewIfNeeded();
     await page.screenshot({path:path.join(artifacts,'workbench-readiness-desktop.png'),fullPage:true,animations:'disabled'});
