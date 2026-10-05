@@ -4,6 +4,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+async function closeSettingsDialog(page) {
+  // Removing the native dialog's open flag is synchronous; its close event is
+  // queued. Wait for the existing application close handler before reopening
+  // and capturing a baseline for a separately delayed network response.
+  await page.locator('#settingsDialog').evaluate(dialog=>{
+    if(!dialog.open)throw new Error('Settings must be open before testing native close');
+    dialog.dataset.acceptanceCloseObserved='false';
+    dialog.addEventListener('close',()=>{dialog.dataset.acceptanceCloseObserved='true';},{once:true});
+  });
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(()=>document.querySelector('#settingsDialog').dataset.acceptanceCloseObserved==='true');
+  await page.locator('#settingsDialog').evaluate(dialog=>{delete dialog.dataset.acceptanceCloseObserved;});
+}
+
 async function credentialRecoveryAcceptance({page,origin,providerUrl,providerRequests,stateDir,artifacts,
   scenario,report,assertLayout,assertDialogLayout}) {
   const keys=['old','new','search_old','search_new','other'].map(name=>scenario[name]);
@@ -241,9 +255,11 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     await submitKey('search',scenario.search_new);
     assert.equal(await keyButton(0).isDisabled(),true,'Search completion cannot release the provider pending guard');
     assert.equal(await page.locator('#discardSettings').isDisabled(),true);
-    await page.keyboard.press('Escape');assert.equal(await page.locator('#settingsDialog').isVisible(),false);
+    await closeSettingsDialog(page);assert.equal(await page.locator('#settingsDialog').isVisible(),false);
     await openSettings();assert.equal(await keyButton(0).isDisabled(),true,'Pending guard survives close/reopen');
     const reopenedResult=await card(0).locator('.credential-result').textContent();
+    assert.equal(reopenedResult,'','Native close has cleared the old pending notice');
+    assert.match(await card(0).locator('.secret-status').textContent(),/更新結果は未確認/);
     await releaseReal(deferred);assert.equal(await card(0).locator('.credential-result').textContent(),reopenedResult,
       'A late success cannot repaint a reopened credential dialog');
     assert.equal(await keyButton(0).isEnabled(),true);await poll(2);
@@ -283,8 +299,10 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     const stale=await holdKey(providerId,scenario.new);
     assert.equal(await page.locator('#saveSettings').isDisabled(),true,'Pending key also locks configuration after a run is done');
     assert.equal(await page.locator('#profile-0-model').isDisabled(),true);
-    await page.keyboard.press('Escape');await openSettings();
+    await closeSettingsDialog(page);await openSettings();
     const beforeFailure=await card(0).locator('.credential-result').textContent();
+    assert.equal(beforeFailure,'','Native close has cleared the old pending notice');
+    assert.match(await card(0).locator('.secret-status').textContent(),/更新結果は未確認/);
     const changed=await api('/api/config','PUT',saved.config);assert(changed.config_revision>saved.config_revision);
     await releaseReal(stale,409);assert.equal(await card(0).locator('.credential-result').textContent(),beforeFailure,
       'A late rejection cannot repaint a reopened dialog');
@@ -347,4 +365,4 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
   }
 }
 
-module.exports={credentialRecoveryAcceptance};
+module.exports={credentialRecoveryAcceptance,closeSettingsDialog};

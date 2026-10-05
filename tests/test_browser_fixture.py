@@ -11,6 +11,42 @@ from workbench.engine import Engine
 from tools.browser_fixture import SyntheticClient
 
 
+def test_credential_reopen_waits_for_native_close_handler_before_new_baseline():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node is required for the browser-helper contract')
+    script = r"""
+const assert=require('node:assert/strict');
+const {closeSettingsDialog}=require('./tools/browser-tests/credential_recovery_acceptance.cjs');
+let listener,release,finished=false;
+const dialog={open:true,dataset:{},addEventListener(type,callback,options){
+  assert.equal(type,'close');assert.deepEqual(options,{once:true});listener=callback;
+}};
+global.document={querySelector(selector){assert.equal(selector,'#settingsDialog');return dialog;}};
+const page={
+  locator(selector){assert.equal(selector,'#settingsDialog');return {evaluate:async callback=>callback(dialog)};},
+  keyboard:{async press(key){assert.equal(key,'Escape');assert(listener);dialog.open=false;}},
+  async waitForFunction(predicate){
+    assert.equal(dialog.open,false);assert.equal(predicate(),false);
+    await new Promise(resolve=>{release=()=>{listener();assert.equal(predicate(),true);resolve();};});
+  }
+};
+(async()=>{
+  const pending=closeSettingsDialog(page).then(()=>{finished=true;});
+  for(let i=0;i<10&&!release;i++)await Promise.resolve();
+  assert(release);assert.equal(finished,false,'The removed open flag is not a completed close handler');
+  assert.equal(dialog.dataset.acceptanceCloseObserved,'false');
+  release();await pending;assert.equal(finished,true);
+  assert.equal(dialog.dataset.acceptanceCloseObserved,undefined);
+  console.log('native close event observed before reopened-dialog baseline');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+"""
+    result = subprocess.run([node, '-'], input=script, cwd=Path(__file__).resolve().parents[1],
+                            capture_output=True, text=True, encoding='utf-8', timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert 'native close event observed' in result.stdout
+
+
 def test_browser_run_wait_awaits_completed_reads_and_returns_matching_snapshot():
     node = shutil.which('node')
     if node is None:

@@ -739,3 +739,13 @@ all-or-none admission of malformed provider batches. Existing stop/drain, budget
 pause/finish, redaction and receipt tests remain. Final exact-head six-job CI,
 Windows Edge evidence and evaluation-only package checks belong to the handoff;
 no live inference, user-PC action, binary distribution, merge or release is included.
+
+The first dev15 source Edge run exposed an older test synchronization race in the
+credential late-rejection flow. It captured a reopened-dialog baseline before the
+native queued `close` event cleared the previous pending notice. The sibling PR
+Edge run passed, but that does not validate the failed source run. The acceptance
+helper now registers before native Escape and waits for the actual close event;
+both delayed-success and delayed-409 cases assert the cleared/unknown state before
+releasing the real upstream response. Exact post-response equality assertions remain.
+A deterministic helper test proves that removing the `open` flag alone is not
+completion. Application frontend code is unchanged; fresh full CI is required.

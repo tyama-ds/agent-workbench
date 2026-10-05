@@ -14,8 +14,8 @@ Cancellation/draining and redaction-capacity special paths remain covered.
 
 These fixtures validate application behavior and wire structure, not live-provider
 acceptance. No UI, provider destination, permission or automatic retry is added.
-Local aggregate: **884 passed, 6 platform-specific skips**, including **42 new
-integrity cases**. Exact-head six-job CI, Windows Edge and evaluation-only packaged
+Local aggregate: **885 passed, 6 platform-specific skips**, including **42 new
+integrity cases** and a native-close synchronization helper regression. Exact-head six-job CI, Windows Edge and evaluation-only packaged
 acceptance evidence are recorded in the draft PR handoff.
 
 ## Prior revision — contextual history lifetime (2026-10-05)
