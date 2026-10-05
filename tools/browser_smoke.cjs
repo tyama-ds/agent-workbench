@@ -199,6 +199,8 @@ async function main() {
     assert.match(await page.locator('#collaborationLimitNotice').textContent(),/回数はリセットされません/);
     report.checks.push('collaboration counter and blocked-handoff notice distinguish budget exhaustion from completion');
     await page.locator('#stopRun').click();await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();assert.equal(stopped.length,1);assert.equal(await page.locator('#messageInput').isDisabled(),true);
+    assert.equal(await page.locator('#collaborationLimitNotice').isVisible(),true);
+    assert((await page.locator('#collaborationLimitNotice').textContent()).includes('停止したチームは再開できません'));
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.locator('#closeSettings').click();
     await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow stopped notice');
     await page.screenshot({path:path.join(artifacts,'workbench-mobile.png'),fullPage:true,animations:'disabled'});

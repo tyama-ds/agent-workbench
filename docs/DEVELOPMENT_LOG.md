@@ -111,7 +111,10 @@ The first cycle 2 Edge run passed its assertions, but pixel inspection exposed a
 send confirmation carried into a newly selected run. Clear composer feedback on run or
 automatic agent selection, and bind late send success/error feedback to its original
 selected agent. Preserve drafts and queue behavior. Add browser/DOM regression assertions;
-the corrected source requires its own exact-head CI and screenshot review.
+the corrected source requires its own exact-head CI and screenshot review. A second
+review clarified that the collaboration limit alone does not stop existing work; the
+notice must not imply a stopped team can resume. Explicit stopped-team copy and a browser
+assertion cover the combined stopped/limit state.
 
 ### Verification
 

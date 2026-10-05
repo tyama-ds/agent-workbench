@@ -172,6 +172,8 @@ console.log(JSON.stringify(['waiting','human_input','error','collaboration_limit
     assert 'agent.task' not in APP
     assert "agent.role==='pm'" not in APP
     assert 'message_eligibility' in APP and 'messageEligibility' in HTML
+    assert '開始済み・待機中の作業は続行できます。' not in APP
+    assert 'この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。' in APP
 
 
 def test_message_feedback_stays_with_its_selected_agent_and_clears_on_run_change():
