@@ -1,5 +1,10 @@
 # Validation scope
 
+Commit-specific runs, artifact links and historical review records are indexed in
+[evidence/README.md](evidence/README.md). The archived PR snapshot is historical;
+use the live PR’s explicitly named head for current acceptance. Counts below describe
+the named development revisions, not automatic acceptance of later documentation edits.
+
 ## Current revision — queued filesystem deadlines (2026-10-05)
 
 Version **0.1.1.dev17** rejects file operations that expire while waiting for the

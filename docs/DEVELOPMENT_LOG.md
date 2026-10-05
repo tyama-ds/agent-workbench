@@ -1,5 +1,9 @@
 # Versioned development log
 
+Historical PR handoff evidence, source/run/artifact links and exact snapshot provenance
+are available in the [verification evidence index](evidence/README.md). The current PR
+overview keeps only the latest head’s checks; archived claims retain their original scope.
+
 ## Cycle 1 — browser acceptance v1 (2026-10-05)
 
 Based on PR #1 head `9067567388d659b4d00109f0d5cb3ecc7b5e7f71`.
