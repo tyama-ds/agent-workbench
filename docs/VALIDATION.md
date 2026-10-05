@@ -141,7 +141,7 @@ No real model service, billable inference or private user files are used.
 
 ## Run readiness revision (0.1.1.dev4)
 
-Local Linux/CPython 3.12 verification: **451 passed, 4 Windows-only checks skipped**.
+Local Linux/CPython 3.12 verification: **453 passed, 4 Windows-only checks skipped**.
 `pip check`, JavaScript syntax, `git diff --check`, and optional jsdom smoke pass.
 Mocked diagnostics cover bounded/chunked bodies, strict JSON/schema validation,
 HTTP/network/TLS errors, redirects, pagination, manual aliases, output truncation,
@@ -155,3 +155,5 @@ scope previews, and PM-only text work while preserving prior results and drafts.
 This browser evidence requires the exact-head CI artifact; DOM shims are not visual
 verification. No installed model, paid inference, external scan, user PC, or corporate
 network configuration is exercised by these synthetic tests.
+
+The first cycle-4 Edge run exposed a real textarea-blur/click race: redundant preflight refresh moved the Start button during a pointer action. The fix deduplicates unchanged payload/configuration previews, retains pending content, visibly marks pending checks, preserves expanded scope details, and defers preview layout changes through native Start pointer gestures. The exact failing narrow-screen click remains in acceptance coverage; fresh final-head CI is required after the fix.

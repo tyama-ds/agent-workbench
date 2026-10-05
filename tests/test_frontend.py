@@ -334,3 +334,42 @@ def test_export_failure_revokes_blob_url_and_cannot_be_overwritten_by_pending_co
     assert 'ダウンロードを開始できませんでした' in result['failed']
     assert result['error'] is True
     assert result['revoked'] == ['blob:failed']
+
+
+def test_preflight_deduplicates_native_blur_and_keeps_existing_content():
+    source = re.search(r"function schedulePreflight\(\).*?\n\}", APP, re.S).group()
+    result = run_javascript("""
+const ui={settingsRevision:0,settingsDirty:false,preflightRequest:0,preflightKey:''};
+let task='first',scheduled=0,cleared=0;
+const nodes={runFormStatus:{textContent:'Previous attempt'},preflightPending:{textContent:''},taskDialog:{open:true},preflightStatus:{textContent:'Existing scope',setAttribute(){}},preflightDetails:{replaceChildren(){throw Error('Preview was cleared during a pointer action')}}};
+const $=id=>nodes[id];const runPayload=()=>({task});
+const clearTimeout=()=>{cleared++};const setTimeout=()=>{scheduled++;return scheduled};
+const inlineStatus=(node,text)=>{if(node!==nodes.runFormStatus)throw Error('Existing guidance should remain stable while pending');node.textContent=text};
+""" + source + """
+schedulePreflight();schedulePreflight(); // input, then native change on blur
+const deduplicated=scheduled===1&&ui.preflightRequest===1;
+task='second';schedulePreflight();ui.settingsRevision++;schedulePreflight();
+nodes.taskDialog.open=false;schedulePreflight();
+console.log(JSON.stringify({deduplicated,scheduled,cleared,request:ui.preflightRequest}));
+""")
+    assert result == {'deduplicated': True, 'scheduled': 3, 'cleared': 3, 'request': 3}
+    assert "details.open=scopeOpen" in APP
+    assert "ui.preflightKey=''" in APP
+
+
+def test_preflight_render_waits_for_native_start_pointer_release_only():
+    source = APP[APP.index('async function settleStartPointer('):APP.index('async function refreshPreflight(')]
+    result = run_javascript("""
+const ui={startPointerActive:true,startPointerWaiters:[]};const callbacks=[];
+const window={setTimeout:callback=>callbacks.push(callback)};
+""" + source + """
+(async()=>{
+let rendered=false;const waiting=settleStartPointer().then(()=>{rendered=true});
+await Promise.resolve();const held=!rendered&&ui.startPointerWaiters.length===1;
+releaseStartPointer();const beforeDefaultAction=!rendered&&ui.startPointerActive;
+callbacks.shift()();await waiting;
+console.log(JSON.stringify({held,beforeDefaultAction,rendered,active:ui.startPointerActive,waiters:ui.startPointerWaiters.length}));
+})();
+""")
+    assert result == {'held': True, 'beforeDefaultAction': True, 'rendered': True, 'active': False, 'waiters': 0}
+    assert '.submit(' not in source and 'requestSubmit(' not in source

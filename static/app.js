@@ -54,7 +54,7 @@ const PROFILE_FIELDS = [
 const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機'};
 const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
-const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,drafts:new Map(),logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null};
+const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,drafts:new Map(),logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -212,33 +212,50 @@ function runPayload() {
   return {task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value)};
 }
 function schedulePreflight() {
-  const request=++ui.preflightRequest;clearTimeout(ui.preflightTimer);
   if(!$('taskDialog').open)return;
-  $('preflightDetails').replaceChildren();inlineStatus($('preflightStatus'),'保存済み設定を確認しています…');
+  const key=JSON.stringify([runPayload(),ui.settingsRevision,ui.settingsDirty]);
+  if(key===ui.preflightKey)return;
+  ui.preflightKey=key;
+  if(!ui.startingRun)inlineStatus($('runFormStatus'),'');
+  const request=++ui.preflightRequest;clearTimeout(ui.preflightTimer);
+  // A textarea change event also fires on blur. Do not rebuild the preview or
+  // move Start between pointer-down and pointer-up for an unchanged payload.
+  $('preflightStatus').setAttribute('aria-busy','true');$('preflightPending').textContent='更新中';
+  if(!$('preflightStatus').textContent)inlineStatus($('preflightStatus'),'保存済み設定を確認しています…');
   ui.preflightTimer=setTimeout(()=>refreshPreflight(request),180);
+}
+async function settleStartPointer() {
+  // Keep preview layout stable through the native pointer click/default submit.
+  // Releasing this wait only renders guidance; it never submits a form.
+  while(ui.startPointerActive)await new Promise(resolve=>ui.startPointerWaiters.push(resolve));
+}
+function releaseStartPointer() {
+  if(!ui.startPointerActive)return;
+  window.setTimeout(()=>{ui.startPointerActive=false;ui.startPointerWaiters.splice(0).forEach(resolve=>resolve());},0);
 }
 async function refreshPreflight(request) {
   const revision=ui.settingsRevision;
   const current=()=>request===ui.preflightRequest&&revision===ui.settingsRevision&&$('taskDialog').open;
   try {
-    const response=await api('/api/run-preflight',{method:'POST',body:runPayload()});if(!current())return;
+    const response=await api('/api/run-preflight',{method:'POST',body:runPayload()});await settleStartPointer();if(!current())return;
     const parts=[];
     parts.push(ui.settingsDirty?'未保存の変更は含みません。開始には保存済み設定を使います。':'保存済み設定の確認です。外部通信・推論テストは行っていません。');
     for(const issue of [...(response.blockers||[]),...(response.warnings||[])])parts.push(issue.message);
     inlineStatus($('preflightStatus'),(response.can_start?'開始に必要な設定を確認しました。推論・ツール動作は未確認です。':'開始前に修正が必要です。')+' '+parts.join(' '),!response.can_start);
-    const target=$('preflightDetails');target.replaceChildren();
+    const target=$('preflightDetails'),scopeOpen=Boolean(target.querySelector('.readiness-scope')?.open);target.replaceChildren();
     if(response.destinations){
       target.append(element('p','small','送信される可能性のある接続先（実際の呼び出し記録ではありません）'));
       for(const p of response.destinations)target.append(element('p','readiness-destination',`${p.role} · ${p.label} · ${p.model} — ${p.endpoint}${p.proxy?' · proxy: '+p.proxy:''}`));
       const scope=response.scope||{};
-      const details=element('details','readiness-scope');details.append(element('summary','','許可・拒否するフォルダーを確認'));
+      const details=element('details','readiness-scope');details.open=scopeOpen;details.append(element('summary','','許可・拒否するフォルダーを確認'));
       for(const [key,label] of [['read_roots','読み取り'],['write_roots','書き込み'],['deny_roots','拒否（アプリ・設定保存先の自動保護を含む）']])details.append(element('p','small',`${label}: ${(scope[key]||[]).join(' / ')||'なし'}`));
       details.append(element('p','small','拒否が優先されます。読み取りと書き込みは独立した権限です。各ファイルの操作時にも確認します。'));target.append(details);
       const web=response.web||{};
       target.append(element('p','small',`Web 検索: ${web.search_configured?'設定あり（未接続確認）':'使用不可'} · 公開ページ取得: ${web.fetch_enabled?'有効':'無効'}${web.enabled?' · 検索先: '+web.search_endpoint+' · ページ取得先: モデルが選ぶ公開 HTTP(S) サイト'+(web.proxy?' · proxy: '+web.proxy:''):''}`));
       target.append(element('p','small','依頼・会話・作業方針・許可パスと、必要に応じたファイル内容やツール結果は、選択したモデル接続先へ送られます。Web 有効時は検索語・取得 URL も各接続先へ送られます。'));
     }
-  }catch(error){if(current())inlineStatus($('preflightStatus'),errorText(error)+' 開始時にも設定を再確認します。',true);}
+  }catch(error){await settleStartPointer();if(current())inlineStatus($('preflightStatus'),errorText(error)+' 開始時にも設定を再確認します。',true);}
+  finally{if(current()){$('preflightStatus').setAttribute('aria-busy','false');$('preflightPending').textContent='';}}
 }
 function setBriefOpen(open) {
   if(open) { if(!$('taskDialog').open)$('taskDialog').showModal();schedulePreflight(); }
@@ -464,9 +481,13 @@ async function initialize() {
   $('resultSelection').addEventListener('change',()=>{ui.outputSelections.set(outputOwner(),$('resultSelection').value);renderResults(getAgent());$('resultText').scrollTop=0;});
   $('copyResult').addEventListener('click',copySelectedOutput);$('exportResult').addEventListener('click',exportSelectedOutput);
   $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',()=>showView('settings'));
+  $('startRun').addEventListener('pointerdown',event=>{if(event.isPrimary)ui.startPointerActive=true;});
+  window.addEventListener('pointerup',releaseStartPointer);
+  window.addEventListener('pointercancel',releaseStartPointer);
+  window.addEventListener('blur',releaseStartPointer);
   $('runForm').addEventListener('input',schedulePreflight);
   $('runForm').addEventListener('change',schedulePreflight);
-  $('taskDialog').addEventListener('close',()=>{ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
+  $('taskDialog').addEventListener('close',()=>{releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
   $('settingsDialog').addEventListener('close',()=>{invalidateDiagnostics();schedulePreflight();});
   $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
   $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));

@@ -34,6 +34,7 @@ async function preflightAfter(page,action,matches) {
   const result=await response.json();
   assert.equal(result.inference_tested,false);assert.equal(result.tools_tested,false);
   await page.locator('#preflightStatus').filter({hasText:result.can_start?'開始に必要な設定を確認しました':'開始前に修正が必要です'}).waitFor();
+  await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
   return result;
 }
 
@@ -208,12 +209,84 @@ async function main() {
     assert.match(await page.locator('#preflightStatus').textContent(),/外部通信・推論テストは行っていません/);
     assert.match(await page.locator('#preflightDetails').textContent(),/実際の呼び出し記録ではありません/);
     assert.doesNotMatch(await page.locator('#preflightDetails').textContent(),/fixture-memory-secret/);
-    await page.locator('.readiness-scope summary').click();await assertDialogLayout(page,'#taskDialog','desktop readiness');
-    await page.locator('#preflightStatus').scrollIntoViewIfNeeded();
+    assert.equal(await page.locator('#preflightStatus').getAttribute('aria-busy'),'false');
+    let redundantPreflights=0;
+    const countBlurPreflights=request=>{if(request.url().endsWith('/api/run-preflight'))redundantPreflights++;};
+    page.on('request',countBlurPreflights);
+    // Clicking the disclosure blurs the edited textarea. Its duplicate change
+    // event must neither refetch nor rebuild and close the disclosure.
+    await page.locator('.readiness-scope summary').click();
+    assert.equal(await page.locator('.readiness-scope').evaluate(scope=>scope.open),true);
+    await page.waitForTimeout(250);page.off('request',countBlurPreflights);
+    assert.equal(redundantPreflights,0,'Unchanged textarea blur cannot restart preflight');
+    assert.equal(await page.locator('#preflightStatus').getAttribute('aria-busy'),'false');
+    assert.equal(await page.locator('.readiness-scope').evaluate(scope=>scope.open),true,'Expanded folder scope survives textarea blur');
+    await assertDialogLayout(page,'#taskDialog','desktop readiness');
+    await page.locator('.readiness-scope').scrollIntoViewIfNeeded();
     await page.screenshot({path:path.join(artifacts,'workbench-readiness-desktop.png'),fullPage:true,animations:'disabled'});
     await page.setViewportSize({width:390,height:844});await assertDialogLayout(page,'#taskDialog','narrow readiness');
-    await page.locator('#preflightStatus').scrollIntoViewIfNeeded();
+    assert.equal(await page.locator('#preflightStatus').getAttribute('aria-busy'),'false');
+    assert.equal(await page.locator('.readiness-scope').evaluate(scope=>scope.open),true);
+    await page.locator('.readiness-scope').scrollIntoViewIfNeeded();
     await page.screenshot({path:path.join(artifacts,'workbench-readiness-narrow.png'),fullPage:true,animations:'disabled'});
+    // Exercise actual pointer and keyboard activation while preview responses
+    // remain pending. Reject only the start response so no extra engine run is made.
+    const pendingPreviewStarts=[];
+    const rejectPendingStart=async route=>{pendingPreviewStarts.push(route.request().postDataJSON());await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({ok:false,error:'[SYNTHETIC] Start received while preview pending.'})});};
+    await page.route('**/api/runs',rejectPendingStart);
+    const pointerStartResponse=page.waitForResponse(response=>response.url().endsWith('/api/runs')&&response.request().method()==='POST');
+    const pointerPreview=await holdNextRequest(page,'**/api/run-preflight',async()=>{
+      await page.locator('#taskInput').fill('[SYNTHETIC] Immediate pointer start.');
+      await page.locator('#startRun').click();
+    });
+    assert.equal((await pointerStartResponse).status(),400);
+    await page.locator('#runFormStatus').filter({hasText:'Start received while preview pending.'}).waitFor();
+    assert.equal(await page.locator('#preflightStatus').getAttribute('aria-busy'),'true');
+    assert.equal(pendingPreviewStarts.length,1);assert.equal(pendingPreviewStarts[0].task,'[SYNTHETIC] Immediate pointer start.');
+    assert.equal(await page.locator('.readiness-scope').evaluate(scope=>scope.open),true,'Pending preview retains expanded scope');
+    await releaseResponse(page,pointerPreview,ready);await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
+    assert.equal(pendingPreviewStarts.length,1,'Late preview cannot submit another run');
+    assert.equal(await page.locator('.readiness-scope').evaluate(scope=>scope.open),true,'Refreshed preview retains expanded scope');
+    const keyboardStartResponse=page.waitForResponse(response=>response.url().endsWith('/api/runs')&&response.request().method()==='POST');
+    const keyboardPreview=await holdNextRequest(page,'**/api/run-preflight',async()=>{
+      await page.locator('#taskInput').fill('[SYNTHETIC] Keyboard start.');
+      await page.locator('#startRun').focus();await page.keyboard.press('Enter');
+    });
+    assert.equal((await keyboardStartResponse).status(),400);
+    await page.locator('#runFormStatus').filter({hasText:'Start received while preview pending.'}).waitFor();
+    assert.equal(pendingPreviewStarts.length,2);assert.equal(pendingPreviewStarts[1].task,'[SYNTHETIC] Keyboard start.');
+    await releaseResponse(page,keyboardPreview,ready);await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
+    assert.equal(pendingPreviewStarts.length,2,'Late preview cannot repeat keyboard submission');
+    const changingPreview=await holdNextRequest(page,'**/api/run-preflight',()=>page.locator('#taskInput').fill('[SYNTHETIC] Preview arrives during pointer gesture.'));
+    await page.locator('#startRun').scrollIntoViewIfNeeded();
+    assert.equal(await page.locator('#startRun').isEnabled(),true);
+    const startBox=await page.locator('#startRun').boundingBox();assert(startBox);
+    await page.mouse.move(startBox.x+startBox.width/2,startBox.y+startBox.height/2);
+    await page.mouse.down();
+    const heldStartBox=await page.locator('#startRun').boundingBox();assert(heldStartBox);
+    const tallPreview={...ready,warnings:[{code:'synthetic_changed_height',message:'[SYNTHETIC] Changed-height preview details. '.repeat(30)}]};
+    await releaseResponse(page,changingPreview,tallPreview);
+    const pendingStartBox=await page.locator('#startRun').boundingBox();assert(pendingStartBox);
+    for(const key of ['x','y','width','height'])assert(Math.abs(pendingStartBox[key]-heldStartBox[key])<=1,'Preview must not move Start during pointer gesture: '+key);
+    assert.doesNotMatch(await page.locator('#preflightStatus').textContent(),/Changed-height preview details/,'Changed-height rendering waits until the pointer gesture ends');
+    assert.equal(pendingPreviewStarts.length,2,'Preview completion cannot itself start a run');
+    const gestureStartResponse=page.waitForResponse(response=>response.url().endsWith('/api/runs')&&response.request().method()==='POST');
+    await page.mouse.up();assert.equal((await gestureStartResponse).status(),400);
+    await page.locator('#runFormStatus').filter({hasText:'Start received while preview pending.'}).waitFor();
+    await page.locator('#preflightStatus').filter({hasText:'Changed-height preview details.'}).waitFor();
+    await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
+    assert.equal(pendingPreviewStarts.length,3,'One native pointer gesture produces exactly one explicit start');
+    assert.equal(pendingPreviewStarts[2].task,'[SYNTHETIC] Preview arrives during pointer gesture.');
+    assert.equal(await page.locator('#runList .run-link').count(),0);
+    const cancelledPreview=await holdNextRequest(page,'**/api/run-preflight',()=>page.locator('#taskInput').fill('[SYNTHETIC] Cancel held start.'));
+    await page.locator('#startRun').scrollIntoViewIfNeeded();const cancelBox=await page.locator('#startRun').boundingBox();assert(cancelBox);
+    await page.mouse.move(cancelBox.x+cancelBox.width/2,cancelBox.y+cancelBox.height/2);await page.mouse.down();
+    await page.keyboard.press('Escape');assert.equal(await page.locator('#taskDialog').isVisible(),false);
+    await page.mouse.up();await releaseResponse(page,cancelledPreview,tallPreview);
+    assert.equal(await page.locator('#taskDialog').isVisible(),false,'A late preview cannot reopen a dismissed task');
+    assert.equal(pendingPreviewStarts.length,3,'Cancelling a held pointer gesture cannot submit');
+    await preflightAfter(page,()=>page.locator('#newRun').click(),data=>data.task==='[SYNTHETIC] Cancel held start.');
+    report.checks.push('narrow Start works immediately after typing and by keyboard while preflight is delayed; blur does not refetch or collapse scope; actual refresh preserves expanded scope; changed-height responses cannot move Start between mouse-down/up; late previews never start extra runs');
     await page.setViewportSize({width:1366,height:768});
     const stalePreflight={...ready,warnings:[{code:'synthetic_stale',message:'STALE-PREFLIGHT-SUCCESS'}]};
     const olderPreflight=await holdNextRequest(page,'**/api/run-preflight',()=>page.locator('#taskInput').fill('[SYNTHETIC] Older selection.'));
@@ -227,6 +300,8 @@ async function main() {
     await releaseResponse(page,closingPreflight,stalePreflight);
     assert.match(await page.locator('#preflightStatus').textContent(),/API キーが未設定/);
     assert.doesNotMatch(await page.locator('#preflightStatus').textContent(),/STALE-PREFLIGHT-SUCCESS|開始に必要な設定を確認しました/);
+    assert.equal(pendingPreviewStarts.length,3,'Stale selection and dismissed/reopened preview responses cannot add starts');
+    await page.unroute('**/api/runs',rejectPendingStart);
     await page.keyboard.press('Escape');await page.locator('#navSettings').click();
     assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'},{method:'GET',path:'/v1/models'}]);
     report.checks.push('real admission preview shows saved model/protocol destinations, protected folders, web exposure and untested capability limits without provider calls; old selection and closed/reopened dialog responses cannot overwrite newer blockers; desktop/narrow screenshots');
