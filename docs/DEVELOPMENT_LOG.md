@@ -244,3 +244,9 @@ build, inventory available notices and unresolved components honestly, retain ex
 hashes, and remove binary artifact upload entirely. Only internal execution tests,
 reports/screenshots and non-binary manifests may proceed. No source-offer commitment
 or distribution clearance is made.
+
+Actual frozen execution reached authenticated Edge startup on the next internal run.
+The acceptance driver then compared a Windows 8.3 temporary-directory alias with
+the server's canonical long path. Correct the test to compare native filesystem
+identities, keep exact protected-root assertions, and record synthetic preflight
+scope for diagnostics. No production deny boundary is weakened.

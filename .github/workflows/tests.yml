@@ -120,6 +120,7 @@ jobs:
             runtime/verification/portable-smoke.json
             runtime/verification/portable-console.json
             runtime/verification/portable-workbench.png
+            runtime/verification/portable-workbench-failure.png
             dist/AgentWorkbench/build-manifest.json
             dist/AgentWorkbench/THIRD-PARTY-NOTICES/inventory.json
           if-no-files-found: warn

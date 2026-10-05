@@ -20,7 +20,8 @@ const STOP_TASK = '[PORTABLE SYNTHETIC] Hold request until stopped';
 const FINAL_TEXT = '[SYNTHETIC] DOCX / XLSX / PPTX の作成・読み取り・編集と拒否範囲を確認しました。';
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const sha256 = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-const normalized = value => path.resolve(value).toLowerCase();
+// Python's resolved paths expand Windows 8.3 aliases; compare actual filesystem identities.
+const normalized = value => fs.realpathSync.native(value).toLowerCase();
 const redact = value => String(value).replace(/#token=[A-Za-z0-9_-]+/g, '#token=[redacted]');
 
 async function until(check, label, timeout = 30000) {
@@ -532,6 +533,7 @@ async function main() {
     const preflight = await api('/api/run-preflight', {method: 'POST', body: runPayload});
     assert.equal(preflight.can_start, true);
     assert.equal(preflight.inference_tested, false); assert.equal(preflight.tools_tested, false);
+    report.preflightScope = preflight.scope;
     const denied = preflight.scope.deny_roots.map(normalized);
     for (const directory of [install, internal, state])
       assert(denied.includes(normalized(directory)), 'Frozen runtime must explicitly deny: ' + directory);
