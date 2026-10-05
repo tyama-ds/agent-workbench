@@ -6,46 +6,27 @@ Codex CLI / Claude Code / WSL / Docker / Microsoft Office のインストール�
 
 ## Windows で起動
 
-必要なもの: Windows 11、Python 3.11 以降、Edge または Chrome。検証環境は Windows と Python 3.13 です。
+必要なもの: Windows 11、承認済みの通常版 **64-bit CPython 3.11〜3.13**（3.13 推奨）、Edge または Chrome。
 
-リポジトリを保存したフォルダーで PowerShell を開きます。
+1. ソース ZIP を、自分が書き込めるローカルフォルダーにすべて展開します。
+2. **`Setup.cmd` をダブルクリック**し、`Setup complete` を確認します。
+3. **`Launch.cmd` をダブルクリック**します。起動したコンソールで Ctrl+C を押すと停止します。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Setup-Windows.ps1 -CreateDesktopShortcut
+通常のセットアップ・起動に PowerShell、管理者権限、Git、ビルドツールは不要です。Python 本体は会社で承認された方法で用意してください。社内ポリシーによる実行禁止やセキュリティ警告を回避する設定は行いません。
+
+コマンドプロンプトから診断・プロキシ・オフラインインストールも指定できます。
+
+```bat
+Setup.cmd --check
+Setup.cmd --proxy "http://proxy.example.local:8080"
+Setup.cmd --wheelhouse "C:\Approved Packages\wheelhouse"
 ```
 
-セットアップ後、デスクトップの **Agent Workbench**、または `Launch.cmd` を開きます。ブラウザーが開き、サーバーは起動したコンソールで動きます。コンソールで `Ctrl+C` を押すと停止します。セットアップの ExecutionPolicy 指定はそのプロセスにだけ適用され、OS の設定は変更しません。
+上のプロキシは例です。会社の指定値を使ってください。証明書は `--certificate "C:\Certificates\company-ca.pem"` で指定できます。通常モードは既存 pip / proxy 設定を引き継ぎます。パッケージはハッシュを確認した wheel のみ利用し、依存のソースビルドや TLS 検証無効化は行いません。
 
-既定ポートは `8818`。二重起動は既存画面を開きます。別アプリがそのポートを使用している場合は:
+既定ポートは `8818`。二重起動は既に起動中であることを表示します。既存のブラウザー画面を使ってください。別アプリが使っている場合は `Launch.cmd --port 8820` で起動してください。アプリはソースフォルダーを利用するため、セットアップ後にフォルダーを移動しないでください。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-Workbench.ps1 -Port 8820
-```
-
-初回インストール時のみ、ハッシュを固定した Python パッケージを取得します。ランタイムに CDN や外部 JavaScript はありません。
-
-### 会社のプロキシ経由でインストールする場合
-
-セットアップ中の `WARNING: Retrying ... ConnectTimeoutError` は、パッケージの取得先またはプロキシへの接続がタイムアウトしている状態です。会社で指定されたプロキシのホスト名・ポートを使って再実行してください。アプリの設定画面で指定するプロキシとは別の、インストール時の指定です。
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Setup-Windows.ps1 -ProxyUrl "http://proxy.example.local:8080" -CreateDesktopShortcut
-```
-
-上の URL は例です。実際の会社の設定に置き換えてください。HTTPS のパッケージを取得する場合でも、接続するプロキシ自体が HTTP なら `http://` を指定します。`-ProxyUrl` は HTTP(S) の接続先のみ対応し、PAC ファイルや認証情報を埋め込んだ URL は受け付けません。認証が必要な環境では会社指定の pip 設定・認証方法を利用してください。プロキシのパスワードをチャットや GitHub Issue に貼らないでください。
-
-既にダウンロードした旧版のセットアップでも、同じ PowerShell 内で環境変数を指定してから実行できます。これはその PowerShell と子プロセスだけに適用され、Windows の永続設定は変更しません。
-
-```powershell
-$env:PIP_PROXY = "http://proxy.example.local:8080"
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Setup-Windows.ps1 -CreateDesktopShortcut
-```
-
-`PIP_PROXY` は pip 用の指定です。明示プロキシを指定しなければ、既存の pip 設定や `HTTP_PROXY` / `HTTPS_PROXY` 等の環境変数も使われます。セットアップ自身はプロキシ設定を保存しません。Local LLM の実行時プロキシ除外も変わりません。作成済みの `.venv` は再実行で利用できるので、ダウンロード失敗を理由に削除する必要はありません。
-
-`407 Proxy Authentication Required` はプロキシ認証、`CERTIFICATE_VERIFY_FAILED` は証明書の信頼設定の問題です。証明書エラーの場合は、会社から指定された PEM 形式の CA バンドルを `-CertificatePath "C:\Certificates\company-ca.pem"` で渡せます。証明書検証を無効にする設定は行いません。必要に応じて `-TimeoutSeconds 120` / `-Retries 3` も指定できますが、接続先や認証の誤りは待ち時間を延ばしても解消しません。
-
-参考: [pip のプロキシ設定](https://pip.pypa.io/en/stable/user_guide/#using-a-proxy-server)、[pip の HTTPS 証明書設定](https://pip.pypa.io/en/stable/topics/https-certificates/)。
+**詳しい手順・Python の指定・社内 CA・オフライン wheel の準備・エラー対処は [Windows 11 セットアップガイド](docs/WINDOWS_SETUP.md) を参照してください。**
 
 ## 最初の設定
 
@@ -105,21 +86,25 @@ LAN 上の Local サーバーでは、この PC の GPU 値を代用できない
 
 既定では無効です。検索方式は SearXNG JSON API または Brave Search API を選択します。
 
-- SearXNG: 使用するサーバーの `/search` URL。JSON 出力が有効なサーバーが必要です。
+- SearXNG: 使用するサーバーの `/search` URL。JSON 出力が有効なサーバーが必要です。LAN 内でも HTTPS が必要です。HTTP の例外は `localhost` / `127.0.0.1` / `[::1]` のみです。
 - Brave: `https://api.search.brave.com/res/v1/web/search`。検索キーはメモリ欄または `BRAVE_SEARCH_API_KEY`。
 - 検索用プロキシ例: `http://127.0.0.1:8080`。**検索と検索後のページ取得の両方**に適用されます。失敗時に直接接続へ切り替えません。
 - OpenAI / Anthropic にもプロファイルごとの明示プロキシがあります。検索の設定とは独立しています。
 
-HTTP(S) プロキシに対応します。SOCKS、PAC、URL に埋め込んだ認証情報、独自 CA の登録 UI は未対応です。Local はこれらの設定の影響を受けません。Web の取得対象は公開 HTTP(S) テキストのみで、JavaScript は実行しません。内部・メタデータアドレスや危険なリダイレクトを拒否します。明示した検索サーバーだけは内部の接続先も利用できます。
+HTTP(S) プロキシに対応します。SOCKS、PAC、URL に埋め込んだ認証情報、独自 CA の登録 UI は未対応です。Local はこれらの設定の影響を受けません。Web の取得対象は公開 HTTP(S) テキストのみで、JavaScript は実行しません。内部・メタデータアドレスや危険なリダイレクトを拒否します。明示した SearXNG 検索サーバーだけは内部の接続先も利用できます（LAN 内も HTTPS が必要）。
 
 ## ファイルと Office
 
 | 形式 | 対応する操作 | 制限 |
 | --- | --- | --- |
-| UTF-8 テキスト | 読む、検索、作成、置換、SHA-256取得 | バイナリーへの上書き不可 |
+| UTF-8 テキスト | 読む、検索、作成、置換、SHA-256取得 | 既知の文書・バイナリー形式、非 UTF-8、NUL・バイナリー制御文字への上書き不可 |
 | `.docx` | 段落・表の読み取り、作成、段落・セルの編集 | Word COM / マクロ / OLE / 外部参照なし |
 | `.xlsx` | シート・セル範囲の読み取り、セル更新、シート作成 | 許可した通常関数のみ。数式の再計算エンジンなし |
 | `.pptx` | スライドテキストの読み取り、作成、既存テキストの編集 | PowerPoint 全機能・描画の完全再現ではない |
+
+読み取り・検索は UTF-8 と NUL の有無で判定します。破壊的なテキスト操作（作成・上書き・部分置換）は追加の保護を行います。PDF、Office、OpenDocument、主要な画像・圧縮形式、および WAV/AVI の既知の拡張子を拒否し、新規作成にも適用します。拡張子を変えたファイルも、PDF/GIF/PNG/JPEG/ZIP/OLE/RAR/7z/gzip/bzip2/xz/RIFF の先頭シグネチャで拒否します。本文に TAB・CR・LF 以外の C0 制御文字、DEL・C1 制御文字がある場合も拒否します。判定は保存する本文と既存の原本の両方に適用されます。
+
+BOM 付き UTF-8、空の通常テキスト、CSV/JSON/SVG は扱えます。部分置換では BOM と未編集部分を保持します。すべてのバイナリー形式を識別するものではありません。Office は専用ツールを使ってください。PDF 編集は未対応です。重要な原本は読み取り専用にし、別の出力先を使ってください。
 
 旧形式 `.doc` / `.xls` / `.ppt`、マクロ付き・暗号化・外部リンク・埋め込みオブジェクト付きの Office ファイルは対象外です。既存の複雑な書式の完全維持は保証しません。重要な原本は読み取り専用フォルダーに置き、出力先を分けてください。
 
@@ -155,3 +140,9 @@ Edge の UI 確認用に `tools/browser_smoke.cjs` を同梱しています。�
 ## ライセンス
 
 この独立実装は [MIT License](LICENSE) です。個人・社内利用、改変、再配布が可能です。外部モデルのライセンス、API 契約、依存パッケージの条件は別途適用されます。元の ORRERY のコード・アセットを後から組み込む場合は、そのライセンスを改めて確認してください。
+
+## コックピット GUI
+
+ORRERY の画面構成を参考に、左の担当一覧・中央の作業ログと入力欄・右のチーム図/メールを同時に見渡せるダーク UI に再構成しました。「＋ 新しい作業」で依頼、「⚙ 設定」でモデルや作業環境を編集します。検索と「回答待ち」で担当者を絞り込めます。
+
+独立実装の範囲、操作方法、実描画を含む検証状況は [GUI_REDESIGN.md](docs/GUI_REDESIGN.md) を参照してください。

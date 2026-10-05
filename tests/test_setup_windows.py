@@ -1,184 +1,223 @@
-"""Exercise the Windows installer without network access or a real pip install."""
-
+"""Installer command planning is testable without Windows, network or package installation."""
+import importlib.util
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
+import sys
 
 import pytest
 
-
-SETUP = Path(__file__).resolve().parents[1] / "scripts" / "Setup-Windows.ps1"
-POWERSHELL = shutil.which("powershell.exe") if os.name == "nt" else None
-pytestmark = pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell 5.1 is required")
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location('setup_windows', ROOT / 'scripts/setup_windows.py')
+setup = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(setup)
 
 
 @pytest.fixture
-def run_setup(tmp_path):
-    project = tmp_path / "project with spaces"
-    scripts = project / ".venv" / "Scripts"
-    scripts.mkdir(parents=True)
-    (scripts / "python.exe").write_bytes(b"non-executable test placeholder")
-    (project / "requirements.lock").write_text("# fixture: no dependencies\n", encoding="utf-8")
-    (project / "pyproject.toml").write_text('[project]\nname = "installer-fixture"\n', encoding="utf-8")
-    certificate = project / "company certificate.pem"
-    certificate.write_text("-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n", encoding="ascii")
-    log = tmp_path / "argv.log"
-    environment_log = tmp_path / "environment.log"
-    child_environment = dict(os.environ)
-    child_environment.update(
-        WORKBENCH_SETUP_TEST_LOG=str(log),
-        WORKBENCH_SETUP_TEST_ENV=str(environment_log),
-        HTTPS_PROXY="http://inherited-proxy.example:3128",
-        PIP_PROXY="http://inherited-pip-proxy.example:8080",
-        WORKBENCH_SETUP_TEST_FAIL_PIP="0",
-    )
-    wrapper = tmp_path / "invoke.ps1"
-    wrapper.write_text(
-        "param([string]$FixturePath)\n"
-        "$ErrorActionPreference = 'Stop'\n"
-        "$fixture = Get-Content -LiteralPath $FixturePath -Raw | ConvertFrom-Json\n"
-        "$parameters = @{}\n"
-        "$fixture.arguments.PSObject.Properties | ForEach-Object { $parameters[$_.Name] = $_.Value }\n"
-        "$python = Join-Path $parameters.ProjectRoot '.venv\\Scripts\\python.exe'\n"
-        "Set-Item -LiteralPath ('Function:\\' + $python) -Value {\n"
-        "  ConvertTo-Json -InputObject @($args) -Compress | Add-Content -LiteralPath $env:WORKBENCH_SETUP_TEST_LOG -Encoding UTF8\n"
-        "  @{HTTPS_PROXY=$env:HTTPS_PROXY; PIP_PROXY=$env:PIP_PROXY} | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:WORKBENCH_SETUP_TEST_ENV -Encoding UTF8\n"
-        "  $global:LASTEXITCODE = 0\n"
-        "  if ($env:WORKBENCH_SETUP_TEST_FAIL_PIP -eq '1' -and $args.Count -ge 2 -and $args[0] -eq '-m' -and $args[1] -eq 'pip') { $global:LASTEXITCODE = 42 }\n"
-        "}\n"
-        "& $fixture.setup @parameters\n",
-        encoding="utf-8",
-    )
-
-    def invoke(*arguments, fail_pip=False):
-        assert len(arguments) % 2 == 0
-        options = {"ProjectRoot": str(project)}
-        options.update({str(arguments[i]).lstrip("-"): str(arguments[i + 1])
-                        for i in range(0, len(arguments), 2)})
-        fixture = tmp_path / "fixture.json"
-        fixture.write_text(json.dumps({"setup": str(SETUP), "arguments": options}), encoding="utf-8")
-        environment = dict(child_environment, WORKBENCH_SETUP_TEST_FAIL_PIP="1" if fail_pip else "0")
-        result = subprocess.run(
-            [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-             "-File", str(wrapper), "-FixturePath", str(fixture)],
-            capture_output=True, text=True, timeout=30, env=environment,
-        )
-        calls = [
-            json.loads(line)
-            for line in log.read_text(encoding="utf-8-sig").splitlines()
-        ] if log.exists() else []
-        return result, calls
-
-    invoke.project = project
-    invoke.certificate = certificate
-    invoke.environment_log = environment_log
-    return invoke
+def project(tmp_path):
+    root = tmp_path / '会社 project & spaces !'
+    root.mkdir()
+    for relative in ('requirements.lock', 'pyproject.toml', 'workbench/server.py', 'static/index.html', 'docs/interface.json'):
+        path = root / relative
+        path.parent.mkdir(exist_ok=True)
+        path.write_text('fixture', encoding='utf-8')
+    return root
 
 
-def pip_calls(calls):
-    return [arguments for arguments in calls if arguments[:2] == ["-m", "pip"]]
+def execute(project, *arguments, fail=None):
+    options = setup.parser().parse_args(['--project-root', str(project), *map(str, arguments)])
+    calls = []
+    def runner(args, **kwargs):
+        args = list(map(str, args))
+        calls.append((args, kwargs))
+        if fail and fail(args):
+            raise RuntimeError('simulated failure')
+    setup.install(options, runner=runner)
+    return calls
 
 
-def assert_option(arguments, name, expected):
-    assert arguments.count(name) == 1, arguments
-    assert arguments[arguments.index(name) + 1] == str(expected), arguments
+def installs(calls):
+    return [args for args, _ in calls if args[1:4] == ['-m', 'pip', 'install']]
 
 
-def test_default_setup_preserves_existing_proxy_and_pip_safety(run_setup):
-    result, calls = run_setup()
+def test_fresh_install_hashes_binaries_local_build_and_health_checks(project):
+    calls = execute(project)
+    assert calls[0][0][1:3] == ['-m', 'venv']
+    dep, app = installs(calls)
+    assert '--require-hashes' in dep and '--only-binary=:all:' in dep
+    assert dep[dep.index('-r') + 1] == str(project / 'requirements.lock')
+    assert all(item in app for item in ('--no-index', '--no-deps', '--no-build-isolation'))
+    assert calls[-2][0][1:] == ['-m', 'pip', 'check']
+    assert 'import workbench.server' in calls[-1][0][-1]
+    assert all(kwargs['cwd'] == project for _, kwargs in calls)
+
+
+def test_reinstall_reuses_environment(project):
+    python = project / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b'fixture')
+    calls = execute(project)
+    assert not any(args[1:3] == ['-m', 'venv'] for args, _ in calls)
+    assert python.read_bytes() == b'fixture'
+
+
+def test_incomplete_venv_is_preserved(project):
+    (project / '.venv').mkdir()
+    with pytest.raises(ValueError, match='incomplete'):
+        execute(project)
+    assert (project / '.venv').is_dir()
+
+
+def test_check_only_does_not_run_commands_or_create_venv(project, capsys):
+    assert execute(project, '--check') == []
+    assert not (project / '.venv').exists()
+    assert 'No packages installed' in capsys.readouterr().out
+
+
+def test_proxy_certificate_and_inherited_config(project, monkeypatch):
+    certificate = project / 'company CA.pem'
+    certificate.write_text('fixture')
+    monkeypatch.setenv('HTTPS_PROXY', 'http://inherited.example:8080')
+    calls = execute(project, '--proxy', 'http://proxy.example:3128', '--certificate', certificate)
+    dep, app = installs(calls)
+    assert dep[dep.index('--proxy') + 1] == 'http://proxy.example:3128'
+    assert dep[dep.index('--cert') + 1] == str(certificate)
+    assert '--proxy' not in app  # local-only build
+    assert calls[-1][1]['env']['HTTPS_PROXY'] == 'http://inherited.example:8080'
+    assert '--trusted-host' not in dep
+
+
+def test_offline_ignores_external_find_links_and_config(project, monkeypatch):
+    wheels = project / 'wheel house'
+    wheels.mkdir()
+    (wheels / 'fixture.whl').write_bytes(b'fixture')
+    monkeypatch.setenv('PIP_FIND_LINKS', 'https://remote.example/wheels')
+    calls = execute(project, '--wheelhouse', wheels)
+    dep, app = installs(calls)
+    assert '--no-index' in dep and '--no-index' in app
+    assert dep[dep.index('--find-links') + 1] == str(wheels)
+    for args, kwargs in calls:
+        if args[1:4] == ['-m', 'pip', 'install']:
+            assert 'PIP_FIND_LINKS' not in kwargs['env']
+            assert kwargs['env']['PIP_CONFIG_FILE'] == os.devnull
+    assert os.environ['PIP_FIND_LINKS'].startswith('https://')
+
+
+@pytest.mark.parametrize('proxy', ['proxy:8080', 'http://user:password@proxy', 'socks5://proxy:1234',
+                                  'http://proxy/proxy.pac', 'http://proxy?x=secret', 'http://proxy#secret',
+                                  'http://proxy:0', 'http://proxy:99999', 'http://proxy\\path'])
+def test_invalid_proxy(proxy):
+    with pytest.raises(ValueError):
+        setup.validate_proxy(proxy)
+
+
+@pytest.mark.parametrize('version,bits,implementation', [((3, 10), 64, 'CPython'), ((3, 14), 64, 'CPython'),
+                                                       ((3, 13), 32, 'CPython'), ((3, 13), 64, 'PyPy')])
+def test_unsupported_python(version, bits, implementation):
+    assert not setup.python_supported(version, bits, implementation)
+
+
+def test_missing_files_and_readonly_folder(project, monkeypatch):
+    def denied(**kwargs):
+        raise PermissionError
+    monkeypatch.setattr(setup.tempfile, 'TemporaryFile', denied)
+    with pytest.raises(ValueError, match='not writable'):
+        execute(project)
+    (project / 'static/index.html').unlink()
+    with pytest.raises(ValueError, match='entire ZIP'):
+        execute(project)
+
+
+@pytest.mark.parametrize('option,value', [('--timeout', '4'), ('--retries', '11'), ('--certificate', 'missing'), ('--wheelhouse', 'missing')])
+def test_invalid_options(project, option, value):
+    with pytest.raises((ValueError, SystemExit)):
+        execute(project, option, value)
+
+
+@pytest.mark.parametrize('stage', ['venv', 'pip', 'install', 'check', '-c'])
+def test_failure_propagates_without_success_message(project, capsys, stage):
+    with pytest.raises(RuntimeError):
+        execute(project, fail=lambda args: stage in args)
+    assert 'Setup complete' not in capsys.readouterr().out
+
+
+def test_diagnostics_omit_proxy_values(project, monkeypatch, capsys):
+    monkeypatch.setenv('HTTPS_PROXY', 'http://secret-user:secret-password@internal.example:8080')
+    execute(project, '--check')
+    output = capsys.readouterr().out
+    assert 'secret' not in output and 'internal.example' not in output
+    assert '"proxy_configured": true' in output
+
+
+@pytest.mark.parametrize('key', ['PIP_TARGET', 'PIP_PREFIX', 'PIP_USER'])
+def test_redirected_pip_install_refused(project, monkeypatch, key):
+    monkeypatch.setenv(key, '1')
+    with pytest.raises(ValueError, match=key):
+        execute(project)
+
+
+def test_cmd_entrypoints_do_not_bypass_policy():
+    for name in ('Setup.cmd', 'Launch.cmd'):
+        content = (ROOT / name).read_text()
+        assert 'ExecutionPolicy' not in content and 'powershell' not in content.lower()
+        assert 'DisableDelayedExpansion' in content
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows cmd.exe required')
+def test_real_cmd_check_with_unicode_and_spaces(tmp_path):
+    import shutil
+    project = tmp_path / '会社 project & spaces !'
+    shutil.copytree(ROOT, project, ignore=shutil.ignore_patterns('.git', '.venv', '__pycache__', 'runtime'))
+    env = dict(os.environ, WORKBENCH_PYTHON=sys.executable)
+    result = subprocess.run(['cmd.exe', '/d', '/c', str(project / 'Setup.cmd'), '--check'],
+                            input='\n', text=True, capture_output=True, env=env, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
-    install = pip_calls(calls)
-    assert len(install) == 2
-    for arguments in install:
-        assert "--proxy" not in arguments and "--cert" not in arguments
-        assert_option(arguments, "--timeout", 60)
-        assert_option(arguments, "--retries", 3)
-        assert "--disable-pip-version-check" in arguments
-        assert "--trusted-host" not in arguments
-    assert "--require-hashes" in install[0]
-    assert_option(install[0], "-r", run_setup.project / "requirements.lock")
-    assert "--no-deps" in install[1] and "--no-build-isolation" in install[1]
-    assert json.loads(run_setup.environment_log.read_text(encoding="utf-8-sig")) == {
-        "HTTPS_PROXY": "http://inherited-proxy.example:3128",
-        "PIP_PROXY": "http://inherited-pip-proxy.example:8080",
-    }
+    assert 'Preflight complete' in result.stdout
 
 
-@pytest.mark.parametrize("proxy", ["http://proxy.example:8080", "https://proxy.example:8443"])
-def test_explicit_proxy_certificate_and_limits_reach_both_pip_stages(run_setup, proxy):
-    result, calls = run_setup(
-        "-ProxyUrl", proxy, "-CertificatePath", run_setup.certificate,
-        "-TimeoutSeconds", "135", "-Retries", "7",
-    )
+def test_free_threaded_python_refused():
+    assert not setup.python_supported((3, 13), 64, 'CPython', True)
+
+
+def test_offline_rejects_network_options(project):
+    wheelhouse = project / 'wheels'
+    wheelhouse.mkdir()
+    (wheelhouse / 'fixture.whl').write_bytes(b'fixture')
+    with pytest.raises(ValueError, match='Offline'):
+        execute(project, '--wheelhouse', wheelhouse, '--proxy', 'http://proxy:8080')
+
+
+@pytest.mark.parametrize('key', ['PIP_REQUIREMENT', 'PIP_CONSTRAINT', 'PIP_EDITABLE', 'PIP_BUILD_CONSTRAINT', 'PIP_TARGET'])
+def test_offline_removes_all_injected_pip_inputs(project, monkeypatch, key):
+    wheelhouse = project / 'wheels'
+    wheelhouse.mkdir()
+    (wheelhouse / 'fixture.whl').write_bytes(b'fixture')
+    monkeypatch.setenv(key, 'https://remote.example/input')
+    calls = execute(project, '--wheelhouse', wheelhouse)
+    for _, kwargs in calls:
+        assert key not in kwargs['env']
+
+
+@pytest.mark.parametrize('config', ["global.target='elsewhere'", "install.user='true'", "global.requirement='https://remote.example/requirements.txt'", "install.editable='https://remote.example/code.git'"])
+def test_online_rejects_extra_pip_config(project, config):
+    options = setup.parser().parse_args(['--project-root', str(project)])
+    calls = []
+    def runner(args, **kwargs):
+        calls.append(list(map(str, args)))
+        return config if kwargs.get('capture') else ''
+    with pytest.raises(ValueError, match='pip configuration'):
+        setup.install(options, runner=runner)
+    assert installs([(args, {}) for args in calls]) == []
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell 5.1 required')
+def test_ps51_wrapper_check_with_explicit_python(project):
+    # CI only: process-local Bypass lets the test exercise the compatibility wrapper.
+    # Shipping entrypoints never change execution policy.
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                             '-File', str(ROOT / 'scripts/Setup-Windows.ps1'), '-ProjectRoot', str(project),
+                             '-PythonExecutable', sys.executable, '-CheckOnly'],
+                            capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
-    install = pip_calls(calls)
-    assert len(install) == 2
-    for arguments in install:
-        assert_option(arguments, "--proxy", proxy)
-        assert_option(arguments, "--cert", run_setup.certificate.resolve())
-        assert_option(arguments, "--timeout", 135)
-        assert_option(arguments, "--retries", 7)
-    assert json.loads(run_setup.environment_log.read_text(encoding="utf-8-sig")) == {
-        "HTTPS_PROXY": "http://inherited-proxy.example:3128",
-        "PIP_PROXY": "http://inherited-pip-proxy.example:8080",
-    }
-
-
-def test_failed_download_stops_before_editable_install_and_preserves_environment(run_setup):
-    environment = run_setup.project / ".venv"
-    executable = environment / "Scripts" / "python.exe"
-    original = executable.read_bytes()
-    result, calls = run_setup(fail_pip=True)
-    assert result.returncode != 0
-    assert len(pip_calls(calls)) == 1
-    assert "ConnectTimeout" in result.stderr
-    assert executable.read_bytes() == original
-
-
-@pytest.mark.parametrize("proxy", [
-    "proxy.example:8080", "socks5://proxy.example:1080",
-    "http://user:password@proxy.example:8080", "http://proxy.example/path",
-    "http://proxy.example?token=secret", "http://proxy.example#secret",
-])
-def test_invalid_proxy_fails_before_any_python_or_pip_execution(run_setup, proxy):
-    result, calls = run_setup("-ProxyUrl", proxy)
-    assert result.returncode != 0
-    assert calls == []
-
-
-@pytest.mark.parametrize("certificate", ["missing.pem", "."])
-def test_missing_or_directory_certificate_fails_before_execution(run_setup, certificate):
-    result, calls = run_setup("-CertificatePath", run_setup.project / certificate)
-    assert result.returncode != 0
-    assert calls == []
-
-
-@pytest.mark.parametrize("name,value", [
-    ("-TimeoutSeconds", "4"), ("-TimeoutSeconds", "601"),
-    ("-Retries", "-1"), ("-Retries", "11"),
-])
-def test_limits_rejected_before_execution(run_setup, name, value):
-    result, calls = run_setup(name, value)
-    assert result.returncode != 0
-    assert calls == []
-
-
-def test_ps51_parser_accepts_installer(tmp_path):
-    parser = tmp_path / "parse.ps1"
-    parser.write_text(
-        "param([string]$Source)\n"
-        "$tokens = $null; $errors = $null\n"
-        "[System.Management.Automation.Language.Parser]::ParseFile($Source, [ref]$tokens, [ref]$errors) | Out-Null\n"
-        "if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }\n"
-        "@{major=$PSVersionTable.PSVersion.Major; minor=$PSVersionTable.PSVersion.Minor} | ConvertTo-Json -Compress\n",
-        encoding="utf-8",
-    )
-    result = subprocess.run(
-        [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-         "-File", str(parser), "-Source", str(SETUP)],
-        capture_output=True, text=True, timeout=30,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert json.loads(result.stdout) == {"major": 5, "minor": 1}
+    assert 'Preflight complete' in result.stdout

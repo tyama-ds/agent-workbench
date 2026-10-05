@@ -95,3 +95,65 @@ def test_run_and_reply_preserve_exact_visible_text_and_default_thinking_is_colla
     assert "$('messageInput').value===text" in APP
     assert "ui.drafts.get(id)||''" in APP
     assert "if(ui.polling){await ui.pollPromise;if(fresh)return pollState();return;}" in APP
+
+
+def test_cockpit_has_unique_targets_and_original_local_assets():
+    ids = re.findall(r'\bid="([^"]+)"', HTML)
+    assert len(ids) == len(set(ids))
+    assert set(re.findall(r"\$\('([^']+)'\)", APP)) <= set(ids)
+    for target in ('taskDialog', 'settingsDialog', 'agentTabs', 'teamMap', 'needsYou', 'agentSearch'):
+        assert target in ids
+    assert '<dialog id="taskDialog"' in HTML
+    assert '<dialog id="settingsDialog"' in HTML
+    assert 'content="dark"' in HTML
+    css = (STATIC / 'styles.css').read_text(encoding='utf-8')
+    assert 'align-items:safe center' in css
+    assert 'min-width:max-content' in css
+    assert 'prefers-reduced-motion' in css
+
+
+def test_cockpit_filter_is_searchable_and_only_flags_real_questions():
+    source = re.search(r"function filteredAgents\(.*?\n\}", APP, re.S).group()
+    result = run_javascript("""
+const ui={needsOnly:false};let search='';const $=()=>({value:search});
+""" + source + """
+const agents=[{id:'pm',name:'PM',status:'waiting',question:'Which team?'},{id:'w',name:'レビュー担当',task:'仕様の確認',status:'working'},{id:'q',name:'Queue',status:'queued'}];
+search='レビュー';const searched=filteredAgents(agents).map(a=>a.id);
+search='';ui.needsOnly=true;const needed=filteredAgents(agents).map(a=>a.id);
+console.log(JSON.stringify({searched,needed}));
+""")
+    assert result == {'searched': ['w'], 'needed': ['pm']}
+
+
+def test_dialog_repeated_open_close_preserves_drafts_and_focus():
+    source = APP[APP.index('function showView('):APP.index('function filteredAgents(')]
+    result = run_javascript("""
+const nodes={taskDialog:{open:false,opens:0,closes:0,showModal(){this.open=true;this.opens++},close(){this.open=false;this.closes++}},settingsDialog:{open:false,opens:0,closes:0,showModal(){this.open=true;this.opens++},close(){this.open=false;this.closes++}}};const $=id=>nodes[id];
+""" + source + """
+setBriefOpen(true);setBriefOpen(true);setBriefOpen(false);setBriefOpen(false);
+showView('settings');showView('settings');showView('work');showView('work');
+console.log(JSON.stringify(Object.fromEntries(Object.entries(nodes).map(([k,v])=>[k,{open:v.open,opens:v.opens,closes:v.closes}]))));
+""")
+    assert all(value == {'open': False, 'opens': 1, 'closes': 1} for value in result.values())
+    assert 'ui.startingRun=true' in APP and '||ui.startingRun' in APP
+    assert 'ui.settingsLocked||ui.settingsSaving' in APP
+    assert "window.addEventListener('popstate'" in APP
+    assert 'dialog.close()' in APP
+
+
+def test_poll_restores_same_logical_keyboard_control_and_does_not_steal_other_focus():
+    source = re.search(r"function preserveControlFocus\(.*?\n\}", APP, re.S).group()
+    result = run_javascript("""
+const body={};let calls=0;const replacement={dataset:{focusKey:'agent:pm'},focus(){calls++}};
+const document={body,activeElement:{dataset:{focusKey:'agent:pm'}},querySelectorAll:()=>[replacement]};
+""" + source + """
+preserveControlFocus(()=>{document.activeElement=body});
+document.activeElement={dataset:{focusKey:'agent:pm'}};
+preserveControlFocus(()=>{document.activeElement={dataset:{},id:'messageInput'}});
+console.log(JSON.stringify({calls}));
+""")
+    assert result['calls'] == 1
+    assert 'if(signature===ui.rosterSignature)return' in APP
+    assert 'if(signature===ui.mapSignature)return' in APP
+    assert 'if(signature===ui.tabsSignature)return' in APP
+    assert 'if(signature===ui.runsSignature)return' in APP

@@ -21,6 +21,18 @@ from xml.etree import ElementTree
 
 MAX_OUTPUT = 200_000
 _DENIED_SUFFIXES = {".doc", ".xls", ".ppt", ".docm", ".dotm", ".xlsm", ".xlam", ".xlsb", ".pptm", ".potm", ".ppam"}
+# Destructive text tools must not stand in for document/container editors.
+_TEXT_MUTATION_DENIED_SUFFIXES = _DENIED_SUFFIXES | {
+    ".pdf", ".docx", ".dotx", ".xlsx", ".xltx", ".xltm", ".pptx", ".potx", ".ppsx", ".ppsm",
+    ".odt", ".ods", ".odp", ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz", ".tar",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".ico", ".webp", ".avif",
+    ".wav", ".avi",
+}
+_TEXT_MUTATION_SIGNATURES = (
+    b"%PDF-", b"GIF87a", b"GIF89a", b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff",
+    b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+    b"Rar!\x1a\x07", b"7z\xbc\xaf\x27\x1c", b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"RIFF",
+)
 _RESERVED = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?\Z", re.I)
 _SAFE_FORMULA_FUNCTIONS = {"SUM", "AVERAGE", "COUNT", "COUNTA", "MIN", "MAX", "IF", "IFS", "AND", "OR", "NOT", "ROUND", "ROUNDUP", "ROUNDDOWN", "ABS", "INT", "MOD", "LEN", "CONCAT", "CONCATENATE", "LEFT", "RIGHT", "MID", "TRIM", "UPPER", "LOWER", "VLOOKUP", "HLOOKUP", "XLOOKUP", "INDEX", "MATCH", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "IFERROR", "ISBLANK", "ISNUMBER", "TEXT", "VALUE", "DATE", "YEAR", "MONTH", "DAY", "TODAY", "NOW"}
 
@@ -39,6 +51,27 @@ def _string(value: Any, label: str, limit: int = MAX_OUTPUT, *, empty: bool = Fa
     if "\0" in value:
         raise HarnessError(f"{label} contains a null character")
     return value
+
+
+def _decode_text(data: bytes, *, strip_bom: bool = False) -> str:
+    """The text-tool boundary: strict UTF-8 and no NUL bytes, not MIME detection."""
+    try:
+        text = data.decode("utf-8-sig" if strip_bom else "utf-8")
+    except UnicodeError as exc:
+        raise HarnessError("Text files must use UTF-8") from exc
+    if "\0" in text:
+        raise HarnessError("Binary files containing NUL cannot be used as text")
+    return text
+
+
+def _validate_text_mutation(data: bytes) -> None:
+    text = _decode_text(data)
+    # BOM/leading whitespace must not hide a renamed PDF or container signature.
+    probe = data.removeprefix(b"\xef\xbb\xbf").lstrip(b" \t\r\n")
+    if probe.startswith(_TEXT_MUTATION_SIGNATURES):
+        raise HarnessError("Known document or binary format cannot be modified with text tools")
+    if any((ord(char) < 32 and char not in "\t\r\n") or 0x7f <= ord(char) <= 0x9f for char in text):
+        raise HarnessError("Binary control characters cannot be modified with text tools")
 
 
 def _integer(value: Any, label: str, low: int, high: int) -> int:
@@ -189,18 +222,28 @@ class PathHarness:
         with self._lock:
             return self._read(self.resolve(value))
 
-    def write_bytes(self, value: str, data: bytes, expected_sha256: str) -> dict:
+    def write_bytes(self, value: str, data: bytes, expected_sha256: str, *, text_only: bool = False) -> dict:
         if not isinstance(data, bytes) or len(data) > self.max_file_bytes:
             raise HarnessError("Output exceeds the file size limit")
         if expected_sha256 != "missing" and (not isinstance(expected_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None):
             raise HarnessError("expected_sha256 must be the current hash or 'missing' for a new file")
+        if text_only:
+            _validate_text_mutation(data)
         with self._lock:
             path = self.resolve(value, write=True, must_exist=False)
+            if text_only and path.suffix.lower() in _TEXT_MUTATION_DENIED_SUFFIXES:
+                raise HarnessError("Known document or binary extension cannot be modified with text tools; use a dedicated format tool")
             _inspect(path.parent, directory=True)
             with self._parents_held(path):
-                before = hashlib.sha256(self._read(path)).hexdigest() if path.exists() else "missing"
+                original = self._read(path) if path.exists() else None
+                before = hashlib.sha256(original).hexdigest() if original is not None else "missing"
                 if before != expected_sha256:
                     raise HarnessError("File changed: expected_sha256 does not match")
+                # Check the same bounded, write-authorized snapshot used for the
+                # hash, before creating a temporary file. No read API permission
+                # is implied by this internal validation of an overwrite target.
+                if text_only and original is not None:
+                    _validate_text_mutation(original)
                 descriptor, temporary = tempfile.mkstemp(prefix=".workbench-", suffix=".tmp", dir=path.parent)
                 try:
                     with os.fdopen(descriptor, "wb") as stream:
@@ -225,12 +268,7 @@ class PathHarness:
 
     def read_text(self, value: str) -> dict:
         data = self.read_bytes(value)
-        try:
-            text = data.decode("utf-8-sig")
-        except UnicodeError as exc:
-            raise HarnessError("Text files must use UTF-8") from exc
-        if "\0" in text:
-            raise HarnessError("Binary files cannot be read as text")
+        text = _decode_text(data, strip_bom=True)
         return {"path": str(self.resolve(value)), "text": text[:MAX_OUTPUT], "truncated": len(text) > MAX_OUTPUT,
                 "sha256": hashlib.sha256(data).hexdigest()}
 
@@ -266,9 +304,7 @@ class PathHarness:
                     continue
                 try:
                     data = self.read_bytes(item["path"])
-                    content = data.decode("utf-8-sig")
-                    if "\0" in content:
-                        continue
+                    content = _decode_text(data, strip_bom=True)
                 except (HarnessError, UnicodeError, OSError):
                     continue
                 for number, line in enumerate(content.splitlines(), 1):
@@ -371,8 +407,8 @@ class ToolExecutor:
             ("list_directory", "List an allowed read folder; blocked links and denied entries are omitted.", {"path": path}, ("path",)),
             ("search_text", "Search literal text in allowed folders, with bounded traversal and no shell.", {"path": path, "query": text, "max_results": integer}, ("path", "query")),
             ("file_hash", "Read a file's SHA-256 for a later explicit edit.", {"path": path}, ("path",)),
-            ("write_text", "Write UTF-8 text to an allowed write folder with optimistic hash checking.", {**common, "text": text}, ("path", "text", "expected_sha256")),
-            ("patch_text", "Replace one unique exact text match, preserving other UTF-8 text; requires both read and write access.", {**common, "find": text, "replace": text}, ("path", "find", "replace", "expected_sha256")),
+            ("write_text", "Write UTF-8 text with optimistic hash checking; rejects known document/binary extensions, signatures and binary controls in original and output.", {**common, "text": text}, ("path", "text", "expected_sha256")),
+            ("patch_text", "Replace one unique exact text match, preserving other UTF-8 text; uses the same format/control protection as write_text and requires both read and write access.", {**common, "find": text, "replace": text}, ("path", "find", "replace", "expected_sha256")),
             ("docx_read", "Read paragraphs and tables from a safe DOCX package without opening Word.", {"path": path}, ("path",)),
             ("docx_write", "Create or explicitly replace a DOCX from paragraphs and tables.", {**common, "paragraphs": {"type": "array", "items": text}, "tables": {"type": "array"}}, ("path", "expected_sha256")),
             ("docx_edit", "Edit DOCX with operations: append_paragraph(text), replace_paragraph(index,text), replace_cell(table,row,column,text), append_table(rows). Zero-based indices; edited paragraphs retain first-run formatting.", {**common, "operations": {"type": "array"}}, ("path", "operations", "expected_sha256")),
@@ -448,16 +484,13 @@ class ToolExecutor:
                 data = self.harness.read_bytes(path)
                 if hashlib.sha256(data).hexdigest() != args["expected_sha256"]:
                     raise HarnessError("File changed: expected_sha256 does not match")
-                try:
-                    text = data.decode("utf-8")
-                except UnicodeError as exc:
-                    raise HarnessError("Patch requires UTF-8 text") from exc
+                text = _decode_text(data)
                 find = _string(args["find"], "find")
                 replacement = _string(args["replace"], "replace", empty=True)
                 if text.count(find) != 1:
                     raise HarnessError("Patch find text must occur exactly once")
                 text = text.replace(find, replacement, 1)
-            return self.harness.write_bytes(path, text.encode("utf-8"), args["expected_sha256"])
+            return self.harness.write_bytes(path, text.encode("utf-8"), args["expected_sha256"], text_only=True)
         if name.startswith("docx_"):
             return self._docx(name, args)
         if name.startswith("xlsx_"):

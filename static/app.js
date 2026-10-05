@@ -196,27 +196,55 @@ function renderProfileChoices() {
   $('policyPreview').textContent=ui.config.system_policy||'設定された共通方針はありません。';$('startRun').disabled=!profiles.length;
 }
 function showView(view) {
-  const settings=view==='settings';$('workView').hidden=settings;$('settingsView').hidden=!settings;
-  for(const [id,on] of [['navWork',!settings],['navSettings',settings]]){$(id).classList.toggle('active',on);if(on)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}
-  $('pageTitle').textContent=settings?'設定':'チームで作業';
-  window.scrollTo(0,0);
+  if(view==='settings') { if(!$('settingsDialog').open)$('settingsDialog').showModal(); }
+  else { if($('settingsDialog').open)$('settingsDialog').close(); }
 }
-function setBriefOpen(open) { $('runForm').hidden=!open;$('toggleBrief').textContent=open?'折りたたむ':'新しい依頼を入力';$('toggleBrief').setAttribute('aria-expanded',String(open));$('toggleBrief').closest('.task-panel').classList.toggle('compact',!open); }
+function setBriefOpen(open) {
+  if(open) { if(!$('taskDialog').open)$('taskDialog').showModal(); }
+  else if($('taskDialog').open)$('taskDialog').close();
+}
+function filteredAgents(agents) {
+  const query=$('agentSearch').value.trim().toLocaleLowerCase();
+  return agents.filter(agent=>(!ui.needsOnly||Boolean(agent.question)||['waiting_human','needs_input'].includes(agent.status))&&(!query||[agent.name,agent.id,agent.task,agent.profile_id].join(' ').toLocaleLowerCase().includes(query)));
+}
+function renderTeamMap(agents) {
+  const signature=JSON.stringify([ui.selectedAgent,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.role])]);if(signature===ui.mapSignature)return;ui.mapSignature=signature;
+  const map=$('teamMap');map.replaceChildren();$('teamMapMeta').textContent=`${agents.length} AGENTS`;
+  if(!agents.length){map.appendChild(element('p','empty-small','チームの親子関係を表示します'));return;}
+  const ids=new Set(agents.map(agent=>agent.id));
+  const roots=agents.filter(agent=>!agent.parent_id||!ids.has(agent.parent_id));
+  const visited=new Set();
+  function node(agent,root=false) {
+    const group=element('div','map-branch'),button=element('button',root?'map-root':'map-node');button.type='button';button.dataset.focusKey=`map:${agent.id}`;button.setAttribute('aria-label',`${agent.name||agent.id} の作業ログ`);button.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
+    button.append(element('span','map-medallion',agent.role==='pm'?'PM':'W'),element('span','map-label',agent.name||agent.id));button.addEventListener('click',()=>selectAgent(agent.id));group.appendChild(button);visited.add(agent.id);
+    const children=agents.filter(child=>child.parent_id===agent.id&&!visited.has(child.id));
+    if(children.length){const row=element('div','map-children');children.forEach(child=>row.appendChild(node(child)));group.appendChild(row);}return group;
+  }
+  roots.forEach(agent=>map.appendChild(node(agent,true)));
+  agents.forEach(agent=>{if(!visited.has(agent.id))map.appendChild(node(agent,true));});
+}
+function renderAgentTabs(agents) {
+  const signature=JSON.stringify([ui.selectedAgent,agents.map(agent=>[agent.id,agent.name,agent.role])]);if(signature===ui.tabsSignature)return;ui.tabsSignature=signature;
+  const tabs=$('agentTabs');tabs.replaceChildren();
+  agents.forEach(agent=>{const button=element('button','agent-tab'+(agent.id===ui.selectedAgent?' active':''),`${agent.role==='pm'?'◉':'○'} ${agent.name||agent.id}`);button.type='button';button.dataset.focusKey=`tab:${agent.id}`;button.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));button.addEventListener('click',()=>selectAgent(agent.id));tabs.appendChild(button);});
+}
 function saveAgentDraft() { if(ui.selectedAgent)ui.drafts.set(ui.selectedAgent,$('messageInput').value); }
 function selectAgent(id) { if(ui.selectedAgent!==id){saveAgentDraft();ui.selectedAgent=id;$('messageInput').value=ui.drafts.get(id)||'';ui.logSignature='';inlineStatus($('messageStatus'),'');}renderRun(); }
 function selectRun(id) { saveAgentDraft();ui.selectedRun=id;const agents=ui.state.agents.filter(agent=>agent.run_id===id);ui.selectedAgent=agents.find(agent=>agent.role==='pm')?.id||agents[0]?.id||null;$('messageInput').value=ui.drafts.get(ui.selectedAgent)||'';ui.logSignature='';showView('work');setBriefOpen(false);renderState(); }
 
 function renderRunList() {
+  const signature=JSON.stringify([ui.selectedRun,ui.state.runs.map(run=>[run.id,run.task,run.status,run.created_at])]);if(signature===ui.runsSignature)return;ui.runsSignature=signature;
   $('runCount').textContent=String(ui.state.runs.length);$('runList').replaceChildren();
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
-  [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':''));button.type='button';button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${statusLabel(run.status)} · ${localTime(run.created_at)}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
+  [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${statusLabel(run.status)} · ${localTime(run.created_at)}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
 function badge(status) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),statusLabel(status)); }
 function renderAgents(agents) {
-  $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();
-  agents.forEach((agent,index)=>{
-    const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
-    const top=element('div','agent-card-top');top.append(element('span','agent-avatar',agent.role==='pm'?'PM':`W${index}`),badge(agent.status));
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(({logs,...agent})=>agent),ui.config?.providers]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
+  filteredAgents(agents).forEach((agent,index)=>{
+    const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
+    const top=element('div','agent-card-top');top.append(element('span','agent-avatar',agent.role==='pm'?'PM':`W${agents.filter(item=>item.role!=='pm').findIndex(item=>item.id===agent.id)+1}`),badge(agent.status));
     const profile=ui.config?.providers?.find(item=>item.id===agent.profile_id);
     card.append(top,element('span','agent-name',agent.name||agent.id),element('span','agent-model',profileLabel(profile)),element('span','agent-task',agent.task||agent.question||agent.last_error||(agent.role==='pm'?'チームの作業を管理':'割り当てられた作業を担当')));
     card.addEventListener('click',()=>selectAgent(agent.id));$('agentCards').appendChild(card);
@@ -255,8 +283,14 @@ function renderActivity(run) {
     content.append(element('div','activity-title',title),element('div','activity-body',event.text||''));row.append(element('time','activity-time',localTime(event.at)),content);feed.appendChild(row);
   });
 }
-function renderRun() {
-  const run=getRun();$('activeRunSection').hidden=!run;$('workEmpty').hidden=Boolean(run);if(!run)return;
+function preserveControlFocus(render) {
+  const key=document.activeElement?.dataset.focusKey;
+  render();
+  if(key&&document.activeElement===document.body) [...document.querySelectorAll('[data-focus-key]')].find(node=>node.dataset.focusKey===key)?.focus({preventScroll:true});
+}
+function renderRun() { preserveControlFocus(renderRunContent); }
+function renderRunContent() {
+  const run=getRun();$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id);const waiting=agents.filter(agent=>agent.question||['waiting_human','needs_input'].includes(agent.status)).length;$('needsYou').textContent=`回答待ち ${waiting}`;if(!run){renderAgents(agents);renderTeamMap(agents);renderAgentTabs(agents);$('activityFeed').replaceChildren(element('p','empty-small','エージェント同士のメールと進捗を表示します。'));return;}
   $('activeRunTitle').textContent='チームの作業';$('activeRunStatus').className='status-badge '+(Object.hasOwn(STATUS_LABELS,run.status)?run.status:'');$('activeRunStatus').textContent=statusLabel(run.status);$('activeRunTask').textContent=run.task||'';
   const collaborationBlocked=run.collaboration_limit_reached===true;
   if(collaborationBlocked&&run.status==='waiting')$('activeRunStatus').textContent='連携上限';
@@ -264,9 +298,8 @@ function renderRun() {
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。開始済み・待機中の作業は続行できます。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!ACTIVE_STATUSES.has(run.status)||run.status==='stopping';
   const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of [['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0]]){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}
-  const agents=ui.state.agents.filter(agent=>agent.run_id===run.id);
   if(!agents.some(agent=>agent.id===ui.selectedAgent)){saveAgentDraft();ui.selectedAgent=agents.find(agent=>agent.role==='pm')?.id||agents[0]?.id||null;$('messageInput').value=ui.drafts.get(ui.selectedAgent)||'';}
-  renderAgents(agents);renderConversation(getAgent());renderActivity(run);
+  renderAgents(agents);renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }
 function resourceLabel(resources,gpuIndex=0) {
   if(!resources||!Object.keys(resources).length)return 'リソース情報なし';
@@ -279,7 +312,7 @@ function resourceLabel(resources,gpuIndex=0) {
 }
 function renderState() {
   if(!ui.state.runs.some(run=>run.id===ui.selectedRun))ui.selectedRun=ui.state.runs.at(-1)?.id||null;
-  renderRunList();renderRun();setSettingsLock();$('resourceSummary').textContent=resourceLabel(ui.state.resources,ui.config?.local?.gpu_index||0);
+  preserveControlFocus(()=>{renderRunList();renderRun();});setSettingsLock();$('resourceSummary').textContent=resourceLabel(ui.state.resources,ui.config?.local?.gpu_index||0);
 }
 async function pollState(fresh=false) {
   if(!ui.authenticated)return;
@@ -292,24 +325,31 @@ async function pollState(fresh=false) {
 }
 async function initialize() {
   $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',()=>showView('settings'));
-  $('toggleBrief').addEventListener('click',()=>setBriefOpen($('runForm').hidden));
+  $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));
+  for(const id of ['newRun','launchTask','emptyNewRun'])$(id).addEventListener('click',()=>setBriefOpen(true));
+  $('emptySettings').addEventListener('click',()=>showView('settings'));
+  $('closeSettings').addEventListener('click',()=>showView('work'));
+  $('agentSearch').addEventListener('input',()=>renderRun());
+  $('needsYou').addEventListener('click',()=>{ui.needsOnly=!ui.needsOnly;$('needsYou').setAttribute('aria-pressed',String(ui.needsOnly));renderRun();});
+  for(const id of ['taskDialog','settingsDialog']) { const dialog=$(id);dialog.addEventListener('click',event=>{if(event.target!==dialog)return;const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();}); }
+  window.addEventListener('popstate',()=>{setBriefOpen(false);showView('work');});
   $('settingsForm').addEventListener('input',event=>{if(event.target.type!=='password')markSettingsDirty();});
   $('settingsForm').addEventListener('change',event=>{if(event.target.type!=='password')markSettingsDirty();});
   $('settingsForm').addEventListener('invalid',event=>{const card=event.target.closest('.profile-editor');if(card&&card.querySelector('.profile-content').hidden)card.querySelector('[data-readonly]').click();},true);
   $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180},index);markSettingsDirty();});
   $('settingsForm').addEventListener('submit',async event=>{
-    event.preventDefault();if(ui.settingsLocked)return;
+    event.preventDefault();if(ui.settingsLocked||ui.settingsSaving)return;
     ui.settingsSaving=true;setSettingsLock(true);inlineStatus($('settingsStatus'),'保存しています…');
     try {const config=collectConfig();const response=await api('/api/config',{method:'PUT',body:config});ui.config=response.config||config;ui.settingsDirty=false;renderProfileChoices();inlineStatus($('settingsStatus'),'設定を保存しました。');notice('');}
     catch(error){inlineStatus($('settingsStatus'),errorText(error),true);}finally{ui.settingsSaving=false;setSettingsLock(true);}
   });
   $('runForm').addEventListener('submit',async event=>{
-    event.preventDefault();const task=$('taskInput').value;if(!task.trim())return;
+    event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun)return;
     const workerProfiles=[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value);
     if(!workerProfiles.length&&Number($('maxWorkers').value)>0){inlineStatus($('runFormStatus'),'作業者に使ってよいプロファイルを1つ以上選んでください。',true);return;}
-    $('startRun').disabled=true;inlineStatus($('runFormStatus'),'チームを準備しています…');
+    ui.startingRun=true;$('startRun').disabled=true;inlineStatus($('runFormStatus'),'チームを準備しています…');
     try {const response=await api('/api/runs',{method:'POST',body:{task,pm_profile:$('pmProfile').value,worker_profiles:workerProfiles,max_workers:Number($('maxWorkers').value)}});const id=response.run?.id||response.id||response.run_id;await pollState(true);if(id)selectRun(id);inlineStatus($('runFormStatus'),'チームを開始しました。');notice('');}
-    catch(error){inlineStatus($('runFormStatus'),errorText(error),true);}finally{$('startRun').disabled=!$('pmProfile').value;}
+    catch(error){inlineStatus($('runFormStatus'),errorText(error),true);}finally{ui.startingRun=false;$('startRun').disabled=!$('pmProfile').value;}
   });
   $('stopRun').addEventListener('click',async()=>{const run=getRun();if(!run)return;$('stopRun').disabled=true;try{await api(`/api/runs/${encodeURIComponent(run.id)}/stop`,{method:'POST',body:{}});await pollState(true);notice('チームに停止を要求しました。');}catch(error){notice(errorText(error),true);$('stopRun').disabled=false;}});
   $('messageInput').addEventListener('input',saveAgentDraft);

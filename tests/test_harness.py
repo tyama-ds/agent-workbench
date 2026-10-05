@@ -258,3 +258,148 @@ def test_active_word_fields_and_utf16_entities_are_rejected(payload):
         archive.writestr("word/document.xml", payload)
     with pytest.raises(HarnessError):
         _check_package(buffer.getvalue(), 10 * 1024 * 1024)
+
+
+@pytest.mark.parametrize('payload', [b'find\xff\xfe', b'find\x00tail', b'PK\x03\x04\x00find', b'\xff\xfeF\x00i\x00n\x00d\x00'])
+@pytest.mark.parametrize('tool', ['write_text', 'patch_text'])
+def test_text_mutations_reject_binary_original_without_changes(tmp_path, payload, tool):
+    path = tmp_path / 'ordinary.txt'  # Content, not a misleading extension, decides.
+    path.write_bytes(payload)
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    args = {'text': 'replacement'} if tool == 'write_text' else {'find': 'find', 'replace': 'replacement'}
+    with pytest.raises(HarnessError, match='UTF-8|Binary'):
+        execute(tools, tool, path=str(path), expected_sha256=hashlib.sha256(payload).hexdigest(), **args)
+    assert path.read_bytes() == payload
+    assert not list(tmp_path.glob('.workbench-*'))
+
+
+@pytest.mark.parametrize('payload', [b'', b'find\r\nnext', 'find 日本語 😀'.encode(), b'\xef\xbb\xbffind\r\nnext'])
+def test_write_text_validates_write_only_targets_without_granting_read(tmp_path, payload):
+    path = tmp_path / 'text.data'
+    path.write_bytes(payload)
+    tools = ToolExecutor(PathHarness([], [str(tmp_path)]))
+    with pytest.raises(HarnessError, match='read folders'):
+        execute(tools, 'read_text', path=str(path))
+    result = execute(tools, 'write_text', path=str(path), text='更新 😀', expected_sha256=hashlib.sha256(payload).hexdigest())
+    assert path.read_bytes() == '更新 😀'.encode()
+    assert result['sha256'] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert not list(tmp_path.glob('.workbench-*'))
+
+
+def test_write_only_binary_target_is_still_rejected(tmp_path):
+    path = tmp_path / 'data.bin'
+    original = b'\x00binary'
+    path.write_bytes(original)
+    tools = ToolExecutor(PathHarness([], [str(tmp_path)]))
+    with pytest.raises(HarnessError, match='Binary'):
+        execute(tools, 'write_text', path=str(path), text='', expected_sha256=hashlib.sha256(original).hexdigest())
+    assert path.read_bytes() == original
+
+
+def test_patch_preserves_bom_and_crlf(tmp_path):
+    path = tmp_path / 'bom.txt'
+    original = b'\xef\xbb\xbffind\r\nnext\r\n'
+    path.write_bytes(original)
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    execute(tools, 'patch_text', path=str(path), find='find', replace='日本語', expected_sha256=hashlib.sha256(original).hexdigest())
+    assert path.read_bytes() == b'\xef\xbb\xbf' + '日本語\r\nnext\r\n'.encode()
+    assert execute(tools, 'read_text', path=str(path))['text'] == '日本語\r\nnext\r\n'
+
+
+@pytest.mark.parametrize('payload', [b'\xff', b'new\x00text'])
+def test_text_write_boundary_checks_output_before_creation(tmp_path, payload):
+    harness = PathHarness([], [str(tmp_path)])
+    with pytest.raises(HarnessError, match='UTF-8|Binary'):
+        harness.write_bytes('new.txt', payload, 'missing', text_only=True)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_text_write_rechecks_hash_after_temporary_write(tmp_path, monkeypatch):
+    path = tmp_path / 'file.txt'
+    path.write_bytes(b'original')
+    harness = PathHarness([], [str(tmp_path)])
+    fsync = os.fsync
+    def external_edit(fd):
+        fsync(fd)
+        path.write_bytes(b'\x00changed by external editor')
+    monkeypatch.setattr(os, 'fsync', external_edit)
+    with pytest.raises(HarnessError, match='changed before replacement'):
+        harness.write_bytes(str(path), b'replacement', hashlib.sha256(b'original').hexdigest(), text_only=True)
+    assert path.read_bytes() == b'\x00changed by external editor'
+    assert not list(tmp_path.glob('.workbench-*'))
+
+
+def test_text_atomic_replace_failure_keeps_original_and_cleans_temp(tmp_path, monkeypatch):
+    path = tmp_path / 'file.txt'
+    path.write_bytes(b'original')
+    def failed_replace(*args):
+        raise OSError('simulated replace failure')
+    monkeypatch.setattr(os, 'replace', failed_replace)
+    tools = ToolExecutor(PathHarness([], [str(tmp_path)]))
+    with pytest.raises(OSError, match='simulated'):
+        execute(tools, 'write_text', path=str(path), text='replacement', expected_sha256=hashlib.sha256(b'original').hexdigest())
+    assert path.read_bytes() == b'original'
+    assert not list(tmp_path.glob('.workbench-*'))
+
+
+@pytest.mark.parametrize('payload', [b'%PDF-1.4\nfind\n%%EOF\n', b'\xef\xbb\xbf \n%PDF-1.4\nfind', b'GIF89afind', b'find\x01tail', b'find\x7ftail', 'find\u0085tail'.encode(), b'BZhfind', b'RIFFfind'])
+@pytest.mark.parametrize('tool', ['write_text', 'patch_text'])
+def test_text_mutations_reject_disguised_formats_and_controls(tmp_path, payload, tool):
+    path = tmp_path / 'renamed.txt'
+    path.write_bytes(payload)
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    args = {'text': 'safe'} if tool == 'write_text' else {'find': 'find', 'replace': 'safe'}
+    with pytest.raises(HarnessError, match='binary|Binary'):
+        execute(tools, tool, path=str(path), expected_sha256=hashlib.sha256(payload).hexdigest(), **args)
+    assert path.read_bytes() == payload
+    assert not list(tmp_path.glob('.workbench-*'))
+
+
+@pytest.mark.parametrize('name', ['empty.docx', 'empty.PDF', 'empty.XLSX', 'empty.pptx', 'empty.GIF', 'empty.zip'])
+@pytest.mark.parametrize('exists', [False, True])
+def test_text_mutation_cannot_create_or_replace_known_format(tmp_path, name, exists):
+    path = tmp_path / name
+    if exists:
+        path.write_bytes(b'')
+    tools = ToolExecutor(PathHarness([], [str(tmp_path)]))
+    with pytest.raises(HarnessError, match='extension'):
+        execute(tools, 'write_text', path=str(path), text='safe', expected_sha256=hashlib.sha256(b'').hexdigest() if exists else 'missing')
+    assert path.exists() == exists
+    if exists:
+        assert path.read_bytes() == b''
+    assert not list(tmp_path.glob('.workbench-*'))
+
+
+@pytest.mark.parametrize('payload', ['%PDF-1.4\n%%EOF', 'GIF89a', 'text\x01', 'text\u0085'])
+def test_text_mutation_rejects_known_format_or_controls_in_new_output(tmp_path, payload):
+    tools = ToolExecutor(PathHarness([], [str(tmp_path)]))
+    with pytest.raises(HarnessError, match='binary|Binary'):
+        execute(tools, 'write_text', path='new.txt', text=payload, expected_sha256='missing')
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('name,text', [('data.csv', 'a,b\r\n1,2'), ('data.json', '{"a":1}'), ('drawing.svg', '<svg></svg>'), ('script', '#!/bin/sh\necho hello'), ('empty.txt', '')])
+def test_text_mutation_keeps_ordinary_text_formats(tmp_path, name, text):
+    tools = ToolExecutor(PathHarness([], [str(tmp_path)]))
+    execute(tools, 'write_text', path=name, text=text, expected_sha256='missing')
+    assert (tmp_path / name).read_bytes() == text.encode()
+
+
+def test_patch_cannot_erase_signature_to_bypass_original_validation(tmp_path):
+    original = b'%PDF-1.4\nfind\n%%EOF\n'
+    path = tmp_path / 'renamed.txt'
+    path.write_bytes(original)
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    with pytest.raises(HarnessError, match='binary'):
+        execute(tools, 'patch_text', path=str(path), find=original.decode(), replace='safe text', expected_sha256=hashlib.sha256(original).hexdigest())
+    assert path.read_bytes() == original
+    assert not list(tmp_path.glob('.workbench-*'))
+
+
+def test_patch_cannot_edit_known_document_extension(tmp_path):
+    path = tmp_path / 'damaged.PDF'
+    path.write_bytes(b'find')
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    with pytest.raises(HarnessError, match='extension'):
+        execute(tools, 'patch_text', path=str(path), find='find', replace='safe', expected_sha256=hashlib.sha256(b'find').hexdigest())
+    assert path.read_bytes() == b'find'

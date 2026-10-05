@@ -21,3 +21,20 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: python -m pip check
       - run: python -m pytest -q
+      - name: Prepare locked Windows offline wheels
+        if: runner.os == 'Windows'
+        run: python -m pip download --only-binary=:all: --require-hashes -r requirements.lock -d "${{ runner.temp }}/workbench-wheels"
+      - name: Exercise real offline installer and repeated install
+        if: runner.os == 'Windows'
+        run: |
+          python scripts/setup_windows.py --wheelhouse "${{ runner.temp }}/workbench-wheels"
+          python scripts/setup_windows.py --wheelhouse "${{ runner.temp }}/workbench-wheels"
+          ./.venv/Scripts/python.exe -m pip check
+      - name: Exercise CMD auto-selection and actual launcher
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          set WORKBENCH_PYTHON=
+          call Setup.cmd --check < nul
+          if errorlevel 1 exit /b 1
+          call Launch.cmd --help

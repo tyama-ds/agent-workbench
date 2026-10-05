@@ -178,3 +178,17 @@ async def test_model_list_waits_for_chunked_response_without_inference(tmp_path)
             assert paths == ['/v1/models']
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.parametrize('host', ['192.168.1.5', '[fd00::1]', 'search.example.local'])
+def test_searxng_lan_requires_https(host):
+    with pytest.raises(ValueError, match='HTTPS'):
+        validate_settings({'search': {'provider': 'searxng', 'endpoint': f'http://{host}/search'}})
+    result = validate_settings({'search': {'provider': 'searxng', 'endpoint': f'https://{host}/search'}})
+    assert result['search']['endpoint'] == f'https://{host}/search'
+
+
+@pytest.mark.parametrize('host', ['localhost', '127.0.0.1', '[::1]'])
+def test_searxng_loopback_http_exception(host):
+    result = validate_settings({'search': {'provider': 'searxng', 'endpoint': f'http://{host}:8888/search'}})
+    assert result['search']['endpoint'] == f'http://{host}:8888/search'

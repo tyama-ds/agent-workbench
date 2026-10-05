@@ -40,3 +40,28 @@ Screenshots and the report are generated under ignored `runtime/verification/`. 
 - Hostile same-user OS-level isolation and all possible third-party document parser vulnerabilities.
 
 These distinctions are intentional: no live API credentials were supplied for validation, and no paid inference was performed by the tests.
+
+## Corporate Windows installer revision (2026-10-04)
+
+Local verification for this revision used Linux / CPython 3.12.14, not a Windows desktop:
+
+- Full suite: **206 passed, 4 skipped**. Windows CMD, PowerShell 5.1, mutex/duplicate-launch and junction checks require Windows and are not covered by this Linux result.
+- Fresh actual offline install from a hash-checked local wheelhouse, repeated install, `pip check` and application/Office module imports passed.
+- All 25 locked distributions could be downloaded as Windows x64 CPython 3.13 wheels with `--only-binary=:all:` and `--require-hashes`.
+- Independent real launcher smoke used a dynamic port and a Japanese/spaced state path; `/`, `/app.js`, `/styles.css` returned HTTP 200 and the server exited cleanly.
+- Installer unit tests cover preflight/no-install mode, missing files, write failure, retained incomplete/reused environments, rejected interpreter variants, proxy/CA argument validation, stage failure propagation, hash/binary-only flags, post-install checks, offline pip-option isolation and rejection of redirected/extra online pip inputs. No corporate proxy passwords or live API keys were used.
+
+The Windows matrix now includes real CMD and PowerShell wrapper checks, duplicate launch, plus clean and repeated offline installation on Python 3.11 and 3.13. Until those CI jobs run successfully, these added Windows checks are **unverified**. This does not validate a particular company's AppLocker/WDAC rules, proxy authentication or CA configuration. The earlier Windows result above records the previous installer, not proof that the new CMD route has run on Windows.
+
+## File mutation protection revision (2026-10-05)
+
+Verified locally on Linux / CPython 3.12.14 after the cockpit revision:
+
+- Full suite: **273 passed, 4 skipped**. The four Windows-only checks (junction, CMD, PowerShell 5.1 and mutex/console process group) remain unverified here.
+- Text creation/replacement/patch now validate output and the original locked/hash-checked snapshot. Regressions cover invalid UTF-8, NUL, binary controls, renamed ASCII PDF/GIF/container signatures, known format extensions (including new/empty files), patch removal of an entire signature, original-byte preservation, write-only permissions, UTF-8 BOM/CRLF/Japanese, empty and ordinary CSV/JSON/SVG/extensionless files.
+- External edits between temporary write and publication still fail the final hash check; simulated atomic replacement failure preserves the original and removes temporary files. Existing path/deny/link and Office package tests pass.
+- SearXNG configuration tests verify LAN HTTPS requirements and the exact HTTP loopback exceptions. No network/proxy/TLS behavior was weakened.
+- `pip check`, JavaScript syntax checks for the app and both smoke scripts, `git diff --check`, and the optional jsdom DOM smoke all pass. No GUI or Windows setup implementation was changed.
+- Independent review additionally passed 34 synthetic file-boundary/race checks. This conservative known-format guard is not a universal file-format classifier; keep important originals read-only.
+
+The DOM smoke uses simulated dialog APIs and is not visual/browser acceptance. Real browser rendering and real Windows execution were not rerun for this file-safety-only revision; the limits recorded in `GUI_REDESIGN.md` still apply. No live model services, user-PC changes, GitHub push, merge or release were performed.
