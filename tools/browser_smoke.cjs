@@ -21,6 +21,8 @@ async function assertLayout(page,label) {
     assert(box.width>0&&box.height>0,label+': '+name+' has no usable area');
     assert(box.bottom<=metrics.panel.bottom+1&&box.right<=metrics.panel.right+1&&box.left>=metrics.panel.left-1,
       label+': '+name+' clipped by conversation panel');
+    if(metrics.width>600)assert(box.bottom<=metrics.main.bottom+1&&box.right<=metrics.main.right+1&&box.left>=metrics.main.left-1,
+      label+': '+name+' clipped by workspace ancestor');
   }
 }
 
@@ -185,6 +187,7 @@ async function main() {
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.locator('#closeSettings').click();
     await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow stopped notice');
     await page.screenshot({path:path.join(artifacts,'workbench-mobile.png'),fullPage:true,animations:'disabled'});
+    report.checks.push('desktop 1366x768, tablet 820x768, narrow 390x844: no document horizontal overflow, no sidebar/workspace overlap, input and send inside unclipped panels, long Japanese questions and stop notice');
     // Remove only the UI-state fixtures: the following flow uses real app endpoints
     // and Engine with an injected test client, including real serialization.
     await page.unroute('**/api/state');await page.unroute('**/api/runs');

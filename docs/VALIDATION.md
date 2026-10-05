@@ -2,18 +2,31 @@
 
 ## Current revision — browser acceptance v1 (2026-10-05)
 
-This revision adds an always-running Windows Edge browser job with screenshots and a
-JSON assertion report attached to its exact GitHub Actions run. Previous browser claims
-below are historical; they are **not proof of this revision**. Until this revision's CI
-job passes, browser checks are pending, not verified. The targeted narrow-layout correction
-in 0.1.1.dev1 must be validated by its own run; see the cycle record for prior evidence.
+Version **0.1.1.dev1** adds a Windows Edge browser job and corrects narrow-layout
+clipping found by inspecting its actual screenshots. The implementation at
+`c8e4f510b120593a8c9a3f5ca84aa68803910781` passed all five jobs in
+[run 37259569652](https://github.com/tyama-ds/agent-workbench/actions/runs/37259569652):
+Windows/Ubuntu × Python 3.11/3.13 plus real Edge 153.0.4234.48. The report records
+tested PR merge SHA `4ac18ba28dd759ba0907ee142106f2134a2b1036`, distinct from the source
+head above. Windows Python 3.13: 281 passed, 1 symlink-privilege skip.
+[Eight screenshots and the assertion report](https://github.com/tyama-ds/agent-workbench/actions/runs/37259569652/artifacts/11323354158)
+are retained until 2026-10-19; downloading requires repository access. Local suite:
+**278 passed, 4 Windows-only skips**, with dependency consistency and JS syntax checks.
+
+The completed browser flow covers 1366×768 desktop, 820×768 tablet and 390×844 narrow
+layouts, long Japanese questions, visible stop notice, modal keyboard/Escape behavior,
+per-agent drafts and real HTTP/engine question/reply/mail/cancellation. All page-error,
+CSP-error and external-page-request lists were empty. Current PR checks must also pass
+for later commits; this dated run is evidence for the named implementation, not a claim
+that an untested future revision passed. Browser claims farther below are historical.
 
 The browser flow uses isolated temporary state. Its first phase uses contract-checked
 synthetic UI snapshots; its second uses real HTTP endpoints and the real engine with an
 injected deterministic model client. Neither phase invokes a live model service.
 Reports explicitly label synthetic data and record browser version. Artifacts contain
 only `workbench-*.png` and `browser-smoke.json`, not traces, HAR, session cookies or state.
-Screenshots support human review; this is not a pixel-baseline comparison suite.
+Screenshots support human review; this is not a pixel-baseline comparison suite. Full
+screen-reader and browser/text-zoom audits have not been performed.
 
 Local reproduction (Node 22+ is needed only for this developer check):
 

@@ -35,8 +35,12 @@ A more-specific notice selector retained a viewport-fixed shell height on stacke
 - Add vertical region/control bounds assertions, active long-question and 820px tablet
   screenshots, plus reset the scrollable settings dialog before its screenshot.
 - Desktop structure, colors, interaction and model/security behavior are preserved.
-- A new exact-head CI run and independent pixel review are required for this correction;
-  the earlier green run does not validate it.
+- The correction at `c8e4f51` passed all five jobs in
+  [run 37259569652](https://github.com/tyama-ds/agent-workbench/actions/runs/37259569652).
+  Actual desktop, tablet and narrow screenshots were inspected; controls are reachable
+  without sidebar/workspace overlap. Later commits must retain their own green checks.
+- Local suite: 278 passed, 4 Windows-only skips. Full screen-reader/text-zoom audits and
+  pixel-baseline comparison remain outside this cycle's evidence.
 
 ### Research decisions
 
