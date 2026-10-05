@@ -5,7 +5,8 @@
 This revision adds an always-running Windows Edge browser job with screenshots and a
 JSON assertion report attached to its exact GitHub Actions run. Previous browser claims
 below are historical; they are **not proof of this revision**. Until this revision's CI
-job passes, browser checks are pending, not verified. No runtime GUI behavior changed.
+job passes, browser checks are pending, not verified. The targeted narrow-layout correction
+in 0.1.1.dev1 must be validated by its own run; see the cycle record for prior evidence.
 
 The browser flow uses isolated temporary state. Its first phase uses contract-checked
 synthetic UI snapshots; its second uses real HTTP endpoints and the real engine with an

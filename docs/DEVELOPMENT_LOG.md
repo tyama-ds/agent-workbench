@@ -3,7 +3,8 @@
 ## Cycle 1 — browser acceptance v1 (2026-10-05)
 
 Based on PR #1 head `9067567388d659b4d00109f0d5cb3ecc7b5e7f71`.
-Application version stays 0.1.0: this cycle changes validation, not shipped behavior.
+Application version is 0.1.1.dev1: browser evidence uncovered a narrow-layout defect,
+so this cycle also includes a targeted responsive preservation fix.
 The test-only package is version 0.1.1 and the assertion report schema is version 1.
 
 ### Adopted
@@ -21,6 +22,22 @@ The test-only package is version 0.1.1 and the assertion report schema is versio
   focus, per-agent drafts, overflow, settings locks and unlocks. Upload only synthetic
   screenshots and JSON assertions, including failure evidence, for 14 days.
 
+### Responsive correction discovered by actual pixels
+
+The first fully passing browser run on head `5b4104c` was
+[run 37259217044](https://github.com/tyama-ds/agent-workbench/actions/runs/37259217044).
+Independent screenshot review still found overlap after the stop notice at 390px.
+A more-specific notice selector retained a viewport-fixed shell height on stacked layouts.
+
+- Match that selector in the responsive auto-height override.
+- Keep narrow rails/content in natural document flow, with bounded internally scrolling
+  cards/logs, so long Japanese questions and the send form remain reachable.
+- Add vertical region/control bounds assertions, active long-question and 820px tablet
+  screenshots, plus reset the scrollable settings dialog before its screenshot.
+- Desktop structure, colors, interaction and model/security behavior are preserved.
+- A new exact-head CI run and independent pixel review are required for this correction;
+  the earlier green run does not validate it.
+
 ### Research decisions
 
 - [W3C modal dialog pattern](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/): adopt
@@ -36,8 +53,8 @@ The test-only package is version 0.1.1 and the assertion report schema is versio
 
 ### Known limits / next candidates
 
-- Local browser launch is blocked by this executor's process/socket policy. CI must run
-  before declaring browser validation passed; local Python checks alone are insufficient.
+- Local browser launch is blocked by this executor's process/socket policy. Windows CI
+  has now run the real browser; each correction still needs its own exact-head rerun.
 - Assignment display/search currently looks for a non-public `agent.task` field. The
   synthetic snapshots no longer mask that gap; a future distinct assignment field must
   not expose the internal asyncio task.

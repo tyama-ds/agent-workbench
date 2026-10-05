@@ -8,6 +8,22 @@ const path = require('node:path');
 const {spawn,spawnSync} = require('node:child_process');
 const {chromium} = require('node:module').createRequire(path.join(__dirname,'browser-tests','package.json'))('playwright');
 
+async function assertLayout(page,label) {
+  const metrics=await page.evaluate(()=>{
+    const rect=selector=>document.querySelector(selector).getBoundingClientRect().toJSON();
+    return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth,
+      sidebar:rect('.sidebar'),main:rect('main'),panel:rect('.conversation-panel'),
+      send:rect('#sendMessage'),input:rect('#messageInput')};
+  });
+  assert(metrics.scrollWidth<=metrics.width,label+': document horizontal overflow');
+  if(metrics.width<=600)assert(metrics.sidebar.bottom<=metrics.main.top+1,label+': sidebar overlaps workspace');
+  for(const [name,box] of [['send',metrics.send],['input',metrics.input]]) {
+    assert(box.width>0&&box.height>0,label+': '+name+' has no usable area');
+    assert(box.bottom<=metrics.panel.bottom+1&&box.right<=metrics.panel.right+1&&box.left>=metrics.panel.left-1,
+      label+': '+name+' clipped by conversation panel');
+  }
+}
+
 async function main() {
   const root=path.resolve(__dirname,'..'),sandbox=fs.mkdtempSync(path.join(os.tmpdir(),'workbench-ui-'));
   const workspace=path.join(sandbox,'project'),stateDir=path.join(sandbox,'state');
@@ -95,6 +111,7 @@ async function main() {
     report.checks.push('real config persistence, four arbitrary model profiles, file scopes, separate local slots, memory-only key, models-only connection test');
     for(const index of [1,2,3])await page.locator('.profile-editor').nth(index).getByRole('button',{name:'閉じる',exact:true}).click();
     await page.evaluate(()=>window.scrollTo(0,0));
+    await page.locator('#settingsDialog').evaluate(dialog=>{dialog.scrollTop=0;});
     await page.screenshot({path:path.join(artifacts,'workbench-settings.png'),fullPage:true,animations:'disabled'});
 
     const sentRuns=[],sentMessages=[],stopped=[];
@@ -141,6 +158,14 @@ async function main() {
     assert.equal(await page.locator('#runForm').isVisible(),false);await page.evaluate(()=>window.scrollTo(0,0));
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
     await page.screenshot({path:path.join(artifacts,'workbench-team.png'),fullPage:true,animations:'disabled'});
+    await assertLayout(page,'desktop active');
+    fixture.agents[0].question='[SYNTHETIC] 長い確認事項：共有するチームと対象資料を確認してください。'.repeat(5);
+    await page.locator('#humanQuestion').filter({hasText:'長い確認事項'}).waitFor();
+    await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow active long question');
+    await page.screenshot({path:path.join(artifacts,'workbench-active-narrow.png'),fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:820,height:768});await assertLayout(page,'tablet active long question');
+    await page.screenshot({path:path.join(artifacts,'workbench-tablet.png'),fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:1366,height:768});
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),true);assert.equal(await page.locator('#systemPolicy').isDisabled(),true);
     await page.locator('#closeSettings').click();
     await page.locator('#messageInput').fill('PMに送る未送信メモ');await page.locator('#agentTabs [data-focus-key="tab:fixture-worker-1"]').click();await page.locator('#messageInput').fill('担当者への未送信メモ');await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();assert.equal(await page.locator('#messageInput').inputValue(),'PMに送る未送信メモ');
@@ -158,7 +183,7 @@ async function main() {
     report.checks.push('collaboration counter and blocked-handoff notice distinguish budget exhaustion from completion');
     await page.locator('#stopRun').click();await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();assert.equal(stopped.length,1);assert.equal(await page.locator('#messageInput').isDisabled(),true);
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.locator('#closeSettings').click();
-    await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow stopped notice');
     await page.screenshot({path:path.join(artifacts,'workbench-mobile.png'),fullPage:true,animations:'disabled'});
     // Remove only the UI-state fixtures: the following flow uses real app endpoints
     // and Engine with an injected test client, including real serialization.
@@ -173,7 +198,7 @@ async function main() {
     await page.locator('#humanQuestion').filter({hasText:'[SYNTHETIC] Continue this test run?'}).waitFor();
     await page.waitForFunction(()=>document.querySelectorAll('.agent-card').length===2);
     await page.locator('#activityFeed').filter({hasText:'Worker review complete.'}).waitFor();
-    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    await assertLayout(page,'narrow real engine');
     await page.screenshot({path:path.join(artifacts,'workbench-real-engine-narrow.png'),fullPage:true,animations:'disabled'});
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),true);await page.keyboard.press('Escape');
     await page.locator('#messageInput').fill('[SYNTHETIC] Continue until cancellation.');await page.locator('#sendMessage').click();
