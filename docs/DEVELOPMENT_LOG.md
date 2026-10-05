@@ -789,3 +789,38 @@ batches, preserved prior writes/receipts, budgets and explicit continuation; dir
 adapter tests preserve optional metadata and empty terminals. Full local validation,
 independent review, exact-head six-job CI, real Windows Edge and evaluation-only
 package evidence are required for the handoff. Frontend files remain unchanged.
+
+
+## 0.1.1.dev17 — Recheck deadlines after filesystem queue waits (2026-10-05)
+
+- Reproduced a writer queued behind another worker's read at 0.024 seconds starting
+  and committing at 10.114 seconds despite a configured 10-second run limit. The
+  outer tool check happened before lock acquisition; dispatch did not recheck time.
+- Recheck the existing deadline immediately inside the shared filesystem lock,
+  before any path resolution or executor dispatch. An expired queued operation uses
+  the existing safe limit error and ordinary tool-result path. Preserve attempted-call
+  accounting, spent turns, exact result closure, earlier reports and save receipts.
+- Preserve started-file-operation draining and cancellation unchanged. Do not wrap
+  filesystem saves in a new cancellation timer, refund queued attempts, redefine
+  model calls as HTTP attempts, or add a scheduler/status/retry/configuration path.
+
+Research decisions:
+- [Python asyncio locks](https://docs.python.org/3/library/asyncio-sync.html#asyncio.Lock):
+  lock acquisition waits independently of the application's run deadline. Adopt a
+  fresh admission check after the asynchronous wait, before filesystem access.
+- [Python cancellation shielding](https://docs.python.org/3/library/asyncio-task.html#shielding-from-cancellation):
+  preserve the existing shielded operation and explicit drain. Reject forced I/O
+  cancellation as a substitute for preventing an operation from starting.
+- [HTTP idempotency and retry guidance](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2):
+  keep conservative existing transport retry behavior. The audit confirmed bounded
+  Local 503 retries use one logical model call; cancellation during backoff prevents
+  later attempts and releases the resource slot. No demonstrated bug justifies
+  changing that accounting contract or expanding retries.
+
+Deterministic tests isolate the engine clock and synchronize on actual contested
+lock acquisition. All three loopback provider protocols cover pre/exact/post-deadline
+admission, single and multi-call results, retained output, human rejection, queued
+Stop and started-save draining. Direct guards cover every filesystem tool before
+path access. Full local validation, independent review, exact-head six-job CI,
+Windows Edge and evaluation-only package evidence are required for the handoff.
+No live inference, user-PC action, browser retry, binary distribution, merge or release.

@@ -1,6 +1,26 @@
 # Validation scope
 
-## Current revision — provider completion evidence (2026-10-05)
+## Current revision — queued filesystem deadlines (2026-10-05)
+
+Version **0.1.1.dev17** rejects file operations that expire while waiting for the
+shared filesystem lock, before path resolution or executor dispatch. The existing
+attempted-call accounting, result history, earlier reports/receipts and started-save
+draining remain unchanged. Provider retry policy and logical model-call counts are
+not redefined.
+
+Deterministic tests use an engine-only controlled clock and an observed real lock,
+without short timer races. All three loopback HTTP provider protocols cover the
+pre-deadline success path, inclusive/exceeded deadline rejection, single/multi-call
+result closure, retained earlier output, continued spent budgets, rejected human
+continuation, cancellation while queued and draining of started saves after expiry
+or Stop. Every filesystem schema is checked for rejection before path access.
+
+Local aggregate: **1027 passed, 6 platform-specific skips**, including **44 new
+deadline cases**. Exact-head six-job CI, actual Windows Edge, independent review
+and evaluation-only package evidence belong to the final handoff. No frontend,
+permission, retry, public-state, persistence or binary-distribution change is added.
+
+## Prior revision — provider completion evidence (2026-10-05)
 
 Version **0.1.1.dev16** checks non-streaming completion evidence before accepting
 reports or executing any call. Local/Anthropic missing, null, unknown and incomplete

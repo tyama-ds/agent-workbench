@@ -37,6 +37,23 @@ The app does not force a fixed number of agents on every request. PM decides whe
 
 Snapshots contain bounded display logs. Full protocol history remains in process memory, bounded at the next model request by the context character limit. There is no silent truncation of tool history and no hidden summarizer; budget exhaustion is surfaced as an error. The UI can receive another instruction, but spent run/turn budgets are not reset.
 
+### Queued filesystem deadline admission (0.1.1.dev17)
+
+File tools recheck the existing run deadline immediately after acquiring the shared
+filesystem lock, before path resolution, reservation checks or executor dispatch.
+An operation queued before expiry has not started; it cannot use its earlier admission
+to begin a new read or mutation after the deadline. The comparison uses the existing
+run clock and inclusive expiry boundary, without changing configuration or clock semantics.
+
+The attempted tool call retains its consumed budget and receives the ordinary fixed
+limit error. The existing batch logic closes skipped sibling calls and blocks another
+model request, including when the rejected call was the last or only call. Prior
+reports, committed files and receipts remain. An expired run still rejects human
+continuation; no budget reset, refund, automatic retry or new status is introduced.
+Already-dispatched filesystem operations keep their shielded completion/draining path,
+including Stop during a save. This is a dispatch check, not rollback or forced file-I/O
+termination. Provider retry policy and logical model-call accounting are unchanged.
+
 ### Provider completion evidence (0.1.1.dev16)
 
 Provider normalization completes before the engine logs an assistant response,

@@ -697,6 +697,10 @@ class Engine:
         # Serialize file tool operations to make optimistic hashes + reservations
         # meaningful for cooperating agents; no arbitrary shell is available.
         async with self.lock:
+            # Waiting for another file operation does not start this one. The
+            # run can expire while queued; only already-started saves may drain.
+            if time.time() - run['created_at'] >= run['_config']['limits']['max_run_seconds']:
+                raise ValueError('ツール実行回数または実行時間の上限です')
             if isinstance(args.get('path'), str):
                 writing = name in WRITE_TOOLS
                 candidate = run['_harness'].resolve(args['path'], write=writing, must_exist=False)
