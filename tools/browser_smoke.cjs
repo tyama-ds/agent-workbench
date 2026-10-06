@@ -467,8 +467,14 @@ async function main() {
     await page.locator('#closeSettings').click();
     await page.locator('#messageInput').fill('PMに送る未送信メモ');await page.locator('#agentTabs [data-focus-key="tab:fixture-worker-1"]').click();await page.locator('#messageInput').fill('担当者への未送信メモ');await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();assert.equal(await page.locator('#messageInput').inputValue(),'PMに送る未送信メモ');
     const answer='まず開発チームだけを対象にしてください。外部には共有しません。';
-    await page.locator('#messageInput').fill(answer);await page.locator('#sendMessage').click();await page.locator('#messageInput').fill('送信中に編集した次の指示');
-    await page.locator('#messageStatus').filter({hasText:'送信しました'}).waitFor();
+    const heldAnswer=await holdNextRequest(page,'**/api/agents/fixture-pm/message',async()=>{
+      await page.locator('#messageInput').fill(answer);await page.locator('#sendMessage').click();
+    });
+    await page.locator('#messageInput').fill('送信中に編集した次の指示');
+    const acceptedAnswer=page.waitForResponse(response=>response.request()===heldAnswer.request());
+    await heldAnswer.fallback();const answerResponse=await acceptedAnswer;assert.equal(answerResponse.status(),200);await answerResponse.finished();
+    await page.waitForFunction(()=>!document.querySelector('#sendMessage').disabled);
+    assert.equal(await page.locator('#messageStatus').textContent(),'','A completed send cannot label the newer edited draft as sent');
     assert.deepEqual(sentMessages,[{text:answer}]);assert.equal(await page.locator('#messageInput').inputValue(),'送信中に編集した次の指示');
     messageDelay=600;
     await page.locator('#sendMessage').click();await page.locator('#agentTabs [data-focus-key="tab:fixture-worker-2"]').click();

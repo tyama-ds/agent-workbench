@@ -36,6 +36,10 @@ overview keeps only the latest head’s checks; archived claims retain their ori
 - The first real Edge pass exposed a long-task/long-question composition that
   clipped Send on desktop. Allow the bounded, keyboard-scrollable question region
   to shrink to a usable minimum; retain the strict composer visibility assertions.
+  The next Edge pass completed the new feature cases, then exposed an older send
+  test expecting stale feedback after editing a draft. Replace that expectation
+  with a held exact POST/acceptance check and preserve the newer unsent draft;
+  subsequent cross-agent send cases remain unchanged.
 - Preserve the exact preceding documentation-revision PR overview and provenance
   in the evidence index. Final local counts, source/PR CI, artifacts and independent
   review belong to the exact-head handoff. No live inference, user-PC execution,
