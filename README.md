@@ -8,6 +8,8 @@ Codex CLI / Claude Code / WSL / Docker / Microsoft Office のインストール�
 
 ## Windows で起動
 
+社内導入の確認項目は [IT 向けチェックリスト](docs/IT_REVIEW_CHECKLIST.md) にまとめています。
+
 必要なもの: Windows 11、承認済みの通常版 **64-bit CPython 3.11〜3.13**（3.13 推奨）、Edge または Chrome。
 
 1. ソース ZIP を、自分が書き込めるローカルフォルダーにすべて展開します。

@@ -4,6 +4,25 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## Documentation revision 1 — internal deployment review (2026-10-06)
+
+- Add one short Japanese [IT review checklist](IT_REVIEW_CHECKLIST.md), linked from
+  README and Windows setup. Its behavior baseline is `0.1.1.dev25`, source commit
+  `497b549bec320020dd35696ab0871ef45ca832b9`; the application version stays unchanged.
+- Gather separate installation, runtime-destination and data-handling decisions;
+  link existing instructions instead of adding another installation procedure.
+  Keep approvals blank, and distinguish hashes, private IPs and CI from company approval.
+- Cover enabled initial profiles, offline-install versus inference behavior,
+  separate proxy/CA settings, retained retired-key masks and explicit state-directory
+  ACL caveats. No application, default, dependency, permission or CI behavior changes.
+- Check the existing approach against [pip secure installs](https://pip.pypa.io/en/stable/topics/secure-installs/),
+  [local-package installation](https://pip.pypa.io/en/stable/user_guide/#installing-from-local-packages),
+  [Python ensurepip](https://docs.python.org/3/library/ensurepip.html) and
+  [Microsoft icacls](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/icacls).
+  These references explain mechanisms, not approval or compatibility of this deployment.
+- Validate Markdown references and source consistency. Fresh exact-head five-job CI
+  and independent review belong to the public handoff; prior evidence keeps its scope.
+
 ## 0.1.1.dev25 — Python-independent setup help (2026-10-06)
 
 - Reproduce a bootstrap usability gap: the CMD entrypoint checked for an approved
