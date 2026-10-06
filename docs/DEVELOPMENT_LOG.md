@@ -4,6 +4,35 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev25 — Python-independent setup help (2026-10-06)
+
+- Reproduce a bootstrap usability gap: the CMD entrypoint checked for an approved
+  interpreter before processing `--help`. A user could not read option help before
+  Python selection. Add fixed, English ASCII usage/examples for `--help`, `-h` and
+  `/?` before that check. Help must be the first and only argument; extra arguments,
+  including an explicitly empty quoted argument, return an error without setup.
+- Explain the existing temporary `WORKBENCH_PYTHON` selection, separately approved
+  standard CPython, preflight, proxy/CA and offline choices. Help does not run
+  Python, validate prerequisites, create `.venv`, install packages or use network.
+- Keep the normal CMD body and its complete argument forwarding unchanged. Python
+  selection, source installation, version support, proxy/CA containment, offline
+  behavior and the PowerShell compatibility wrapper retain their existing rules.
+- Apply Microsoft's [CMD quoting guidance](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd)
+  and [batch parameter semantics](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/call):
+  keep help as static echo lines outside command groups, never expanding user
+  environment values into its output. Use native Windows tests for actual parsing.
+- Defer a new Python-path argument or interactive picker: the existing two-line
+  flow already avoids persistent settings, and another selector does not solve
+  organizational approval. [SHIFT leaves `%*` unchanged](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/shift),
+  so consuming a selector would require a new forwarding contract. Do not promise
+  untested drag-and-drop behavior or add discovery through PATH/registry/launchers.
+- Retain the launcher restriction because [Python install-manager launch paths](https://docs.python.org/3/using/windows.html#installing-runtimes)
+  can install a missing runtime. No new dependency, installer redesign, policy
+  bypass, bundled build, UI change, live inference or user-PC execution is added.
+- Preserve the exact preceding dev24 public PR description and byte provenance in
+  the evidence index. Fresh exact-head source/PR CI and independent review are
+  recorded in the public handoff; historical checks retain their named scope.
+
 ## 0.1.1.dev24 — clarify data-use limits (2026-10-06)
 
 - Keep the existing readiness destinations, file scope and Web explanation. Add one

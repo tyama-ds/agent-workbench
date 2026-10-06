@@ -32,7 +32,8 @@ Its original **“Current verification” means the captured dev17 source head o
 
 | Cycle | Subject | Original verification record |
 | --- | --- | --- |
-| 24 | Data-use guidance and Local/LOCAL APP limits | [Validation scope](../VALIDATION.md#data-use-guidance-011dev24-2026-10-06); exact-head acceptance is in the live draft PR |
+| 25 | Python-independent CMD setup help | [Validation scope](../VALIDATION.md#python-independent-setup-help-011dev25-2026-10-06); exact-head acceptance is in the live draft PR |
+| 24 | Data-use guidance and Local/LOCAL APP limits | [Complete prior compact PR overview](dev24-data-use-verification.md) and [exact-body provenance](dev24-data-use-verification.json) |
 | 23 | Source-only setup with separately approved Python | [Complete prior compact PR overview](dev23-source-only-verification.md) and [exact-body provenance](dev23-source-only-verification.json); [current installation policy](../WINDOWS_SETUP.md) |
 | 21 | Terminal batch precedence and reachable-session regressions | [Complete prior compact PR overview](dev21-transitions-verification.md) and [exact-body provenance](dev21-transitions-verification.json) |
 | 20 | Revision-owned settings saves and retained drafts | [Complete prior compact PR overview](dev20-settings-verification.md) and [exact-body provenance](dev20-settings-verification.json) |

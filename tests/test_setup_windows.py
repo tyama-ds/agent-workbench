@@ -435,6 +435,117 @@ def test_setup_entrypoints_use_only_explicit_standard_interpreter():
         assert 'PYLAUNCHER_' not in text
 
 
+def test_cmd_help_is_fixed_text_before_interpreter_validation():
+    cmd = (ROOT / 'Setup.cmd').read_text()
+    gate = cmd.index('if not defined WORKBENCH_PYTHON goto python_required')
+    for alias in ('--help', '-h', '/?'):
+        assert cmd.index(f'"%~1"=="{alias}" goto setup_help') < gate
+    help_body = cmd.split(':setup_help\n', 1)[1]
+    assert 'if not [%2]==[] goto help_arguments' in help_body
+    assert 'exit /b 0' in help_body and help_body.endswith('exit /b 2\n')
+    assert help_body.isascii()
+    # Help displays only fixed examples, never user-supplied settings or commands.
+    for line in help_body.splitlines():
+        if line.startswith('echo'):
+            assert not any(char in line for char in '%!&|<>()^')
+    assert 'pause' not in help_body and 'setup_windows.py' not in help_body
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows cmd.exe required')
+@pytest.mark.parametrize('help_arg', ['--help', '-h', '/?'])
+@pytest.mark.parametrize('selection', ['unset', 'missing', 'alias', 'actual', 'hostile'])
+def test_real_cmd_help_never_invokes_python_or_changes_files(tmp_path, help_arg, selection):
+    import shutil
+    project = tmp_path / '会社 help & spaces ! (source)'
+    project.mkdir()
+    shutil.copy2(ROOT / 'Setup.cmd', project / 'Setup.cmd')
+    scripts = project / 'scripts'
+    scripts.mkdir()
+    (scripts / 'setup_windows.py').write_text(
+        'from pathlib import Path\nPath("python-invoked.txt").write_text("invoked")\n',
+        encoding='utf-8')
+    alias = project / 'python.exe'
+    alias.write_text('not an executable', encoding='utf-8')
+    for name in ('py.cmd', 'python.cmd', 'pymanager.cmd'):
+        (project / name).write_text('@echo invoked>alias-invoked.txt\n', encoding='ascii')
+    env = dict(os.environ, PATH=str(project), PYLAUNCHER_ALLOW_INSTALL='1',
+               PYLAUNCHER_ALWAYS_INSTALL='1', PYTHON_MANAGER_AUTOMATIC_INSTALL='true',
+               HTTPS_PROXY='http://private-proxy-secret.invalid:8080',
+               PIP_CERT='private-ca-secret.pem')
+    env.pop('WORKBENCH_PYTHON', None)
+    if selection != 'unset':
+        env['WORKBENCH_PYTHON'] = {
+            'missing': str(project / 'missing' / 'python.exe'),
+            'alias': str(alias), 'actual': sys.executable,
+            'hostile': 'C:\\untrusted" & echo invoked>environment-invoked.txt & rem "',
+        }[selection]
+    before = {str(path.relative_to(project)): path.read_bytes()
+              for path in project.rglob('*') if path.is_file()}
+    result = subprocess.run([shutil.which('cmd.exe'), '/d', '/c', 'Setup.cmd', help_arg],
+                            cwd=project, input='', text=True, capture_output=True,
+                            env=env, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stderr == ''
+    assert 'Agent Workbench source setup' in result.stdout
+    assert 'first and only argument' in result.stdout
+    assert 'set "WORKBENCH_PYTHON=C:\\Approved Python\\python.exe"' in result.stdout
+    assert 'Setup.cmd --check' in result.stdout
+    assert all(option in result.stdout for option in
+               ('--proxy', '--certificate', '--wheelhouse', '--timeout', '--retries', '--project-root'))
+    assert 'private-proxy-secret' not in result.stdout and 'private-ca-secret' not in result.stdout
+    assert 'Press any key' not in result.stdout
+    assert not (project / '.venv').exists()
+    assert before == {str(path.relative_to(project)): path.read_bytes()
+                      for path in project.rglob('*') if path.is_file()}
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows cmd.exe required')
+@pytest.mark.parametrize('help_arg', ['--help', '-h', '/?'])
+@pytest.mark.parametrize('extra', [['--unknown'], ['', '--check'], ['two words & marks !']])
+def test_real_cmd_help_rejects_additional_arguments_without_setup(tmp_path, help_arg, extra):
+    import shutil
+    shutil.copy2(ROOT / 'Setup.cmd', tmp_path / 'Setup.cmd')
+    env = dict(os.environ, WORKBENCH_PYTHON=sys.executable)
+    result = subprocess.run(['cmd.exe', '/d', '/c', 'Setup.cmd', help_arg, *extra],
+                            cwd=tmp_path, input='', text=True, capture_output=True,
+                            env=env, timeout=10)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert 'Help must be used alone' in result.stdout
+    assert result.stderr == '' and not (tmp_path / '.venv').exists()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows cmd.exe required')
+@pytest.mark.parametrize('arguments', [
+    ['--check', '--proxy', 'http://proxy.example.local:8080', '--certificate',
+     r'C:\Company CA & files !\company.pem', '--timeout', '120', '--retries', '2'],
+    ['--check', '--wheelhouse', r'C:\Approved Packages & files !\wheelhouse'],
+    ['--unknown'], ['--check', '/?'],
+])
+def test_real_cmd_normal_arguments_and_exit_status_are_forwarded(tmp_path, arguments):
+    import shutil
+    shutil.copy2(ROOT / 'Setup.cmd', tmp_path / 'Setup.cmd')
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    (scripts / 'setup_windows.py').write_text(
+        'import json, sys\nprint("FORWARDED:" + json.dumps(sys.argv[1:]))\nraise SystemExit(17)\n',
+        encoding='utf-8')
+    env = dict(os.environ, WORKBENCH_PYTHON=sys.executable)
+    result = subprocess.run(['cmd.exe', '/d', '/c', 'Setup.cmd', *arguments],
+                            cwd=tmp_path, input='\n', text=True, capture_output=True,
+                            env=env, timeout=10)
+    assert result.returncode == 17, result.stdout + result.stderr
+    forwarded = next(line.removeprefix('FORWARDED:') for line in result.stdout.splitlines()
+                     if line.startswith('FORWARDED:'))
+    assert json.loads(forwarded) == arguments
+    assert 'Agent Workbench source setup' not in result.stdout
+
+
+def test_unknown_normal_setup_argument_remains_an_error():
+    with pytest.raises(SystemExit) as error:
+        setup.parser().parse_args(['--unknown'])
+    assert error.value.code == 2
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows cmd.exe required')
 @pytest.mark.parametrize('selection', ['', 'python', 'relative\\python.exe', 'missing', 'alias'])
 def test_real_cmd_rejects_missing_or_alias_runtime_without_invocation(tmp_path, selection):

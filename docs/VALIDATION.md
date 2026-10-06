@@ -5,6 +5,29 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
+## Python-independent setup help (0.1.1.dev25, 2026-10-06)
+
+The CMD wrapper recognizes `--help`, `-h` and `/?` as a first, standalone argument
+before reading the selected Python path. Fixed help text does not run Python or
+diagnose prerequisites. Additional arguments are rejected without setup; normal
+installation options still follow the original interpreter validation and complete
+argument forwarding. No Python selector, persistent setting, UI or policy is added.
+
+Windows-only tests exercise all three aliases with unset, missing, alias-like,
+actual and hostile selected-interpreter values. Sentinel scripts and alias traps,
+restricted fixture PATH and before/after file snapshots check that help performs
+no Python invocation or file changes. Additional cases reject extra/empty arguments
+and preserve normal proxy/CA/wheelhouse arguments, unknown options and exit status.
+Cross-platform tests check the fixed help structure and unknown-argument rejection.
+
+Local source tests cannot establish Windows command parsing. Exact-head Windows
+CI is required for those cases, alongside the existing repeated offline setup,
+preflight and launch checks. All five source-only CI jobs and existing Edge checks
+remain unchanged. Final local counts, source/merge identities, exact-head CI and
+independent review are recorded in the live draft PR handoff. Hosted checks do not
+establish corporate-PC approval, corporate proxy compatibility or live-provider
+behavior. No new UI pixel or accessibility claim is made.
+
 ## Data-use guidance (0.1.1.dev24, 2026-10-06)
 
 One readiness paragraph distinguishes the local app from inference on another PC,
