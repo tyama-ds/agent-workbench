@@ -4,6 +4,54 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev27 — Displayed request text into a protected new-task draft (2026-10-06)
+
+- Reproduced that selecting an older team did not bring its request into the new-task
+  editor, while the editor could hold a different meaningful draft. Add one secondary
+  action in the selected-team overview and reuse the existing dialog. Only public
+  display-redacted request text is adopted; preserve current form choices and all
+  agent drafts/navigation. No historical conversation, results, configuration,
+  credentials, permissions or budget are copied.
+- Protect every nonempty differing draft, including whitespace-only input, with
+  explicit Keep/Replace. Identical content opens without draft-epoch churn. Pending
+  choices block Start and suppress/invalidate preflight. Adoption or Keep uses the
+  existing admission-only preflight; creating a team still needs explicit Start.
+- Bind replacement to source ID/raw displayed text, selection/navigation/dialog/
+  workspace/draft epochs and the actual current payload. Cancel stale/ABA choices,
+  source removal/remasking and intervening edits. Preserve newer focus and feedback;
+  guard pending start requests without changing their existing outcome semantics.
+- Preserve text and literal redaction markers except native textarea CRLF/CR-to-LF
+  normalization, disclosed in the dialog. Compare raw source for freshness, normalized
+  text for editor equality and the 16,000 UTF-16-unit limit. Reject unavailable or
+  oversized candidates without truncation; whitespace-only and NUL sources are also
+  unavailable, matching backend task validation. This is displayed text, not byte-exact
+  original data, verified latest state, resumed execution or restored authority.
+
+Research decisions:
+- [GitLab manual pipelines](https://docs.gitlab.com/ci/pipelines/#run-a-pipeline-manually):
+  adopt editable preparation separated from an explicit execution action.
+- [AWS Step Functions redrive](https://docs.aws.amazon.com/step-functions/latest/dg/redrive-executions.html):
+  reject restart/resume semantics, which require preserved execution history and
+  definition guarantees that this text-only feature does not provide.
+- [Microsoft HAI guidelines](https://www.microsoft.com/en-us/research/uploads/prod/2019/03/AI_Guidelines_Poster_PrintQuality.pdf):
+  apply efficient correction, cautious adaptation, short-term references and clear
+  consequences through editable drafts and overwrite protection. This is design
+  guidance, not a user study or proof of demand.
+- [Slack draft discovery](https://slack.com/help/articles/201457107-Send-and-read-messages)
+  and [VS Code unsaved editing](https://code.visualstudio.com/docs/editing/codebasics#_save-auto-save):
+  a real alternative is finding hidden per-agent drafts. Defer a global draft view
+  because nonempty task text can already have been submitted, and blocked/vanished
+  owners and unknown send outcomes need separate contracts. Do not imply durable
+  recovery, add storage or introduce another dashboard.
+
+Coverage uses production callbacks with deferred transport, non-mutating Engine
+preflight checks and Windows Edge native keyboard/layout cases. Exact-head full
+local/CI gates, independent source review and actual screenshot inspection are
+required before acceptance. Preserve previous verification bytes in the historical
+evidence index. No local browser retry, live inference, user-PC action, dependency,
+bundled binary, merge, deployment or release is included.
+
+
 ## 0.1.1.dev26 — all-session human questions (2026-10-06)
 
 - Reproduce the visibility gap: the old header counted only the selected team's

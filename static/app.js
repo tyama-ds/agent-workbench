@@ -59,6 +59,7 @@ Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGenerat
 Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,credentialGeneration:0,credentialOperations:new Map()});
 Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
+Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -355,16 +356,90 @@ function renderProfileChoices(preserveDraft=false) {
 function showView(view) {
   if(view==='settings') { if(!$('settingsDialog').open){ui.workspaceGeneration++;$('settingsDialog').showModal();} }
   else { if($('settingsDialog').open){ui.workspaceGeneration++;$('settingsDialog').close();} }
+  reconcileTaskReuse();
 }
 function runPayload() {
   return {task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value)};
 }
-function trackTaskDraft() {
+function trackTaskDraft(event) {
+  // An actual edit also invalidates a choice when numeric parsing would hide
+  // it (0 → blank, 1 → 01), or when the user re-enters the same value.
+  if(ui.taskReuseCandidate&&['input','change'].includes(event?.type))clearTaskReuse('入力を変更したため、置き換えを取り消しました。現在の入力は残しています。');
   const key=JSON.stringify(runPayload());
   if(key!==ui.taskDraftKey){ui.taskDraftKey=key;ui.taskDraftGeneration++;}
+  reconcileTaskReuse();
+  if(ui.taskReuseSource&&$('taskInput').value!==ui.taskReuseSource.text){ui.taskReuseSource=null;$('taskReuseProvenance').hidden=true;}
   showPendingStart();
 }
-function syncStartControl() { $('startRun').disabled=Boolean(ui.startingRun)||!$('pmProfile').value; }
+function syncStartControl() { $('startRun').disabled=Boolean(ui.startingRun||ui.taskReuseCandidate)||!$('pmProfile').value;syncTaskReuseControl(); }
+function taskEditorText(text) { return text.replace(/\r\n?/g,'\n'); }
+function taskReuseDraftKey() { return JSON.stringify([runPayload(),$('maxWorkers').value]); }
+function taskReuseIssue(run) {
+  if(typeof run?.task!=='string'||!run.task.trim()||run.task.includes('\0'))return '表示用の依頼文を取得できないため、下書きには使えません。';
+  if(taskEditorText(run.task).length>16000)return '表示用の依頼文が入力欄の上限（16,000文字・UTF-16）を超えています。省略せずに移せないため、内容を確認して入力してください。';
+  return '';
+}
+function syncTaskReuseControl() {
+  const issue=taskReuseIssue(getRun()),pending=Boolean(ui.startingRun||ui.startOperation);
+  $('reuseTask').disabled=Boolean(issue)||pending;
+  $('taskReuseAvailability').hidden=!issue&&!pending;
+  $('taskReuseAvailability').textContent=pending?'開始要求の結果を確認中です。確認できるまで、別の依頼文は下書きに移せません。':issue;
+}
+function ownsTaskReuse(candidate) {
+  const run=getRun();
+  return ui.taskReuseCandidate===candidate&&$('taskDialog').open&&!$('settingsDialog').open&&!ui.startingRun&&!ui.startOperation&&
+    candidate.run===run?.id&&candidate.rawText===run.task&&candidate.navigation===ui.navigationGeneration&&
+    candidate.selection===ui.selectionGeneration&&candidate.dialog===ui.taskDialogGeneration&&candidate.draft===ui.taskDraftGeneration&&
+    candidate.workspace===ui.workspaceGeneration&&candidate.payload===taskReuseDraftKey()&&!taskReuseIssue(run);
+}
+function clearTaskReuse(message='') {
+  const pending=Boolean(ui.taskReuseCandidate),focused=[$('keepTaskDraft'),$('replaceTaskDraft'),$('taskReusePreview')].includes(document.activeElement);
+  ui.taskReuseCandidate=null;$('taskReuseConfirm').hidden=true;$('taskReusePreview').textContent='';
+  if(message&&$('taskDialog').open&&!$('settingsDialog').open)inlineStatus($('taskReuseStatus'),message);
+  else if(pending)inlineStatus($('taskReuseStatus'),'');
+  syncStartControl();
+  if(focused&&$('taskDialog').open&&!$('settingsDialog').open)$('taskInput').focus({preventScroll:true});
+}
+function reconcileTaskReuse() {
+  if(ui.taskReuseCandidate&&!ownsTaskReuse(ui.taskReuseCandidate))clearTaskReuse('入力または表示が変わったため、置き換えを取り消しました。現在の入力は残しています。');
+}
+function adoptTaskReuse(source) {
+  clearTaskReuse();
+  if($('taskInput').value!==source.text){$('taskInput').value=source.text;trackTaskDraft();}
+  ui.taskReuseSource={run:source.run,text:source.text};
+  $('taskReuseProvenance').textContent=`依頼文の元：チーム ${String(source.run).slice(-8)}（最後に取得した表示用の内容）`;
+  $('taskReuseProvenance').hidden=false;$('taskReuseHelp').hidden=false;
+  inlineStatus($('taskReuseStatus'),'表示用の依頼文を下書きに入れました。まだ開始していません。');
+  setBriefOpen(true);$('taskInput').focus();
+}
+function beginTaskReuse() {
+  const run=getRun();if(ui.startingRun||ui.startOperation||taskReuseIssue(run))return;
+  // Preserve the raw display source for freshness checks; only native textarea
+  // newline normalization is applied to the candidate, never trimming.
+  const source={run:run.id,rawText:run.task,text:taskEditorText(run.task)};
+  if($('taskInput').value===''||$('taskInput').value===source.text){adoptTaskReuse(source);return;}
+  clearTaskReuse();setBriefOpen(true,false);trackTaskDraft();
+  ui.taskReuseCandidate={...source,navigation:ui.navigationGeneration,selection:ui.selectionGeneration,dialog:ui.taskDialogGeneration,
+    draft:ui.taskDraftGeneration,workspace:ui.workspaceGeneration,payload:taskReuseDraftKey()};
+  // A pending replacement must never preview the candidate as if adopted.
+  ++ui.preflightRequest;clearTimeout(ui.preflightTimer);ui.preflightKey='';
+  $('preflightStatus').setAttribute('aria-busy','false');$('preflightPending').textContent='';
+  inlineStatus($('preflightStatus'),'依頼文を選んだ後に、保存済み設定を確認します。');$('preflightDetails').replaceChildren();
+  $('taskReuseConfirm').hidden=false;$('taskReusePreview').textContent=source.text;
+  $('taskReuseCandidateSource').textContent=`チーム ${shortRunId(run)} の表示用の依頼文`;
+  $('taskReuseHelp').hidden=false;inlineStatus($('taskReuseStatus'),'現在の入力を残しています。置き換えるか選んでください。');
+  syncStartControl();$('keepTaskDraft').focus();
+}
+function replaceTaskDraft() {
+  const candidate=ui.taskReuseCandidate;
+  if(!candidate)return;
+  if(!ownsTaskReuse(candidate)){reconcileTaskReuse();return;}
+  adoptTaskReuse(candidate);
+}
+function keepTaskDraft() {
+  if(!ui.taskReuseCandidate)return;
+  clearTaskReuse('現在の入力を残しました。');schedulePreflight();$('taskInput').focus();
+}
 function ownsTaskDialog(action) {
   return $('taskDialog').open&&!$('settingsDialog').open&&action.dialogGeneration===ui.taskDialogGeneration&&
     action.draftGeneration===ui.taskDraftGeneration&&action.navigationGeneration===ui.navigationGeneration&&action.workspaceGeneration===ui.workspaceGeneration;
@@ -385,7 +460,7 @@ function reconcileStartedRun() {
 }
 function canStopRun(run) { return Boolean(run)&&ACTIVE_STATUSES.has(run.status)&&run.status!=='stopping'&&!ui.stoppingRuns.has(run.id); }
 function schedulePreflight() {
-  if(!$('taskDialog').open)return;
+  if(!$('taskDialog').open||ui.taskReuseCandidate)return;
   const key=JSON.stringify([runPayload(),ui.settingsRevision,ui.settingsDirty]);
   if(key===ui.preflightKey)return;
   ui.preflightKey=key;
@@ -408,7 +483,7 @@ function releaseStartPointer() {
 }
 async function refreshPreflight(request) {
   const revision=ui.settingsRevision;
-  const current=()=>request===ui.preflightRequest&&revision===ui.settingsRevision&&$('taskDialog').open;
+  const current=()=>request===ui.preflightRequest&&revision===ui.settingsRevision&&$('taskDialog').open&&!ui.taskReuseCandidate;
   try {
     const response=await api('/api/run-preflight',{method:'POST',body:runPayload()});await settleStartPointer();if(!current())return;
     const parts=[];
@@ -431,8 +506,8 @@ async function refreshPreflight(request) {
   }catch(error){await settleStartPointer();if(current())inlineStatus($('preflightStatus'),errorText(error)+' 開始時にも設定を再確認します。',true);}
   finally{if(current()){$('preflightStatus').setAttribute('aria-busy','false');$('preflightPending').textContent='';}}
 }
-function setBriefOpen(open) {
-  if(open) { if(!$('taskDialog').open){ui.taskDialogGeneration++;$('taskDialog').showModal();}showPendingStart();syncStartControl();schedulePreflight(); }
+function setBriefOpen(open,preview=true) {
+  if(open) { if(!$('taskDialog').open){ui.taskDialogGeneration++;$('taskDialog').showModal();}showPendingStart();syncStartControl();if(preview)schedulePreflight(); }
   else if($('taskDialog').open)$('taskDialog').close();
 }
 function needsHuman(agent) { return agent.status_reason==='human_input'||(Boolean(agent.question)&&['waiting','waiting_human','needs_input'].includes(agent.status)); }
@@ -794,6 +869,7 @@ function preserveControlFocus(render,fallback=null) {
 }
 function renderRun() { preserveControlFocus(renderRunContent); }
 function renderRunContent() {
+  reconcileTaskReuse();syncTaskReuseControl();
   const run=getRun();$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;
   const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);
   $('rosterHeading').textContent=ui.needsOnly?'質問':'CREW';
@@ -874,13 +950,16 @@ async function initialize() {
   window.addEventListener('pointerup',releaseStartPointer);
   window.addEventListener('pointercancel',releaseStartPointer);
   window.addEventListener('blur',releaseStartPointer);
-  $('runForm').addEventListener('input',()=>{trackTaskDraft();schedulePreflight();});
-  $('runForm').addEventListener('change',()=>{trackTaskDraft();schedulePreflight();});
-  $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
+  $('runForm').addEventListener('input',event=>{trackTaskDraft(event);schedulePreflight();});
+  $('runForm').addEventListener('change',event=>{trackTaskDraft(event);schedulePreflight();});
+  $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;clearTaskReuse();releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
   $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
   $('discardSettings').addEventListener('click',discardSettings);
   $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
   $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));
+  $('reuseTask').addEventListener('click',beginTaskReuse);
+  $('replaceTaskDraft').addEventListener('click',replaceTaskDraft);
+  $('keepTaskDraft').addEventListener('click',keepTaskDraft);
   for(const id of ['newRun','launchTask','emptyNewRun'])$(id).addEventListener('click',()=>setBriefOpen(true));
   $('emptySettings').addEventListener('click',()=>showView('settings'));
   $('closeSettings').addEventListener('click',()=>showView('work'));
@@ -894,7 +973,7 @@ async function initialize() {
   $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180},index,true,false);markSettingsDirty();});
   $('settingsForm').addEventListener('submit',saveSettings);
   $('runForm').addEventListener('submit',async event=>{
-    event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun)return;
+    event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun||ui.taskReuseCandidate)return;
     const workerProfiles=[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value);
     if(!workerProfiles.length&&Number($('maxWorkers').value)>0){inlineStatus($('runFormStatus'),'作業者に使ってよいプロファイルを1つ以上選んでください。',true);return;}
     trackTaskDraft();notice('');

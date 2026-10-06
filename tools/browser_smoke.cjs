@@ -16,6 +16,7 @@ const {disclosureFocusAcceptance} = require('./browser-tests/disclosure_focus_ac
 const {settingsSaveAcceptance} = require('./browser-tests/settings_save_acceptance.cjs');
 const {dataUseAcceptance} = require('./browser-tests/data_use_acceptance.cjs');
 const {allQuestionsAcceptance} = require('./browser-tests/questions_acceptance.cjs');
+const {taskReuseAcceptance} = require('./browser-tests/task_reuse_acceptance.cjs');
 
 async function assertLayout(page,label) {
   const metrics=await page.evaluate(()=>{
@@ -425,6 +426,7 @@ async function main() {
     await page.locator('#conversationLog summary').click();assert.equal(await page.locator('#conversationLog details[open]').count(),1);
     await disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,report,holdNextRequest,releaseResponse,assertLayout});
     await allQuestionsAcceptance({page,fixture,compactFixture,artifacts,report,holdNextRequest,releaseResponse,assertLayout});
+    await taskReuseAcceptance({page,fixture,compactFixture,providerRequests,artifacts,report,holdNextRequest,releaseResponse,assertLayout,assertDialogLayout});
     assert.equal(await page.locator('#activityFeed img').count(),0);assert.equal(await page.evaluate(()=>Boolean(window.fixtureInjected)),false);
     assert.equal(await page.locator('#runForm').isVisible(),false);await page.evaluate(()=>window.scrollTo(0,0));
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));

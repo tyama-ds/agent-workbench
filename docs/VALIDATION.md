@@ -716,3 +716,28 @@ independent pixel inspection are required before this cycle is called complete.
   explicit single-record exports and no horizontal/sidebar overlap. No assertion of
   full browser-restart recovery, crash durability, assistive-technology certification
   or access to a saved file merely because its receipt is retained.
+
+## Displayed request reuse (0.1.1.dev27, 2026-10-06)
+
+`test_task_reuse_frontend.py` runs the production handlers with synthetic DOM and
+deferred transport. It checks empty/identical/whitespace drafts, Keep/Replace, exact
+text except native newline normalization, UTF-16 boundaries, literal redaction,
+all retained run statuses, offline display, invalid whitespace-only/NUL sources and
+raw numeric edits whose parsed value is unchanged. Source/draft/navigation/dialog/
+workspace ownership includes ABA, unsignaled form changes, source remasking and
+removal. Pending choices suppress and invalidate preflight; pending starts block
+entry. Only reviewed explicit Start may POST a new run. No other mutation route
+is exercised by reuse. Agent drafts, selection, search and reading position remain.
+
+`test_task_reuse_state.py` compares real Engine snapshots, pending queues, stored
+settings, credentials, file bytes, events and counters before/after admission-only
+preflight using a public redacted task. Model/tool execution remains absent. The
+feature adds no backend endpoint, schema, authority-copy or persistent draft store.
+
+`task_reuse_acceptance.cjs` adds real Windows Edge native keyboard, long-preview
+scrolling, overwrite and stale-choice cases with synthetic retained teams. Desktop,
+tablet and narrow screenshots accompany geometry, state-owner and request assertions.
+CRLF, CR and LF cases establish actual textarea normalization rather than relying
+on the synthetic DOM. Fresh CI artifacts and independent pixel inspection establish
+only the tested browser state, not corporate deployment or assistive-technology
+certification. Previous-version artifacts do not accept this version.
