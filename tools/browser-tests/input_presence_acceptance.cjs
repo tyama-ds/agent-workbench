@@ -138,11 +138,13 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       }
       const hit=document.elementFromPoint(box.left+box.width/2,box.top+box.height/2);
       return {left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height,
-        clipLeft:left,clipTop:top,clipRight:right,clipBottom:bottom,hit:hit===node||node.contains(hit),overflow:node.scrollWidth-node.clientWidth};
+        clipLeft:left,clipTop:top,clipRight:right,clipBottom:bottom,hit:hit===node||node.contains(hit),
+        overflow:node.scrollWidth-node.clientWidth,verticalOverflow:node.scrollHeight-node.clientHeight};
     });
+    const measured='; measured area='+JSON.stringify(area);
     assert(area.width>0&&area.height>0&&area.left>=area.clipLeft-1&&area.right<=area.clipRight+1&&
-      area.top>=area.clipTop-1&&area.bottom<=area.clipBottom+1,label+': target is inside every clipping ancestor');
-    assert.equal(area.hit,true,label+': target is unobscured');assert(area.overflow<=1,label+': text has no horizontal clipping');
+      area.top>=area.clipTop-1&&area.bottom<=area.clipBottom+1,label+': target is inside every clipping ancestor'+measured);
+    assert.equal(area.hit,true,label+': target is unobscured'+measured);assert(area.overflow<=1,label+': text has no horizontal clipping'+measured);
   };
   const assertGeometry=async label=>{
     await assertLayout(page,label);
@@ -322,8 +324,14 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       await poll();assert.equal(await focused('#nextMessageInput'),true,name+': unchanged polls retain discovery focus');
       await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-crew.png'),fullPage:true,animations:'disabled'});
       await card(root.id).focus();await assertVisible(card(root.id),name+' crew input owner');await assertMarker(root);
-      await mode(true);await page.locator('#agentSearch').clear();await card(root.id).focus();await assertVisible(card(root.id),name+' question input owner');
-      await assertMarker(root);await assertMarker(worker);await assertMarker(unknown);await assertGeometry('input presence questions '+name);
+      await mode(true);await page.locator('#agentSearch').clear();
+      for(const [agent,state] of [[root,'enabled'],[worker,'blocked'],[unknown,'unknown eligibility']]){
+        await card(agent.id).focus();await assertVisible(card(agent.id),name+' '+state+' question input owner');
+        assert.equal(await card(agent.id).evaluate(node=>node===document.activeElement),true,name+': native focus remains on the '+state+' question card');
+        await assertVisible(card(agent.id).locator('.question-open'),name+' '+state+' lower question open action');
+        await assertMarker(agent);
+      }
+      await card(root.id).focus();await assertVisible(card(root.id),name+' screenshot question input owner');await assertGeometry('input presence questions '+name);
       await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-questions.png'),fullPage:true,animations:'disabled'});
       await next.focus();const position=cycle.indexOf(root),destination=cycle[(position+1)%cycle.length];
       await activate(destination,'Space');await assertVisible(page.locator(await input.isDisabled()?'#conversationHeading':'#messageInput'),name+' explicit destination');

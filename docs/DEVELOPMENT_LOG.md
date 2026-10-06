@@ -65,6 +65,20 @@ Preserve the preceding dev27 public overview byte-for-byte in historical evidenc
 No new endpoint, persistent storage, live inference, local browser retry, user-PC
 action, dependency, bundled Python, merge, deployment or release is included.
 
+Hosted acceptance correction:
+- The [first exact source run](https://github.com/tyama-ds/agent-workbench/actions/runs/37405818118)
+  on `40bbfbce` passed all four matrix jobs. Edge reached the new desktop geometry
+  check, then found a real focused-question-card clipping issue: the added sidebar
+  controls and active notice left a roughly 222-pixel roster scrollport, smaller
+  than the long question card. Independent failure-pixel review confirmed it.
+- Keep the strict whole-target clipping assertion. Use concise card previews at
+  every width, retaining full identity/question in selected detail and the separate
+  team ID, neutral marker and two-line availability reason. Reserve a usable
+  question scrollport and let a shorter sidebar scroll instead of hiding controls.
+  Add measured clipping diagnostics and native focus coverage for blocked/unknown
+  question cards as well as the allowed owner. Fresh exact-head hosted checks and
+  actual pixels are required; the failed run does not accept the correction.
+
 ## 0.1.1.dev27 — Displayed request text into a protected new-task draft (2026-10-06)
 
 - Reproduced that selecting an older team did not bring its request into the new-task
