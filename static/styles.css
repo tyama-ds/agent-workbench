@@ -50,3 +50,16 @@ dialog{color:var(--ink);background:#131921;border:1px solid #54504a;border-radiu
 
 /* Compact lifetime guidance; optional depth stays inside the bounded result panel. */
 .history-retention{flex:none;margin:0;padding:0 14px 9px;font-size:10px;line-height:1.6;color:#adb6c2;overflow-wrap:anywhere}.sidebar-label-row{flex:none}.run-list{min-height:0}.history-details{margin-top:10px;color:#adb6c2;font-size:10px;line-height:1.7;overflow-wrap:anywhere}.history-details>summary{cursor:pointer;color:#dec08a}.history-details p{margin-top:8px}.history-details>summary:focus-visible{outline:2px solid #e3bc79;outline-offset:2px}
+
+/* All-session questions reuse the crew rail; the workspace stays selected-team scoped. */
+.roster-scope{flex:none;padding:8px 12px 0;color:#adb6c2;font-size:10px;line-height:1.6;overflow-wrap:anywhere}
+.question-card{display:flex;flex-direction:column;gap:7px;padding:12px;text-align:left}
+.question-card>span{flex:none;min-width:0}
+.question-run,.question-preview,.question-availability{display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;line-height:1.6}
+.question-run{font-size:10px;color:#c1b69e;display:flex;flex-direction:column}.question-run-id{font:9px var(--mono);color:#d7c7ab}.question-run-title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+.question-card .agent-name{font-size:14px;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.question-preview{font-size:11px;color:#e0c396;-webkit-line-clamp:3}
+.question-availability{font-size:10px;color:#b8c5cd;-webkit-line-clamp:2}
+.question-open{font-size:10px;color:#dec08a}.question-card .agent-model{font-size:9px}
+#humanQuestion:focus-visible{outline:2px solid #e3bc79;outline-offset:-3px}
+@media(max-width:600px){.agent-cards.question-list{height:270px}.question-card{min-width:240px;width:240px;gap:5px;height:250px}.question-card .question-open{margin-top:auto}.roster-scope{padding-top:6px}}

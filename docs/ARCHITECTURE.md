@@ -328,3 +328,36 @@ reload, while ordinary draft fields remain editable. Reload validates a complete
 snapshot before replacing the form. It remains GET-only and explicitly discards
 settings edits, not task or conversation drafts. No automatic retry, merge, rollback,
 background settings synchronization or new persistence is introduced.
+
+## All-session human-question view (0.1.1.dev26)
+
+The existing roster has an opt-in global question mode. Membership requires a
+known team, a waiting agent with runtime `status_reason=human_input`, a nonempty
+question, and a team that is neither stopping nor stopped. The view uses existing
+compact summary metadata; there is no queue endpoint, second backend state source,
+new scheduler or persistence. It orders teams by creation time and agents by their
+team membership order, not question age or model-inferred importance.
+
+Reply availability is a separate current hint. False or unknown eligibility stays
+visible, and both the composer and submit callback fail closed unless `allowed`
+is exactly true. The ordinary message endpoint rechecks admission. Opening a card
+only selects its exact run/agent atomically; it never marks a question read, sends a
+reply, clears a question, resets budgets, changes permissions or resumes work. A
+question pauses its agent, not necessarily its peers. Stopped retained question
+text is historical and excluded from the active view. Messages remain agent-scoped
+text, not versioned-question approval transactions.
+
+Team short IDs remain separate from clamped task titles. The center explicitly
+names its selected team; logs, results, map and activity keep that owner. Search
+queries are retained separately for crew and question modes. Global and filtered
+counts are distinct. Stable native controls and a concise changed-count polite
+status avoid moving focus on arrival. Explicit card navigation focuses the full
+keyboard-scrollable question. Same-question polling retains text nodes and scroll;
+a changed owner/question begins at the top. A removed focused card falls back to
+a visible neighbor or the existing toggle without changing selected agent.
+
+Message completion captures selection and per-agent draft epochs, including input
+events that change text away and back. A delayed response cannot clear or label a
+newer same-ID/same-text interaction. No automatic resend is added. Existing
+selected-detail generations, one-flight polling, exact user text, same-origin
+requests, secret redaction and memory-only lifetime are unchanged.

@@ -4,6 +4,40 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev26 — all-session human questions (2026-10-06)
+
+- Reproduce the visibility gap: the old header counted only the selected team's
+  questions, while another running team could contain a paused agent. Reuse the
+  existing roster for an explicit global question view; retain the cockpit and
+  clearly identify the selected team's center/right context.
+- Show independent membership and reply availability, separate visible team IDs,
+  question previews, search and per-session counts. Keep blocked/unknown questions
+  visible; exclude errors, teammates and stopped residue. Opening is read-only.
+  No ranking, unread/resolve state, queue API, persistence or notification service.
+- Select the exact run/agent once, preserving drafts and compact detail ownership.
+  Guard send completion with selection and draft epochs, including same-text ABA
+  edits. Add native full-question keyboard reading, changed-count announcements,
+  poll-stable reading position and visible focus fallback after removal.
+- Adopt contextual disclosure, efficient invocation and cautious adaptation from
+  [Microsoft's Human-AI Interaction guidelines](https://www.microsoft.com/en-us/research/wp-content/uploads/2019/01/Guidelines-for-Human-AI-Interaction-camera-ready.pdf).
+  Apply [mixed-initiative interaction research](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/11/chi99horvitz.pdf)
+  by exposing needed dialogue without forcing interruption. These are design
+  interpretations, not empirical proof of this implementation's user benefit.
+- Apply [W3C status-message guidance](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html),
+  [focus order](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html) and
+  [native button semantics](https://www.w3.org/WAI/ARIA/apg/patterns/button/).
+  Reject inferred priority, auto-navigation and assertive whole-queue announcements.
+  No external code or assets are copied. Defer draft badges and stopped-task
+  carry-forward as separate features with different state/permission tradeoffs.
+- Independent review tightened membership, exposed IDs outside clamped text,
+  preserved question scroll and revealed removed-card fallback. Cover real Engine
+  pause/peer/deadline/reply/stop transitions, deferred UI races and 20-session
+  synthetic Windows Edge interaction at desktop/tablet/narrow widths.
+- Preserve the exact preceding documentation-revision PR overview and provenance
+  in the evidence index. Final local counts, source/PR CI, artifacts and independent
+  review belong to the exact-head handoff. No live inference, user-PC execution,
+  dependency, permission, binary packaging or five-job CI policy changes.
+
 ## Documentation revision 1 — internal deployment review (2026-10-06)
 
 - Add one short Japanese [IT review checklist](IT_REVIEW_CHECKLIST.md), linked from

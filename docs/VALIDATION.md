@@ -5,6 +5,44 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
+## All-session human questions (0.1.1.dev26, 2026-10-06)
+
+The existing roster's optional global mode derives current human pauses from compact
+summary metadata. It distinguishes blocked/unknown reply eligibility, source teams
+and the selected center context. It does not create a backend queue or alter the
+Engine, endpoint, permissions, budgets, notification or persistence contracts.
+
+Deterministic production-callback tests cover global versus filtered counts, stable
+team/member ordering, strict membership, plain-text provenance, atomic selection,
+unknown eligibility, rejected sends, exact drafts and delayed same-ID/same-text
+selection/draft ownership. Focus tests cover unchanged nodes, nearby/toggle removal
+fallback, question reading position and no focus movement on unrelated arrivals.
+Real authenticated Engine tests cover a paused agent while its peer continues,
+unselected metadata without history loading, non-mutating repeated snapshots,
+clock-only eligibility expiry, rejected replies and explicit reply/stop behavior
+without budget resets.
+
+The existing Edge route adds 20 retained mixed-state sessions, native Tab/Enter/Space
+and pointer navigation, search/count announcements, delayed state/send responses,
+composer/search/modal focus, unknown/blocked replies and visible fallback. It
+captures desktop 1366x768, tablet 820x768 and narrow 390x844 long-question/provenance
+views. The earlier disclosure test includes the new native question-reading stop.
+All previous browser acceptance remains. Test-only provider/state data is synthetic;
+no external inference or notification traffic is required.
+
+Local aggregate: **1248 passed, 42 platform-specific skips**. Dependency consistency,
+Python compilation, JavaScript syntax and whitespace checks pass. The existing
+state benchmark completes five cases with zero model calls and one selected
+agent history per compact response. Optional DOM smoke is unavailable because
+jsdom is absent; no dependency was installed.
+
+Exact source/PR checkouts, five-job CI, artifact integrity and independent screenshot
+review are recorded in the live draft PR. Local checks
+do not replace Windows Edge execution. DOM/keyboard checks and screenshots are not
+a full accessibility conformance audit or a screen-reader user study. Hosted checks
+do not establish corporate approval, production-provider behavior or deployment
+compatibility. Source-only setup remains unchanged.
+
 ## Python-independent setup help (0.1.1.dev25, 2026-10-06)
 
 The CMD wrapper recognizes `--help`, `-h` and `/?` as a first, standalone argument

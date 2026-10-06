@@ -178,8 +178,10 @@ console.log(JSON.stringify(['waiting','human_input','error','collaboration_limit
 
 
 def test_message_feedback_stays_with_its_selected_agent_and_clears_on_run_change():
-    assert "if(ui.selectedAgent===agent.id)inlineStatus($('messageStatus'),'送信しました。')" in APP
-    assert "if(ui.selectedAgent===agent.id)inlineStatus($('messageStatus'),errorText(error),true)" in APP
+    assert "if(owns())inlineStatus($('messageStatus'),'送信しました。')" in APP
+    assert "if(owns())inlineStatus($('messageStatus'),errorText(error)" in APP
+    assert "ui.selectionGeneration===action.selection" in APP
+    assert "ui.draftRevisions.get(action.agent)===action.draft" in APP
     select = re.search(r"function selectRun\(.*?\n", APP).group()
     assert "inlineStatus($('messageStatus'),'')" in select
 

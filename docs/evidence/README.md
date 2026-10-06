@@ -32,6 +32,7 @@ Its original **“Current verification” means the captured dev17 source head o
 
 | Cycle | Subject | Original verification record |
 | --- | --- | --- |
+| Docs 1 | Internal deployment review checklist | [Complete preceding public overview](docs-revision1-it-review-verification.md) and [exact-body provenance](docs-revision1-it-review-verification.json); source `59d26a962f9f03a24bf0a6f7153b635450921cf9` |
 | 25 | Python-independent CMD setup help | [Complete prior compact PR overview](dev25-setup-help-verification.md) and [exact-body provenance](dev25-setup-help-verification.json); [validation scope](../VALIDATION.md#python-independent-setup-help-011dev25-2026-10-06) |
 | 24 | Data-use guidance and Local/LOCAL APP limits | [Complete prior compact PR overview](dev24-data-use-verification.md) and [exact-body provenance](dev24-data-use-verification.json) |
 | 23 | Source-only setup with separately approved Python | [Complete prior compact PR overview](dev23-source-only-verification.md) and [exact-body provenance](dev23-source-only-verification.json); [current installation policy](../WINDOWS_SETUP.md) |

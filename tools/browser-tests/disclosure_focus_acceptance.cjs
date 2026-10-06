@@ -108,6 +108,10 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
       await page.locator('#messageInput').fill(draft);
       // Enter the first native summary using Tab, not a synthetic click handler.
       await page.locator('#conversationHeading').focus();await page.keyboard.press('Tab');
+      if(await page.locator('#humanQuestion').isVisible()){
+        assert.equal(await focused(page.locator('#humanQuestion')),true,'The selected human question is a native keyboard reading region');
+        await page.keyboard.press('Tab');
+      }
       assert.equal(await focused(page.locator('#resultsPanel > summary')),true,'The existing results disclosure keeps its keyboard position');
       await page.keyboard.press('Tab');
       assert.equal(await focused(summary(firstId)),true,'Native Tab reaches the first disclosure');
