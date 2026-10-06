@@ -192,3 +192,26 @@ assert.equal($('taskReusePreview').scrollTop,50);assert.equal($('runFormStatus')
 getRun().task='Remasked';renderRun();assert.equal(document.activeElement,$('taskInput'));
 assert.equal($('taskInput').value,'Existing draft');
 ''')
+
+
+def test_polled_source_change_resumes_only_current_draft_preflight_after_cancel():
+    check(r'''
+await setup();task('Existing draft');reuse();getRun().task='Changed source';renderRun();
+assert.equal(ui.taskReuseCandidate,null);assert.equal($('taskInput').value,'Existing draft');
+assert.equal($('preflightStatus').getAttribute('aria-busy'),'true');clearTimeout(ui.preflightTimer);
+const pending=refreshPreflight(ui.preflightRequest);assert.equal(requests[0].path,'/api/run-preflight');
+assert.equal(requests[0].options.body.task,'Existing draft');
+resolve(0,{can_start:true,blockers:[],warnings:[]});await pending;
+assert.match($('preflightStatus').textContent,/開始に必要な設定を確認しました/);assert.equal(requests.length,1);
+''')
+
+
+def test_close_and_settings_cancel_without_scheduling_preview_in_hidden_context():
+    check(r'''
+await setup();task('Existing draft');reuse();const before=ui.preflightRequest;
+showView('settings');assert.equal(ui.taskReuseCandidate,null);assert.equal(ui.preflightRequest,before);
+assert.equal(ui.preflightKey,'');assert.equal($('taskReuseStatus').textContent,'');
+showView('work');clearTimeout(ui.preflightTimer);reuse();const closing=ui.preflightRequest;
+setBriefOpen(false);assert.equal(ui.taskReuseCandidate,null);assert.equal(ui.preflightRequest,closing+1);
+assert.equal(ui.preflightKey,'');assert.equal($('taskReuseStatus').textContent,'');assert.equal(requests.length,0);
+''')

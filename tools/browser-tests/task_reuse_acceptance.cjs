@@ -206,10 +206,27 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     await page.keyboard.press('Escape');await page.locator('#newRun').click();await assertNoCandidate(existing,'Settings/workspace round trip cancels the decision');
     await candidate(existing);await close();await select(other.id);await select(source.id);await page.locator('#newRun').click();
     await assertNoCandidate(existing,'Native team A → B → A and reopen cannot revive a decision');
-    await candidate(existing);await poll(()=>{
+    await candidate(existing);const beforeMalformedRemoval=preflights().length;
+    await poll(()=>{
       fixture.runs=fixture.runs.filter(run=>run.id!==source.id);fixture.agents=fixture.agents.filter(agent=>agent.run_id!==source.id);
     });
-    await assertNoCandidate(existing,'Removing the source during polling cancels the decision');
+    // compactFixture still claims detail_loaded for the removed requested agent.
+    // That malformed response is rejected before replacing the displayed state;
+    // it must not manufacture source removal or cancel the displayed candidate.
+    assert.deepEqual(await owner(),{run:source.id,agent:sourceAgent.id},'Malformed compact removal retains the displayed owner');
+    assert.equal(await page.locator('#activeRunTask').textContent(),sourceText,'Malformed compact removal retains the last displayed source');
+    assert.equal(await page.locator('#taskInput').inputValue(),existing,'Malformed compact removal preserves the current draft');
+    assert.equal(await page.locator('#taskReuseConfirm').isVisible(),true,'Rejected state does not invalidate the last displayed candidate');
+    assert.equal(await page.locator('#taskReusePreview').textContent(),sourceText);
+    assert.equal(await page.locator('#startRun').isDisabled(),true);
+    assert.equal(preflights().length,beforeMalformedRemoval,'Rejected state keeps candidate preflight suppressed');
+    // Exercise accepted synthetic source removal through the explicitly supported
+    // legacy full-state snapshot, without compact selection metadata. This is a
+    // controller invalidation test, not a claim that Engine deletes retained runs.
+    heldState=await holdNextRequest(page,'**/api/state*',async()=>{});
+    const removedFullState=structuredClone(fixture);assert.equal(Object.hasOwn(removedFullState,'selection'),false);
+    await releaseResponse(page,heldState,removedFullState);heldState=null;
+    await assertNoCandidate(existing,'A valid legacy full-state removal cancels the decision');
     await poll(()=>{fixture.runs.push(source);fixture.agents.push(sourceAgent);});await close();await select(source.id);await page.locator('#newRun').click();
     await assertNoCandidate(existing,'Returning the same source ID does not revive the removed candidate');
 
@@ -335,7 +352,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     assert.equal(await page.locator('#messageInput').inputValue(),before.draft);assert.equal(await page.locator('#taskInput').inputValue(),before.task);
     assert.deepEqual(await choices(),{pm:before.pm,workers:before.workers,count:before.count});assert.deepEqual(page.viewportSize(),viewport);
     restored=true;
-    report.checks.push('task reuse: native Enter/Space reuses only last-displayed run.task, preserving whitespace, [redacted], literal markup and current PM/worker/count choices; stopped source is never resumed; empty/identical/Keep/Replace and whitespace-only overwrite guards, implicit/pointer Start blocking and preflight suppression while deciding; draft/form/source ABA, late displayed-state delivery, Escape/reopen, settings/team round trips and source removal; LF/CRLF/CR normalization with raw-source ABA checks; missing/invalid/oversize sources rejected without truncation, exactly 16000 normalized UTF-16 code units retained; poll-stable preview focus/scroll and unchanged polite status; desktop/tablet/narrow preview, decision-control and reuse-entry geometry and screenshots; no mutation except normal preflight and one explicit held/rejected synthetic Start after normalized replacement, with exact visible-task/current-choice POST and pending-entry protection; no provider traffic; original fixture, choices and selected-owner context restored');
+    report.checks.push('task reuse: native Enter/Space reuses only last-displayed run.task, preserving whitespace, [redacted], literal markup and current PM/worker/count choices; stopped source is never resumed; empty/identical/Keep/Replace and whitespace-only overwrite guards, implicit/pointer Start blocking and preflight suppression while deciding; draft/form/source ABA, late displayed-state delivery, Escape/reopen, settings/team round trips, malformed compact-state retention and valid legacy-full source removal; LF/CRLF/CR normalization with raw-source ABA checks; missing/invalid/oversize sources rejected without truncation, exactly 16000 normalized UTF-16 code units retained; poll-stable preview focus/scroll and unchanged polite status; desktop/tablet/narrow preview, decision-control and reuse-entry geometry and screenshots; no mutation except normal preflight and one explicit held/rejected synthetic Start after normalized replacement, with exact visible-task/current-choice POST and pending-entry protection; no provider traffic; original fixture, choices and selected-owner context restored');
   } catch(error) {
     await page.screenshot({path:path.join(artifacts,'workbench-task-reuse-failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{});throw error;
   } finally {

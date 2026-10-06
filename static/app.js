@@ -401,7 +401,10 @@ function clearTaskReuse(message='') {
   if(focused&&$('taskDialog').open&&!$('settingsDialog').open)$('taskInput').focus({preventScroll:true});
 }
 function reconcileTaskReuse() {
-  if(ui.taskReuseCandidate&&!ownsTaskReuse(ui.taskReuseCandidate))clearTaskReuse('入力または表示が変わったため、置き換えを取り消しました。現在の入力は残しています。');
+  if(ui.taskReuseCandidate&&!ownsTaskReuse(ui.taskReuseCandidate)){
+    clearTaskReuse('入力または表示が変わったため、置き換えを取り消しました。現在の入力は残しています。');
+    if($('taskDialog').open&&!$('settingsDialog').open)schedulePreflight();
+  }
 }
 function adoptTaskReuse(source) {
   clearTaskReuse();

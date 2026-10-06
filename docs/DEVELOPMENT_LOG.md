@@ -27,6 +27,21 @@ overview keeps only the latest head’s checks; archived claims retain their ori
   unavailable, matching backend task validation. This is displayed text, not byte-exact
   original data, verified latest state, resumed execution or restored authority.
 
+Hosted acceptance correction:
+- The [first source Edge run](https://github.com/tyama-ds/agent-workbench/actions/runs/37401350963)
+  on `3559294` reached the new source-removal case but the synthetic compact response
+  incorrectly claimed loaded detail after deleting its requested agent. The app
+  correctly rejected that inconsistent response and retained its last displayed
+  source. Independent review and the failure screenshot confirmed this. Keep strict
+  compact validation; assert malformed-response retention, then test accepted removal
+  through the explicitly supported legacy full-state fixture. The Engine itself does
+  not delete retained runs during its lifetime. All four matrix jobs passed; fresh
+  exact-head Edge/aggregate gates are required after this fixture correction.
+- Source review also found that polling-driven invalidation left the old preflight
+  guidance waiting for a decision that no longer existed. Resume admission-only
+  checking of the retained current draft after cancellation, without adopting or
+  executing anything; a focused regression verifies the exact preview payload.
+
 Research decisions:
 - [GitLab manual pipelines](https://docs.gitlab.com/ci/pipelines/#run-a-pipeline-manually):
   adopt editable preparation separated from an explicit execution action.

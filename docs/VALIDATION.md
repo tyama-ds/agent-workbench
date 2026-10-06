@@ -738,6 +738,8 @@ feature adds no backend endpoint, schema, authority-copy or persistent draft sto
 scrolling, overwrite and stale-choice cases with synthetic retained teams. Desktop,
 tablet and narrow screenshots accompany geometry, state-owner and request assertions.
 CRLF, CR and LF cases establish actual textarea normalization rather than relying
-on the synthetic DOM. Fresh CI artifacts and independent pixel inspection establish
+on the synthetic DOM. Malformed compact selected-detail snapshots retain the last
+displayed owner; accepted source removal is exercised by the supported legacy full-
+state fixture, not a claim that the live Engine deletes retained teams. Fresh CI artifacts and independent pixel inspection establish
 only the tested browser state, not corporate deployment or assistive-technology
 certification. Previous-version artifacts do not accept this version.
