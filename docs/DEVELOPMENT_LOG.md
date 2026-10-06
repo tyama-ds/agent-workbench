@@ -87,6 +87,14 @@ Hosted acceptance correction:
   enabled Next pointer clicks alongside Space at every viewport. No production
   focus-style workaround or relaxed clipping check is introduced; rerun the exact
   final source and inspect its artifacts before acceptance.
+- The [third source run](https://github.com/tyama-ds/agent-workbench/actions/runs/37407490083)
+  on `d2ef8ea3` passed all four matrix jobs and reached narrow card visibility.
+  After a direct programmatic card focus, its 240-pixel rectangle was partly
+  outside the horizontal strip (left 259, right 499, viewport right 390), while
+  vertical bounds and content overflow passed. Keep that measured evidence and
+  the strict visibility assertion. Exercise actual search-to-card Tab traversal
+  for each enabled/blocked/unknown target, without test-side scrolling, before
+  inferring a native keyboard reveal defect or adding production scroll behavior.
 
 ## 0.1.1.dev27 — Displayed request text into a protected new-task draft (2026-10-06)
 

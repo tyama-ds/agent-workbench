@@ -146,6 +146,22 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       area.top>=area.clipTop-1&&area.bottom<=area.clipBottom+1,label+': target is inside every clipping ancestor'+measured);
     assert.equal(area.hit,true,label+': target is unobscured'+measured);assert(area.overflow<=1,label+': text has no horizontal clipping'+measured);
   };
+  const focusCardByTab=async(agent,label)=>{
+    const maximum=await page.locator('#agentCards .agent-card').count();
+    assert(maximum>0,label+': the current roster has keyboard-reachable cards');
+    await page.locator('#agentSearch').focus();
+    for(let step=0;step<maximum;step++){
+      await page.keyboard.press('Tab');
+      if(await card(agent.id).evaluate(node=>node===document.activeElement)){
+        await paint();
+        assert.equal(await card(agent.id).evaluate(node=>node===document.activeElement),true,label+': target retains native focus after scroll and layout settle');
+        return;
+      }
+    }
+    const active=await page.evaluate(()=>({tag:document.activeElement?.tagName,id:document.activeElement?.id,
+      focusKey:document.activeElement?.dataset.focusKey,agent:document.activeElement?.dataset.agentId}));
+    assert.fail(label+': native Tab did not reach the exact card within '+maximum+' roster positions; target='+agent.id+'; active='+JSON.stringify(active));
+  };
   const assertGeometry=async label=>{
     await assertLayout(page,label);
     const boxes=await page.evaluate(()=>{
@@ -326,15 +342,15 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       assert(focusStyle.outline!=='none'||focusStyle.shadow!=='none',name+': discovery has a visible keyboard focus indicator; focus diagnostics='+JSON.stringify(focusStyle));
       await poll();assert.equal(await focused('#nextMessageInput'),true,name+': unchanged polls retain discovery focus');
       await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-crew.png'),fullPage:true,animations:'disabled'});
-      await card(root.id).focus();await assertVisible(card(root.id),name+' crew input owner');await assertMarker(root);
+      await focusCardByTab(root,name+' crew input owner');await assertVisible(card(root.id),name+' crew input owner');await assertMarker(root);
       await mode(true);await page.locator('#agentSearch').clear();
       for(const [agent,state] of [[root,'enabled'],[worker,'blocked'],[unknown,'unknown eligibility']]){
-        await card(agent.id).focus();await assertVisible(card(agent.id),name+' '+state+' question input owner');
+        await focusCardByTab(agent,name+' '+state+' question input owner');await assertVisible(card(agent.id),name+' '+state+' question input owner');
         assert.equal(await card(agent.id).evaluate(node=>node===document.activeElement),true,name+': native focus remains on the '+state+' question card');
         await assertVisible(card(agent.id).locator('.question-open'),name+' '+state+' lower question open action');
         await assertMarker(agent);
       }
-      await card(root.id).focus();await assertVisible(card(root.id),name+' screenshot question input owner');await assertGeometry('input presence questions '+name);
+      await focusCardByTab(root,name+' screenshot question input owner');await assertVisible(card(root.id),name+' screenshot question input owner');await assertGeometry('input presence questions '+name);
       await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-questions.png'),fullPage:true,animations:'disabled'});
       let position=cycle.indexOf(root);
       for(const action of ['pointer','Space']){
