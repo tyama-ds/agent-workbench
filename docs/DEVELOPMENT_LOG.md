@@ -4,6 +4,30 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev24 — clarify data-use limits (2026-10-06)
+
+- Keep the existing readiness destinations, file scope and Web explanation. Add one
+  small in-place paragraph distinguishing LOCAL APP from inference location and
+  explaining cross-profile sharing and unverified downstream data handling.
+- Correct the README/SECURITY Local-only recommendation: private-LAN addresses do
+  not establish company approval or rule out server-side forwarding. File reads
+  enter model conversations; the copy does not claim that access grants permission
+  under organizational policy. All PM and worker endpoints need the relevant review.
+- Adopt the transparency principle from [Microsoft's responsible agent design
+  guidance](https://learn.microsoft.com/en-us/agents/design-guidelines/responsible-ai):
+  explain information use and system limits where users choose the task's models.
+  The wording is grounded in this application's provider, teammate and Web flows,
+  not in assumptions about any provider's retention or training policies.
+- Reject approval badges, private-IP trust labels, automated probes and a new policy
+  engine. No extra settings section, control, persistence, telemetry or data-routing
+  behavior is added. Existing native forms, styles and asynchronous ownership remain.
+- Add repeated Local-only/mixed-provider copy checks and real Edge desktop/narrow
+  focus, wrapping and reachable-control checks, retaining the prior browser suite.
+  Source-only installation and all five CI jobs remain unchanged. Final exact-head
+  CI, screenshot inspection and independent review belong to the public handoff.
+- Preserve the full preceding dev23 public PR description and byte provenance in
+  the evidence index; historical checks are not relabeled as dev24 acceptance.
+
 ## 0.1.1.dev23 — source-only installation (2026-10-05)
 
 - Follow the requirement that Python is separately approved and installed by the

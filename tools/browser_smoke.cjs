@@ -14,6 +14,7 @@ const {firstTaskAcceptance} = require('./browser-tests/first_task_acceptance.cjs
 const {retentionAcceptance} = require('./browser-tests/retention_acceptance.cjs');
 const {disclosureFocusAcceptance} = require('./browser-tests/disclosure_focus_acceptance.cjs');
 const {settingsSaveAcceptance} = require('./browser-tests/settings_save_acceptance.cjs');
+const {dataUseAcceptance} = require('./browser-tests/data_use_acceptance.cjs');
 
 async function assertLayout(page,label) {
   const metrics=await page.evaluate(()=>{
@@ -231,6 +232,7 @@ async function main() {
     assert.doesNotMatch(await page.locator('#preflightDetails').textContent(),/fixture-memory-secret/);
     assert.equal(await page.locator('#preflightStatus').getAttribute('aria-busy'),'false');
     await configuredGuidance.assertDraft('[SYNTHETIC] Preflight overview.');
+    await dataUseAcceptance({page,stateDir,providerRequests,artifacts,report,assertDialogLayout,preflightAfter});
     let redundantPreflights=0;
     const countBlurPreflights=request=>{if(request.url().endsWith('/api/run-preflight'))redundantPreflights++;};
     page.on('request',countBlurPreflights);

@@ -23,7 +23,7 @@ The default shared system policy is visible and editable. The runtime appends th
 
 Incoming file text, web text and teammate messages are untrusted data. Labeling them does not guarantee that a model will ignore all prompt injections. The enforced tool boundaries remain necessary. An attacker who controls a permitted file can still influence the quality of the model's answer or cause unwanted edits **within** allowed write roots.
 
-Reading a file authorizes its content to enter the selected model conversation. Team mail may move content from a Local worker into a cloud PM. Search queries and URLs can also carry content. There is no per-document data-loss-prevention classifier. Use Local-only teams with Web disabled when external transfer is prohibited; do not include unrelated secrets in permitted roots. Filename/role labels and error messages are not confidentiality boundaries.
+Content read by a file tool enters the selected model conversation. Team mail may move content from a Local worker into a cloud PM. Search queries and URLs can also carry content. There is no per-document data-loss-prevention classifier. When external transfer is prohibited, disable Web and verify every PM and worker endpoint and its downstream handling against organizational requirements. Local accepts loopback or literal private-LAN endpoints; that address restriction does not establish organizational approval or prevent an endpoint from forwarding data. The application does not verify endpoint retention, training use, or onward transfer. Do not include unrelated secrets in permitted roots. Filename/role labels and error messages are not confidentiality boundaries.
 
 ## Credentials and state
 

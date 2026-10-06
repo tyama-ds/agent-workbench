@@ -5,6 +5,28 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
+## Data-use guidance (0.1.1.dev24, 2026-10-06)
+
+One readiness paragraph distinguishes the local app from inference on another PC,
+cross-profile teammate sharing and downstream handling that the app cannot verify.
+Matching README/SECURITY copy removes the implication that Local-only plus Web-off
+establishes corporate approval or prevents onward transfer. No runtime policy,
+network route, permission, dependency, form or style changes are included.
+
+The production refresh callback is exercised repeatedly with Local-only and mixed
+profiles, existing model/Web proxies and expanded file scope. A single text note
+must remain while existing data-flow content is retained. Real Windows Edge checks
+repeat the selections, preserve draft/settings bytes and focus, verify wrapping and
+control reachability at 1366×768 and 390×844, and add four synthetic screenshots.
+The original browser scenarios and all five source-only CI jobs remain in place.
+
+Local aggregate: **1204 passed, 14 platform-specific skips**. Dependency consistency,
+Python compilation, JavaScript syntax and whitespace checks pass. Exact-head CI and
+artifact identities and independent screenshot review are recorded in the live PR
+handoff. Synthetic checks do not establish
+organizational approval, live-provider behavior, downstream retention/training,
+corporate-PC compatibility or full accessibility conformance.
+
 ## Source-only installation policy (0.1.1.dev23, 2026-10-05)
 
 Python is separately approved and installed by the organization. The former bundled
