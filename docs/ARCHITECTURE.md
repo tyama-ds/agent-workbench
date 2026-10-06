@@ -361,3 +361,23 @@ events that change text away and back. A delayed response cannot clear or label 
 newer same-ID/same-text interaction. No automatic resend is added. Existing
 selected-detail generations, one-flight polling, exact user text, same-origin
 requests, secret redaction and memory-only lifetime are unchanged.
+
+## Neutral message-input presence (0.1.1.dev28)
+
+Input presence is a frontend-only projection of the existing per-agent draft map
+and the currently selected textarea. A string's nonzero length, including only
+whitespace, is the entire presence predicate. Current run/member summaries bind
+the owner; missing owners are excluded without pruning their text. Per-team and
+global totals count owners, not messages, and are independent of roster search,
+human-question membership or current reply eligibility. The task editor is excluded
+because its submitted text also remains after team creation.
+
+Neutral marks on existing cards and one next-input action reuse the cockpit.
+The action uses the current session-list order and declared agent order, preserves
+both search modes/queries and selects the exact owner once. Dialogs block it;
+same-owner activation only focuses the existing input. Disabled composers lead to
+the existing owner heading. Only explicit activation moves focus; late details do
+not. Presence transitions and existing successful clears update marks immediately,
+while unchanged presence leaves card/count/status DOM stable. Missing-owner text
+is neither transferred nor promised recoverable. No content snippets, delivery
+inference, attempt-state store, auto-send, queue API or durable storage is added.

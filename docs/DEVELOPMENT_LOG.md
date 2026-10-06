@@ -4,6 +4,67 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev28 — Neutral input presence and direct owner navigation (2026-10-06)
+
+- Add passive input marks to existing crew/question cards, per-team input-owner
+  counts, and one explicit cross-team next-input action in the existing sidebar.
+  Keep the cockpit and question mode; no third dashboard or draft collection.
+- A nonempty input field, including whitespace, establishes only text presence.
+  Pending, unknown and already accepted text can remain after navigation or edits.
+  Use neutral `入力あり`, count owners rather than messages, exclude the task editor,
+  and never infer unsent state, priority, forgotten intent or current send eligibility.
+- Derive known owners from current run/member summaries; preserve exact existing
+  strings. Missing owners are not navigated to or silently reassigned/deleted.
+  Do not copy message content into cards, search, status metadata or storage.
+- Traverse current session-list order and each team's declared member order,
+  selecting the exact run/agent once. Preserve both roster searches and mode;
+  keep blocked inputs visible without enabling Send. Explicit navigation focuses
+  the enabled composer or existing owner heading. Same-owner activation does not
+  churn selection/navigation epochs; delayed state never performs that focus move.
+- Presence transitions update existing render signatures and a concise polite count.
+  Same-presence character edits and unchanged polls do not rebuild cards or rewrite
+  count/label/status nodes. Successful existing text clearing updates indicators
+  immediately, before the following state request completes.
+- Independent source review tightened modal isolation, presence-only DOM updates,
+  known-member badges and immediate post-clear rendering. Place navigation before
+  search to preserve the existing native search-to-first-card Tab route. Dedicated
+  production callback tests cover these cases without changing receipt semantics.
+
+Research decisions:
+- [VS Code editing](https://code.visualstudio.com/docs/editing/codebasics#_save-auto-save):
+  adopt contextual marks and aggregate counts. Backup/Hot Exit are separate
+  capabilities; these marks do not promise storage or restoration.
+- [Slack drafts](https://slack.com/help/articles/201457107-Send-and-read-messages)
+  and [Teams release notes](https://support.microsoft.com/en-us/teams/platform/what-s-new-in-microsoft-teams):
+  cross-conversation discovery is an established messaging pattern. Defer a full
+  collection because this smaller feature closes the visibility gap without a
+  new lifecycle/filtering surface. Product precedent is not comparative evidence
+  proving this design's benefit.
+- [Mixed-initiative principles](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/11/chi99horvitz.pdf)
+  and [Human-AI Interaction Guidelines](https://www.microsoft.com/en-us/research/wp-content/uploads/2019/01/Guidelines-for-Human-AI-Interaction-camera-ready.pdf):
+  interpret uncertainty conservatively, expose a quiet affordance, and leave
+  invocation to the user. Reject automatic reminders, reopening and resubmission.
+- [W3C status messages](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html),
+  [focus order](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html) and
+  [native buttons](https://www.w3.org/WAI/ARIA/apg/patterns/button/): textual marks,
+  native activation, count-only announcements and nearby unavailable-control
+  fallback, without interrupting typing or announcing message content.
+
+Separate confirmed follow-on: the existing message callback accepts an
+object-shaped HTTP 2xx response without requiring the endpoint's `{ok:true}`
+receipt. Synthetic production-API/callback reproduction with `200 {}` clears an
+unchanged input and displays success. Strict receipt validation is not changed
+in this discovery feature; no new accepted-status badge or attempt-state store
+is introduced. This remains a distinct correction with its own outcome tests.
+
+Verification uses deterministic production callbacks and the existing synthetic
+Windows Edge route at desktop/tablet/narrow widths with 20 retained teams.
+Exact-head full local/CI checks, artifact identity, independent source and actual
+pixel review are required; earlier screenshots do not accept this revision.
+Preserve the preceding dev27 public overview byte-for-byte in historical evidence.
+No new endpoint, persistent storage, live inference, local browser retry, user-PC
+action, dependency, bundled Python, merge, deployment or release is included.
+
 ## 0.1.1.dev27 — Displayed request text into a protected new-task draft (2026-10-06)
 
 - Reproduced that selecting an older team did not bring its request into the new-task

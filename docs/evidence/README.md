@@ -32,6 +32,7 @@ Its original **“Current verification” means the captured dev17 source head o
 
 | Cycle | Subject | Original verification record |
 | --- | --- | --- |
+| 27 | Protected displayed-task reuse drafts | [Complete prior compact PR overview](dev27-task-reuse-verification.md) and [exact-body provenance](dev27-task-reuse-verification.json) |
 | 26 | All-session human questions and safe reply navigation | [Complete prior compact PR overview](dev26-questions-verification.md) and [exact-body provenance](dev26-questions-verification.json) |
 | Docs 1 | Internal deployment review checklist | [Complete preceding public overview](docs-revision1-it-review-verification.md) and [exact-body provenance](docs-revision1-it-review-verification.json); source `59d26a962f9f03a24bf0a6f7153b635450921cf9` |
 | 25 | Python-independent CMD setup help | [Complete prior compact PR overview](dev25-setup-help-verification.md) and [exact-body provenance](dev25-setup-help-verification.json); [validation scope](../VALIDATION.md#python-independent-setup-help-011dev25-2026-10-06) |

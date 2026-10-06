@@ -5,6 +5,38 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
+## Neutral input presence (0.1.1.dev28, 2026-10-06)
+
+The existing roster/session surfaces derive neutral marks from exact nonempty
+per-agent input. Current run/member summaries determine reachable owners; task
+text is excluded. Whitespace, blocked owners and text retained after pending,
+unknown or accepted sends remain distinguishable from send eligibility by the
+feature's deliberately limited label and guidance. No delivery state is inferred,
+and message text is not copied into discovery/search/status metadata.
+
+Production-callback tests cover membership, orphan retention, exact text, separate
+question/crew searches, cyclic atomic selection, same-owner epoch stability,
+modal isolation, blocked navigation, stale details, failed refreshes and send/edit
+ABA races. Assertions also check that unchanged presence does not rebuild cards
+or rewrite count/label/status nodes, and successful existing input clearing updates
+counts before a delayed state response. The malformed message-acknowledgement
+follow-on recorded in the development log remains outside this change.
+
+The existing Windows Edge acceptance route adds native keyboard/pointer interaction,
+20 mixed sessions, long identities, whitespace input, missing owners, deferred
+details/sends and exact restoration of the surrounding fixture. Desktop 1366x768,
+tablet 820x768 and narrow 390x844 geometry checks cover navigation, neutral marks,
+short team IDs and bounded cards. New exact-head CI and screenshot inspection are
+required before acceptance; deterministic checks alone do not validate native
+layout. No local browser fallback, external inference, dependency or binary build
+is added. These checks are not a full accessibility audit or corporate-PC approval.
+
+Local full suite: **1,323 passed, 42 platform-specific skips**. Dependency
+consistency, Python-source compilation, JavaScript syntax and whitespace checks
+pass. The five existing synthetic state-benchmark cases remain unchanged. Final
+exact-head source/PR CI, artifact identities and independent pixel review belong
+in the current draft PR overview; local results do not replace those gates.
+
 ## All-session human questions (0.1.1.dev26, 2026-10-06)
 
 The existing roster's optional global mode derives current human pauses from compact
