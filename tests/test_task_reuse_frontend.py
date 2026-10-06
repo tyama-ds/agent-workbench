@@ -215,3 +215,17 @@ showView('work');clearTimeout(ui.preflightTimer);reuse();const closing=ui.prefli
 setBriefOpen(false);assert.equal(ui.taskReuseCandidate,null);assert.equal(ui.preflightRequest,closing+1);
 assert.equal(ui.preflightKey,'');assert.equal($('taskReuseStatus').textContent,'');assert.equal(requests.length,0);
 ''')
+
+
+def test_each_explicit_candidate_resets_preview_but_polling_and_boundary_keys_do_not_escape():
+    check(r'''
+await setup();task('Existing draft');$('taskReusePreview').scrollTop=80;reuse();
+const preview=$('taskReusePreview');assert.equal(preview.scrollTop,0);preview.focus();
+let prevented=0;const key=key=>preview.listeners.keydown({target:preview,key,preventDefault(){prevented++;}});
+key('End');assert.equal(preview.scrollTop,600);key('End');assert.equal(preview.scrollTop,600);
+renderState();assert.equal(preview.scrollTop,600);assert.equal(document.activeElement,preview);
+key('Home');assert.equal(preview.scrollTop,0);assert.equal(prevented,3);
+for(const modifier of ['altKey','ctrlKey','metaKey','shiftKey'])preview.listeners.keydown({target:preview,key:'End',[modifier]:true,preventDefault(){throw Error('Modified key intercepted');}});
+key('Tab');assert.equal(prevented,3);assert.equal(requests.length,0);
+keep();setBriefOpen(false);reuse();assert.equal(preview.scrollTop,0);
+''')

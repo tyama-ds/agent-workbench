@@ -428,7 +428,7 @@ function beginTaskReuse() {
   ++ui.preflightRequest;clearTimeout(ui.preflightTimer);ui.preflightKey='';
   $('preflightStatus').setAttribute('aria-busy','false');$('preflightPending').textContent='';
   inlineStatus($('preflightStatus'),'依頼文を選んだ後に、保存済み設定を確認します。');$('preflightDetails').replaceChildren();
-  $('taskReuseConfirm').hidden=false;$('taskReusePreview').textContent=source.text;
+  $('taskReuseConfirm').hidden=false;$('taskReusePreview').textContent=source.text;$('taskReusePreview').scrollTop=0;
   $('taskReuseCandidateSource').textContent=`チーム ${shortRunId(run)} の表示用の依頼文`;
   $('taskReuseHelp').hidden=false;inlineStatus($('taskReuseStatus'),'現在の入力を残しています。置き換えるか選んでください。');
   syncStartControl();$('keepTaskDraft').focus();
@@ -442,6 +442,14 @@ function replaceTaskDraft() {
 function keepTaskDraft() {
   if(!ui.taskReuseCandidate)return;
   clearTaskReuse('現在の入力を残しました。');schedulePreflight();$('taskInput').focus();
+}
+function scrollTaskReusePreview(event) {
+  const preview=$('taskReusePreview');
+  if(event.target!==preview||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||!['Home','End'].includes(event.key))return;
+  // At a scroll boundary Edge otherwise passes End to the surrounding dialog,
+  // moving its still-focused reading region entirely out of view. Tab and all
+  // modified shortcuts keep their native behavior.
+  event.preventDefault();preview.scrollTop=event.key==='Home'?0:Math.max(0,preview.scrollHeight-preview.clientHeight);
 }
 function ownsTaskDialog(action) {
   return $('taskDialog').open&&!$('settingsDialog').open&&action.dialogGeneration===ui.taskDialogGeneration&&
@@ -963,6 +971,7 @@ async function initialize() {
   $('reuseTask').addEventListener('click',beginTaskReuse);
   $('replaceTaskDraft').addEventListener('click',replaceTaskDraft);
   $('keepTaskDraft').addEventListener('click',keepTaskDraft);
+  $('taskReusePreview').addEventListener('keydown',scrollTaskReusePreview);
   for(const id of ['newRun','launchTask','emptyNewRun'])$(id).addEventListener('click',()=>setBriefOpen(true));
   $('emptySettings').addEventListener('click',()=>showView('settings'));
   $('closeSettings').addEventListener('click',()=>showView('work'));

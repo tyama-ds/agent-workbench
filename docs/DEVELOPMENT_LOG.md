@@ -42,6 +42,15 @@ Hosted acceptance correction:
   checking of the retained current draft after cancellation, without adopting or
   executing anything; a focused regression verifies the exact preview payload.
 
+- The [second source Edge run](https://github.com/tyama-ds/agent-workbench/actions/runs/37402154387)
+  on `88db2ef` passed all matrix jobs and the corrected state cases, then exposed a
+  real tablet keyboard-reading issue: End on an already bottom-scrolled preview
+  scrolled its surrounding dialog, hiding the still-focused preview. Independent
+  failure pixels confirmed it. Reset only a newly opened candidate's preview; keep
+  unmodified Home/End inside that focused reading region and contain overscroll.
+  Retain strict clipping checks and add repeated-End/Home cases; unchanged polls
+  still preserve reading position. New exact-head hosted evidence is required.
+
 Research decisions:
 - [GitLab manual pipelines](https://docs.gitlab.com/ci/pipelines/#run-a-pipeline-manually):
   adopt editable preparation separated from an explicit execution action.

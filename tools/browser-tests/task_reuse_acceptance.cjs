@@ -271,9 +271,31 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     for(const [name,width,height] of [['desktop',1366,768],['tablet',820,768],['narrow',390,844]]){
       await page.setViewportSize({width,height});await candidate(existing);
       assert.equal(await page.locator('#taskReusePreview').getAttribute('tabindex'),'0','Long source preview is keyboard-scrollable');
+      assert.equal(await page.locator('#taskReusePreview').evaluate(node=>node.scrollTop),0,
+        name+': every explicit new candidate begins at the top of its preview');
       await page.locator('#taskReusePreview').focus();await page.keyboard.press('End');
       await page.waitForFunction(()=>{const node=document.querySelector('#taskReusePreview');return node.scrollTop>0&&node.scrollHeight-node.clientHeight-node.scrollTop<=1;});
-      const reading=await page.locator('#taskReusePreview').evaluate(node=>node.scrollTop);
+      await paint();await assertVisible('#taskReusePreview',name+' first End preview');
+      assert.equal(await page.locator('#taskReusePreview').evaluate(node=>getComputedStyle(node).outlineStyle),'solid',name+': focused preview has a visible outline');
+      const reading=await page.locator('#taskReusePreview').evaluate(node=>node.scrollTop),
+        dialogReading=await page.locator('#taskDialog').evaluate(node=>node.scrollTop);
+      // A fresh-candidate reset alone must not hide keyboard scroll chaining:
+      // End again at the boundary must remain inside this focused reading region.
+      await page.keyboard.press('End');await paint();
+      assert.equal(await focused('#taskReusePreview'),true,name+': repeated End keeps preview focus');
+      assert.equal(await page.locator('#taskReusePreview').evaluate(node=>node.scrollTop),reading,name+': repeated End stays at the preview bottom');
+      assert.equal(await page.locator('#taskDialog').evaluate(node=>node.scrollTop),dialogReading,name+': repeated End does not scroll the outer dialog');
+      await assertVisible('#taskReusePreview',name+' repeated End preview');
+      await page.keyboard.press('Home');
+      await page.waitForFunction(()=>document.querySelector('#taskReusePreview').scrollTop===0);await paint();
+      assert.equal(await focused('#taskReusePreview'),true,name+': Home keeps preview focus');
+      assert.equal(await page.locator('#taskDialog').evaluate(node=>node.scrollTop),dialogReading,name+': Home scrolls only the preview');
+      await assertVisible('#taskReusePreview',name+' Home preview');
+      await page.keyboard.press('End');
+      await page.waitForFunction(()=>{const node=document.querySelector('#taskReusePreview');return node.scrollTop>0&&node.scrollHeight-node.clientHeight-node.scrollTop<=1;});
+      await paint();assert.equal(await page.locator('#taskReusePreview').evaluate(node=>node.scrollTop),reading,name+': Home then End reaches the same complete source');
+      assert.equal(await page.locator('#taskDialog').evaluate(node=>node.scrollTop),dialogReading,name+': Home then End keeps the dialog reading position');
+      await assertVisible('#taskReusePreview',name+' Home then End preview');
       await page.evaluate(()=>{
         window.taskReuseChanges=0;window.taskReuseMutationObserver?.disconnect();
         window.taskReuseMutationObserver=new MutationObserver(records=>{window.taskReuseChanges+=records.length;});
@@ -281,6 +303,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
       });
       await poll();assert.equal(await focused('#taskReusePreview'),true,name+': unchanged polls retain preview focus');
       assert.equal(await page.locator('#taskReusePreview').evaluate(node=>node.scrollTop),reading,name+': unchanged polls preserve source reading position');
+      assert.equal(await page.locator('#taskDialog').evaluate(node=>node.scrollTop),dialogReading,name+': unchanged polls preserve the dialog reading position');
       assert.equal(await page.evaluate(()=>window.taskReuseChanges),0,name+': unchanged polls do not rewrite confirmation or polite status');
       await assertDialogLayout(page,'#taskDialog','task reuse '+name);await assertVisible('#taskReusePreview',name+' preview');
       await page.screenshot({path:path.join(artifacts,'workbench-task-reuse-'+name+'.png'),fullPage:true,animations:'disabled'});
@@ -352,7 +375,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     assert.equal(await page.locator('#messageInput').inputValue(),before.draft);assert.equal(await page.locator('#taskInput').inputValue(),before.task);
     assert.deepEqual(await choices(),{pm:before.pm,workers:before.workers,count:before.count});assert.deepEqual(page.viewportSize(),viewport);
     restored=true;
-    report.checks.push('task reuse: native Enter/Space reuses only last-displayed run.task, preserving whitespace, [redacted], literal markup and current PM/worker/count choices; stopped source is never resumed; empty/identical/Keep/Replace and whitespace-only overwrite guards, implicit/pointer Start blocking and preflight suppression while deciding; draft/form/source ABA, late displayed-state delivery, Escape/reopen, settings/team round trips, malformed compact-state retention and valid legacy-full source removal; LF/CRLF/CR normalization with raw-source ABA checks; missing/invalid/oversize sources rejected without truncation, exactly 16000 normalized UTF-16 code units retained; poll-stable preview focus/scroll and unchanged polite status; desktop/tablet/narrow preview, decision-control and reuse-entry geometry and screenshots; no mutation except normal preflight and one explicit held/rejected synthetic Start after normalized replacement, with exact visible-task/current-choice POST and pending-entry protection; no provider traffic; original fixture, choices and selected-owner context restored');
+    report.checks.push('task reuse: native Enter/Space reuses only last-displayed run.task, preserving whitespace, [redacted], literal markup and current PM/worker/count choices; stopped source is never resumed; empty/identical/Keep/Replace and whitespace-only overwrite guards, implicit/pointer Start blocking and preflight suppression while deciding; draft/form/source ABA, late displayed-state delivery, Escape/reopen, settings/team round trips, malformed compact-state retention and valid legacy-full source removal; LF/CRLF/CR normalization with raw-source ABA checks; missing/invalid/oversize sources rejected without truncation, exactly 16000 normalized UTF-16 code units retained; fresh preview starts at top, repeated End and Home/End stay within the visible focused preview, poll-stable preview/dialog scroll and unchanged polite status; desktop/tablet/narrow preview, decision-control and reuse-entry geometry and screenshots; no mutation except normal preflight and one explicit held/rejected synthetic Start after normalized replacement, with exact visible-task/current-choice POST and pending-entry protection; no provider traffic; original fixture, choices and selected-owner context restored');
   } catch(error) {
     await page.screenshot({path:path.join(artifacts,'workbench-task-reuse-failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{});throw error;
   } finally {
