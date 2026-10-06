@@ -33,6 +33,9 @@ overview keeps only the latest head’s checks; archived claims retain their ori
   preserved question scroll and revealed removed-card fallback. Cover real Engine
   pause/peer/deadline/reply/stop transitions, deferred UI races and 20-session
   synthetic Windows Edge interaction at desktop/tablet/narrow widths.
+- The first real Edge pass exposed a long-task/long-question composition that
+  clipped Send on desktop. Allow the bounded, keyboard-scrollable question region
+  to shrink to a usable minimum; retain the strict composer visibility assertions.
 - Preserve the exact preceding documentation-revision PR overview and provenance
   in the evidence index. Final local counts, source/PR CI, artifacts and independent
   review belong to the exact-head handoff. No live inference, user-PC execution,

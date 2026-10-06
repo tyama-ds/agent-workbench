@@ -145,7 +145,7 @@ async function allQuestionsAcceptance({page,fixture,compactFixture,artifacts,rep
       return {width:innerWidth,controls:['needsYou','navSettings','newRun','agentSearch'].map(box),
         cards:[...document.querySelectorAll('#agentCards .agent-card')].map(node=>{
           const rect=node.getBoundingClientRect();return {width:rect.width,overflow:node.scrollWidth-node.clientWidth,
-            children:[...node.querySelectorAll('.question-run,.question-preview,.question-availability')].map(child=>{
+            children:[...node.querySelectorAll('.question-run,.question-preview,.question-availability,.question-open,.agent-model,.agent-name')].map(child=>{
               const area=child.getBoundingClientRect();return {width:area.width,height:area.height,left:area.left-rect.left,right:area.right-rect.right,
                 top:area.top-rect.top,bottom:area.bottom-rect.bottom};})};})};
     });
@@ -157,7 +157,7 @@ async function allQuestionsAcceptance({page,fixture,compactFixture,artifacts,rep
     for(const item of controls.cards){
       assert(item.overflow<=1,label+': question card has no horizontal overflow');
       for(const child of item.children)assert(child.width>0&&child.height>0&&child.left>=-1&&child.right<=1&&child.top>=-1&&child.bottom<=1,
-        label+': provenance, question preview and answer eligibility remain inside each card');
+        label+': provenance, question preview, answer eligibility, open action, model and agent name remain inside each card');
     }
   };
   let heldState,heldSend,restored=false;

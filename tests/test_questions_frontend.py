@@ -1,7 +1,7 @@
 """All-session human pauses, exact navigation and draft ownership; no inference."""
 import pytest
 
-from test_frontend import APP, HTML, run_javascript
+from test_frontend import APP, HTML, STATIC, run_javascript
 from test_disclosure_focus_frontend import FOCUS_DOM
 from test_run_action_frontend import ACTION_DOM, ACTION_FIXTURES
 
@@ -205,6 +205,7 @@ def test_native_question_controls_and_no_new_persistence_or_queue_endpoint():
     assert 'id="questionCount" aria-hidden="true"' in HTML
     assert 'id="questionQueueStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"' in HTML
     assert 'aria-label="選択したエージェントへの質問" tabindex="0"' in HTML
+    assert 'min-height:52px;overflow:auto;flex:0 1 auto' in (STATIC / 'styles.css').read_text()
     assert '/api/questions' not in APP
     assert 'localStorage' not in APP and 'sessionStorage' not in APP
 
