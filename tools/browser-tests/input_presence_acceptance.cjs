@@ -118,7 +118,7 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
   };
   const activate=async(agent,key='Enter',wait=true)=>{
     const retained={questions:await page.locator('#needsYou').getAttribute('aria-pressed'),search:await page.locator('#agentSearch').inputValue()},previous=await owner(),start=requests.length;
-    await next.focus();await page.keyboard.press(key);
+    if(key==='pointer')await next.click();else {await next.focus();await page.keyboard.press(key);}
     assert.deepEqual(await owner(),{run:agent.run_id,agent:agent.id},'Next input picks exactly the expected run and declared member');
     assert.equal(await input.inputValue(),texts.get(agent.id),'Navigation preserves every input character, including whitespace');
     const target=await input.isDisabled()?'#conversationHeading':'#messageInput';
@@ -318,9 +318,12 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
     // metadata remain legible in all supported viewport classes.
     for(const [name,width,height] of [['desktop',1366,768],['tablet',820,768],['narrow',390,844]]){
       await page.setViewportSize({width,height});await mode(false);await page.locator('#agentSearch').clear();await select(root);
-      await next.focus();await assertVisible(next,name+' discovery button');await assertGeometry('input presence crew '+name);
-      const focusStyle=await next.evaluate(node=>({outline:getComputedStyle(node).outlineStyle,shadow:getComputedStyle(node).boxShadow}));
-      assert(focusStyle.outline!=='none'||focusStyle.shadow!=='none',name+': discovery has a visible keyboard focus indicator');
+      await page.locator('#newRun').focus();await page.keyboard.press('Tab');
+      assert.equal(await focused('#nextMessageInput'),true,name+': native Tab moves from New task to the enabled discovery action');
+      await assertVisible(next,name+' discovery button');await assertGeometry('input presence crew '+name);
+      const focusStyle=await next.evaluate(node=>({outline:getComputedStyle(node).outlineStyle,shadow:getComputedStyle(node).boxShadow,
+        focusVisible:node.matches(':focus-visible'),activeElement:{tag:document.activeElement?.tagName,id:document.activeElement?.id,className:document.activeElement?.className}}));
+      assert(focusStyle.outline!=='none'||focusStyle.shadow!=='none',name+': discovery has a visible keyboard focus indicator; focus diagnostics='+JSON.stringify(focusStyle));
       await poll();assert.equal(await focused('#nextMessageInput'),true,name+': unchanged polls retain discovery focus');
       await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-crew.png'),fullPage:true,animations:'disabled'});
       await card(root.id).focus();await assertVisible(card(root.id),name+' crew input owner');await assertMarker(root);
@@ -333,8 +336,11 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       }
       await card(root.id).focus();await assertVisible(card(root.id),name+' screenshot question input owner');await assertGeometry('input presence questions '+name);
       await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-questions.png'),fullPage:true,animations:'disabled'});
-      await next.focus();const position=cycle.indexOf(root),destination=cycle[(position+1)%cycle.length];
-      await activate(destination,'Space');await assertVisible(page.locator(await input.isDisabled()?'#conversationHeading':'#messageInput'),name+' explicit destination');
+      let position=cycle.indexOf(root);
+      for(const action of ['pointer','Space']){
+        position=(position+1)%cycle.length;await activate(cycle[position],action);
+        await assertVisible(page.locator(await input.isDisabled()?'#conversationHeading':'#messageInput'),name+' '+action+' explicit destination');
+      }
     }
     // One remaining owner is still a useful focus action. Repeated native
     // activations neither manufacture another selection nor send its input.

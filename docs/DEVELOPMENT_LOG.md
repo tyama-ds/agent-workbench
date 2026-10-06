@@ -78,6 +78,15 @@ Hosted acceptance correction:
   Add measured clipping diagnostics and native focus coverage for blocked/unknown
   question cards as well as the allowed owner. Fresh exact-head hosted checks and
   actual pixels are required; the failed run does not accept the correction.
+- The [second source run](https://github.com/tyama-ds/agent-workbench/actions/runs/37406734628)
+  on `15968d32` passed all four matrix jobs and the corrected desktop card checks,
+  then the tablet test incorrectly expected a keyboard focus indicator after
+  pointer selection followed by programmatic focus. Establish keyboard modality
+  with a real Tab from the preceding control, retain the strict outline assertion,
+  and include focus-visible diagnostics. Independent review also added actual
+  enabled Next pointer clicks alongside Space at every viewport. No production
+  focus-style workaround or relaxed clipping check is introduced; rerun the exact
+  final source and inspect its artifacts before acceptance.
 
 ## 0.1.1.dev27 — Displayed request text into a protected new-task draft (2026-10-06)
 
