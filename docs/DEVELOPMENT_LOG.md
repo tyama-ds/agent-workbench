@@ -103,6 +103,15 @@ Hosted acceptance correction:
   Never change focus/selection, capture an old target or schedule from polling;
   newer focus and modal context win. Production-callback tests cover those guards,
   and the full-card/lower-action native browser assertions remain unchanged.
+- The [resumed source run](https://github.com/tyama-ds/agent-workbench/actions/runs/37601859460)
+  on `0861c3fa` passed all five jobs, as did its PR run. Independent artifact review
+  nevertheless found the tablet full-page question screenshot showing the focused
+  card partly clipped, contradicting the immediately preceding native geometry
+  assertion. Do not accept that pixel gate solely from green checks. Retain strict
+  bounds, add an unchanged-poll settling check, viewport-sized question captures
+  before full-page captures, and pre/post focus/scroll geometry in the report.
+  No test-side scrolling or production change is added while distinguishing a
+  capture effect from a delayed layout/scroll defect.
 
 ## 0.1.1.dev27 — Displayed request text into a protected new-task draft (2026-10-06)
 

@@ -145,7 +145,15 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
     assert(area.width>0&&area.height>0&&area.left>=area.clipLeft-1&&area.right<=area.clipRight+1&&
       area.top>=area.clipTop-1&&area.bottom<=area.clipBottom+1,label+': target is inside every clipping ancestor'+measured);
     assert.equal(area.hit,true,label+': target is unobscured'+measured);assert(area.overflow<=1,label+': text has no horizontal clipping'+measured);
+    return area;
   };
+  const questionCaptureState=async(stage,name)=>({stage,viewport:name,
+    card:await assertVisible(card(root.id),name+' '+stage+' focused question card'),
+    open:await assertVisible(card(root.id).locator('.question-open'),name+' '+stage+' lower question action'),
+    layout:await page.evaluate(()=>({width:innerWidth,height:innerHeight,documentHeight:document.documentElement.scrollHeight,
+      active:document.activeElement?.dataset.focusKey,window:{x:scrollX,y:scrollY},
+      scroll:Object.fromEntries(['agentCards','runList'].map(id=>{const node=document.getElementById(id);return [id,{top:node.scrollTop,left:node.scrollLeft}];})),
+      sidebar:{top:document.querySelector('.sidebar').scrollTop,left:document.querySelector('.sidebar').scrollLeft}}))});
   const focusCardByTab=async(agent,label)=>{
     const maximum=await page.locator('#agentCards .agent-card').count();
     assert(maximum>0,label+': the current roster has keyboard-reachable cards');
@@ -351,7 +359,21 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
         await assertMarker(agent);
       }
       await focusCardByTab(root,name+' screenshot question input owner');await assertVisible(card(root.id),name+' screenshot question input owner');await assertGeometry('input presence questions '+name);
+      // Observe settled native focus through a real unchanged poll. A viewport
+      // capture avoids captureBeyondViewport; neither capture may reveal the
+      // card for the test or silently change its focus/scroll geometry.
+      await poll();assert.equal(await card(root.id).evaluate(node=>node===document.activeElement),true,name+': an unchanged poll retains the native card focus');
+      const capture={viewport:name};(report.inputPresenceGeometry??=[]).push(capture);
+      const beforeCapture=await questionCaptureState('before viewport capture',name);
+      capture.beforeCapture=beforeCapture;
+      await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-questions-viewport.png'),fullPage:false,animations:'disabled'});
+      const afterViewport=await questionCaptureState('after viewport capture',name);
+      capture.afterViewport=afterViewport;
       await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-questions.png'),fullPage:true,animations:'disabled'});
+      const afterFullPage=await questionCaptureState('after full-page capture',name);
+      capture.afterFullPage=afterFullPage;
+      assert.deepEqual(afterViewport.layout,beforeCapture.layout,name+': viewport capture does not change focus or scroll');
+      assert.deepEqual(afterFullPage.layout,beforeCapture.layout,name+': full-page capture restores focus and scroll');
       let position=cycle.indexOf(root);
       for(const action of ['pointer','Space']){
         position=(position+1)%cycle.length;await activate(cycle[position],action);
