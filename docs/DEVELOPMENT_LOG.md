@@ -4,6 +4,47 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev30 — Keep credential Enter shortcuts out of IME composition (2026-10-06)
+
+- A production-callback audit found that both provider and search credential
+  inputs treated composition-marked Enter as an explicit key-set command. Synthetic
+  `isComposing: true` and `isComposing: false, keyCode: 229` events reached
+  `preventDefault()` and a mocked `/api/secrets` request, clearing the input.
+- Guard only those two keyboard callbacks with `isComposing || keyCode === 229`
+  before canceling native behavior or invoking `setCredential()`. Retain ordinary
+  Enter and explicit buttons, saved target/revision capture, pending one-flight
+  behavior, stale/dirty settings guards, and the existing credential lifecycle.
+- The task/message composers have no Enter-to-send callback. Keep their native
+  textarea editing and submit-button behavior unchanged, along with draft epochs,
+  task-reuse confirmation, the shared API helper and dev29 acknowledgement checks.
+  Do not add global composition locks, delayed sends, timers, or dependencies.
+- Add registered production-callback cases for both credential targets covering
+  active composition, the end-of-composition 229 boundary, later explicit Enter
+  and button activation, repeated pending activation, unrelated keys, and existing
+  authentication/settings guards. All transport remains synthetic.
+
+Primary-source decisions:
+- [MDN keydown events with IME](https://developer.mozilla.org/en-US/docs/Web/API/Element/keydown_event#keydown_events_with_ime):
+  check both `isComposing` and legacy `keyCode === 229`; some boundary keydowns
+  occur outside the compositionstart/compositionend interval.
+- [W3C UI Events composition model](https://www.w3.org/TR/uievents/#events-compositionevents):
+  composition and keyboard events are distinct, and composition keys vary by IME.
+- [WHATWG implicit form submission](https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#implicit-submission):
+  native submit-button activation is separate from the two custom shortcuts.
+  Callback-only tests do not establish actual browser default-action behavior.
+
+Local implementation begins from exact dev29 candidate
+`72bc2fb46688693367333c06543f6cc9d02836a6`. The new composition regression first failed
+against the unchanged dev29 callback. After the guard, all 26 new callback cases
+passed, the focused credential/version set passed 47 tests, and aggregate pytest
+passed 1,427 tests with 42 skips. Application JavaScript syntax and whitespace
+checks passed. A byte comparison confirms that `app.js` differs from dev29 only
+by the two guard insertions. Real Japanese OS IME behavior, password-field
+composition availability, native Windows Edge keyboard/button behavior, and
+remote CI remain unverified. No hosted acceptance, publication, merge, deployment
+or release is claimed. Earlier versioned log sections and evidence archives
+retain their original scope unchanged.
+
 ## 0.1.1.dev29 — Require the message acceptance receipt (2026-10-06)
 
 - Correct the separate dev28 follow-on: a successful HTTP response containing

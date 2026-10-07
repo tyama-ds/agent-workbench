@@ -307,7 +307,7 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   });
   card._credential={id:saved?profile.id:null,input:secret,button:saveSecret,status:secretState,result:secretResult,target};
   saveSecret.addEventListener('click',()=>setCredential(card._credential));
-  secret.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();setCredential(card._credential);}});
+  secret.addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229)return;if(event.key==='Enter'){event.preventDefault();setCredential(card._credential);}});
   $('profilesEditor').appendChild(card);
 }
 function renderSettings() {
@@ -1103,7 +1103,7 @@ async function initialize() {
     finally{ui.busyMessage=false;renderConversation(getAgent());renderMessageInputPresence();}
   });
   $('setSearchSecret').addEventListener('click',()=>setCredential(credentialControls().find(control=>control.id==='search')));
-  $('searchSecret').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();setCredential(credentialControls().find(control=>control.id==='search'));}});
+  $('searchSecret').addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229)return;if(event.key==='Enter'){event.preventDefault();setCredential(credentialControls().find(control=>control.id==='search'));}});
   try {
     const fragment=new URLSearchParams(location.hash.slice(1)),token=fragment.get('token');
     if(token){history.replaceState(null,'',location.pathname+location.search);await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}});}
