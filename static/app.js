@@ -1090,7 +1090,8 @@ async function initialize() {
     const unchanged=()=>ui.draftRevisions.get(action.agent)===action.draft&&ui.drafts.get(agent.id)===text;
     ui.busyMessage=true;$('sendMessage').disabled=true;
     try {
-      await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,{method:'POST',body:{text}});
+      const receipt=await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,{method:'POST',body:{text}});
+      if(receipt?.ok!==true){const failure=new Error('応答の形式を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
       if(unchanged()&&(owns()||ui.selectedAgent!==agent.id)){
         ui.drafts.delete(agent.id);
         if(owns()&&$('messageInput').value===text)$('messageInput').value='';

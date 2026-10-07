@@ -4,6 +4,43 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev29 — Require the message acceptance receipt (2026-10-06)
+
+- Correct the separate dev28 follow-on: a successful HTTP response containing
+  `{}` must not clear the message input or display `送信しました。`.
+- Require literal `ok === true` only in the message callback, after production
+  `api()` parsing and before the existing clear/success path. Missing or invalid
+  acknowledgement uses the existing unknown-outcome feedback and retains exact
+  input. Explicit rejection continues through the existing error path.
+- Preserve selection/draft epochs, same-text edit/restore and selection ABA
+  protection, exact captured target/body, pending one-flight behavior, and neutral
+  input-presence marks. No auto-resend, storage, endpoint or scheduler is added.
+- Document `{ok:true}` as acceptance into the current in-memory engine workflow,
+  not model completion or durable delivery. A lost/malformed response may follow
+  acceptance; retained text must not be described as definitely unsent.
+- Cover actual API parsing plus submit callbacks across receipt types, HTTP and
+  transport failures, deferred fetch/JSON, and old-owner completions. Add real HTTP
+  server-contract coverage and browser cases that forward the POST once, verify
+  real acceptance, and then replace or abort only the browser-facing response.
+
+Primary-source decisions:
+- [WHATWG Fetch Response.ok](https://fetch.spec.whatwg.org/#dom-response-ok) and
+  [Body.json()](https://fetch.spec.whatwg.org/#dom-body-json): HTTP success and JSON
+  parsing do not validate this application's acknowledgement contract.
+- [RFC 9110 §9.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2) and
+  [AWS Builders' Library](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/):
+  non-idempotent requests must not be automatically replayed merely because an
+  acknowledgement is missing. No idempotency mechanism is introduced here.
+
+Local implementation begins from exact dev28 candidate
+`8d4f6340c75ff4c485fcf09300f7420cdffb880f`. Local verification: 76 focused tests
+passed; aggregate pytest passed 1,401 tests with 42 skips; application JavaScript,
+the new browser module and its smoke integration pass syntax checks. The shared
+API helper and earlier versioned log sections remain byte-identical. The six new
+real-HTTP browser cases are written but Windows Edge execution and remote CI are
+pending. No hosted acceptance, publication, merge, deployment or release is
+claimed. Earlier evidence archives retain their original scope unchanged.
+
 ## 0.1.1.dev28 — Neutral input presence and direct owner navigation (2026-10-06)
 
 - Add passive input marks to existing crew/question cards, per-team input-owner

@@ -387,3 +387,33 @@ roster-card focus target with nearest alignment, including the horizontal narrow
 strip. The callback rechecks current DOM membership and modal state; it never
 changes focus/selection or uses a captured old card. Polling and delayed detail
 responses do not schedule this keyboard-only reveal.
+
+## Explicit message acknowledgement (0.1.1.dev29)
+
+`POST /api/agents/{id}/message` returns `{ok:true}` after the engine rechecks
+admission and enqueues the exact human text. This acknowledges acceptance into
+the current in-memory workflow; it does not establish model completion, durable
+storage or that anyone read the message. HTTP success alone is not that receipt.
+The message callback requires the literal boolean `ok === true` before its
+existing unchanged-draft clearing and success feedback. Other API contracts are
+unchanged; generic state/config objects do not require an `ok` member.
+
+Missing or malformed acknowledgements retain the input and use the existing
+unknown-outcome path: `応答の形式を確認できませんでした。` followed by
+`送信結果は未確認です。作業ログを確認してから再送信が必要か判断してください。`.
+The backend might already have accepted the POST before its response was lost or
+changed. Retained text and neutral input-presence marks therefore never establish
+non-delivery. A matching log entry is context for the user's decision, not a
+unique receipt for this attempt; identical messages can be sent separately.
+
+Selection and draft epochs still reject older A → B → A and edit/restore
+callbacks. A pending request keeps the existing one-flight lock and captured
+target/body. No automatic retry, new endpoint, scheduler, persistent attempt
+state or idempotency claim is added. Transport and server errors keep their
+existing classification and preserve drafts.
+
+Tests separate response parsing, deferred callback ownership, and a real HTTP
+acceptance response overridden only after the synthetic engine has returned its
+receipt. This last case proves that unknown browser outcome and server-side
+acceptance can coexist. Windows Edge execution remains a separate acceptance
+gate; writing the test is not evidence that it passed.
