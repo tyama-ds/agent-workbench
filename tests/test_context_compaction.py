@@ -306,3 +306,48 @@ async def test_compactable_overflow_allows_human_reply_but_unshrinkable_does_not
         assert engine.message_eligibility(agent)['reason'] == 'context_limit'
     finally:
         await engine.close()
+
+
+async def test_lookup_bounds_apply_after_mask_expansion_and_to_requested_ids(tmp_path):
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=0)
+    try:
+        engine.settings.secrets['local'] = 'x'
+        engine._append_context(agent, {'role': 'user', 'content': 'x' * 4000}, human=True)
+        ident = agent.record_sequence
+        result = await engine.execute_tool(run, agent, 'read_context_history', {'record_ids': [ident, 1000000]})
+        assert result['records'] == [] and result['over_response_limit_ids'] == [ident]
+        assert result['unavailable_ids'] == [1000000] and len(json.dumps(result)) <= 24000
+        for ids in ([True], [0], [1000001], [10 ** 100], list(range(1, 10))):
+            with pytest.raises(ValueError):
+                await engine.execute_tool(run, agent, 'read_context_history', {'record_ids': ids})
+        before = copy.deepcopy(agent.original_history)
+        run['_config']['limits']['max_history_chars'] = 5000
+        engine._append_context(agent, {'role': 'assistant', 'content': 'oversized' * 1000})
+        assert agent.original_history == before and agent.history_omitted == 1
+    finally:
+        await engine.close()
+
+
+async def test_summary_and_next_dispatch_use_current_key_without_persisting_it(tmp_path):
+    from workbench.engine import Engine
+    class Client:
+        def __init__(self): self.keys = []
+        async def complete(self, profile, messages, tools, system, limits):
+            self.keys.append(profile['api_key'])
+            if not tools:
+                engine.set_secret('local', 'synthetic-new-key')
+                return summary_reply()
+            return reply('Done')
+    client = Client()
+    engine, run, agent = await seeded(tmp_path, client)
+    try:
+        engine.set_secret('local', 'synthetic-old-key')
+        engine.kick = Engine.kick.__get__(engine, Engine)
+        await engine.human_message(agent.id, 'Continue')
+        await settled(engine)
+        assert agent.status == 'done'
+        assert client.keys == ['synthetic-old-key', 'synthetic-new-key']
+        assert 'api_key' not in run['_config']['providers'][0]
+        assert run['_config'] == engine.settings.value
+    finally:
+        await engine.close()
