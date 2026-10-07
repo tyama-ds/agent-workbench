@@ -381,3 +381,9 @@ not. Presence transitions and existing successful clears update marks immediatel
 while unchanged presence leaves card/count/status DOM stable. Missing-owner text
 is neither transferred nor promised recoverable. No content snippets, delivery
 inference, attempt-state store, auto-send, queue API or durable storage is added.
+
+Native unmodified Tab/Shift+Tab schedules one frame to reveal the actual current
+roster-card focus target with nearest alignment, including the horizontal narrow
+strip. The callback rechecks current DOM membership and modal state; it never
+changes focus/selection or uses a captured old card. Polling and delayed detail
+responses do not schedule this keyboard-only reveal.

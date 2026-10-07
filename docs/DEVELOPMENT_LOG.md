@@ -95,6 +95,14 @@ Hosted acceptance correction:
   the strict visibility assertion. Exercise actual search-to-card Tab traversal
   for each enabled/blocked/unknown target, without test-side scrolling, before
   inferring a native keyboard reveal defect or adding production scroll behavior.
+- The [fourth source run](https://github.com/tyama-ds/agent-workbench/actions/runs/37408225451)
+  on `9d276e0b` reproduced those same narrow horizontal bounds with genuine Tab
+  traversal and two-frame settling. This confirms a native reveal issue rather
+  than just programmatic test setup. After an unmodified Tab/Shift+Tab, reveal the
+  actual currently focused roster card on the next frame using nearest alignment.
+  Never change focus/selection, capture an old target or schedule from polling;
+  newer focus and modal context win. Production-callback tests cover those guards,
+  and the full-card/lower-action native browser assertions remain unchanged.
 
 ## 0.1.1.dev27 — Displayed request text into a protected new-task draft (2026-10-06)
 

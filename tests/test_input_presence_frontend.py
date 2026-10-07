@@ -238,3 +238,32 @@ def test_native_presence_controls_do_not_add_storage_send_state_or_endpoints():
     assert '送信済みの文が残っている場合もあります' in HTML
     assert '.question-run-line' in (STATIC / 'styles.css').read_text()
     assert '/api/drafts' not in APP and 'localStorage' not in APP and 'sessionStorage' not in APP
+
+
+def test_only_explicit_tab_reveals_the_current_roster_card_without_changing_focus():
+    check(r'''
+seedQuestions();const frames=[];window.requestAnimationFrame=callback=>frames.push(callback);
+const card=cards()[1],calls=[];card.scrollIntoView=options=>calls.push(options);card.focus();
+renderState();assert.equal(frames.length,0);assert.equal(calls.length,0);
+for(const event of [{key:'ArrowRight'},{key:'Tab',ctrlKey:true},{key:'Tab',altKey:true},{key:'Tab',metaKey:true},{key:'Tab',defaultPrevented:true}])revealAgentCardAfterTab(event);
+assert.equal(frames.length,0);const owner=[ui.selectedRun,ui.selectedAgent,ui.selectionGeneration];
+revealAgentCardAfterTab({key:'Tab'});assert.equal(calls.length,0);frames.shift()();
+assert.deepEqual(calls,[{block:'nearest',inline:'nearest'}]);assert.equal(document.activeElement,card);
+assert.deepEqual([ui.selectedRun,ui.selectedAgent,ui.selectionGeneration],owner);assert.equal(requests.length,0);
+revealAgentCardAfterTab({key:'Tab',shiftKey:true});frames.shift()();assert.equal(calls.length,2);
+''')
+
+
+def test_tab_frame_respects_newer_focus_replaced_cards_and_modal_context():
+    check(r'''
+seedQuestions();const frames=[];window.requestAnimationFrame=callback=>frames.push(callback);
+const old=cards()[0],other=cards()[1];let oldScroll=0,otherScroll=0;
+old.scrollIntoView=()=>oldScroll++;other.scrollIntoView=()=>otherScroll++;
+old.focus();revealAgentCardAfterTab({key:'Tab'});$('messageInput').focus();frames.shift()();assert.equal(oldScroll,0);
+old.focus();revealAgentCardAfterTab({key:'Tab'});other.focus();frames.shift()();assert.equal(otherScroll,1);assert.equal(oldScroll,0);
+revealAgentCardAfterTab({key:'Tab'});$('settingsDialog').showModal();frames.shift()();assert.equal(otherScroll,1);
+revealAgentCardAfterTab({key:'Tab'});assert.equal(frames.length,0);$('settingsDialog').close();
+$('taskDialog').showModal();revealAgentCardAfterTab({key:'Tab'});assert.equal(frames.length,0);$('taskDialog').close();
+old.focus();revealAgentCardAfterTab({key:'Tab'});$('agentCards').replaceChildren();frames.shift()();assert.equal(oldScroll,0);
+assert.equal(requests.length,0);
+''')

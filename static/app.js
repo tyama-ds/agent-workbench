@@ -575,6 +575,17 @@ function openNextMessageInput() {
   ($('messageInput').disabled?$('conversationHeading'):$('messageInput')).focus();
   if(changed)void pollState();
 }
+function revealAgentCardAfterTab(event) {
+  if(event.key!=='Tab'||event.altKey||event.ctrlKey||event.metaKey||event.defaultPrevented||$('taskDialog').open||$('settingsDialog').open)return;
+  // Native Tab can reveal only a card's center in the horizontal narrow roster.
+  // Reveal the actual current keyboard target; polls and delayed detail never
+  // schedule this, and a newer focus/modal choice wins before the frame runs.
+  window.requestAnimationFrame(()=>{
+    if($('taskDialog').open||$('settingsDialog').open)return;
+    const card=document.activeElement;
+    if([...$('agentCards').querySelectorAll('[data-focus-key]')].includes(card))card.scrollIntoView({block:'nearest',inline:'nearest'});
+  });
+}
 function questionEntries() {
   // Current runtime pauses, not unread messages or an inferred priority queue.
   const agents=new Map(ui.state.agents.map(agent=>[agent.id,agent]));
@@ -1032,6 +1043,7 @@ async function initialize() {
   $('agentSearch').addEventListener('input',()=>renderRun());
   $('needsYou').addEventListener('click',toggleQuestionView);
   $('nextMessageInput').addEventListener('click',openNextMessageInput);
+  document.addEventListener('keydown',revealAgentCardAfterTab);
   for(const id of ['taskDialog','settingsDialog']) { const dialog=$(id);dialog.addEventListener('click',event=>{if(event.target!==dialog)return;const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();}); }
   window.addEventListener('popstate',()=>{setBriefOpen(false);showView('work');});
   $('settingsForm').addEventListener('input',event=>{if(event.target.type!=='password')markSettingsDirty();});

@@ -31,7 +31,7 @@ required before acceptance; deterministic checks alone do not validate native
 layout. No local browser fallback, external inference, dependency or binary build
 is added. These checks are not a full accessibility audit or corporate-PC approval.
 
-Local full suite: **1,323 passed, 42 platform-specific skips**. Dependency
+Local full suite: **1,325 passed, 42 platform-specific skips**. Dependency
 consistency, Python-source compilation, JavaScript syntax and whitespace checks
 pass. The five existing synthetic state-benchmark cases remain unchanged. Final
 exact-head source/PR CI, artifact identities and independent pixel review belong
