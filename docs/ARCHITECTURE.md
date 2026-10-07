@@ -454,7 +454,9 @@ assignment or recent results can still exceed the budget and stop execution.
 Planning selects complete older groups that fit the summarizer's own request budget.
 A successful summary must validate against the fixed JSON shape, shrink the request
 by at least 5%, and reduce serialized characters. At most three passes occur at one
-boundary; if the request still exceeds its hard budget, it stops visibly. If it fits
+boundary; if the request still exceeds its hard budget, it stops visibly. If only one model
+call remains and the request already fits, optional soft-trigger summarization is
+skipped to leave that call usable. If it fits
 but cannot beneficially compact at the soft trigger, it can proceed until a hard limit.
 Malformed, empty, oversized, non-shrinking, timed-out or failed summaries do not replace
 that pass's active history. Successful earlier passes stay committed. There are no
@@ -468,9 +470,12 @@ record is omitted whole. The visible omitted count includes each evicted/oversiz
 record; there is no complete-audit or infinite-memory promise. The model can use
 `read_context_history` for up to eight retained IDs in its own agent only, with a
 24000-character response ceiling. Native private reasoning is excluded and configured
-secrets are masked. Missing and oversized records are explicitly reported; a returned
+secrets are masked. Tool arguments are returned as serialized `arguments_json` text
+so nested property names are masked without silently merging key collisions. Missing and oversized records are explicitly reported; a returned
 record's `_human` field identifies its source, not the truth of text within it.
 The archive is not exposed through browser snapshots or automatically written to disk.
+Human-message admission uses the same serialized native-request pressure and
+compaction feasibility as dispatch, including the optional token planning budget.
 Existing display-log/result retention remains separate. Browser reload does not end the
 server process, but server restart loses context, originals, summaries and memory keys.
 Persistence, cross-run memory and restart/resume are deliberately outside this feature.

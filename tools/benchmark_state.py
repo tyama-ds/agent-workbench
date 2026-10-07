@@ -27,6 +27,7 @@ from aiohttp import ClientSession, ClientTimeout, CookieJar, web
 import workbench.engine as engine_module
 from workbench.config import Settings
 from workbench.engine import Agent
+from workbench.harness import ToolExecutor
 from workbench.redaction import MAX_REDACTION_BYTES, MAX_REDACTION_VALUES, SecretRedactor
 from workbench.server import APP_KEY, BrowserAuth, create_app
 
@@ -34,7 +35,7 @@ from workbench.server import APP_KEY, BrowserAuth, create_app
 ITERATIONS = 7
 MEMORY_LIMIT_BYTES = 256 * 1024 * 1024
 TEXT_PATTERN = '調査abcde'
-# Keep admission checks eligible, including their actual conversation JSON scan.
+# Keep admission checks eligible, including their actual serialized-request admission scan.
 # Only engine_module.time is replaced while measuring; wall-clock timings remain real.
 CREATED_AT = 1700000000.0
 
@@ -145,6 +146,16 @@ def populate_registry(engine, mode):
     }
 
 
+class NoToolExecutor:
+    """Schemas only for exact request budgeting; execution is always rejected."""
+
+    def schemas(self):
+        return ToolExecutor.schemas(self)
+
+    async def execute(self, *args, **kwargs):
+        raise AssertionError('The state benchmark must not execute tools')
+
+
 class NoModelClient:
     """A fail-fast sentinel, not a live provider or a synthetic model runner."""
 
@@ -188,7 +199,7 @@ def populate(engine, fixture):
             'status': 'done', 'created_at': CREATED_AT, 'model_calls': 10,
             'tool_calls': 10, 'auto_collaborations': 0, 'max_auto_collaborations': 24,
             'collaboration_limit_reached': False, '_collaboration_blocked': False,
-            'agent_ids': [], '_config': copy.deepcopy(settings.value),
+            'agent_ids': [], '_config': copy.deepcopy(settings.value), '_executor': NoToolExecutor(),
         }
         engine.runs[run_id] = run
         for agent_index in range(fixture.agents_per_run):

@@ -43,14 +43,18 @@ def request_size(profile, messages, tools, system):
     return len(body), len(body.encode('utf-8'))
 
 
-def pressure(profile, messages, tools, system, limits, *, output_tokens=None):
-    chars, estimate = request_size(profile, messages, tools, system)
+def budget_ratio(profile, chars, estimate, limits, *, output_tokens=None):
     window = profile.get('context_window_tokens', 0)
     reserve = limits['context_reserve_tokens'] + (limits['max_output_tokens'] if output_tokens is None else output_tokens)
     ratios = [chars / limits['max_context_chars']]
     if window:
         ratios.append((estimate + reserve) / window)
-    return max(ratios), chars, estimate
+    return max(ratios)
+
+
+def pressure(profile, messages, tools, system, limits, *, output_tokens=None):
+    chars, estimate = request_size(profile, messages, tools, system)
+    return budget_ratio(profile, chars, estimate, limits, output_tokens=output_tokens), chars, estimate
 
 
 def groups(messages):
@@ -112,14 +116,24 @@ def plan_compaction(profile, messages, tools, system, limits):
                 if not protected.intersection(block)]
     indexes, source = set(), []
     output = min(limits['max_output_tokens'], 4096)
+    summary_system = SUMMARY_POLICY + f'\nKeep the complete JSON output within {limits["context_summary_chars"]} characters.'
+    summary_chars, summary_estimate = request_size(profile, [{'role': 'user', 'content': encoded({'records': []})}], [], summary_system)
+    # The source JSON is a single text content string in every adapter. Its
+    # escaped-record contributions and commas are additive. Measure each record
+    # once instead of repeatedly reserializing an ever-growing candidate list.
     for block in eligible:
-        candidate = source + [source_record(messages[i]) for i in block]
-        request = [{'role': 'user', 'content': encoded({'records': candidate})}]
-        summary_system = SUMMARY_POLICY + f'\nKeep the complete JSON output within {limits["context_summary_chars"]} characters.'
-        if pressure(profile, request, [], summary_system, limits, output_tokens=output)[0] > 1:
+        candidate = [source_record(messages[i]) for i in block]
+        quoted = [encoded(encoded(record)) for record in candidate]
+        commas = len(candidate) if source else len(candidate) - 1
+        chars_added = sum(len(value) - 2 for value in quoted) + commas
+        estimate_added = sum(len(value.encode('utf-8')) - 2 for value in quoted) + commas
+        if budget_ratio(profile, summary_chars + chars_added, summary_estimate + estimate_added,
+                        limits, output_tokens=output) > 1:
             break
         indexes.update(block)
-        source = candidate
+        source.extend(candidate)
+        summary_chars += chars_added
+        summary_estimate += estimate_added
     if not indexes:
         return None
     # A tiny early group cannot repay summary wrapper overhead. Avoid calls with

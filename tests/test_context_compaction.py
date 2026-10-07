@@ -156,7 +156,7 @@ async def test_incoming_human_and_peer_queues_are_not_lost_during_summary(tmp_pa
 
 async def test_budget_exhaustion_and_oversize_pins_fail_without_call(tmp_path):
     client = ScriptClient([])
-    engine, run, agent = await seeded(tmp_path, client)
+    engine, run, agent = await seeded(tmp_path, client, context=28000)
     try:
         run['model_calls'] = run['_config']['limits']['max_model_calls'] - 1
         before = copy.deepcopy(agent.conversation)
@@ -351,3 +351,96 @@ async def test_summary_and_next_dispatch_use_current_key_without_persisting_it(t
         assert run['_config'] == engine.settings.value
     finally:
         await engine.close()
+
+
+async def test_native_duplicate_storage_does_not_reject_fitting_followup(tmp_path):
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), context=100000, count=0)
+    try:
+        text = 'x' * 55000
+        engine._append_context(agent, {'role': 'assistant', 'content': text,
+            'provider_raw': {'provider': 'local', 'model': 'fixture', 'message': {'role': 'assistant', 'content': text}}})
+        assert len(json.dumps(agent.conversation)) > 100000
+        profile, tools, limits = call_args(engine, run, agent)
+        assert pressure(profile, agent.conversation, tools, engine._policy(run, agent), limits)[0] < 1
+        assert engine.message_eligibility(agent)['allowed']
+        await engine._ensure_context(run, agent, profile, tools, limits)
+        assert run['model_calls'] == 0
+        await engine.human_message(agent.id, 'Continue')
+        assert agent.pending[-1] == ('Continue', True)
+    finally:
+        await engine.close()
+
+
+async def test_token_window_overflow_is_shared_by_dispatch_and_admission(tmp_path):
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=0)
+    try:
+        for config in (engine.settings.value, run['_config']):
+            config['providers'][0]['context_window_tokens'] = 6000
+        assert len(json.dumps(agent.conversation)) < run['_config']['limits']['max_context_chars']
+        assert engine.message_eligibility(agent)['reason'] == 'context_limit'
+        with pytest.raises(ValueError, match='文脈予算'):
+            await engine.human_message(agent.id, 'Cannot fit')
+        with pytest.raises(ValueError, match='文脈予算'):
+            await engine._ensure_context(run, agent, *call_args(engine, run, agent))
+        assert run['model_calls'] == 0
+    finally:
+        await engine.close()
+
+
+async def test_last_call_is_usable_below_hard_cap_without_optional_summary(tmp_path):
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]))
+    try:
+        run['model_calls'] = run['_config']['limits']['max_model_calls'] - 1
+        before = copy.deepcopy(agent.conversation)
+        assert engine.message_eligibility(agent)['allowed']
+        await engine._ensure_context(run, agent, *call_args(engine, run, agent))
+        assert agent.conversation == before and agent.compactions == 0
+        assert run['model_calls'] == run['_config']['limits']['max_model_calls'] - 1
+    finally:
+        await engine.close()
+
+
+async def test_lookup_masks_nested_argument_keys_without_merging_collisions(tmp_path):
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=0)
+    try:
+        secret = 'SYNTHETIC-secret-as-property'
+        engine.set_secret('local', secret)
+        arguments = {secret: 'first', '[redacted]': 'second', 'nested': [{secret: {'inside-' + secret: 'third'}}]}
+        original = {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'c1', 'name': 'list_team', 'arguments': arguments}]}
+        engine._append_context(agent, original)
+        before = copy.deepcopy(agent.original_history)
+        result = await engine.execute_tool(run, agent, 'read_context_history', {'record_ids': [agent.record_sequence]})
+        assert secret not in json.dumps(result)
+        call = result['records'][0]['tool_calls'][0]
+        assert 'arguments' not in call
+        # JSON text remains text: duplicate masked names are never parsed into
+        # a collapsing object by the application.
+        text = call['arguments_json']
+        assert '"[redacted]":"first"' in text and '"[redacted]":"second"' in text
+        assert 'inside-[redacted]' in text and 'third' in text
+        assert agent.original_history == before
+        assert secret in agent.conversation[-1]['tool_calls'][0]['arguments']
+        assert len(json.dumps(result)) < 24000
+    finally:
+        await engine.close()
+
+
+@pytest.mark.parametrize('kind', ['local', 'openai', 'anthropic'])
+def test_planner_estimates_incrementally_without_reserializing_all_prefixes(monkeypatch, kind):
+    import workbench.context as context
+    profile = {'kind': kind, 'context_window_tokens': 0}
+    limits = {**DEFAULT['limits'], 'max_context_chars': 1000000}
+    messages = [{'role': 'user', 'content': 'Original task', '_human': True}]
+    messages += [{'role': 'assistant', 'content': ('日本語\\n"quoted"\\backslash' + 'x' * 950), '_record_id': index + 2}
+                 for index in range(950)]
+    measured = []
+    original = context.request_size
+    def observe(*args):
+        measured.append(1)
+        return original(*args)
+    monkeypatch.setattr(context, 'request_size', observe)
+    plan = plan_compaction(profile, messages, [], 'Fixed policy', limits)
+    assert plan is not None and len(measured) == 2
+    system = context.SUMMARY_POLICY + f'\nKeep the complete JSON output within {limits["context_summary_chars"]} characters.'
+    assert pressure(profile, plan.request, [], system, limits, output_tokens=4096)[0] <= 1
+    assert len(plan.indexes) > 800

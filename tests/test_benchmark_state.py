@@ -54,18 +54,18 @@ def test_seeded_fixture_is_exact_bounded_and_context_eligible(tmp_path, monkeypa
         assert engine.message_eligibility(agent)['allowed']
     assert all(len(event['text']) == 160 for event in engine.events)
 
-    # Prove each public projection reaches every private conversation's real
-    # json.dumps admission scan; no early time/budget guard hides that cost.
+    # Prove each public projection reaches every private conversation's actual
+    # native-request pressure scan; no early time/budget guard hides that cost.
     conversation_ids = {id(agent.conversation) for agent in engine.agents.values()}
     observed = []
-    original_dumps = json.dumps
+    original_pressure = engine_module.pressure
 
-    def observe_dumps(value, *args, **kwargs):
-        if id(value) in conversation_ids:
-            observed.append(id(value))
-        return original_dumps(value, *args, **kwargs)
+    def observe_pressure(profile, messages, *args, **kwargs):
+        if id(messages) in conversation_ids:
+            observed.append(id(messages))
+        return original_pressure(profile, messages, *args, **kwargs)
 
-    monkeypatch.setattr(engine_module.json, 'dumps', observe_dumps)
+    monkeypatch.setattr(engine_module, 'pressure', observe_pressure)
     engine.snapshot()
     assert set(observed) == conversation_ids and len(observed) == len(conversation_ids)
     observed.clear()
