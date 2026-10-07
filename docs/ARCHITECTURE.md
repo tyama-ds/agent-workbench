@@ -35,7 +35,7 @@ PM starts from the exact visible user task plus the shared policy and verified r
 
 The app does not force a fixed number of agents on every request. PM decides whether delegation is useful and calls the real tool; no tool call means no pretend worker. Roles are task-specific text. An idle PM with outstanding workers is waiting for mail. A human question pauses that agent; peers can still proceed. Settings cannot change while teams are active/waiting/stopping. After a completed run's settings change, follow-up requires a new run so old permissions cannot be revived.
 
-Snapshots contain bounded display logs. Full protocol history remains in process memory, bounded at the next model request by the context character limit. There is no silent truncation of tool history and no hidden summarizer; budget exhaustion is surfaced as an error. The UI can receive another instruction, but spent run/turn budgets are not reset.
+Snapshots contain bounded display logs. Model replay context is automatically compacted at safe pre-request boundaries; a separate bounded original-record archive remains in process memory. See the context-memory section below. The UI can receive another instruction, but spent run/turn budgets are not reset.
 
 ### Terminal batch precedence (0.1.1.dev21)
 
@@ -417,3 +417,60 @@ acceptance response overridden only after the synthetic engine has returned its
 receipt. This last case proves that unknown browser outcome and server-side
 acceptance can coexist. Windows Edge execution remains a separate acceptance
 gate; writing the test is not evidence that it passed.
+
+
+## Context memory and automatic compaction (0.1.1.dev31)
+
+`workbench/context.py` plans compaction at a model-request boundary, after all
+results of a tool batch have settled. A retained assistant message, its provider-native
+reasoning/signatures, and all parallel tool results are indivisible. The exact original
+assignment, last two human messages, and the configured recent groups remain. Earlier
+human/peer/model/tool records become structured, explicitly untrusted summary data
+(goals, constraints, decisions, evidence, open tasks and uncertainty). Summary input
+includes source record IDs and human-origin metadata but excludes native reasoning.
+Summary text is never promoted to system instructions or new authorization. A model
+must reread a cited human original before relying on older permission or consequential
+constraints; if it is unavailable, it must ask the human. This is instruction-level
+provenance guidance, not a semantic guarantee that a model obeys or remembers everything.
+Existing runtime path scopes, role checks and budgets remain the enforced boundary.
+
+Auto-compaction defaults to enabled, including existing settings that omit its fields.
+The default trigger is 75% of the configured request budget, with four recent protocol
+groups and a 6000-character maximum structured summary. Every summary uses the same
+selected profile/model and endpoint with no tools, consumes the existing logical
+model-call budget and run deadline, and can incur ordinary API cost. Provider transport
+retry behavior is unchanged; a logical call is not a monetary cap or a count of HTTP
+attempts. No live-provider quality, tokenizer, pricing or billing inference is made.
+
+`max_context_chars` now counts serialized replay plus system policy and tool definitions.
+Per-profile `context_window_tokens` is an optional user-supplied planning budget (0:
+disabled). It uses serialized UTF-8 byte length as a deliberately conservative heuristic,
+not an exact tokenizer or a guarantee of fitting an unknown model. It includes output
+allowance plus `context_reserve_tokens` (default 1024) for additional overhead/tool growth.
+Provider-native hidden representations and provider-specific encoding can differ. The
+actual model window is not auto-detected. Large fixed policies, tool schemas, the original
+assignment or recent results can still exceed the budget and stop execution.
+
+Planning selects complete older groups that fit the summarizer's own request budget.
+A successful summary must validate against the fixed JSON shape, shrink the request
+by at least 5%, and reduce serialized characters. At most three passes occur at one
+boundary; if the request still exceeds its hard budget, it stops visibly. If it fits
+but cannot beneficially compact at the soft trigger, it can proceed until a hard limit.
+Malformed, empty, oversized, non-shrinking, timed-out or failed summaries do not replace
+that pass's active history. Successful earlier passes stay committed. There are no
+automatic failure retries. Stop cancels inference, and queued human/peer messages remain
+in their existing queue while summarization awaits. Each dispatch rechecks time/call
+budgets and current credentials. Compaction never replenishes any run/turn/tool budget.
+
+Original records are separately retained in RAM up to `max_history_chars` (default
+400000 serialized characters) and 2000 records per agent, oldest first. An oversized
+record is omitted whole. The visible omitted count includes each evicted/oversized
+record; there is no complete-audit or infinite-memory promise. The model can use
+`read_context_history` for up to eight retained IDs in its own agent only, with a
+24000-character response ceiling. Native private reasoning is excluded and configured
+secrets are masked. Missing and oversized records are explicitly reported; a returned
+record's `_human` field identifies its source, not the truth of text within it.
+The archive is not exposed through browser snapshots or automatically written to disk.
+Existing display-log/result retention remains separate. Browser reload does not end the
+server process, but server restart loses context, originals, summaries and memory keys.
+Persistence, cross-run memory and restart/resume are deliberately outside this feature.

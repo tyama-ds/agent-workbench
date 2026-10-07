@@ -101,6 +101,7 @@ def validate_settings(raw):
         if type(profile['enabled']) is not bool:
             raise ValueError('enabled は bool です')
         number(profile.setdefault('request_timeout_seconds', 180), 'API timeout', 5, 1800)
+        number(profile.setdefault('context_window_tokens', 0), 'context_window_tokens', 0, 2000000, integer=True)
     for name, roots in value['paths'].items():
         if not isinstance(roots, list) or len(roots) > 32:
             raise ValueError(f'{name}: フォルダーを32個以内で指定してください')
@@ -139,9 +140,18 @@ def validate_settings(raw):
     limits = {'max_workers': (0, 16), 'max_auto_collaborations': (0, 1000), 'max_model_calls': (1, 1000), 'max_tool_calls': (1, 5000),
               'max_turns_per_agent': (1, 100), 'max_run_seconds': (10, 86400),
               'max_context_chars': (4000, 2000000), 'max_output_tokens': (128, 65536),
-              'max_file_bytes': (1024, 50 * 1024 * 1024)}
+              'max_file_bytes': (1024, 50 * 1024 * 1024),
+              'context_trigger_percent': (50, 90), 'context_recent_groups': (2, 32),
+              'context_summary_chars': (512, 16000), 'context_reserve_tokens': (256, 65536),
+              'max_history_chars': (4000, 4000000)}
     for key, (low, high) in limits.items():
         number(value['limits'][key], key, low, high, integer=True)
+    if type(value['limits']['auto_compact']) is not bool:
+        raise ValueError('auto_compact: bool が必要です')
+    for profile in profiles:
+        window = profile['context_window_tokens']
+        if window and window <= value['limits']['max_output_tokens'] + value['limits']['context_reserve_tokens']:
+            raise ValueError('モデルの文脈予算は出力上限と余白の合計より大きく指定してください')
     text(value['system_policy'], 'system_policy', 16000, False)
     return value
 

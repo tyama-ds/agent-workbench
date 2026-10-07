@@ -1387,3 +1387,12 @@ and four bounded model traces. Full local checks, independent review and exact-h
 source/PR six-job CI belong to acceptance. UI design, permissions, runtime dependencies,
 historical evidence and the dev15 source ZIP remain unchanged. No local browser retry,
 live inference, user-PC action, binary upload, merge or release is included.
+
+
+## 0.1.1.dev31 — automatic context compaction (local verification)
+
+- Added bounded process-memory original records, source-aware history lookup, structured untrusted summaries, and safe complete native tool-batch retention.
+- Added configurable compaction, request-character and optional heuristic model-token budgets, summary size/recent-context/archive controls, and visible compaction/omission status.
+- Summary requests share ordinary run budgets/deadlines and preserve current history on failed/non-shrinking attempts; queued messages and cancellation retain their existing semantics.
+- No persistent memory, provider-quality guarantee, exact token count, billing cap, live paid API test, deployment or publication is implied.
+- Local verification results are recorded separately for this commit; prior published evidence describes its own exact revisions.

@@ -37,7 +37,13 @@ const FIELD_GROUPS = {
     ['max_tool_calls','ツール呼び出し上限','number',1],
     ['max_turns_per_agent','1エージェントのターン上限','number',1],
     ['max_run_seconds','1つの作業の制限時間（秒）','number',1],
-    ['max_context_chars','コンテキスト上限（文字）','number',1000],
+    ['max_context_chars','リクエスト文脈の上限（文字）','number',1000,'1','システム方針・ツール定義・会話を含みます。実モデルの窓サイズとは別の上限です。'],
+    ['auto_compact','古い会話を自動で要約する','checkbox'],
+    ['context_trigger_percent','要約を始める文脈使用率（%）','number',50],
+    ['context_recent_groups','そのまま残す直近のやり取り数','number',2,'1','ツール呼び出しと結果の組は分割しません。元の依頼と直近2件の人の発言も保持します。'],
+    ['context_summary_chars','1つの要約の上限（文字）','number',512],
+    ['context_reserve_tokens','モデル文脈予算の追加余白（推定 token）','number',256],
+    ['max_history_chars','元の履歴のメモリ上限（文字／担当者）','number',4000,'1','上限超過は古い記録から削除。最大2000件。自動保存・再起動後の復元はしません。'],
     ['max_output_tokens','1回の出力上限（token）','number',1],
     ['max_file_bytes','1ファイルのサイズ上限（byte）','number',1],
   ],
@@ -50,9 +56,10 @@ const PROFILE_FIELDS = [
   ['api_key_env','API キーの環境変数名','text','OPENAI_API_KEY'],
   ['proxy_url','クラウド用プロキシ URL（任意）','url'],
   ['request_timeout_seconds','リクエスト上限（秒）','number',1,'1','Local は共通設定の上限も適用されます'],
+  ['context_window_tokens','モデル文脈予算（推定 token、0 は無効）','number',0,'1','モデルに合わせて指定。UTF-8 byte 数を保守的な推定に使用し、出力上限と追加余白も確保します。正確な token 数・収容の保証ではありません。'],
 ];
 const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機'};
-const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
+const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],context_trigger_percent:[50,90],context_recent_groups:[2,32],context_summary_chars:[512,16000],context_reserve_tokens:[256,65536],max_history_chars:[4000,4000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
 const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,selectionGeneration:0,compactState:false,loadedDetail:null,loadedEventsRun:null,detailError:false,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,pollAgain:false,drafts:new Map(),conversationViews:new Map(),logContext:'',logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
 Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map()});
@@ -123,7 +130,7 @@ function makeField(spec,value,prefix) {
   else if(type==='paths') { input=element('textarea','path-input');input.rows=4;input.placeholder=extra||''; }
   else { input=element('input');input.type=type;if(['text','url'].includes(type))input.placeholder=extra||''; }
   input.id=id;input.dataset.key=key;input.autocomplete='off';
-  if(type==='number'){const bounds=prefix.startsWith('profile-')?[5,1800]:NUMBER_BOUNDS[prefix]?.[key];input.min=String(bounds?.[0]??extra??0);input.step=step||'1';input.required=true;if(bounds||max!==undefined)input.max=String(bounds?.[1]??max);if(key==='max_vram_mb')input.step='1';}
+  if(type==='number'){const bounds=prefix.startsWith('profile-')?(key==='context_window_tokens'?[0,2000000]:[5,1800]):NUMBER_BOUNDS[prefix]?.[key];input.min=String(bounds?.[0]??extra??0);input.step=step||'1';input.required=true;if(bounds||max!==undefined)input.max=String(bounds?.[1]??max);if(key==='max_vram_mb')input.step='1';}
   if(type==='checkbox'){input.checked=value===true;wrap.append(input,name);}
   else {input.value=type==='paths'?(Array.isArray(value)?value.join('\n'):''):String(value??'');wrap.append(name,input);}
   if(help)wrap.appendChild(element('small','',help));
@@ -854,6 +861,9 @@ function renderConversation(agent) {
   $('conversationLog').setAttribute('aria-busy',String(loading));$('resultsPanel').setAttribute('aria-busy',String(loading));
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
   $('conversationMeta').textContent=agent?`${!agent.parent_id?'PM':'作業者'} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
+  const memory=agent?.context_memory;
+  $('contextMemoryStatus').hidden=!memory;
+  $('contextMemoryStatus').textContent=memory?`${memory.compacting?'会話を要約中 · ':''}文脈圧縮 ${memory.compactions} 回 · 元の履歴 ${memory.history_records} 件（上限で除外 ${memory.history_omitted} 件）· 今回の起動中のみ。要約には情報が抜けることがあります。`:'';
   $('conversationProfile').textContent=agent?configuredProfileLabel(agent)+'（応答モデル未確認）':'';
   $('conversationStatus').hidden=!agent;
   if(agent){$('conversationStatus').className='status-badge '+(Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'');$('conversationStatus').textContent=stateLabel(agent);}
@@ -1049,7 +1059,7 @@ async function initialize() {
   $('settingsForm').addEventListener('input',event=>{if(event.target.type!=='password')markSettingsDirty();});
   $('settingsForm').addEventListener('change',event=>{if(event.target.type!=='password')markSettingsDirty();});
   $('settingsForm').addEventListener('invalid',event=>{const card=event.target.closest('.profile-editor');if(card&&card.querySelector('.profile-content').hidden)card.querySelector('[data-readonly]').click();},true);
-  $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180},index,true,false);markSettingsDirty();});
+  $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180,context_window_tokens:0},index,true,false);markSettingsDirty();});
   $('settingsForm').addEventListener('submit',saveSettings);
   $('runForm').addEventListener('submit',async event=>{
     event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun||ui.taskReuseCandidate)return;
