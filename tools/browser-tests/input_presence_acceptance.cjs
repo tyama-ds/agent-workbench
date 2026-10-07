@@ -359,21 +359,19 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
         await assertMarker(agent);
       }
       await focusCardByTab(root,name+' screenshot question input owner');await assertVisible(card(root.id),name+' screenshot question input owner');await assertGeometry('input presence questions '+name);
-      // Observe settled native focus through a real unchanged poll. A viewport
-      // capture avoids captureBeyondViewport; neither capture may reveal the
-      // card for the test or silently change its focus/scroll geometry.
+      // Full-page capture was proven to reset the tablet roster's scroll.
+      // Use viewport-only focused evidence, with real unchanged polls on both
+      // sides, and never reveal or restore the card for the screenshot.
       await poll();assert.equal(await card(root.id).evaluate(node=>node===document.activeElement),true,name+': an unchanged poll retains the native card focus');
-      const capture={viewport:name};(report.inputPresenceGeometry??=[]).push(capture);
+      const capture={viewport:name,captureMode:'viewport-only'};(report.inputPresenceGeometry??=[]).push(capture);
       const beforeCapture=await questionCaptureState('before viewport capture',name);
       capture.beforeCapture=beforeCapture;
-      await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-questions-viewport.png'),fullPage:false,animations:'disabled'});
+      await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-questions.png'),fullPage:false,animations:'disabled'});
       const afterViewport=await questionCaptureState('after viewport capture',name);
       capture.afterViewport=afterViewport;
-      await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-questions.png'),fullPage:true,animations:'disabled'});
-      const afterFullPage=await questionCaptureState('after full-page capture',name);
-      capture.afterFullPage=afterFullPage;
       assert.deepEqual(afterViewport.layout,beforeCapture.layout,name+': viewport capture does not change focus or scroll');
-      assert.deepEqual(afterFullPage.layout,beforeCapture.layout,name+': full-page capture restores focus and scroll');
+      await poll();const afterPoll=await questionCaptureState('after post-capture poll',name);capture.afterPoll=afterPoll;
+      assert.deepEqual(afterPoll.layout,beforeCapture.layout,name+': a later unchanged poll preserves the focused viewport geometry');
       let position=cycle.indexOf(root);
       for(const action of ['pointer','Space']){
         position=(position+1)%cycle.length;await activate(cycle[position],action);

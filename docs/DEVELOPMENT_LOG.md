@@ -112,6 +112,16 @@ Hosted acceptance correction:
   before full-page captures, and pre/post focus/scroll geometry in the report.
   No test-side scrolling or production change is added while distinguishing a
   capture effect from a delayed layout/scroll defect.
+- The [capture diagnostic source run](https://github.com/tyama-ds/agent-workbench/actions/runs/37603649425)
+  on `efb482cd` established that transition: tablet focus remained fully visible
+  after a real unchanged poll and before/after viewport capture, with identical
+  scroll geometry. Only full-page capture shifted the card by the roster's
+  165-pixel scroll offset, causing the strict post-capture assertion to fail.
+  Independent report and viewport-pixel review confirmed the capture-induced
+  change. Focused-question evidence therefore uses viewport-only screenshots,
+  preserving strict full-card/lower-action checks, unchanged polls on both sides
+  and recorded pre/post geometry. No production workaround, test-driven reveal,
+  restored scroll or weakened visibility assertion is introduced.
 
 ## 0.1.1.dev27 — Displayed request text into a protected new-task draft (2026-10-06)
 
