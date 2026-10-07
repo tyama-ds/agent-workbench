@@ -11,7 +11,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .context import (MEMORY_POLICY, SUMMARY_POLICY, encoded, parse_summary, plan_compaction, pressure, source_record)
+from .context import (MEMORY_POLICY, SUMMARY_POLICY, encoded, parse_summary, plan_compaction, pressure, redacted_json, source_record)
 from .config import Settings, ROOT, number, text, validate_settings
 from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
@@ -750,18 +750,19 @@ class Engine:
                     result['unavailable_ids'].append(ident)
                     continue
                 record = source_record(records[ident])
-                if 'tool_calls' in record:
-                    # Serialize untrusted argument property names before masking.
-                    # Keeping text also avoids silently merging redacted-key
-                    # collisions, while leaving native replay untouched.
-                    record['tool_calls'] = [{'id': call['id'], 'name': call['name'],
-                        'arguments_json': encoded(call['arguments'])} for call in record['tool_calls']]
+                calls = record.pop('tool_calls', None)
                 record = self._redact_tree(record)
+                if calls is not None:
+                    # Mask original strings before JSON escaping, retaining
+                    # colliding property entries as text rather than a dict.
+                    redact = self._redactor()
+                    record['tool_calls'] = [{'id': redact(call['id']), 'name': redact(call['name']),
+                        'arguments_json': redacted_json(call['arguments'], redact)} for call in calls]
                 candidate = [*result['records'], record]
                 # Reserve room for every requested ID in either outcome list.
                 # The whole response, including the masked note, remains bounded.
-                if len(encoded({**result, 'records': candidate,
-                                'unavailable_ids': ids, 'over_response_limit_ids': ids})) > 24000:
+                if len(json.dumps({**result, 'records': candidate, 'unavailable_ids': ids,
+                                   'over_response_limit_ids': ids}, ensure_ascii=False, allow_nan=False)) > 24000:
                     result['over_response_limit_ids'].append(ident)
                     continue
                 result['records'] = candidate

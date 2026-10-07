@@ -444,3 +444,33 @@ def test_planner_estimates_incrementally_without_reserializing_all_prefixes(monk
     system = context.SUMMARY_POLICY + f'\nKeep the complete JSON output within {limits["context_summary_chars"]} characters.'
     assert pressure(profile, plan.request, [], system, limits, output_tokens=4096)[0] <= 1
     assert len(plan.indexes) > 800
+
+
+async def test_lookup_masks_escaped_secrets_before_encoding_arguments(tmp_path):
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=0)
+    try:
+        secret = 'synthetic"quote\\backslash'
+        engine.set_secret('local', secret)
+        engine._append_context(agent, {'role': 'assistant', 'content': '', 'tool_calls': [
+            {'id': 'c1', 'name': 'list_team', 'arguments': {secret: secret, 'nested': [{secret: secret}]}}]})
+        result = await engine.execute_tool(run, agent, 'read_context_history', {'record_ids': [agent.record_sequence]})
+        text = result['records'][0]['tool_calls'][0]['arguments_json']
+        decoded = json.loads(text)
+        assert decoded == {'[redacted]': '[redacted]', 'nested': [{'[redacted]': '[redacted]'}]}
+        assert secret not in text and secret not in str(decoded)
+        assert secret in agent.conversation[-1]['tool_calls'][0]['arguments']
+    finally:
+        await engine.close()
+
+
+async def test_lookup_ceiling_uses_actual_tool_dispatch_serialization(tmp_path):
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=0)
+    try:
+        engine._append_context(agent, {'role': 'assistant', 'content': '', 'tool_calls': [
+            {'id': str(index), 'name': 'list_team', 'arguments': {}} for index in range(394)]})
+        ident = agent.record_sequence
+        result = await engine.execute_tool(run, agent, 'read_context_history', {'record_ids': [ident]})
+        assert result['records'] == [] and result['over_response_limit_ids'] == [ident]
+        assert len(json.dumps(result, ensure_ascii=False, allow_nan=False)) <= 24000
+    finally:
+        await engine.close()

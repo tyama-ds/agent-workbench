@@ -33,6 +33,20 @@ def encoded(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
 
 
+def redacted_json(value, redact):
+    """Mask original strings before escaping, without collapsing object keys.
+
+    This is JSON text, never a reconstructed arguments dictionary. Distinct
+    original keys can become identical after masking and must remain separate.
+    """
+    if isinstance(value, dict):
+        return '{' + ','.join(encoded(redact(str(key))) + ':' + redacted_json(item, redact)
+                              for key, item in value.items()) + '}'
+    if isinstance(value, list):
+        return '[' + ','.join(redacted_json(item, redact) for item in value) + ']'
+    return encoded(redact(value) if isinstance(value, str) else value)
+
+
 def request_size(profile, messages, tools, system):
     """Include native replay, system text and tool schemas; no provider calls."""
     messages = [{k: v for k, v in message.items() if k != 'provider_raw' or v} for message in messages]
