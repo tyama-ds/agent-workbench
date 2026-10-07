@@ -1428,3 +1428,25 @@ live inference, user-PC action, binary upload, merge or release is included.
   added a full-engine failure/key-replacement/explicit-human-resume regression.
   Both new real-engine fixture regressions pass. No production recovery behavior
   or permission check was relaxed.
+
+
+### Dev31 first published acceptance correction (2026-10-07)
+
+- Source `de05bc6e2b040397a612f81feca98420c740e4f2` ran on
+  [source CI](https://github.com/tyama-ds/agent-workbench/actions/runs/37608842232)
+  and [PR CI](https://github.com/tyama-ds/agent-workbench/actions/runs/37608847669).
+  Both Edge jobs stopped at the earlier saved-result composer before the new
+  receipt/compaction cases: the old deterministic provider emitted arbitrary raw
+  protocol dictionaries. Real context sizing correctly rejected these invalid
+  replay envelopes and made continuation unavailable.
+- Independent review reproduced the cause with the real engine. Corrected only
+  synthetic provider replay to valid Local/OpenAI/Anthropic envelopes, preserving
+  private-protocol sentinels, exact tool-call/result groups and export exclusions.
+  Added three real-engine saved-result/follow-up regressions plus three real-adapter
+  replay-sizing regressions. Production validation, budgets and assertions remain
+  strict; neither failed Edge job was retried unchanged.
+- All four source matrix jobs passed. The initial PR Windows 3.11 job separately
+  hit the existing 10-second Node helper subprocess timeout (1 failed, 1,511 passed,
+  1 skipped); the other three PR matrix jobs passed. This initial failure remains
+  visible. A new corrected head needs fresh source/PR acceptance; no success is
+  inferred from the initial runs.

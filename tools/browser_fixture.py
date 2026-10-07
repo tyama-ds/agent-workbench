@@ -41,6 +41,28 @@ COMPACTION_CASE = {
 }
 
 
+def synthetic_native(profile, text, calls=(), *, private=''):
+    """Use valid replay envelopes while retaining export-exclusion sentinels."""
+    kind = profile['kind']
+    raw = {'provider': kind, 'model': profile['model']}
+    if kind == 'local':
+        raw['message'] = {'role': 'assistant', 'content': text, 'reasoning_content': private,
+            'tool_calls': [{'id': call['id'], 'type': 'function', 'function': {
+                'name': call['name'], 'arguments': json.dumps(call['arguments'])}} for call in calls]}
+    elif kind == 'openai':
+        raw['output'] = ([{'type': 'reasoning', 'encrypted_content': private}] if private else []) + [
+            {'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': text}]}] + [
+            {'type': 'function_call', 'call_id': call['id'], 'name': call['name'],
+             'arguments': json.dumps(call['arguments'])} for call in calls]
+    elif kind == 'anthropic':
+        raw['content'] = ([{'type': 'thinking', 'thinking': private, 'signature': 'synthetic-signature'}]
+                          if private else []) + [{'type': 'text', 'text': text}] + [
+            {'type': 'tool_use', 'id': call['id'], 'name': call['name'], 'input': call['arguments']} for call in calls]
+    else:
+        raise AssertionError('Unsupported synthetic provider kind')
+    return raw
+
+
 class SyntheticClient:
     """Exercise real worker creation, mail, human questions and cancellation."""
 
@@ -131,21 +153,24 @@ class SyntheticClient:
                                         'text': '[SYNTHETIC] Safe saved bytes.',
                                         'expected_sha256': 'missing'})]
             else:
-                return ModelReply(text='[SYNTHETIC] Historical report ' + marker +
-                                  ('; current authentication verified.' if current else '.'),
+                text = '[SYNTHETIC] Historical report ' + marker + ('; current authentication verified.' if current else '.')
+                return ModelReply(text=text,
                                   thinking='[SYNTHETIC] Private historical reasoning ' + marker,
-                                  tool_calls=[], usage={}, raw={'private': marker})
-            return ModelReply(text='[SYNTHETIC] Historical log ' + marker,
+                                  tool_calls=[], usage={}, raw=synthetic_native(profile, text, private=marker))
+            text = '[SYNTHETIC] Historical log ' + marker
+            native_calls = [{'id': f'retained-{count}-{i}', 'name': name, 'arguments': args}
+                            for i, (name, args) in enumerate(calls)]
+            return ModelReply(text=text,
                               thinking='[SYNTHETIC] Private historical reasoning ' + marker,
-                              tool_calls=[{'id': f'retained-{count}-{i}', 'name': name, 'arguments': args}
-                                          for i, (name, args) in enumerate(calls)], usage={}, raw={'private': marker})
+                              tool_calls=native_calls, usage={}, raw=synthetic_native(profile, text, native_calls, private=marker))
         if messages and messages[0].get('content') == '[SYNTHETIC] Save result.':
             if count == 0:
                 calls = [('write_text', {'path': str(Path(identity['write_roots'][0]) / 'browser-result.txt'),
                                         'text': '[SYNTHETIC] Saved text 日本語.', 'expected_sha256': 'missing'})]
             else:
                 return ModelReply(text='[SYNTHETIC] Terminal answer 日本語.', thinking='PRIVATE-REASONING-FIXTURE',
-                                  tool_calls=[], usage={}, raw={'protocol': 'PRIVATE-PROTOCOL-FIXTURE'})
+                                  tool_calls=[], usage={}, raw=synthetic_native(profile, '[SYNTHETIC] Terminal answer 日本語.',
+                                      private='PRIVATE-PROTOCOL-FIXTURE'))
         elif messages and messages[0].get('content') == '[SYNTHETIC] Complete immediately.':
             calls = []
         elif identity['parent_id']:
