@@ -5,6 +5,42 @@ Commit-specific runs, artifact links and historical review records are indexed i
 use the live PR’s explicitly named head for current acceptance. Counts below describe
 the named development revisions, not automatic acceptance of later documentation edits.
 
+## Integrated receipts, composition guards and context compaction (0.1.1.dev31)
+
+The dev29 strict literal `ok === true` receipt guard retains exact input on missing,
+malformed or interrupted replies, even when the real server already accepted it.
+Its Windows Edge module is imported and awaited by the smoke runner: it sends each
+message once to the real synthetic engine, alters only response delivery, verifies
+exact single user logs, owner/ABA preservation and absence of retries across polls.
+This fixes the follow-on explicitly left outside the historical dev28 section below.
+
+The dev30 credential Enter guards ignore `isComposing` and legacy key code 229.
+Production-callback regressions and six browser-dispatched flag combinations cover
+both provider and search inputs. These synthetic events do **not** establish native
+Windows IME behavior. Existing non-composition native Enter flows remain covered.
+
+The dev31 context implementation keeps bounded process-only originals, structured
+untrusted summaries, exact initial/recent human text, complete native protocol
+batches and source-aware history lookup. Limits include summary call/time budgets,
+request characters, optional UTF-8-byte token estimation, archive size and count.
+These are planning limits, not exact tokenization, fit guarantees or billing caps.
+
+The added deterministic browser fixture exercises the unmodified real engine:
+large assistant/tool exchanges cross the configured threshold, a test-only provider
+release gate exposes actual summarizing status, and a successful summary continues
+through `read_context_history` before completion. The fake provider itself verifies
+exact human and assistant originals and the missing-record response. Settings
+opt-out/re-enable and edited budgets survive real Save/reload. API status omits raw
+archives; desktop/narrow captures check truthful counters and unchanged polls.
+No production state, function or endpoint is replaced to induce compaction.
+
+The original standalone dev31 suite/review is historical evidence in
+[evidence/dev31-context-compaction-local.json](evidence/dev31-context-compaction-local.json).
+Integrated local checks, final source/PR five-job CI and artifact/pixel review are
+reported for their exact commits in PR #2. A checked-in acceptance script is not
+proof that Edge has run it. Live/paid model calls, summary quality, real OS IME,
+corporate-PC/proxy compatibility, bundled Python, merge and deployment are excluded.
+
 ## Neutral input presence (0.1.1.dev28, 2026-10-06)
 
 The existing roster/session surfaces derive neutral marks from exact nonempty

@@ -1,0 +1,29 @@
+{
+  "source_head": "39f38227adcb92d8d94cbfd67fe984c3900d553d",
+  "pr_updated_at": "2026-10-07T10:16:17Z",
+  "captured_at": "2026-10-07T10:26:33.222892+00:00",
+  "pr_url": "https://github.com/tyama-ds/agent-workbench/pull/2",
+  "body_utf8_offset": 289,
+  "body_bytes": 7320,
+  "body_characters": 7289,
+  "body_sha256": "576dfd06ae501f586d9ac2477f8affb6cafb3b36ef89a7c19ac201ae352fc68a",
+  "original_urls": [
+    "https://github.com/tyama-ds/agent-workbench/blob/39f38227adcb92d8d94cbfd67fe984c3900d553d/README.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/39f38227adcb92d8d94cbfd67fe984c3900d553d/docs/ARCHITECTURE.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/39f38227adcb92d8d94cbfd67fe984c3900d553d/docs/VALIDATION.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/39f38227adcb92d8d94cbfd67fe984c3900d553d/docs/DEVELOPMENT_LOG.md",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37604758017",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37604765942",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37604758017/artifacts/11474646564",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37604765942/artifacts/11474482038",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37405818118",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37406734628",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37407490083",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37408225451",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37601859460",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37603649425",
+    "https://github.com/tyama-ds/agent-workbench/blob/39f38227adcb92d8d94cbfd67fe984c3900d553d/docs/evidence/dev27-task-reuse-verification.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/39f38227adcb92d8d94cbfd67fe984c3900d553d/docs/evidence/dev27-task-reuse-verification.json",
+    "https://github.com/tyama-ds/agent-workbench/blob/39f38227adcb92d8d94cbfd67fe984c3900d553d/docs/evidence/README.md"
+  ]
+}

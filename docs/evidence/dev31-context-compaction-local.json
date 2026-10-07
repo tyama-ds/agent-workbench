@@ -1,0 +1,52 @@
+{
+  "feature": "Automatic bounded context compaction",
+  "version": "0.1.1.dev31",
+  "scope": "Historical local dev31 verification before source integration and browser acceptance; not final PR acceptance.",
+  "branch": "context-compaction-local",
+  "base_commit": "8634eab9d0825b0b2847446424db03f6a76ed803",
+  "commit": "e787341ab5361bce957389908ac114f84f9e30f9",
+  "verified_at_utc": "2026-10-07T09:21:04Z",
+  "clean_tree": true,
+  "checks": {
+    "full_pytest": {
+      "passed": 1469,
+      "skipped": 42,
+      "failed": 0,
+      "seconds": 81.71,
+      "skip_scope": "Native Windows junction/kernel/process/watchdog/cmd.exe/PowerShell/mutex regressions"
+    },
+    "pip_check": "No broken requirements found",
+    "javascript_syntax": "passed",
+    "git_diff_check": "passed",
+    "active_checkout_import_assertion": "passed",
+    "excluded_historical_file": "absent and unchanged"
+  },
+  "independent_review": {
+    "commit": "e787341ab5361bce957389908ac114f84f9e30f9",
+    "result": "approved, no remaining blockers",
+    "focused_tests_passed": 162,
+    "randomized_planner_reference_cases": 74,
+    "planner_950_record_seconds": 0.023
+  },
+  "not_run": [
+    "Live or paid provider calls and summarization quality evaluation",
+    "Native Windows and real browser/Edge acceptance",
+    "Remote publication and CI",
+    "Deployment, merge, Python bundling"
+  ],
+  "semantics": {
+    "automatic_compaction_default": true,
+    "trigger_percent": 75,
+    "recent_complete_groups": 4,
+    "summary_max_chars": 6000,
+    "original_history_max_chars_per_agent": 400000,
+    "original_history_max_records_per_agent": 2000,
+    "summary_calls": "Same selected profile, charged to ordinary logical call/time budgets; not a monetary cap",
+    "token_estimate": "Optional per-profile planning budget; UTF-8-byte heuristic plus output/reserve, not a tokenizer or fit guarantee",
+    "persistence": false,
+    "original_task_and_recent_human_text": "retained exactly",
+    "old_authority": "summary is untrusted; reread cited retained human source or ask when missing",
+    "protocol": "Complete native assistant/tool-result groups retained or removed together",
+    "limits": "Lossy summaries, bounded original eviction, explicit no-progress/failure/cancellation and budget stops"
+  }
+}

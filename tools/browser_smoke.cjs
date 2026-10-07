@@ -19,6 +19,7 @@ const {allQuestionsAcceptance} = require('./browser-tests/questions_acceptance.c
 const {taskReuseAcceptance} = require('./browser-tests/task_reuse_acceptance.cjs');
 const {inputPresenceAcceptance} = require('./browser-tests/input_presence_acceptance.cjs');
 const {messageReceiptAcceptance} = require('./browser-tests/message_receipt_acceptance.cjs');
+const {contextCompactionAcceptance} = require('./browser-tests/context_compaction_acceptance.cjs');
 
 async function assertLayout(page,label) {
   const metrics=await page.evaluate(()=>{
@@ -692,6 +693,7 @@ async function main() {
     await settingsSaveAcceptance({page,context,origin,providerUrl,providerRequests,stateDir,artifacts,
       report,assertLayout,assertDialogLayout});
     await messageReceiptAcceptance({context,origin,providerRequests,report});
+    await contextCompactionAcceptance({context,origin,providerRequests,stateDir,artifacts,report,assertLayout});
     assert.deepEqual(providerRequests,[{method:'GET',path:'/v1/models'},{method:'GET',path:'/v1/models'}]);
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
     assert.deepEqual(report.pageErrors,[]);assert.deepEqual(report.cspErrors,[]);assert.deepEqual(report.externalRequests,[]);

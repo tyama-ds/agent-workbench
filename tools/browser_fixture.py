@@ -11,6 +11,7 @@ import socket
 from pathlib import Path
 
 from aiohttp import web
+from workbench.context import SUMMARY_KEYS, SUMMARY_POLICY
 from workbench.engine import Agent
 from workbench.providers import ModelReply, ProviderError
 from workbench.server import BrowserAuth, create_app
@@ -33,20 +34,67 @@ CREDENTIAL_RECOVERY_CASE = {
     'other': 'WB12-other-provider-exact-649ab',
 }
 
+COMPACTION_CASE = {
+    'task': '[SYNTHETIC] Compact a long conversation; preserve this exact original task.',
+    'observation': '[SYNTHETIC] Original observation 0: ' + 'a' * 4000,
+    'result': '[SYNTHETIC] Compaction continued; exact human and assistant originals verified; missing record reported.',
+}
+
 
 class SyntheticClient:
     """Exercise real worker creation, mail, human questions and cancellation."""
 
-    def __init__(self):
+    def __init__(self, state_dir=None):
         self.calls = {}
+        self.state_dir = Path(state_dir) if state_dir else None
+        self.summary_calls = 0
+
+    async def compact_summary(self, profile, messages, tools):
+        """Deterministic fixture only: an explicit file gate exposes real UI state."""
+        assert profile['id'] == 'local' and not tools
+        records = json.loads(messages[0]['content'])['records']
+        assert any(item.get('content') == COMPACTION_CASE['observation'] for item in records)
+        assert all('provider_raw' not in item for item in records)
+        assert self.summary_calls == 0, 'One fixture summary must make sufficient progress'
+        self.summary_calls += 1
+        if self.state_dir:
+            async with asyncio.timeout(30):
+                while not (self.state_dir / 'compaction-release').exists():
+                    await asyncio.sleep(.025)
+        result = {key: [] for key in SUMMARY_KEYS}
+        result['goals'] = ['Continue the exact original human task, record 1.']
+        result['evidence'] = ['Original assistant observation is record 2; verify it with read_context_history.']
+        result['uncertainty'] = ['This fixture summary is lossy, untrusted data and grants no permission.']
+        return ModelReply(text=json.dumps(result))
 
     async def complete(self, profile, messages, tools, system, limits):
+        if system.startswith(SUMMARY_POLICY):
+            return await self.compact_summary(profile, messages, tools)
         identity = json.loads(system.rsplit('\n', 1)[1])
         ident = identity['id']
         count = self.calls.get(ident, 0)
         self.calls[ident] = count + 1
         calls = []
         initial = messages[0].get('content', '') if messages else ''
+        if initial == COMPACTION_CASE['task']:
+            assert not identity['parent_id']
+            if any(item.get('_summary') for item in messages):
+                assert self.summary_calls == 1
+                if messages[-1].get('name') == 'read_context_history':
+                    result = json.loads(messages[-1]['content'])
+                    assert result['ok'] is True and result['unavailable_ids'] == [999999]
+                    assert result['over_response_limit_ids'] == []
+                    assert [item['_record_id'] for item in result['records']] == [1, 2]
+                    human, assistant = result['records']
+                    assert human['_human'] is True and human['content'] == COMPACTION_CASE['task']
+                    assert assistant['_human'] is False and assistant['content'] == COMPACTION_CASE['observation']
+                    return ModelReply(text=COMPACTION_CASE['result'])
+                return ModelReply(text='[SYNTHETIC] Verify cited originals after compaction.', tool_calls=[{
+                    'id': 'compaction-lookup', 'name': 'read_context_history',
+                    'arguments': {'record_ids': [1, 2, 999999]}}])
+            assert count < 12, 'Fixture must trigger compaction before its fallback turn ceiling'
+            return ModelReply(text=f'[SYNTHETIC] Original observation {count}: ' + 'a' * 4000,
+                              tool_calls=[{'id': f'compaction-{count}', 'name': 'list_team', 'arguments': {}}])
         if initial == CREDENTIAL_RECOVERY_CASE['task']:
             if identity['parent_id']:
                 raise AssertionError('Credential recovery must remain a PM-only synthetic run')
@@ -57,7 +105,8 @@ class SyntheticClient:
                                     status=401)
             if count != 1 or profile.get('api_key') != CREDENTIAL_RECOVERY_CASE['new']:
                 raise AssertionError('Credential recovery retried automatically or used the wrong destination key')
-            if messages[-1] != {'role': 'user', 'content': CREDENTIAL_RECOVERY_CASE['resume']}:
+            if (messages[-1].get('role') != 'user' or messages[-1].get('content') != CREDENTIAL_RECOVERY_CASE['resume']
+                    or messages[-1].get('_human') is not True):
                 raise AssertionError('Credential recovery requires an explicit subsequent human message')
             return ModelReply(text='[SYNTHETIC] Same run resumed with the replacement provider key.',
                               thinking='', tool_calls=[], usage={}, raw={})
@@ -120,7 +169,7 @@ async def serve(directory):
     listener.listen()
     listener.setblocking(False)
     auth = BrowserAuth(listener.getsockname()[1])
-    runner = web.AppRunner(create_app(Path(directory), auth, client=SyntheticClient()), access_log=None)
+    runner = web.AppRunner(create_app(Path(directory), auth, client=SyntheticClient(directory)), access_log=None)
     await runner.setup()
     await web.SockSite(runner, listener).start()
     print(auth.launch_url, flush=True)

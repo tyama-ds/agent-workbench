@@ -1396,3 +1396,35 @@ live inference, user-PC action, binary upload, merge or release is included.
 - Summary requests share ordinary run budgets/deadlines and preserve current history on failed/non-shrinking attempts; queued messages and cancellation retain their existing semantics.
 - No persistent memory, provider-quality guarantee, exact token count, billing cap, live paid API test, deployment or publication is implied.
 - Local verification results are recorded separately for this commit; prior published evidence describes its own exact revisions.
+
+
+## Dev29–31 integration and Windows Edge acceptance (2026-10-07)
+
+- Replayed accepted dev29 strict receipt, dev30 composition guards and dev31
+  compaction changes as deliberate local versioned commits onto the final dev28
+  source head `39f38227adcb92d8d94cbfd67fe984c3900d553d`. Preserved the final native
+  viewport-only focused-question captures and strict pre/post/unchanged-poll geometry.
+- Added a no-network compaction provider fixture and a full-engine regression:
+  real long assistant/tool groups trigger a summary, then exact retained human and
+  assistant originals are read through the actual history tool before completion.
+- Added awaited Edge acceptance for Save/reload of compaction opt-out/re-enable and
+  budgets; held actual summarizing status, completed status, unavailable record IDs,
+  desktop/narrow screenshots and unchanged polls. The fixture release file controls
+  only a deterministic provider wait, never production state or API behavior.
+- Kept the dev29 six-scenario real-server receipt module imported and awaited. Added
+  real-input synthetic composition-flag coverage for both key fields. Native OS IME
+  remains untested; synthetic events do not establish IME integration.
+- Archived the exact immediately preceding dev28 PR overview and its byte/hash
+  manifest; all older evidence payloads remain unchanged. Historical standalone
+  dev31 local results are explicitly separate from fresh integrated acceptance.
+- Full integrated tests, independent review and exact-head source/PR CI must be
+  checked before final acceptance. No local browser retry, live provider call,
+  user-PC action, runtime dependency, Python bundling, merge or deployment.
+
+- Independent integration review reproduced a test-fixture mismatch: the old
+  credential-recovery fixture compared a human message to an exact two-key dict,
+  while dev31 deliberately adds source-record and human-provenance metadata.
+  Changed only the fixture assertion to verify exact role/text and human provenance;
+  added a full-engine failure/key-replacement/explicit-human-resume regression.
+  Both new real-engine fixture regressions pass. No production recovery behavior
+  or permission check was relaxed.

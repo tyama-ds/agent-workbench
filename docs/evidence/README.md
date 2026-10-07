@@ -88,3 +88,9 @@ Retain this snapshot unchanged. If a later archive is needed, add a separately d
 snapshot and provenance manifest rather than duplicating the whole history in the PR.
 Document-only commits still need their own exact-head check results before being
 called verified; a copied archive is not a new application feature or version.
+
+## Dev28 input-presence acceptance before dev29–31 integration
+
+[Exact preceding PR overview](dev28-input-presence-verification.md) and [provenance manifest](dev28-input-presence-verification.json) preserve 7,320 UTF-8 bytes, SHA-256 `576dfd06ae501f586d9ac2477f8affb6cafb3b36ef89a7c19ac201ae352fc68a`. The accepted viewport-only question captures, unchanged-poll geometry, earlier failed checks and bounded CI retries remain explicitly recorded.
+
+[Historical dev31 local verification](dev31-context-compaction-local.json) records the original standalone compaction implementation and independent review before integration. It does not claim browser or final-head CI acceptance.
