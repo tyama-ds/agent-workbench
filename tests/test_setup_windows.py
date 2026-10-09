@@ -14,6 +14,37 @@ setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 
 
+@pytest.fixture(scope='module')
+def standard_python():
+    """Use the installed interpreter behind pytest's venv, never a launcher alias."""
+    executable = Path(getattr(sys, '_base_executable', None) or sys.executable)
+    required = ('Lib/os.py', 'Lib/venv/__init__.py', 'Lib/ensurepip/__init__.py')
+    if (not executable.is_absolute() or executable.name.lower() != 'python.exe'
+            or not executable.is_file()
+            or not all((executable.parent / name).is_file() for name in required)):
+        pytest.skip('A separately installed standard Windows CPython is required for wrapper tests')
+    return str(executable)
+
+
+@pytest.fixture(scope='module')
+def permitted_powershell_scripts():
+    """Respect the host's effective policy; never override it for a test."""
+    # PowerShell 7 can leave a PSModulePath that prevents Windows PowerShell 5.1
+    # from auto-loading its own security module in a Python child process.
+    command = ('Import-Module (Join-Path $PSHOME '
+               '"Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1") '
+               '-ErrorAction Stop; Get-ExecutionPolicy')
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
+                             '-Command', command],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    policy = result.stdout.strip()
+    assert policy in {'Restricted', 'AllSigned', 'RemoteSigned', 'Unrestricted',
+                      'Bypass', 'Undefined'}, result.stdout + result.stderr
+    if policy in {'Restricted', 'AllSigned'}:
+        pytest.skip(f'Existing PowerShell execution policy {policy} disallows the unsigned setup wrapper; policy was not changed')
+
+
 @pytest.fixture
 def project(tmp_path):
     root = tmp_path / '会社 project & spaces !'
@@ -167,11 +198,11 @@ def test_cmd_entrypoints_do_not_bypass_policy():
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows cmd.exe required')
-def test_real_cmd_check_with_unicode_and_spaces(tmp_path):
+def test_real_cmd_check_with_unicode_and_spaces(tmp_path, standard_python):
     import shutil
     project = tmp_path / '会社 project & spaces !'
     shutil.copytree(ROOT, project, ignore=shutil.ignore_patterns('.git', '.venv', '__pycache__', 'runtime'))
-    env = dict(os.environ, WORKBENCH_PYTHON=sys.executable,
+    env = dict(os.environ, WORKBENCH_PYTHON=standard_python,
                PYLAUNCHER_ALLOW_INSTALL="1", PYLAUNCHER_ALWAYS_INSTALL="1",
                PYTHON_MANAGER_AUTOMATIC_INSTALL="true")
     # Launch as a user would from the extracted project directory. Passing a
@@ -220,11 +251,11 @@ def test_online_rejects_extra_pip_config(project, config):
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell 5.1 required')
-def test_ps51_wrapper_check_with_explicit_python(project):
+def test_ps51_wrapper_check_with_explicit_python(project, standard_python, permitted_powershell_scripts):
     # Exercise the wrapper under the runner's existing execution policy.
     result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
                              '-File', str(ROOT / 'scripts/Setup-Windows.ps1'), '-ProjectRoot', str(project),
-                             '-PythonExecutable', sys.executable, '-CheckOnly'],
+                             '-PythonExecutable', standard_python, '-CheckOnly'],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'Preflight complete' in result.stdout
@@ -454,7 +485,7 @@ def test_cmd_help_is_fixed_text_before_interpreter_validation():
 @pytest.mark.skipif(os.name != 'nt', reason='Windows cmd.exe required')
 @pytest.mark.parametrize('help_arg', ['--help', '-h', '/?'])
 @pytest.mark.parametrize('selection', ['unset', 'missing', 'alias', 'actual', 'hostile'])
-def test_real_cmd_help_never_invokes_python_or_changes_files(tmp_path, help_arg, selection):
+def test_real_cmd_help_never_invokes_python_or_changes_files(tmp_path, help_arg, selection, request):
     import shutil
     project = tmp_path / '会社 help & spaces ! (source)'
     project.mkdir()
@@ -476,7 +507,7 @@ def test_real_cmd_help_never_invokes_python_or_changes_files(tmp_path, help_arg,
     if selection != 'unset':
         env['WORKBENCH_PYTHON'] = {
             'missing': str(project / 'missing' / 'python.exe'),
-            'alias': str(alias), 'actual': sys.executable,
+            'alias': str(alias), 'actual': request.getfixturevalue('standard_python') if selection == 'actual' else '',
             'hostile': 'C:\\untrusted" & echo invoked>environment-invoked.txt & rem "',
         }[selection]
     before = {str(path.relative_to(project)): path.read_bytes()
@@ -505,7 +536,7 @@ def test_real_cmd_help_never_invokes_python_or_changes_files(tmp_path, help_arg,
 def test_real_cmd_help_rejects_additional_arguments_without_setup(tmp_path, help_arg, extra):
     import shutil
     shutil.copy2(ROOT / 'Setup.cmd', tmp_path / 'Setup.cmd')
-    env = dict(os.environ, WORKBENCH_PYTHON=sys.executable)
+    env = dict(os.environ, WORKBENCH_PYTHON=str(tmp_path / 'not-installed' / 'python.exe'))
     result = subprocess.run(['cmd.exe', '/d', '/c', 'Setup.cmd', help_arg, *extra],
                             cwd=tmp_path, input='', text=True, capture_output=True,
                             env=env, timeout=10)
@@ -521,7 +552,7 @@ def test_real_cmd_help_rejects_additional_arguments_without_setup(tmp_path, help
     ['--check', '--wheelhouse', r'C:\Approved Packages & files !\wheelhouse'],
     ['--unknown'], ['--check', '/?'],
 ])
-def test_real_cmd_normal_arguments_and_exit_status_are_forwarded(tmp_path, arguments):
+def test_real_cmd_normal_arguments_and_exit_status_are_forwarded(tmp_path, arguments, standard_python):
     import shutil
     shutil.copy2(ROOT / 'Setup.cmd', tmp_path / 'Setup.cmd')
     scripts = tmp_path / 'scripts'
@@ -529,7 +560,7 @@ def test_real_cmd_normal_arguments_and_exit_status_are_forwarded(tmp_path, argum
     (scripts / 'setup_windows.py').write_text(
         'import json, sys\nprint("FORWARDED:" + json.dumps(sys.argv[1:]))\nraise SystemExit(17)\n',
         encoding='utf-8')
-    env = dict(os.environ, WORKBENCH_PYTHON=sys.executable)
+    env = dict(os.environ, WORKBENCH_PYTHON=standard_python)
     result = subprocess.run(['cmd.exe', '/d', '/c', 'Setup.cmd', *arguments],
                             cwd=tmp_path, input='\n', text=True, capture_output=True,
                             env=env, timeout=10)
@@ -571,7 +602,7 @@ def test_real_cmd_rejects_missing_or_alias_runtime_without_invocation(tmp_path, 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell 5.1 required')
 @pytest.mark.parametrize('selection', ['', 'python', 'alias'])
-def test_real_ps_rejects_missing_or_alias_runtime_without_invocation(project, selection):
+def test_real_ps_rejects_missing_or_alias_runtime_without_invocation(project, selection, permitted_powershell_scripts):
     alias = project / 'python.exe'
     alias.write_text('not an executable')
     selected = str(alias) if selection == 'alias' else selection

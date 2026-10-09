@@ -1,4 +1,4 @@
-"""Console entrypoint for the optional Windows ONEDIR build."""
+"""Historical ONEDIR entrypoint; Python-bundled builds are retired and disabled."""
 import sys
 
 for stream in (sys.stdout, sys.stderr):

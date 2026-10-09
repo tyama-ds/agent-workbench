@@ -1,4 +1,6 @@
-"""Fixed Windows utility bridge for frozen builds; no server-global DLL changes.
+"""Historical frozen-build utility bridge, retained for regression tests only.
+
+Python-bundled builds are retired; source installations do not use this bridge.
 
 Only a short-lived helper resets the PyInstaller DLL search. Native utility
 children join that helper's kill-on-close Job, so terminating the helper cannot

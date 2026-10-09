@@ -1,4 +1,4 @@
-"""Immutable resources and installed program boundaries, for source and ONEDIR."""
+"""Source resource boundaries, retaining historical frozen-build regression cases."""
 from pathlib import Path
 import sys
 

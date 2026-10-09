@@ -2,6 +2,8 @@
 
 [検証範囲](docs/VALIDATION.md)・[開発履歴](docs/DEVELOPMENT_LOG.md)・[過去の PR 検証記録](docs/evidence/README.md)。各 CI・画面確認の結果は記載されたコミットに限ります。
 
+[2026-10-09 の統合内容と検証](docs/INTEGRATION_REVIEW.md): Python を同梱しないソース版として、セットアップ・操作画面・復旧・会話要約を統合しています。
+
 Windows 11 で動く、Local LLM・OpenAI・Anthropic のためのエージェント作業アプリです。PM が作業者を作り、役割を割り当て、メールで相談し、結果を受け取って作業をまとめます。同じ API を使う役割別チームと、異なる API を使う混成チームの両方に対応します。
 
 Codex CLI / Claude Code / WSL / Docker / Microsoft Office のインストールは不要です。LLM サーバーそのものは別途用意してください。ORRERY のソースや素材は使用せず、新規に実装しています。
