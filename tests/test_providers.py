@@ -172,7 +172,7 @@ async def test_local_retry_limit_exhausted_and_unknown_tool_refused():
     assert len(calls) == 2 and caught.value.status == 429
     assert 'sensitive' not in str(caught.value)
     with pytest.raises(ProviderError, match='unknown tool'):
-        ProviderClient()._parse('anthropic', 'test', {'content': [
+        ProviderClient()._parse('anthropic', 'test', {'stop_reason': 'tool_use', 'content': [
             {'type': 'tool_use', 'id': 'one', 'name': 'execute_shell', 'input': {}}]}, {'read_file'})
 
 
@@ -205,23 +205,37 @@ async def test_provider_response_limit_and_invalid_json_have_safe_errors(monkeyp
 @pytest.mark.asyncio
 async def test_timeout_is_not_retried_and_output_limit_is_global_cap():
     requests = []
+    entered, release = asyncio.Event(), asyncio.Event()
     async def handler(request):
         body = await request.json()
         requests.append(body)
-        await asyncio.sleep(.1)
+        entered.set()
+        await release.wait()
         return web.json_response({'choices': []})
     async with fake_server(handler) as url:
-        with pytest.raises(ProviderError, match='timed out'):
-            await ProviderClient().complete(dict(kind='local', base_url=url, model='test', max_output_tokens=9999,
-                                                request_timeout_seconds=.02), [], [], '',
-                                            {'max_output_tokens': 100, 'local': {'max_retries': 3}})
+        # A 20-ms total timeout could expire before a loaded Windows runner
+        # dispatched anything. Observe real receipt, then hold the response until
+        # the client's actual total timeout; never race two short sleeps.
+        pending = asyncio.create_task(ProviderClient().complete(
+            dict(kind='local', base_url=url, model='test', max_output_tokens=9999,
+                 request_timeout_seconds=5), [], [], '',
+            {'max_output_tokens': 100, 'local': {'max_retries': 3}}))
+        try:
+            await asyncio.wait_for(entered.wait(), 4)
+            with pytest.raises(ProviderError, match='timed out'):
+                await asyncio.wait_for(pending, 8)
+        finally:
+            release.set()
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
     assert len(requests) == 1 and requests[0]['max_tokens'] == 100
 
 
 def test_thinking_unclosed_or_quoted_and_prose_never_creates_tools():
     assert split_thinking('<think>still working') == ('', 'still working')
     assert split_thinking('Example <think>literal</think>') == ('Example <think>literal</think>', '')
-    reply = ProviderClient()._parse('local', 'test', {'choices': [{'message': {
+    reply = ProviderClient()._parse('local', 'test', {'choices': [{'finish_reason': 'stop', 'message': {
         'content': 'Use read_file({"path":"secret"})', 'role': 'assistant'}}]}, {'read_file'})
     assert reply.tool_calls == []
 

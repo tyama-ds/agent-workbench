@@ -22,6 +22,8 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from .config import Settings, ROOT, text
 from .engine import Engine
+from .redaction import RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
+from .runtime_paths import FROZEN
 
 APP_KEY = web.AppKey('engine', Engine)
 STATIC = ROOT / 'static'
@@ -33,7 +35,10 @@ def private_directory(path):
         if item.exists() and (item.is_symlink() or getattr(item.lstat(), 'st_file_attributes', 0) & 0x400):
             raise ValueError('状態フォルダーに symlink / junction は使用できません')
     path.mkdir(parents=True, exist_ok=True)
-    if os.name == 'nt':
+    if os.name == 'nt' and FROZEN:
+        from .windows_runtime import harden_directory
+        harden_directory(path)
+    elif os.name == 'nt':
         system = Path(os.environ['SystemRoot']) / 'System32'
         result = subprocess.run([str(system / 'whoami.exe'), '/user', '/fo', 'csv', '/nh'], capture_output=True,
                                 text=True, timeout=10, creationflags=0x08000000, check=True)
@@ -80,8 +85,16 @@ class BrowserAuth:
             response = await handler(request)
         except web.HTTPException as exc:
             response = web.json_response({'ok': False, 'error': exc.text}, status=exc.status)
+        except RedactionCapacityError:
+            response = web.json_response({'ok': False, 'error': REDACTION_CAPACITY_MESSAGE,
+                                          'code': 'redaction_capacity'}, status=409)
         except (ValueError, KeyError, TypeError) as exc:
-            response = web.json_response({'ok': False, 'error': str(exc)[:1000]}, status=400)
+            try:
+                message = request.app[APP_KEY].redact(str(exc))[:1000]
+                response = web.json_response({'ok': False, 'error': message}, status=400)
+            except RedactionCapacityError:
+                response = web.json_response({'ok': False, 'error': REDACTION_CAPACITY_MESSAGE,
+                                              'code': 'redaction_capacity'}, status=409)
         except OSError:
             response = web.json_response({'ok': False, 'error': 'ファイルまたはネットワーク操作に失敗しました'}, status=503)
         response.headers.update({'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
@@ -127,27 +140,47 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
 
     async def config(request):
         if request.method == 'PUT':
+            value = await body(request)
+            revision = value.get('config_revision')
+            if type(revision) is not int or revision != settings.revision:
+                return web.json_response({'ok': False, 'code': 'settings_changed',
+                    'error': '保存済み設定が変わったか、設定の確認情報がありません。保存済み設定を読み直してから編集してください。'}, status=409)
             if engine.active():
                 raise web.HTTPConflict(text='設定変更は実行中のチームを停止してから行ってください')
-            return web.json_response(settings.save(await body(request)))
+            # Recheck ownership after the body arrives; do not await between
+            # this revision/active-run check and the atomic settings transition.
+            return web.json_response(engine.save_settings(value.get('config')))
         return web.json_response(settings.public())
 
     async def secret(request):
         value = await body(request)
+        revision = value.get('config_revision')
+        if type(revision) is not int or revision != settings.revision:
+            return web.json_response({'ok': False, 'code': 'settings_changed',
+                'error': '保存済み設定が変わったか、設定の確認情報がありません。保存済み設定を読み直してからキーを入力してください。'}, status=409)
         ident = value.get('id')
-        if ident not in {p['id'] for p in settings.value['providers']} | {'search'}:
+        if not isinstance(ident, str) or ident not in {p['id'] for p in settings.value['providers']} | {'search'}:
             raise ValueError('未知のプロファイル ID です')
         key = text(value.get('key'), 'key', 4096)
         if any(ord(c) < 32 or ord(c) == 127 for c in key):
             raise ValueError('API キーに制御文字は使用できません')
-        if key:
-            settings.secrets[ident] = key
-        else:
-            settings.secrets.pop(ident, None)
-        return web.json_response({'ok': True, 'configured': bool(key)})
+        if key and ident == 'search' and (settings.value['search']['provider'] != 'brave' or not settings.value['search']['endpoint']):
+            raise ValueError('検索キーは保存済みの接続先を持つ Brave Search だけで使用できます。SearXNG とページ取得では使用しません。')
+        # No await between saved-target validation and the atomic mutation.
+        # Clearing an old value also requires the same revision precondition.
+        engine.set_secret(ident, key)
+        return web.json_response({'ok': True, 'id': ident, 'config_revision': settings.revision,
+                                  'configured': settings.public()['secret_status'][ident]})
 
     async def state(request):
-        return web.json_response(engine.snapshot())
+        view = request.query.get('view')
+        if view is None:
+            return web.json_response(engine.snapshot())
+        if view != 'selected' or any(len(request.query.getall(key, [])) > 1
+                                     for key in ('view', 'run_id', 'agent_id')):
+            raise ValueError('状態表示の選択が不正です')
+        return web.json_response(engine.selected_snapshot(run_id=request.query.get('run_id'),
+                                                          agent_id=request.query.get('agent_id')))
 
     async def start(request):
         return web.json_response(await engine.start_run(await body(request)))
@@ -165,27 +198,13 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         profile = next((p for p in settings.value['providers'] if p['id'] == value.get('provider_id')), None)
         if profile is None:
             raise ValueError('未知のプロファイルです')
-        headers = {}
+        from .diagnostics import diagnose_provider
         key = settings.key(profile)
-        if key:
-            headers = {'x-api-key': key, 'anthropic-version': '2023-06-01'} if profile['kind'] == 'anthropic' else {'Authorization': 'Bearer ' + key}
-        endpoint = profile['base_url'].rstrip('/') + '/models'
-        proxy = None if profile['kind'] == 'local' else profile['proxy_url'] or None
-        try:
-            async with ClientSession(trust_env=False, timeout=ClientTimeout(total=15)) as session:
-                async with session.get(endpoint, headers=headers, proxy=proxy, allow_redirects=False) as response:
-                    if response.status != 200:
-                        return web.json_response({'ok': False, 'error': f'モデル一覧 API: HTTP {response.status}。推論は実行していません。'})
-                    raw = bytearray()
-                    async for chunk in response.content.iter_chunked(65536):
-                        raw.extend(chunk)
-                        if len(raw) > 1024 * 1024:
-                            raise ValueError('モデル一覧が大きすぎます')
-                    data = json.loads(raw)
-                    models = [str(m.get('id', m.get('name', '')))[:200] for m in data.get('data', data.get('models', []))[:200] if isinstance(m, dict)]
-                    return web.json_response({'ok': True, 'models': models, 'inference_tested': False})
-        except (asyncio.TimeoutError, __import__('aiohttp').ClientError):
-            return web.json_response({'ok': False, 'error': 'API 接続に失敗しました。URL・認証・proxy を確認してください。推論は実行していません。'})
+        engine._redaction.remember([*engine._secret_values(), key])
+        return web.json_response(engine._redact_tree(await diagnose_provider(profile, key)))
+
+    async def preflight(request):
+        return web.json_response(engine.preflight(await body(request)))
 
     app.router.add_get('/', static)
     app.router.add_post('/api/bootstrap', auth.bootstrap)
@@ -194,6 +213,7 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_post('/api/secrets', secret)
     app.router.add_get('/api/state', state)
     app.router.add_post('/api/runs', start)
+    app.router.add_post('/api/run-preflight', preflight)
     app.router.add_post('/api/runs/{id}/stop', stop)
     app.router.add_post('/api/agents/{id}/message', message)
     app.router.add_post('/api/provider-test', provider_test)
@@ -216,14 +236,18 @@ async def serve(args):
     auth = BrowserAuth(listener.getsockname()[1])
     app = create_app(directory, auth)
     runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    await web.SockSite(runner, listener).start()
-    print('Agent Workbench started. Ctrl+C to stop.', flush=True)
-    if args.no_browser:
-        print(auth.launch_url, flush=True)
-    else:
-        await asyncio.to_thread(webbrowser.open, auth.launch_url)
     try:
+        await runner.setup()
+        await web.SockSite(runner, listener).start()
+        print('Agent Workbench started. Ctrl+C to stop.', flush=True)
+        if args.no_browser:
+            print(auth.launch_url, flush=True)
+        else:
+            if FROZEN and os.name == "nt":
+                from .windows_runtime import capture_helper
+                await capture_helper("browser", auth.launch_url, timeout=15)
+            else:
+                await asyncio.to_thread(webbrowser.open, auth.launch_url)
         await asyncio.Event().wait()
     finally:
         await runner.cleanup()

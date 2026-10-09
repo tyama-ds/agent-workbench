@@ -1,7 +1,7 @@
 @echo off
 setlocal DisableDelayedExpansion
 if not exist "%~dp0.venv\Scripts\python.exe" (
-  echo Setup is missing. Double-click Setup.cmd first.
+  echo Setup is missing. Use separately installed, approved Python and run Setup.cmd first.
   pause
   exit /b 1
 )

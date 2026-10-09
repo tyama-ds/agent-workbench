@@ -363,13 +363,18 @@ class ProviderClient:
         seen = set()
         try:
             if kind == "openai":
-                if data.get("status") not in {None, "completed"}:
+                # The Responses status is optional. Its absence must not hide
+                # explicit failure/incompletion evidence elsewhere in the reply.
+                if (data.get("status") not in {None, "completed"}
+                        or data.get("error") is not None or data.get("incomplete_details") is not None):
                     raise ProviderError("OpenAI response was incomplete or failed; no tools were executed")
                 output = data["output"]
                 if not isinstance(output, list):
                     raise ValueError
                 reply.raw = {"provider": kind, "model": model, "output": copy.deepcopy(output)}
                 for item in output:
+                    if item.get("status") not in {None, "completed"}:
+                        raise ProviderError("OpenAI output was incomplete or unconfirmed; no tools were executed")
                     if item["type"] == "function_call":
                         reply.tool_calls.append(_call(item["call_id"], item["name"], item["arguments"], seen))
                     elif item["type"] == "message":
@@ -379,8 +384,8 @@ class ProviderClient:
                     elif item["type"] == "reasoning":
                         reply.thinking += "\n".join(block["text"] for block in item.get("summary", []) if block.get("type") == "summary_text")
             elif kind == "anthropic":
-                if data.get("stop_reason") not in {None, "end_turn", "tool_use", "stop_sequence"}:
-                    raise ProviderError("Anthropic response was incomplete or paused; no tools were executed")
+                if data.get("stop_reason") not in {"end_turn", "tool_use", "stop_sequence"}:
+                    raise ProviderError("Anthropic response was incomplete or unconfirmed; no tools were executed")
                 content = data["content"]
                 if not isinstance(content, list):
                     raise ValueError
@@ -394,20 +399,27 @@ class ProviderClient:
                         reply.tool_calls.append(_call(block["id"], block["name"], block["input"], seen))
             else:
                 choice = data["choices"][0]
-                if choice.get("finish_reason") not in {None, "stop", "tool_calls"}:
-                    raise ProviderError("Local model response was truncated; no tools were executed")
+                if choice.get("finish_reason") not in {"stop", "tool_calls"}:
+                    raise ProviderError("Local model response was incomplete or unconfirmed; no tools were executed")
                 message = choice["message"]
                 if not isinstance(message, dict) or message.get("role", "assistant") != "assistant":
                     raise ValueError
                 text = message.get("content") or ""
                 if not isinstance(text, str):
                     raise ValueError
+                refusal = message.get("refusal")
+                if refusal is not None and not isinstance(refusal, str):
+                    raise ValueError
+                if refusal and (message.get("tool_calls") or choice["finish_reason"] == "tool_calls"):
+                    raise ProviderError("Local model returned a refusal with tool calls; no tools were executed")
                 reply.text, tagged = split_thinking(text)
+                if refusal:
+                    reply.text = "\n\n".join(part for part in (reply.text, refusal) if part)
                 explicit = message.get("reasoning_content") or message.get("reasoning") or ""
                 if not isinstance(explicit, str):
                     raise ValueError
                 reply.thinking = explicit or tagged
-                native = {key: copy.deepcopy(message[key]) for key in ("role", "content", "tool_calls", "reasoning_content", "reasoning") if key in message}
+                native = {key: copy.deepcopy(message[key]) for key in ("role", "content", "refusal", "tool_calls", "reasoning_content", "reasoning") if key in message}
                 native.setdefault("role", "assistant")
                 reply.raw = {"provider": kind, "model": model, "message": native}
                 for call in message.get("tool_calls") or []:

@@ -181,3 +181,26 @@ def test_brave_secret_stays_in_header_and_response_never_contains_it(monkeypatch
 @pytest.mark.parametrize("address", ["64:ff9b::7f00:1", "64:ff9b:1::7f00:1", "2002:7f00:1::", "2001::1"])
 def test_ipv6_transition_addresses_cannot_reach_private_ipv4(address):
     assert module._public_ip(address) is False
+
+
+def test_real_proxy_shift_jis_header_bytes_and_final_url(monkeypatch):
+    async def run():
+        paths = []
+        async def endpoint(request):
+            paths.append(request.path)
+            if request.path == '/start':
+                raise web.HTTPFound('/shift-jis')
+            return web.Response(body='<p>日本語 ①髙﨑</p>'.encode('cp932'),
+                                headers={'Content-Type': 'text/html; charset="Shift_JIS"'})
+        async def addresses(host, port):
+            assert host == 'public.example'
+            return ['93.184.216.34']
+        monkeypatch.setattr(module, '_public_addresses', addresses)
+        async with http_server(endpoint) as proxy_url:
+            result = await WebTools(config(proxy_url=proxy_url)).execute('web_fetch', {'url': 'http://public.example/start'})
+        assert result['text'] == '\n日本語 ①髙﨑'
+        assert result['url'] == 'http://public.example/shift-jis'
+        assert result['encoding'] == 'cp932' and result['encoding_source'] == 'http_charset'
+        assert result['untrusted'] and not result['encoding_assumed'] and not result['truncated']
+        assert paths == ['/start', '/shift-jis']
+    asyncio.run(run())

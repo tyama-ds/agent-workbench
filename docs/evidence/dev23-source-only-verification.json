@@ -1,0 +1,23 @@
+{
+  "pr_url": "https://github.com/tyama-ds/agent-workbench/pull/2",
+  "source_head": "cd8cbd77d358d2a2866cf56be41099e189bdb461",
+  "pr_updated_at": "2026-10-05T23:52:55Z",
+  "captured_at": "2026-10-05T23:59:50.662Z",
+  "body_utf8_offset": 596,
+  "body_bytes": 5668,
+  "body_characters": 5655,
+  "body_sha256": "ba8cefa1dc30b949c6c745bdab4d67ffd4b234bd234f589d71a1bc7260d7c785",
+  "original_urls": [
+    "https://github.com/tyama-ds/agent-workbench/blob/cd8cbd77d358d2a2866cf56be41099e189bdb461/README.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/cd8cbd77d358d2a2866cf56be41099e189bdb461/docs/WINDOWS_SETUP.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/cd8cbd77d358d2a2866cf56be41099e189bdb461/docs/VALIDATION.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/cd8cbd77d358d2a2866cf56be41099e189bdb461/docs/DEVELOPMENT_LOG.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/cd8cbd77d358d2a2866cf56be41099e189bdb461/SECURITY.md",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37390418046",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37390425326",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37390418046/artifacts/11380952581",
+    "https://github.com/tyama-ds/agent-workbench/blob/cd8cbd77d358d2a2866cf56be41099e189bdb461/docs/evidence/dev21-transitions-verification.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/cd8cbd77d358d2a2866cf56be41099e189bdb461/docs/evidence/dev21-transitions-verification.json",
+    "https://github.com/tyama-ds/agent-workbench/blob/cd8cbd77d358d2a2866cf56be41099e189bdb461/docs/evidence/README.md"
+  ]
+}

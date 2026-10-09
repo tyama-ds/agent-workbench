@@ -15,17 +15,27 @@ This application gives model-generated instructions a deliberately small set of 
 - Local API traffic ignores environment and configured proxies. Cloud APIs use only explicit profile proxies. No model-controlled provider or proxy URL. Redirects from provider calls are refused to avoid forwarding credentials.
 - Web search and page fetching use the explicit search proxy or explicit direct mode, never environment proxy fallback. Public page fetch validates and pins resolved public IPs, keeping the original Host and TLS identity; redirects are revalidated. Link-local, private, loopback, metadata, IPv4-mapped and transition addresses are rejected. Only the human-configured SearXNG search origin is allowed to be internal; HTTPS is required even on LAN, except HTTP at localhost/127.0.0.1/[::1]. Proxy connections may observe requested data; use a trusted proxy.
 
+Web-text decoding uses a fixed standard-library codec allowlist and strict errors, never arbitrary remote codec names, replacement fallback or statistical detection. Charset declarations can select only a decoder, not execute code. BOM/header precedence is separate from bounded conservative HTML-meta/XML-declaration inspection. The decoder does not resolve XML entities or DTDs. Errors omit response bytes and untrusted labels. UTF-32, contradictory ASCII XML UTF-16 declarations and NUL-bearing UTF-8 defaults/JSON are rejected. Declared encodings and well-formed decoded text do not certify the source's accuracy or safety. Network limits and destination validation are unchanged.
+
 ## Prompt and data trust
 
 The default shared system policy is visible and editable. The runtime appends the verified agent ID, role, parent, allowed profiles, worker limit, and selected folder scope. Tool descriptions are in source. There are no hidden network-fetched prompts, scheduled commands, update checks, analytics, remote plugin loading, or mandatory external orchestration services.
 
 Incoming file text, web text and teammate messages are untrusted data. Labeling them does not guarantee that a model will ignore all prompt injections. The enforced tool boundaries remain necessary. An attacker who controls a permitted file can still influence the quality of the model's answer or cause unwanted edits **within** allowed write roots.
 
-Reading a file authorizes its content to enter the selected model conversation. Team mail may move content from a Local worker into a cloud PM. Search queries and URLs can also carry content. There is no per-document data-loss-prevention classifier. Use Local-only teams with Web disabled when external transfer is prohibited; do not include unrelated secrets in permitted roots. Filename/role labels and error messages are not confidentiality boundaries.
+Content read by a file tool enters the selected model conversation. Team mail may move content from a Local worker into a cloud PM. Search queries and URLs can also carry content. There is no per-document data-loss-prevention classifier. When external transfer is prohibited, disable Web and verify every PM and worker endpoint and its downstream handling against organizational requirements. Local accepts loopback or literal private-LAN endpoints; that address restriction does not establish organizational approval or prevent an endpoint from forwarding data. The application does not verify endpoint retention, training use, or onward transfer. Do not include unrelated secrets in permitted roots. Filename/role labels and error messages are not confidentiality boundaries.
 
 ## Credentials and state
 
-API keys come from explicitly named environment variables or memory-only input. Raw keys are not returned by the settings API or written into settings/log files. Known configured secrets are redacted in UI snapshots. This is exact-value redaction, not a detector for arbitrary sensitive data or transformed secrets. Provider error bodies are not displayed.
+API keys come from explicitly named environment variables or memory-only input. The dedicated credential fields are not returned by the settings API or written into settings/log files. Public settings remain editable metadata: labels, models, endpoints, paths and policy are returned and persisted as entered, so never paste credentials into those fields. Provider error bodies are not displayed.
+
+State snapshots (full and selected), logs, results, save receipts, diagnostics and application errors mask exact configured credential values recognized by the running engine. A private output-only registry keeps recognized current and retired values while run histories remain in that process, so deleting a reference, replacing a key, a late response or continuing an old conversation cannot reveal an already recognized value. Registry values are never an authentication source, public response field, export or persistent store. Copy/export uses the public records it received; export attribution receives the same masking.
+
+The registry accepts at most 512 distinct nonempty values and 2 MiB of their combined UTF-8 payload. These are payload bounds, not a total Python-memory limit. It never evicts a mask while retained histories exist. A supported key/config change that would exceed either bound is rejected before changing credentials or the settings file; existing settings and masks remain in effect. Save needed work and restart the app before configuring more values. Unexpected in-process mutation beyond these bounds prevents new public projections and credential-bearing provider/search/diagnostic requests from proceeding, using fixed safe error text rather than an unredacted fallback. Matching uses literal searches with at most one pending match per value, not user-controlled regex patterns or an expanding character trie.
+
+Retired values increase sensitive process-memory retention until the engine and its histories are discarded, normally when the app exits. Python cannot promise immediate secure zeroization; same-user process inspection remains outside this boundary. This is exact-value masking, not a detector for arbitrary sensitive data, substrings/fragments, encodings or transformed secrets. Private model conversations, protocol payloads and workspace file contents are not rewritten. Previously delivered browser data, clipboard contents or downloaded files cannot be recalled when a value later becomes a credential. Editable settings metadata is likewise outside this projection guarantee.
+
+New provider/search requests resolve current credentials. An already dispatched request retains its original headers; replacement cannot retract it. Removing a provider or changing its kind, endpoint or environment-key reference clears that profile's memory credential. Changing the search provider, endpoint or environment-key reference clears the search memory credential. Re-enter a key for the new identity, or use its explicitly configured environment source; label/model-only changes preserve credentials. Profile ID `search` is reserved for search credentials. Older manually authored configurations using that ID must rename it before starting this version.
 
 Settings contain paths, endpoint/model names and the shared policy; they are private metadata even without keys. State directory permissions remove inherited access on Windows and grant the current user/SYSTEM. Existing explicit grants on a manually selected state directory are not automatically revoked; use the new default application state folder. A process running as the same Windows user can still inspect memory or modify files. Do not run this application as Administrator or expose the UI via a reverse proxy.
 
@@ -40,3 +50,31 @@ Multiple independently launched Workbench servers have independent budgets; the 
 ## Reporting
 
 Do not put real API keys, private documents, prompts or launch URLs in a public issue. Report reproduction steps using synthetic data. Tests under `tests/` contain fake keys and local API fixtures, not live credentials. See `docs/VALIDATION.md` for what was and was not exercised.
+
+## Saved-target credential recovery
+
+Every browser `POST /api/secrets`, including clearing a memory override, requires
+an exact integer `config_revision` obtained with the saved configuration. Missing,
+malformed or stale revisions fail before changing credentials or the redaction
+registry. The process-local revision advances only after successful configuration
+persistence, never after key replacement. It is neither persisted configuration nor
+a run-eligibility value. Revision and target checks occur after the request body is
+read, with no await before the existing atomic secret setter. Existing session,
+Host/Origin, JSON and capacity checks remain mandatory; the revision is a concurrency
+precondition, not an authentication credential or a replacement for authorization.
+
+Saved provider IDs bind memory keys. Search uses its separate reserved identity;
+nonempty search submissions require saved Brave settings with an explicit endpoint.
+The UI discloses saved identity, endpoint and proxy. Dirty/new settings cannot receive
+keys, and active runs never unlock configuration. The read-only discard/reload action
+preserves unrelated task and conversation drafts. Concurrent key operations have
+per-target ownership and prevent configuration writes until they settle.
+
+Replacement affects subsequent ordinary requests for that profile/search identity
+across all teams in this process. It does not alter dispatched headers, verify an API
+key, enqueue a retry, refill quotas or restart stopped work. Explicit human messages
+still pass the original eligibility checks. Late responses cannot repaint reopened
+or rebound credential fields. Unknown outcomes are not automatically replayed;
+credential-presence booleans cannot establish which key is currently installed.
+Input values are cleared on submit, dismissal and configuration editing; JavaScript
+and Python do not promise secure zeroization of previously allocated strings.

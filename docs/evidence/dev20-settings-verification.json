@@ -1,0 +1,29 @@
+{
+  "pr_url": "https://github.com/tyama-ds/agent-workbench/pull/2",
+  "source_head": "b2de9a7d4c997db4f2dd01ce162e0fe427915910",
+  "pr_updated_at": "2026-10-05T13:42:07Z",
+  "captured_at": "2026-10-05T14:03:53Z",
+  "body_utf8_offset": 508,
+  "body_bytes": 10818,
+  "body_characters": 10809,
+  "body_sha256": "99474cd89b043f7f52328187bfe3fd8bc2689a7ced3f5ff9a7c861e6ef9bea42",
+  "original_urls": [
+    "https://github.com/tyama-ds/agent-workbench/blob/8cfaa59ab94ae8da1e04818e0abdfc74c1b0539d/docs/NATIVE_REDISTRIBUTION.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/develop/browser-verified-workbench/README.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/develop/browser-verified-workbench/docs/ARCHITECTURE.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/develop/browser-verified-workbench/SECURITY.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/develop/browser-verified-workbench/docs/VALIDATION.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/develop/browser-verified-workbench/docs/DEVELOPMENT_LOG.md",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37317512585",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37317518818",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37317512585/artifacts/11348926204",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37317512585/artifacts/11348422745",
+    "https://github.com/tyama-ds/agent-workbench/blob/b2de9a7d4c997db4f2dd01ce162e0fe427915910/docs/evidence/dev19-keyboard-verification.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/b2de9a7d4c997db4f2dd01ce162e0fe427915910/docs/evidence/dev19-keyboard-verification.json",
+    "https://github.com/tyama-ds/agent-workbench/blob/3106f3c049b7042354bbcf297c2e25447d1505e1/docs/evidence/dev18-native-evidence-verification.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/b2de9a7d4c997db4f2dd01ce162e0fe427915910/docs/evidence/README.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/fe5d0f35beebb1e951eb375289c337a0e7ca121f/docs/evidence/pr-2-2026-10-05.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/fe5d0f35beebb1e951eb375289c337a0e7ca121f/docs/evidence/pr-2-2026-10-05.json",
+    "https://github.com/tyama-ds/agent-workbench/blob/8cfaa59ab94ae8da1e04818e0abdfc74c1b0539d/docs/evidence/docs-only-fe5d0f3-verification.md"
+  ]
+}

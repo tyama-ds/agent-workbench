@@ -1,0 +1,24 @@
+{
+  "pr_url": "https://github.com/tyama-ds/agent-workbench/pull/2",
+  "source_head": "59d26a962f9f03a24bf0a6f7153b635450921cf9",
+  "pr_updated_at": "2026-10-06T00:50:31Z",
+  "captured_at": "2026-10-06T01:01:10.694Z",
+  "title": "Document corporate deployment review checklist (dev25, docs revision 1)",
+  "body_utf8_offset": 316,
+  "body_bytes": 5302,
+  "body_characters": 5299,
+  "body_sha256": "a94a0241da15e5cb6ae0a0f099f57a2dd8fdedee110353be32b2070bffc55993",
+  "original_urls": [
+    "https://github.com/tyama-ds/agent-workbench/blob/59d26a962f9f03a24bf0a6f7153b635450921cf9/docs/IT_REVIEW_CHECKLIST.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/59d26a962f9f03a24bf0a6f7153b635450921cf9/README.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/59d26a962f9f03a24bf0a6f7153b635450921cf9/docs/WINDOWS_SETUP.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/59d26a962f9f03a24bf0a6f7153b635450921cf9/SECURITY.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/59d26a962f9f03a24bf0a6f7153b635450921cf9/docs/DEVELOPMENT_LOG.md",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37395573471",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37395577073",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37395573471/artifacts/11382263571",
+    "https://github.com/tyama-ds/agent-workbench/blob/59d26a962f9f03a24bf0a6f7153b635450921cf9/docs/evidence/dev25-setup-help-verification.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/59d26a962f9f03a24bf0a6f7153b635450921cf9/docs/evidence/dev25-setup-help-verification.json",
+    "https://github.com/tyama-ds/agent-workbench/blob/59d26a962f9f03a24bf0a6f7153b635450921cf9/docs/evidence/README.md"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "source_head": "11985a41d6e083eee36a8ae4fdc944058f9a0042",
+  "pr_updated_at": "2026-10-06T02:21:58Z",
+  "captured_at": "2026-10-06T02:37:23.889Z",
+  "pr_url": "https://github.com/tyama-ds/agent-workbench/pull/2",
+  "body_utf8_offset": 399,
+  "body_bytes": 6949,
+  "body_characters": 6945,
+  "body_sha256": "a1b065366d094f56f42ad017031a2c7eaa2e40ba9e254c21b5d99dbdd7c91dc4",
+  "original_urls": [
+    "https://github.com/tyama-ds/agent-workbench/blob/11985a41d6e083eee36a8ae4fdc944058f9a0042/README.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/11985a41d6e083eee36a8ae4fdc944058f9a0042/docs/VALIDATION.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/11985a41d6e083eee36a8ae4fdc944058f9a0042/docs/DEVELOPMENT_LOG.md",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37402969085",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37402973289",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37402969085/artifacts/11386346864",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37402973289/artifacts/11385463544",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37401350963",
+    "https://github.com/tyama-ds/agent-workbench/actions/runs/37402154387",
+    "https://github.com/tyama-ds/agent-workbench/blob/11985a41d6e083eee36a8ae4fdc944058f9a0042/docs/evidence/dev26-questions-verification.md",
+    "https://github.com/tyama-ds/agent-workbench/blob/11985a41d6e083eee36a8ae4fdc944058f9a0042/docs/evidence/dev26-questions-verification.json",
+    "https://github.com/tyama-ds/agent-workbench/blob/11985a41d6e083eee36a8ae4fdc944058f9a0042/docs/evidence/README.md"
+  ]
+}

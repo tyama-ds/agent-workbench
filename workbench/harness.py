@@ -264,7 +264,8 @@ class PathHarness:
                 finally:
                     with contextlib.suppress(FileNotFoundError):
                         os.unlink(temporary)
-            return {"path": str(path), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            return {"path": str(path), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                    "operation": "created" if before == "missing" else "updated"}
 
     def read_text(self, value: str) -> dict:
         data = self.read_bytes(value)
@@ -420,7 +421,7 @@ class ToolExecutor:
         ]
         return [{"name": name, "description": description, "parameters": _schema(properties, required)} for name, description, properties, required in definitions]
 
-    async def execute(self, name: str, args: dict) -> dict:
+    async def execute(self, name: str, args: dict, *, on_complete=None) -> dict:
         specification = next((item for item in self.schemas() if item["name"] == name), None)
         if specification is None or not isinstance(args, dict):
             raise HarnessError("Unknown tool or invalid arguments")
@@ -430,7 +431,16 @@ class ToolExecutor:
         # A cancelled await cannot cancel an already-running filesystem thread.
         # Drain it before propagating cancellation, so the caller keeps its
         # reservation/write lock until this operation has actually settled.
-        operation = asyncio.create_task(asyncio.to_thread(self._execute, name, dict(args)))
+        async def complete_operation():
+            result = await asyncio.to_thread(self._execute, name, dict(args))
+            # Run the observer exactly once on the event loop, even when the
+            # caller is cancelled while its committed write is being drained.
+            # A receipt failure cannot turn a completed save into a failed save.
+            if on_complete is not None:
+                with contextlib.suppress(Exception):
+                    on_complete(result)
+            return result
+        operation = asyncio.create_task(complete_operation())
         try:
             return await asyncio.shield(operation)
         except asyncio.CancelledError:
@@ -566,6 +576,7 @@ class ToolExecutor:
 
     def _xlsx(self, name: str, args: dict) -> dict:
         import openpyxl
+        from openpyxl.cell.cell import MergedCell
         from openpyxl.utils.cell import range_boundaries
         path = args["path"]
         _office_kind(path, ".xlsx")
@@ -621,7 +632,10 @@ class ToolExecutor:
                         if not allow or not value.startswith("="):
                             raise HarnessError("Formula-like values require explicit allow_formulas")
                         _safe_formula(value)
-                workbook[item["sheet"]][ref] = value
+                cell = workbook[item["sheet"]][ref]
+                if isinstance(cell, MergedCell):
+                    raise HarnessError("Cannot write to a non-anchor merged cell; explicitly target the merged range's top-left cell")
+                cell.value = value
             return self._save(workbook, args, ".xlsx")
         finally:
             workbook.close()

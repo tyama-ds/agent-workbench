@@ -15,6 +15,49 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Preserve transport settings but never redirect this install or weaken TLS checks.
+FORBIDDEN_PIP_OPTIONS = ('TARGET', 'PREFIX', 'ROOT', 'PYTHON', 'USER', 'REQUIREMENT',
+                         'CONSTRAINT', 'BUILD_CONSTRAINT', 'EDITABLE', 'TRUSTED_HOST')
+CONFIG_MARKER = ":env:.disable-pip-version-check='1'"
+INSPECTION_OPTIONS = ('QUIET', 'VERBOSE', 'GLOBAL', 'SITE', 'USER', 'HELP', 'VERSION', 'ISOLATED')
+STAGES = {
+    'environment': ('Create private environment', 'Ask IT to check the approved Python installation and folder permissions. If a partial .venv remains, use a newly extracted source folder.'),
+    'interpreter': ('Validate private interpreter', 'The existing .venv is incomplete, moved, or unsupported. Use a newly extracted source folder and approved standard 64-bit CPython 3.11-3.13.'),
+    'pip': ('Check private pip', 'This environment needs working pip with --python support (pip 22.3 or newer). Ask IT to repair the approved Python installation or use a newly extracted source folder; setup will not upgrade pip automatically.'),
+    'configuration': ('Check pip configuration', 'Ask IT to review pip configuration. No dependency packages were installed.'),
+    'dependencies': ('Install locked dependencies', 'Check the preceding pip error: proxy/407 needs IT-approved connectivity/authentication; certificate errors need an approved CA bundle; missing wheels need the matching Python version and architecture. Retry with the same source or an approved offline wheelhouse.'),
+    'application': ('Install local application', 'The local-only application install failed. Ask IT to check the source folder and locked build tools; no online fallback is used.'),
+    'consistency': ('Check package consistency', 'The private environment has inconsistent dependencies. Retry Setup.cmd using the same lock and approved package source.'),
+    'imports': ('Check application imports', 'A required module could not load. Ask IT to review the preceding error and any application-control block; do not disable protection.'),
+}
+
+
+class SetupStageError(RuntimeError):
+    """Only fixed stage/recovery text is exposed; never child arguments or config."""
+
+
+def run_stage(stage, runner, arguments, **kwargs):
+    label, recovery = STAGES[stage]
+    print('Setup step: ' + label + '.', flush=True)
+    try:
+        return runner(arguments, **kwargs)
+    except (RuntimeError, OSError, UnicodeError, subprocess.SubprocessError):
+        raise SetupStageError(f'{label} failed. {recovery}') from None
+
+
+def installation_environment(options):
+    child_env = dict(os.environ)
+    if options.wheelhouse:
+        # Offline mode never accepts injected pip options, URLs or destinations.
+        child_env = {key: value for key, value in child_env.items() if not key.upper().startswith('PIP_')}
+        child_env['PIP_CONFIG_FILE'] = os.devnull
+    else:
+        for key in FORBIDDEN_PIP_OPTIONS:
+            if child_env.get('PIP_' + key):
+                raise ValueError(f'PIP_{key} is set. Ask IT to review it: setup requires its private .venv, fixed inputs and verified TLS. The setting was not changed.')
+    child_env.update(PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_NO_INPUT='1')
+    return child_env
+
 
 def validate_proxy(value):
     try:
@@ -79,8 +122,12 @@ def preflight(options):
 
 
 def invoke(arguments, *, cwd, env, capture=False):
-    result = subprocess.run([str(value) for value in arguments], cwd=cwd, env=env, check=False,
-                            capture_output=capture, text=capture)
+    # Windows pipes otherwise use the ANSI code page, which cannot represent
+    # every approved extraction path. Only captured reads use this private UTF-8
+    # contract; preserve the caller's environment and normal console behavior.
+    child_env = dict(env, PYTHONIOENCODING='utf-8') if capture else env
+    result = subprocess.run([str(value) for value in arguments], cwd=cwd, env=child_env, check=False,
+                            capture_output=capture, text=capture, encoding='utf-8' if capture else None)
     if result.returncode:
         raise RuntimeError(f'Command failed (exit {result.returncode}).')
     return result.stdout if capture else ''
@@ -89,6 +136,8 @@ def invoke(arguments, *, cwd, env, capture=False):
 def install(options, *, runner=invoke):
     root = preflight(options)
     environment = root / '.venv'
+    if environment.resolve() != environment:
+        raise ValueError('The .venv folder redirects outside its expected location. It was not changed. Use a newly extracted local source folder or ask IT to inspect it.')
     python = environment / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
     status = {'python': platform.python_version(), 'bits': struct.calcsize('P') * 8,
               'implementation': platform.python_implementation(), 'mode': 'offline' if options.wheelhouse else 'online',
@@ -96,34 +145,38 @@ def install(options, *, runner=invoke):
               'proxy_configured': bool(options.proxy or os.environ.get('PIP_PROXY') or os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')),
               'certificate_supplied': bool(options.certificate), 'folder_writable': True}
     print(json.dumps(status, indent=2), flush=True)
+    child_env = installation_environment(options)
     if options.check:
         print('Preflight complete. No packages installed; network, company policy and existing environment health are not tested.')
         return
-    child_env = dict(os.environ)
-    forbidden = ('TARGET', 'PREFIX', 'USER', 'REQUIREMENT', 'CONSTRAINT', 'BUILD_CONSTRAINT', 'EDITABLE')
-    if options.wheelhouse:
-        # Offline mode accepts only our options, never injected URLs or alternate destinations.
-        child_env = {key: value for key, value in child_env.items() if not key.upper().startswith('PIP_')}
-        child_env['PIP_CONFIG_FILE'] = os.devnull
-    else:
-        for key in forbidden:
-            if child_env.get('PIP_' + key):
-                raise ValueError(f'PIP_{key} is set. Ask IT to review it before installing the fixed lock into a private .venv.')
-    child_env.update(PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_NO_INPUT='1')
     if not python.is_file():
         if environment.exists():
             raise ValueError('An incomplete .venv exists. It was not deleted. Ask IT to inspect or use a newly extracted project folder.')
-        runner([sys.executable, '-m', 'venv', str(environment)], cwd=root, env=child_env)
-    # Validate reused environments before changing their packages, including copied/stale venvs.
-    runner([python, '-c', "import sys,struct,platform,sysconfig; raise SystemExit(0 if (3,11)<=sys.version_info[:2]<=(3,13) and struct.calcsize('P')==8 and platform.python_implementation()=='CPython' and not sysconfig.get_config_var('Py_GIL_DISABLED') else 1)"], cwd=root, env=child_env)
-    runner([python, '-m', 'pip', '--version'], cwd=root, env=child_env)
+        run_stage('environment', runner, [sys.executable, '-m', 'venv', str(environment)], cwd=root, env=child_env)
+    # Prove the executable belongs to this venv, not merely a supported Python.
+    probe = "import sys,struct,platform,sysconfig; from pathlib import Path; raise SystemExit(0 if (3,11)<=sys.version_info[:2]<=(3,13) and struct.calcsize('P')==8 and platform.python_implementation()=='CPython' and not sysconfig.get_config_var('Py_GIL_DISABLED') and sys.prefix!=sys.base_prefix and Path(sys.prefix).resolve()==Path(sys.argv[1]).resolve() else 1)"
+    run_stage('interpreter', runner, [python, '-c', probe, str(environment)], cwd=root, env=child_env)
+    # Pin before reading configuration: global.python can otherwise redirect even
+    # `pip config list` into another interpreter. Older pip must fail closed.
+    pip = [python, '-m', 'pip', '--python', str(python)]
+    run_stage('pip', runner, pip + ['--version'], cwd=root, env=child_env, capture=True)
     if not options.wheelhouse:
-        config = runner([python, '-m', 'pip', 'config', 'list'], cwd=root, env=child_env, capture=True) or ''
-        forbidden_config = {key.lower().replace('_', '-') for key in forbidden}
+        # config's selectors/quiet flags must not hide install-relevant settings.
+        # Override only this read; do not alter the user's files or install env.
+        inspection_env = dict(child_env)
+        inspection_env.update({'PIP_' + key: '0' for key in INSPECTION_OPTIONS})
+        config = run_stage('configuration', runner, pip + ['--log', os.devnull, 'config', 'list'],
+                           cwd=root, env=inspection_env, capture=True) or ''
+        if CONFIG_MARKER not in config.splitlines():
+            raise SetupStageError('Check pip configuration failed. Complete configuration output could not be verified. Ask IT to inspect the approved pip installation; no dependency packages were installed.')
+        forbidden_config = {key.lower().replace('_', '-') for key in FORBIDDEN_PIP_OPTIONS}
         for line in config.splitlines():
-            key = line.split('=', 1)[0].strip().rsplit('.', 1)[-1]
+            full_key = line.split('=', 1)[0].strip()
+            if full_key in {':env:.' + key.lower() for key in INSPECTION_OPTIONS}:
+                continue
+            key = full_key.rsplit('.', 1)[-1]
             if key in forbidden_config:
-                raise ValueError('pip configuration contains an install destination or extra input. Ask IT to review it or use the offline wheelhouse mode.')
+                raise SetupStageError('Check pip configuration failed. A pip setting redirects the private environment, adds package inputs or disables TLS verification. Ask IT to review it or use an approved offline wheelhouse. The setting was not changed; no dependency packages were installed.')
     network = ['--timeout', str(options.timeout), '--retries', str(options.retries)]
     if options.wheelhouse:
         network += ['--no-index', '--find-links', str(options.wheelhouse)]
@@ -132,12 +185,12 @@ def install(options, *, runner=invoke):
             network += ['--proxy', options.proxy]
         if options.certificate:
             network += ['--cert', str(options.certificate)]
-    base = [python, '-m', 'pip', 'install', '--disable-pip-version-check']
-    runner(base + network + ['--only-binary=:all:', '--require-hashes', '-r', root / 'requirements.lock'], cwd=root, env=child_env)
+    base = pip + ['install', '--disable-pip-version-check', '--require-virtualenv']
+    run_stage('dependencies', runner, base + network + ['--only-binary=:all:', '--require-hashes', '-r', root / 'requirements.lock'], cwd=root, env=child_env)
     # Build tools are in the hash-locked wheel set; this stage must never fetch anything.
-    runner(base + ['--no-index', '--no-deps', '--no-build-isolation', '-e', str(root)], cwd=root, env=child_env)
-    runner([python, '-m', 'pip', 'check'], cwd=root, env=child_env)
-    runner([python, '-c', 'import workbench.server, docx, openpyxl, pptx'], cwd=root, env=child_env)
+    run_stage('application', runner, base + ['--no-index', '--no-deps', '--no-build-isolation', '-e', str(root)], cwd=root, env=child_env)
+    run_stage('consistency', runner, pip + ['check'], cwd=root, env=child_env)
+    run_stage('imports', runner, [python, '-c', 'import workbench.server, docx, openpyxl, pptx'], cwd=root, env=child_env)
     print('Setup complete. Double-click Launch.cmd. Keep this folder in place.')
 
 
@@ -147,9 +200,7 @@ def main(argv=None):
         return 0
     except (ValueError, RuntimeError, OSError) as error:
         print(f'Setup stopped: {error}', file=sys.stderr)
-        print('The existing .venv is retained. Timeout/ProxyError: check the IT-approved proxy. '
-              '407: ask IT about proxy authentication. CERTIFICATE_VERIFY_FAILED: use an approved CA bundle. '
-              'No matching distribution: check Python version/architecture and wheelhouse contents. '
+        print('The existing .venv is retained. See the failed setup step and docs/WINDOWS_SETUP.md. '
               'Do not disable TLS checks, execution policy or endpoint protection. '
               'Review terminal output for credentials/internal addresses before sharing it.', file=sys.stderr)
         return 1

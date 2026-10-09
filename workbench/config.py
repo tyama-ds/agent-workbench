@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-ROOT = Path(__file__).resolve().parents[1]
+from .runtime_paths import RESOURCE_ROOT as ROOT
 DEFAULT = json.loads((ROOT / 'docs' / 'interface.json').read_text(encoding='utf-8'))['config']
 ID = re.compile(r'[a-zA-Z][a-zA-Z0-9_-]{0,63}\Z')
 ENV = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}\Z')
@@ -83,11 +83,13 @@ def validate_settings(raw):
             raise ValueError('プロファイルには公開設定のみ保存できます。API キーは環境変数またはメモリ欄を使ってください')
         if not isinstance(profile.get('id'), str) or not ID.fullmatch(profile['id']) or profile['id'] in seen:
             raise ValueError('プロファイル ID は重複しない英数字を指定してください')
+        if profile['id'] == 'search':
+            raise ValueError('プロファイル ID search は検索用に予約されています。別の ID を指定してください')
         seen.add(profile['id'])
         if profile.get('kind') not in {'local', 'openai', 'anthropic'}:
             raise ValueError('provider kind が不正です')
         for key in ('label', 'model'):
-            text(profile.get(key, ''), key, 200)
+            text(profile.setdefault(key, ''), key, 200)
         profile['base_url'] = url(profile.get('base_url'), local=profile['kind'] == 'local')
         env = profile.setdefault('api_key_env', '')
         if not isinstance(env, str) or (env and not ENV.fullmatch(env)):
@@ -99,6 +101,7 @@ def validate_settings(raw):
         if type(profile['enabled']) is not bool:
             raise ValueError('enabled は bool です')
         number(profile.setdefault('request_timeout_seconds', 180), 'API timeout', 5, 1800)
+        number(profile.setdefault('context_window_tokens', 0), 'context_window_tokens', 0, 2000000, integer=True)
     for name, roots in value['paths'].items():
         if not isinstance(roots, list) or len(roots) > 32:
             raise ValueError(f'{name}: フォルダーを32個以内で指定してください')
@@ -137,9 +140,18 @@ def validate_settings(raw):
     limits = {'max_workers': (0, 16), 'max_auto_collaborations': (0, 1000), 'max_model_calls': (1, 1000), 'max_tool_calls': (1, 5000),
               'max_turns_per_agent': (1, 100), 'max_run_seconds': (10, 86400),
               'max_context_chars': (4000, 2000000), 'max_output_tokens': (128, 65536),
-              'max_file_bytes': (1024, 50 * 1024 * 1024)}
+              'max_file_bytes': (1024, 50 * 1024 * 1024),
+              'context_trigger_percent': (50, 90), 'context_recent_groups': (2, 32),
+              'context_summary_chars': (512, 16000), 'context_reserve_tokens': (256, 65536),
+              'max_history_chars': (4000, 4000000)}
     for key, (low, high) in limits.items():
         number(value['limits'][key], key, low, high, integer=True)
+    if type(value['limits']['auto_compact']) is not bool:
+        raise ValueError('auto_compact: bool が必要です')
+    for profile in profiles:
+        window = profile['context_window_tokens']
+        if window and window <= value['limits']['max_output_tokens'] + value['limits']['context_reserve_tokens']:
+            raise ValueError('モデルの文脈予算は出力上限と余白の合計より大きく指定してください')
     text(value['system_policy'], 'system_policy', 16000, False)
     return value
 
@@ -153,13 +165,17 @@ class Settings:
             raise ValueError('設定ファイルにリンクは使用できません')
         self.value = validate_settings(json.loads(self.path.read_text(encoding='utf-8'))) if self.path.exists() else copy.deepcopy(DEFAULT)
         self.secrets: dict[str, str] = {}
+        # Process-local ownership for browser config/credential writes. It is not part
+        # of persisted settings or a retained run's configuration/eligibility.
+        self.revision = 0
 
     def key(self, profile):
         return self.secrets.get(profile['id']) or os.environ.get(profile.get('api_key_env', ''), '')
 
     def public(self):
-        return {'config': copy.deepcopy(self.value),
-                'secret_status': {p['id']: bool(self.key(p)) for p in self.value['providers']},
+        return {'config': copy.deepcopy(self.value), 'config_revision': self.revision,
+                'secret_status': {p['id']: bool(self.key(p)) for p in self.value['providers']} |
+                    {'search': bool(self.secrets.get('search') or os.environ.get(self.value['search']['api_key_env'], ''))},
                 'capabilities': {'office': ['docx', 'xlsx', 'pptx'], 'shell': False,
                     'gpu_hard_limit': False, 'gpu_admission_guard': True, 'state_persistence': False}}
 
@@ -173,4 +189,5 @@ class Settings:
         finally:
             Path(name).unlink(missing_ok=True)
         self.value = value
+        self.revision += 1
         return self.public()

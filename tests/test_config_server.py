@@ -123,7 +123,7 @@ async def test_http_auth_origin_host_one_use_bootstrap_and_csp(tmp_path):
         assert response.status == 401
         response = await client.get(auth.origin + '/api/state')
         assert response.status == 200
-        response = await client.put(auth.origin + '/api/config', json=DEFAULT)
+        response = await client.put(auth.origin + '/api/config', json={'config_revision': app[APP_KEY].settings.revision, 'config': DEFAULT})
         assert response.status == 403
         response = await client.get(auth.origin + '/workbench/config.py')
         assert response.status == 404
@@ -136,16 +136,16 @@ async def test_key_not_persisted_invalid_key_and_active_config_lock(tmp_path):
     async with serving(tmp_path) as (auth, app, client):
         await bootstrap(auth, client)
         headers = {'Origin': auth.origin}
-        response = await client.post(auth.origin + '/api/secrets', json={'id': 'local', 'key': 'fixture-memory-secret'}, headers=headers)
+        response = await client.post(auth.origin + '/api/secrets', json={'config_revision': app[APP_KEY].settings.revision, 'id': 'local', 'key': 'fixture-memory-secret'}, headers=headers)
         assert response.status == 200
         response = await client.get(auth.origin + '/api/config')
         value = await response.text()
         assert 'fixture-memory-secret' not in value and json.loads(value)['secret_status']['local']
-        response = await client.post(auth.origin + '/api/secrets', json={'id': 'local', 'key': 'bad\r\nheader'}, headers=headers)
+        response = await client.post(auth.origin + '/api/secrets', json={'config_revision': app[APP_KEY].settings.revision, 'id': 'local', 'key': 'bad\r\nheader'}, headers=headers)
         assert response.status == 400
         engine = app[APP_KEY]
         engine.runs['test'] = {'id': 'test', 'status': 'waiting', 'agent_ids': []}
-        response = await client.put(auth.origin + '/api/config', json=DEFAULT, headers=headers)
+        response = await client.put(auth.origin + '/api/config', json={'config_revision': app[APP_KEY].settings.revision, 'config': DEFAULT}, headers=headers)
         assert response.status == 409
         assert not (tmp_path / 'state' / 'settings.json').exists()
 
@@ -174,7 +174,10 @@ async def test_model_list_waits_for_chunked_response_without_inference(tmp_path)
             app[APP_KEY].settings.value['providers'][0]['base_url'] = f'http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}/v1'
             response = await client.post(auth.origin + '/api/provider-test', json={'provider_id': 'local'}, headers={'Origin': auth.origin})
             result = await response.json()
-            assert result == {'ok': True, 'models': ['fixture-qwen'], 'inference_tested': False}
+            assert result['ok'] and result['models'] == ['fixture-qwen']
+            assert result['inference_tested'] is False and result['tools_tested'] is False
+            assert result['code'] == 'models_listed' and result['checked_at']
+            assert result['selected_model'] == 'unknown' and result['list_incomplete'] is False
             assert paths == ['/v1/models']
     finally:
         await runner.cleanup()

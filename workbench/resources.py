@@ -13,6 +13,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from .runtime_paths import FROZEN, PROTECTED_ROOTS
+
 
 class ResourceError(RuntimeError):
     """A safe, user-facing admission failure."""
@@ -57,10 +59,10 @@ def find_nvidia_smi() -> str | None:
             continue
         try:
             resolved = directory.resolve()
-            if resolved == current or resolved.is_relative_to(project):
+            if resolved == current or any(resolved.is_relative_to(root) for root in PROTECTED_ROOTS):
                 continue
             candidate = (resolved / executable).resolve()
-            if candidate.parent == current or candidate.is_relative_to(project):
+            if candidate.parent == current or any(candidate.is_relative_to(root) for root in PROTECTED_ROOTS):
                 continue
             if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
                 return str(candidate)
@@ -76,14 +78,18 @@ async def read_nvidia_gpus() -> list[dict]:
         raise ResourceError("GPU guard enabled, but nvidia-smi is unavailable")
     process = None
     try:
-        process = await asyncio.create_subprocess_exec(
-            executable, "--query-gpu=index,memory.used,memory.total,utilization.gpu",
-            "--format=csv,noheader,nounits", stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            creationflags=0x08000000 if os.name == "nt" else 0)
-        output, _ = await asyncio.wait_for(process.communicate(), timeout=5)
-        if process.returncode or len(output) > 65536:
-            raise ResourceError("nvidia-smi could not provide bounded GPU readings")
+        if FROZEN and os.name == "nt":
+            from .windows_runtime import capture_helper
+            output = await capture_helper("gpu", executable, timeout=8)
+        else:
+            process = await asyncio.create_subprocess_exec(
+                executable, "--query-gpu=index,memory.used,memory.total,utilization.gpu",
+                "--format=csv,noheader,nounits", stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+                creationflags=0x08000000 if os.name == "nt" else 0)
+            output, _ = await asyncio.wait_for(process.communicate(), timeout=5)
+            if process.returncode or len(output) > 65536:
+                raise ResourceError("nvidia-smi could not provide bounded GPU readings")
         readings = []
         for line in output.decode("utf-8", "strict").splitlines():
             fields = [int(value.strip()) for value in line.split(",")]
@@ -97,7 +103,7 @@ async def read_nvidia_gpus() -> list[dict]:
         if not readings:
             raise ValueError
         return readings
-    except (OSError, ValueError, UnicodeError, asyncio.TimeoutError) as exc:
+    except (OSError, ValueError, UnicodeError, RuntimeError, asyncio.TimeoutError) as exc:
         raise ResourceError("GPU readings are unavailable; request was not started") from None
     finally:
         if process is not None and process.returncode is None:

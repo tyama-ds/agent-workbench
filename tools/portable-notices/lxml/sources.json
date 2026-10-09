@@ -1,0 +1,33 @@
+{
+  "distribution": "lxml",
+  "version": "6.1.3",
+  "files": [
+    {
+      "path": "elementtree.txt",
+      "sha256": "0497ae8138811ef4466ede653bab7a59feb3d3c14f9ed50fc33a00aeb5bec32e",
+      "component": "ElementTree / XML Toys Library",
+      "component_version": null,
+      "source": "https://files.pythonhosted.org/packages/23/ad/28ecd7cb894d172f3c9c80a075eeeb2017ac62e3632cee05a5f9493547eb/lxml-6.1.3.tar.gz",
+      "source_archive_sha256": "45222d94ddd511536f3b2f7d9deae3b2339b4ce0f075f1ca25703b07cad9dd21",
+      "provenance": "Extracted verbatim from lxml-6.1.3/doc/licenses/elementtree.txt in the SHA-256-verified lxml 6.1.3 source distribution. The source notice does not identify an ElementTree component version."
+    },
+    {
+      "path": "LGPL-2.1.txt",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "component": "iconv",
+      "component_version": null,
+      "license_version": "LGPL-2.1",
+      "source": "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt",
+      "provenance": "Copied verbatim from the installed canonical license text at /usr/share/common-licenses/LGPL-2.1. The canonical GNU URL timed out during retrieval on 2026-10-05. lxml 6.1.3 LICENSES.txt identifies the bundled iconv license as LGPL 2.1 but does not identify the bundled iconv version. Follow-up verification on 2026-10-05 during dev18 successfully retrieved the official GNU URL; its SHA-256 exactly matched this unchanged file. The license text alone does not establish corresponding-source or relinking compliance."
+    },
+    {
+      "path": "zlib.txt",
+      "sha256": "1d113539516a28f3f478ced92f33ea7656a307014514bf331084a4243c85a280",
+      "component": "zlib",
+      "component_version": null,
+      "notice_source_version": "1.3.2",
+      "source": "https://www.zlib.net/zlib_license.html",
+      "provenance": "UTF-8 text extracted from the PRE block of the official zlib license page fetched on 2026-10-05, preserving the complete notice. The page identifies its notice source as zlib 1.3.2 (February 17, 2026); this is not evidence of the version bundled in lxml 6.1.3."
+    }
+  ]
+}
