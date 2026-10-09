@@ -176,9 +176,12 @@ class ResourceGate:
                     # Serialize admission timestamps, including the first request
                     # after a GPU wait, so a queue cannot burst through together.
                     async with self._start_lock:
-                        delay = interval - (time.monotonic() - self._last_start) if self._last_start is not None else 0
-                        if delay > 0:
-                            await asyncio.sleep(delay)
+                        # Event-loop timers can wake early on Windows. Recheck
+                        # the monotonic deadline rather than admitting early.
+                        if self._last_start is not None and interval > 0:
+                            deadline = self._last_start + interval
+                            while (delay := deadline - time.monotonic()) > 0:
+                                await asyncio.sleep(delay)
                         gpu_timeout = number(config, "gpu_wait_timeout_seconds", timeout, 0.01, 3600)
                         async with asyncio.timeout(gpu_timeout):
                             metadata = await self._gpu_ready(config)

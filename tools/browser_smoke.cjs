@@ -21,7 +21,7 @@ async function main() {
   });
   await new Promise(resolve=>provider.listen(0,'127.0.0.1',resolve));
   const providerUrl=`http://127.0.0.1:${provider.address().port}/v1`;
-  const python=process.env.WORKBENCH_TEST_PYTHON||path.join(root,'.venv','Scripts','python.exe');
+  const python=process.env.WORKBENCH_TEST_PYTHON||path.join(root,'.venv',process.platform==='win32'?'Scripts':'bin',process.platform==='win32'?'python.exe':'python');
   const server=spawn(python,['-m','workbench.server','--port','0','--state-dir',stateDir,'--no-browser'],{cwd:root,windowsHide:true,stdio:['ignore','pipe','pipe']});
   let stdout='',stderr='',browser,page;
   server.stdout.on('data',chunk=>{stdout+=chunk;});server.stderr.on('data',chunk=>{stderr+=chunk;});
@@ -32,7 +32,7 @@ async function main() {
       await new Promise(resolve=>setTimeout(resolve,100));
     }
     const origin=new URL(launch).origin;
-    browser=await chromium.launch({channel:'msedge',headless:true});
+    browser=await chromium.launch({headless:true,...(process.env.WORKBENCH_BROWSER_EXECUTABLE?{executablePath:process.env.WORKBENCH_BROWSER_EXECUTABLE}:process.platform==='win32'?{channel:'msedge'}:{})});
     const context=await browser.newContext({viewport:{width:1440,height:1040}});page=await context.newPage();
     page.on('pageerror',error=>report.pageErrors.push(error.message));
     page.on('console',message=>{if(/Content Security Policy|violates.*directive/i.test(message.text()))report.cspErrors.push(message.text());});
@@ -41,6 +41,10 @@ async function main() {
     assert.equal(new URL(page.url()).hash,'');
     assert.equal(await page.locator('#startRun').isDisabled(),true);
     report.checks.push('real one-use bootstrap, cookie session, fragment removal, same-origin assets');
+    await page.screenshot({path:path.join(artifacts,'workbench-empty.png'),fullPage:true,animations:'disabled'});
+    await page.locator('#newRun').click();await page.locator('#taskInput').fill('閉じても残る下書き');await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#taskDialog').isVisible(),false);await page.locator('#newRun').click();assert.equal(await page.locator('#taskInput').inputValue(),'閉じても残る下書き');await page.locator('#toggleBrief').click();
+    await page.locator('#navSettings').click();await page.keyboard.press('Escape');assert.equal(await page.locator('#settingsDialog').isVisible(),false);
     await page.locator('#navSettings').click();
     assert.equal(await page.locator('#limits-max_auto_collaborations').inputValue(),'24');
     assert.equal(await page.locator('#limits-max_auto_collaborations').getAttribute('min'),'0');
@@ -98,22 +102,27 @@ async function main() {
       await new Promise(resolve=>setTimeout(resolve,300));await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});
     });
     await page.route('**/api/runs/*/stop',async route=>{stopped.push(route.request().url());fixture.runs[0].status='stopped';fixture.agents.forEach(agent=>{agent.status='stopped';});await route.fulfill({status:200,contentType:'application/json',body:'{"ok":true}'});});
-    await page.locator('#navWork').click();await page.locator('#pmProfile').selectOption('local');
+    await page.locator('#closeSettings').click();await page.locator('#newRun').click();await page.locator('#pmProfile').selectOption('local');
     await page.locator('#workerProfiles input[value="openai"]').check();await page.locator('#maxWorkers').fill('2');
     const task='  社内FAQを整理し、検索案と検証結果をまとめてください。\n共有の前に対象チームを確認してください。  ';
     await page.locator('#taskInput').fill(task);await page.locator('#startRun').click();
     await page.locator('#humanQuestion').waitFor({state:'visible'});
     assert.deepEqual(sentRuns,[{task,pm_profile:'local',worker_profiles:['local','openai'],max_workers:2}]);
     assert.equal(await page.locator('.agent-card').count(),3);
+    assert.equal(await page.locator('#agentTabs button').count(),3);assert.equal(await page.locator('#teamMap button').count(),3);
+    await page.locator('#needsYou').click();assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#needsYou').click();
+    await page.locator('#agentSearch').fill('レビュー');assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#agentSearch').clear();
+    await page.locator('[data-agent-id="fixture-pm"]').focus();await page.waitForTimeout(1300);assert.equal(await page.evaluate(()=>document.activeElement.dataset.agentId),'fixture-pm');
+    report.checks.push('cockpit roster search, answer-wait filter, true team map, agent tabs, poll-stable keyboard focus, modal Escape/close/reopen and task draft retention');
     assert.equal(await page.locator('#runMetrics .metric').filter({hasText:'自動連携'}).locator('b').textContent(),'3 / 7');
     assert.equal(await page.locator('#collaborationLimitNotice').isVisible(),false);
     assert.equal(await page.locator('#conversationLog details[open]').count(),0);
     await page.locator('#conversationLog summary').click();assert.equal(await page.locator('#conversationLog details[open]').count(),1);
     assert.equal(await page.locator('#activityFeed img').count(),0);assert.equal(await page.evaluate(()=>Boolean(window.fixtureInjected)),false);
     assert.equal(await page.locator('#runForm').isVisible(),false);await page.evaluate(()=>window.scrollTo(0,0));
-    await page.screenshot({path:path.join(artifacts,'workbench-team.png'),fullPage:true,animations:'disabled'});
+    await page.setViewportSize({width:1366,height:768});await page.screenshot({path:path.join(artifacts,'workbench-team.png'),fullPage:true,animations:'disabled'});
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),true);assert.equal(await page.locator('#systemPolicy').isDisabled(),true);
-    await page.locator('#navWork').click();
+    await page.locator('#closeSettings').click();
     await page.locator('#messageInput').fill('PMに送る未送信メモ');await page.locator('[data-agent-id="fixture-worker-1"]').click();await page.locator('#messageInput').fill('担当者への未送信メモ');await page.locator('[data-agent-id="fixture-pm"]').click();assert.equal(await page.locator('#messageInput').inputValue(),'PMに送る未送信メモ');
     const answer='まず開発チームだけを対象にしてください。外部には共有しません。';
     await page.locator('#messageInput').fill(answer);await page.locator('#sendMessage').click();await page.locator('#messageInput').fill('送信中に編集した次の指示');
@@ -128,7 +137,7 @@ async function main() {
     assert.match(await page.locator('#collaborationLimitNotice').textContent(),/回数はリセットされません/);
     report.checks.push('collaboration counter and blocked-handoff notice distinguish budget exhaustion from completion');
     await page.locator('#stopRun').click();await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();assert.equal(stopped.length,1);assert.equal(await page.locator('#messageInput').isDisabled(),true);
-    await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.locator('#navWork').click();
+    await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),false);await page.locator('#closeSettings').click();
     await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
     await page.screenshot({path:path.join(artifacts,'workbench-mobile.png'),fullPage:true,animations:'disabled'});
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
