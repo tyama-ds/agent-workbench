@@ -332,7 +332,7 @@ async def test_summary_and_next_dispatch_use_current_key_without_persisting_it(t
     from workbench.engine import Engine
     class Client:
         def __init__(self): self.keys = []
-        async def complete(self, profile, messages, tools, system, limits):
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
             self.keys.append(profile['api_key'])
             if not tools:
                 engine.set_secret('local', 'synthetic-new-key')

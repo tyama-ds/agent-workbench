@@ -68,6 +68,9 @@ Local サーバーには OpenAI 互換の **JSON tool calling** が必要です�
 
 Local は loopback と、数値で指定した RFC1918 / IPv6 ULA の LAN アドレスに対応します。環境変数を含め、プロキシは常に使いません。LAN の HTTP は平文通信です。社内ネットワークで必要な認証・HTTPS は推論サーバー側で設定してください。
 
+Local / OpenAI 互換（`kind: local`）のエージェント推論には `X-Conversation-Id: <run ID>/<agent ID>` を送ります（ASCII 英数字と `-_./:` 以外を `_` に置換し、先頭128文字まで）。OpenAI / Anthropic や、要約などIDを渡さない呼び出しには送りません。
+対応する中継はこのIDで会話を識別でき、未知のヘッダを無視する他の接続先には影響しません。推論ペイロードは変更しません。
+
 ## チームの使い方
 
 同じ Local プロファイルだけを PM・作業者に指定すると、単一モデルが別々の会話と役割を持ちます。OpenAI の PM に Local と Anthropic の作業者を許可すると、PM はその範囲で担当と API を選べます。作業者同士の連絡も同じチーム内で行えます。

@@ -514,6 +514,7 @@ class Engine:
             summary_system = SUMMARY_POLICY + f'\nKeep the complete JSON output within {limits["context_summary_chars"]} characters.'
             try:
                 async with asyncio.timeout(remaining):
+                    # A summary is separate inference, not an agent-chat continuation.
                     reply = await self.client.complete(profile, plan.request, [], summary_system, summary_limits)
                 if agent.closing or self.closed:
                     raise asyncio.CancelledError
@@ -567,7 +568,8 @@ class Engine:
                     run['model_calls'] += 1
                     self.event(run['id'], agent.id, 'inference', f'{agent.name}: 推論を待機・実行中')
                     async with asyncio.timeout(max(.1, limits['max_run_seconds'] - elapsed)):
-                        reply = await self.client.complete(profile, agent.conversation, tools, self._policy(run, agent), call_limits)
+                        reply = await self.client.complete(profile, agent.conversation, tools, self._policy(run, agent), call_limits,
+                                                           conversation_id=f'{run["id"]}/{agent.id}')
                     if agent.closing:
                         break
                     self.log(agent, 'assistant', reply.text, reply.thinking)

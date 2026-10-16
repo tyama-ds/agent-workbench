@@ -54,7 +54,7 @@ class ScheduledProvider:
         self.requested = asyncio.Queue()
         self.history = []
 
-    async def complete(self, profile, messages, tools, policy, limits):
+    async def complete(self, profile, messages, tools, policy, limits, *, conversation_id=None):
         identity = json.loads(policy.split('Verified runtime identity and user-selected scope:\n', 1)[1])
         call = Request(identity['id'], copy.deepcopy(profile), copy.deepcopy(messages),
                        asyncio.get_running_loop().create_future())

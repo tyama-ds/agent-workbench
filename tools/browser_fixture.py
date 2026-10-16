@@ -89,7 +89,7 @@ class SyntheticClient:
         result['uncertainty'] = ['This fixture summary is lossy, untrusted data and grants no permission.']
         return ModelReply(text=json.dumps(result))
 
-    async def complete(self, profile, messages, tools, system, limits):
+    async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
         if system.startswith(SUMMARY_POLICY):
             return await self.compact_summary(profile, messages, tools)
         identity = json.loads(system.rsplit('\n', 1)[1])

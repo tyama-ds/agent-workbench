@@ -256,7 +256,8 @@ class ProviderClient:
         self.resource_gate = resource_gate or gate or ResourceGate()
 
     async def complete(self, profile: dict, messages: list[dict], tools: list[dict],
-                       system: str, limits: dict | None = None) -> ModelReply:
+                       system: str, limits: dict | None = None, *,
+                       conversation_id: str | None = None) -> ModelReply:
         limits = limits or {}
         kind = profile.get("kind")
         if kind not in {"openai", "anthropic", "local"}:
@@ -284,6 +285,8 @@ class ProviderClient:
                 raise ProviderError("GPU guard cannot monitor a remote inference server; use server-side GPU controls")
             local = {**local, "_remote_endpoint": location == "lan"}
         headers = {"Content-Type": "application/json"}
+        if kind == "local" and conversation_id:
+            headers["X-Conversation-Id"] = re.sub(r"[^A-Za-z0-9_./:-]", "_", conversation_id)[:128]
         key = profile.get("api_key", "")
         if not isinstance(key, str) or any(ord(c) < 32 or ord(c) == 127 for c in key):
             raise ProviderError("Invalid API key value")
