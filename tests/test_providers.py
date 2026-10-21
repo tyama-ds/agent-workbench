@@ -288,3 +288,62 @@ async def test_local_request_timeout_is_capped_by_both_profile_and_global(monkey
 def test_incomplete_responses_cannot_execute_partial_tools(kind, data):
     with pytest.raises(ProviderError):
         ProviderClient()._parse(kind, 'test', data, {'read_file'})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind,options,wire_field,expected', [
+    ('openai', {'reasoning_effort': 'high'}, 'reasoning', {'effort': 'high', 'summary': 'auto'}),
+    ('anthropic', {'thinking': {'type': 'enabled', 'budget_tokens': 1024}},
+     'thinking', {'type': 'enabled', 'budget_tokens': 1024}),
+])
+async def test_cloud_reasoning_options_preserve_caller_inputs(kind, options, wire_field, expected):
+    import copy
+
+    requests = []
+
+    async def handler(request):
+        requests.append(await request.json())
+        if kind == 'openai':
+            return web.json_response({'status': 'completed', 'output': []})
+        return web.json_response({'stop_reason': 'end_turn', 'content': []})
+
+    async with fake_server(handler) as endpoint:
+        profile = dict(kind=kind, base_url=endpoint, model='reasoning-test', api_key='fake-key', **options)
+        messages = [
+            {'role': 'user', 'content': 'Read the permitted file'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': 'call1', 'name': 'read_file', 'arguments': {'path': 'a.txt'}}]},
+            {'role': 'tool', 'tool_call_id': 'call1', 'content': 'File contents'},
+        ]
+        tools = copy.deepcopy(TOOLS)
+        limits = {'max_output_tokens': 2048}
+        original = copy.deepcopy((profile, messages, tools, limits))
+        client = ProviderClient()
+        await client.complete(profile, messages, tools, 'Visible policy', limits)
+        await client.complete(profile, messages, tools, 'Visible policy', limits)
+        assert (profile, messages, tools, limits) == original
+
+    assert len(requests) == 2 and requests[0] == requests[1]
+    assert requests[0][wire_field] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind,options,error', [
+    ('openai', {'api_key': ''}, 'This provider requires an API key'),
+    ('local', {'api_key': 42}, 'Invalid API key value'),
+    # Header validation must still precede the independent payload error.
+    ('anthropic', {'api_key': 'fake\r\nX-Injected: bad', 'thinking': True}, 'Invalid API key value'),
+    ('anthropic', {'thinking': True}, 'Invalid Anthropic thinking configuration'),
+    ('anthropic', {'thinking': {'type': 'unsupported'}}, 'Invalid Anthropic thinking configuration'),
+    ('local', {'enable_thinking': 'false'}, 'enable_thinking must be true or false'),
+])
+async def test_invalid_credentials_and_thinking_are_rejected_before_network(monkeypatch, kind, options, error):
+    client = ProviderClient()
+
+    async def unexpected_network(*args, **kwargs):
+        pytest.fail('Invalid request configuration must be rejected before network access')
+
+    monkeypatch.setattr(client, '_post', unexpected_network)
+    profile = {'kind': kind, 'model': 'test', 'api_key': 'fake-key', **options}
+    with pytest.raises(ProviderError, match=error):
+        await client.complete(profile, [{'role': 'user', 'content': 'Task'}], TOOLS, 'Visible policy')

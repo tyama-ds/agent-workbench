@@ -251,6 +251,48 @@ def _tools(tools: list[dict]) -> list[dict]:
     return result
 
 
+def _request_headers(kind: str, profile: dict, conversation_id: str | None) -> dict:
+    headers = {"Content-Type": "application/json"}
+    if kind == "local" and conversation_id:
+        headers["X-Conversation-Id"] = re.sub(r"[^A-Za-z0-9_./:-]", "_", conversation_id)[:128]
+    key = profile.get("api_key", "")
+    if not isinstance(key, str) or any(ord(c) < 32 or ord(c) == 127 for c in key):
+        raise ProviderError("Invalid API key value")
+    if kind != "local" and not key:
+        raise ProviderError("This provider requires an API key")
+    if key:
+        headers["x-api-key" if kind == "anthropic" else "Authorization"] = key if kind == "anthropic" else "Bearer " + key
+    if kind == "anthropic":
+        headers["anthropic-version"] = "2023-06-01"
+    return headers
+
+
+def _request_payload(kind: str, model: str, profile: dict, messages: list[dict],
+                     definitions: list[dict], system: str, maximum: int) -> dict:
+    if kind == "openai":
+        payload = {"model": model, "instructions": system, "input": _openai_messages(messages),
+                   "store": False, "include": ["reasoning.encrypted_content"], "max_output_tokens": maximum,
+                   "tools": [{"type": "function", **tool, "strict": False} for tool in definitions]}
+        if profile.get("reasoning_effort"):
+            payload["reasoning"] = {"effort": profile["reasoning_effort"], "summary": "auto"}
+    elif kind == "anthropic":
+        payload = {"model": model, "system": system, "messages": _anthropic_messages(messages), "max_tokens": maximum,
+                   "tools": [{"name": tool["name"], "description": tool["description"], "input_schema": tool["parameters"]} for tool in definitions]}
+        if profile.get("thinking") is not None:
+            thinking = profile["thinking"]
+            if not isinstance(thinking, dict) or thinking.get("type") not in {"adaptive", "enabled", "disabled"}:
+                raise ProviderError("Invalid Anthropic thinking configuration")
+            payload["thinking"] = copy.deepcopy(thinking)
+    else:
+        payload = {"model": model, "messages": _local_messages(messages, system), "max_tokens": maximum,
+                   "stream": False, "tools": [{"type": "function", "function": tool} for tool in definitions]}
+        if profile.get("enable_thinking") is not None:
+            if not isinstance(profile["enable_thinking"], bool):
+                raise ProviderError("enable_thinking must be true or false")
+            payload["chat_template_kwargs"] = {"enable_thinking": profile["enable_thinking"]}
+    return payload
+
+
 class ProviderClient:
     def __init__(self, resource_gate: ResourceGate | None = None, *, gate: ResourceGate | None = None):
         self.resource_gate = resource_gate or gate or ResourceGate()
@@ -284,38 +326,8 @@ class ProviderClient:
             if location == "lan" and local.get("gpu_guard_enabled", False):
                 raise ProviderError("GPU guard cannot monitor a remote inference server; use server-side GPU controls")
             local = {**local, "_remote_endpoint": location == "lan"}
-        headers = {"Content-Type": "application/json"}
-        if kind == "local" and conversation_id:
-            headers["X-Conversation-Id"] = re.sub(r"[^A-Za-z0-9_./:-]", "_", conversation_id)[:128]
-        key = profile.get("api_key", "")
-        if not isinstance(key, str) or any(ord(c) < 32 or ord(c) == 127 for c in key):
-            raise ProviderError("Invalid API key value")
-        if kind != "local" and not key:
-            raise ProviderError("This provider requires an API key")
-        if key:
-            headers["x-api-key" if kind == "anthropic" else "Authorization"] = key if kind == "anthropic" else "Bearer " + key
-        if kind == "openai":
-            payload = {"model": model, "instructions": system, "input": _openai_messages(messages),
-                       "store": False, "include": ["reasoning.encrypted_content"], "max_output_tokens": maximum,
-                       "tools": [{"type": "function", **tool, "strict": False} for tool in definitions]}
-            if profile.get("reasoning_effort"):
-                payload["reasoning"] = {"effort": profile["reasoning_effort"], "summary": "auto"}
-        elif kind == "anthropic":
-            headers["anthropic-version"] = "2023-06-01"
-            payload = {"model": model, "system": system, "messages": _anthropic_messages(messages), "max_tokens": maximum,
-                       "tools": [{"name": tool["name"], "description": tool["description"], "input_schema": tool["parameters"]} for tool in definitions]}
-            if profile.get("thinking") is not None:
-                thinking = profile["thinking"]
-                if not isinstance(thinking, dict) or thinking.get("type") not in {"adaptive", "enabled", "disabled"}:
-                    raise ProviderError("Invalid Anthropic thinking configuration")
-                payload["thinking"] = copy.deepcopy(thinking)
-        else:
-            payload = {"model": model, "messages": _local_messages(messages, system), "max_tokens": maximum,
-                       "stream": False, "tools": [{"type": "function", "function": tool} for tool in definitions]}
-            if profile.get("enable_thinking") is not None:
-                if not isinstance(profile["enable_thinking"], bool):
-                    raise ProviderError("enable_thinking must be true or false")
-                payload["chat_template_kwargs"] = {"enable_thinking": profile["enable_thinking"]}
+        headers = _request_headers(kind, profile, conversation_id)
+        payload = _request_payload(kind, model, profile, messages, definitions, system, maximum)
         proxy = None
         if kind != "local" and profile.get("proxy_url"):
             proxy = _proxy_url(profile["proxy_url"])
