@@ -20,7 +20,7 @@ class ScriptClient:
         self.responses = list(responses)
         self.calls = []
 
-    async def complete(self, profile, messages, tools, system, limits):
+    async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
         self.calls.append(copy.deepcopy(messages))
         value = self.responses.pop(0)
         return await value(profile, messages) if callable(value) else value
