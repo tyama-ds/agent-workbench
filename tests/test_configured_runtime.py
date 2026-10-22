@@ -164,6 +164,30 @@ def test_isolated_check_uses_installed_libraries_without_site_hooks(tmp_path, in
     assert not (extra / '__pycache__').exists() and not (tmp_path / '.venv').exists()
 
 
+@pytest.mark.parametrize('missing_config', [False, True], ids=['stdout', 'stderr'])
+def test_check_reports_unicode_paths_with_restricted_console_encoding(tmp_path, installed_runtime, missing_config):
+    python, libraries = installed_runtime
+    extra = tmp_path / '会社 packages'
+    extra.mkdir()
+    config = write_config(tmp_path, {'python_executable': str(python),
+                                    'library_paths': [str(extra), str(libraries)]})
+    if missing_config:
+        config = tmp_path / '会社 missing.json'
+    # Paths remain argv data; the runner code is identical for every test path.
+    runner = ('import sys,runpy; script,config=sys.argv[1:]; '
+              'sys.stdout.reconfigure(encoding="cp1252",errors="strict"); '
+              'sys.stderr.reconfigure(encoding="cp1252",errors="strict"); '
+              'sys.argv=[script,"--config",config,"--check"]; '
+              'runpy.run_path(script,run_name="__main__")')
+    result = subprocess.run([str(python), '-I', '-S', '-B', '-c', runner, str(SCRIPT), str(config)],
+                            cwd=tmp_path, capture_output=True, text=True, encoding='cp1252', timeout=30)
+    assert result.returncode == (1 if missing_config else 0), result.stdout + result.stderr
+    report = result.stderr if missing_config else result.stdout
+    assert r'\u4f1a\u793e' in report
+    assert 'UnicodeEncodeError' not in result.stderr
+    assert ('Configured launch stopped' if missing_config else 'Runtime check complete') in report
+
+
 def test_runtime_lock_preserves_exact_full_lock_versions_and_hashes():
     def requirement_blocks(filename):
         result = {}

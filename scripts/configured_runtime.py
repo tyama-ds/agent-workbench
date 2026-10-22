@@ -153,6 +153,11 @@ def run_server(args):
 
 
 def main(argv=None):
+    # Redirected Windows consoles may use a code page that cannot represent an
+    # otherwise valid path. Keep that encoding, but never fail merely printing it.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='backslashreplace')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=ROOT / 'runtime.local.json')
     parser.add_argument('--check', action='store_true', help='Check installed packages without starting a server or installing anything')
