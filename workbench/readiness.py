@@ -17,7 +17,11 @@ def summarize(prepared):
     warnings = []
     for kind, roots in (('read', harness.read_roots), ('write', harness.write_roots)):
         if not roots:
-            warnings.append({'code': kind + '_scope_empty', 'message': 'ファイルの' + ('読み取り' if kind == 'read' else '書き込み') + 'は許可されていません。文章だけの作業は開始できます。'})
+            action = ('入力フォルダーを「読み取りを許可する場所」に登録してください。' if kind == 'read' else
+                      'ファイルやフォルダーを作成・保存するには、既存の出力フォルダーを「書き込みを許可する場所」に登録してください。')
+            warnings.append({'code': kind + '_scope_empty', 'message': 'ファイルの' + ('読み取り' if kind == 'read' else '書き込み') +
+                'は許可されていません。設定 → ファイルへのアクセスで、' + action +
+                '設定を保存してから新しい作業を開始します。依頼文にパスを書くことだけでは許可されません。文章だけの作業は開始できます。'})
         for root in roots:
             if any(root.is_relative_to(denied) for denied in harness.deny_roots):
                 warnings.append({'code': kind + '_scope_denied', 'message': f'{root}: 拒否範囲に含まれるため使用できません。'})
