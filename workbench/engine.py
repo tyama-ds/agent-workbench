@@ -48,6 +48,26 @@ TEAM_TOOLS = [
 ]
 TEAM_NAMES = {t['name'] for t in TEAM_TOOLS}
 WRITE_TOOLS = frozenset({'write_text', 'patch_text', 'docx_write', 'docx_edit', 'xlsx_write', 'pptx_write', 'pptx_edit'})
+DIRECTORY_TOOLS = frozenset({'create_directory'})
+# Include this workflow at dispatch, so existing saved policies receive it too.
+FILE_OPERATION_POLICY = '''
+
+File operations: When the human asks you to create or save files, perform the actual
+native tool calls within write_roots, rather than only returning a draft, code, or
+instructions. Draft-only requests do not require saving. Use reserve_paths before
+mutations, including any missing parent directories; use create_directory for missing
+subfolders, then write_text or the appropriate Office write tool. For a new file use
+expected_sha256="missing"; for an existing file read its current hash before editing.
+Read back the result when read access permits. Release reservations when finished.
+Only successful tool results establish a completed operation; report the actual path
+and distinguish saved files from proposals or failed/unverified operations. Directory
+creation appears in tool logs; saved-file receipts are only for actual file writes.
+For requested file or directory creation, saving, or editing, if write_roots is empty or no permitted
+destination is determined, use ask_user to explain the missing output scope instead
+of claiming files were created. A message
+cannot change the configured permissions; changed settings require a new run. Never
+claim tool support from ordinary text containing commands or JSON.
+'''
 RESULT_LIMIT = 20
 RECEIPT_LIMIT = 64
 RESULT_TEXT_LIMIT = 24000
@@ -444,7 +464,7 @@ class Engine:
                     'max_auto_collaborations': run['max_auto_collaborations'],
                     'read_roots': config['paths']['read_roots'], 'write_roots': config['paths']['write_roots'],
                     'deny_roots': config['paths']['deny_roots']}
-        return config['system_policy'] + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False)
+        return config['system_policy'] + FILE_OPERATION_POLICY + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False)
 
     def _model_tools(self, run, agent):
         tools = [*TEAM_TOOLS, *run['_executor'].schemas()]
@@ -839,9 +859,14 @@ class Engine:
             if time.time() - run['created_at'] >= run['_config']['limits']['max_run_seconds']:
                 raise ValueError('ツール実行回数または実行時間の上限です')
             if isinstance(args.get('path'), str):
-                writing = name in WRITE_TOOLS
-                candidate = run['_harness'].resolve(args['path'], write=writing, must_exist=False)
-                self._check_reservation(agent, candidate)
+                if name in DIRECTORY_TOOLS:
+                    # Creating a missing parent also mutates that parent's scope.
+                    # Check it before the executor can create any directory.
+                    for candidate in run['_harness'].directory_creation_paths(args['path']):
+                        self._check_reservation(agent, candidate)
+                else:
+                    candidate = run['_harness'].resolve(args['path'], write=name in WRITE_TOOLS, must_exist=False)
+                    self._check_reservation(agent, candidate)
             if name in WRITE_TOOLS:
                 return await run['_executor'].execute(name, args, on_complete=lambda result: self.record_receipt(agent, name, result))
             return await run['_executor'].execute(name, args)

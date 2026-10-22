@@ -1,4 +1,4 @@
-"""Static first-task guidance agrees with the actual, unchanged tool boundary."""
+"""Static first-task guidance agrees with the actual tool boundary."""
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -72,7 +72,9 @@ def test_examples_are_native_optional_static_help_without_actions():
     assert 'モデルの設定が必要' in sections[0]['text']
     assert 'ファイルの許可や Web の設定は不要' in sections[0]['text']
     assert '上限を 0' in sections[0]['text']
-    assert all(text in sections[1]['text'] for text in ('既存フォルダーの絶対パス', '読み取り', '書き込み', 'フォルダー作成・ファイル削除はできません'))
+    assert all(text in sections[1]['text'] for text in ('既存フォルダーの絶対パス', '読み取りを許可する場所', '書き込みを許可する場所',
+        '設定を保存してから新しい作業', '依頼文にパスを書くことだけでは許可されません', '許可した出力先の中',
+        'サブフォルダー', '文章の起案だけ', '成果・保存記録', 'ファイル削除はできません'))
     assert all(text in sections[2]['text'] for text in ('Web を有効', '検索サービスの接続先と必要なキー', '検索とページ取得の利用状態', '公開 HTTP(S) テキスト', 'ログインや JavaScript の実行はできません'))
 
 
@@ -92,7 +94,7 @@ def test_text_only_example_is_admissible_without_files_web_or_tool_execution(tmp
     assert capabilities['shell'] is False
     assert set(capabilities['office']) == {'docx', 'xlsx', 'pptx'}
     tool_names = {tool['name'] for tool in ToolExecutor(None).schemas()}
-    assert {'read_text', 'write_text', 'docx_write', 'xlsx_write', 'pptx_write'} <= tool_names
+    assert {'read_text', 'create_directory', 'write_text', 'docx_write', 'xlsx_write', 'pptx_write'} <= tool_names
     assert not tool_names & {'shell', 'exec', 'run_command', 'mkdir', 'delete_file'}
 
 

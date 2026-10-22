@@ -29,6 +29,11 @@ async def test_text_only_pm_and_unused_workers_preflight_start_parity(tmp_path, 
     assert len(preview['destinations']) == 1
     assert preview['destinations'][0]['protocol'] == '/chat/completions'
     assert preview['scope']['read_roots'] == preview['scope']['write_roots'] == []
+    warnings = {warning['code']: warning['message'] for warning in preview['warnings']}
+    assert '読み取りを許可する場所' in warnings['read_scope_empty']
+    assert all(part in warnings['write_scope_empty'] for part in (
+        'ファイルやフォルダーを作成・保存', '既存の出力フォルダー', '書き込みを許可する場所',
+        '設定を保存してから新しい作業', '依頼文にパスを書くことだけでは許可されません', '文章だけの作業は開始できます'))
     assert not preview['web']['enabled']
     assert not engine.runs and not engine.agents and not engine.events
     started = await engine.start_run(request)
