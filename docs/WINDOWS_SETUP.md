@@ -2,7 +2,49 @@
 
 導入前に、[IT 向けチェックリスト](IT_REVIEW_CHECKLIST.md) で前提条件・接続先・データの扱いを確認してください。
 
-## 最短の手順
+## 既存の Python とライブラリを使う（JSON 設定）
+
+Python と必要なパッケージが既にある場合、`Setup.cmd` を使わずに起動できます。
+
+1. [runtime.example.json](../runtime.example.json) をプロジェクト直下の `runtime.local.json` にコピーします。
+2. `python_executable` と `library_paths` を、このPCの実際の絶対パスへ変更します。
+3. プロジェクトのフォルダーで `Launch-Configured.cmd --check` を実行します。
+4. `Runtime check complete` が出たら `Launch-Configured.cmd` をダブルクリックします。ショートカットもこのファイルを指定します。
+
+```json
+{
+  "python_executable": "C:/Approved/Python313/python.exe",
+  "library_paths": ["C:/Approved/Python313/Lib/site-packages"],
+  "port": 8818,
+  "state_dir": "",
+  "open_browser": true
+}
+```
+
+| 項目 | 指定内容 |
+| --- | --- |
+| `python_executable` | 必須。別途導入済みの通常版64-bit CPython 3.11〜3.13の `python.exe`。`.venv` のPythonやStoreエイリアスは指定しません |
+| `library_paths` | 必須。導入済みパッケージのフォルダーを1〜16個。先に書いた場所を優先します。標準ライブラリの `Lib` やwheel置場ではなく、`.dist-info` を含む `site-packages` 等を指定します |
+| `port` | 省略時8818。0〜65535。0は起動ごとに空きポートを選択します |
+| `state_dir` | 省略／空文字は従来の `%LOCALAPPDATA%/AgentWorkbench`。変更時はローカルの絶対パスを指定します |
+| `open_browser` | 省略時 `true`。`false` なら自動でブラウザーを開かず、起動URLをコンソールへ表示します |
+
+JSONにコメントは書けません。Windowsのパスは `/` 区切り、または `\\` と二重に記述してください。変数（`%LOCALAPPDATA%` 等）の展開は行わず、実際のフルパスを指定します。未知の項目、型違い、存在しないPython／ライブラリ、重複キーはエラーにします。設定変更は次回起動時に反映されます。
+
+必要なものは [パッケージ一覧](DEPENDENCIES.md) と [requirements-runtime.lock](../requirements-runtime.lock) の実行用17件です。診断と起動の両方で、固定版との一致とimportを確認します。不足・版違いはパッケージ名と必要版を表示します。起動側がpipを実行したり、`.venv` を作成したり、Pythonやパッケージを取得することはありません。別のPython版用の `.pyd` は流用できません。
+
+この入口はWindows標準のPowerShellでJSONからPythonの場所を読み、指定されたPythonを `-I -S -B` で実行します。PowerShellの実行ポリシーは変更しません。PowerShell自体の実行が許可されていない環境では、承認済みPythonの絶対パスで直接実行できます。
+
+```bat
+"C:\Approved\Python313\python.exe" -I -S -B scripts\configured_runtime.py --config runtime.local.json --check
+"C:\Approved\Python313\python.exe" -I -S -B scripts\configured_runtime.py --config runtime.local.json
+```
+
+`PYTHONPATH`・`PYTHONHOME`・ユーザーsite・`.pth`・`sitecustomize` は利用しません。`.pth` の処理を前提とするeditableパッケージではなく、通常のインストール済みファイルを指定してください。ライブラリはPythonコードとして実行されるので、利用するフォルダーは自分／組織が管理するものを選びます。起動中は、選択されたライブラリのフォルダーとPython本体のフォルダーをエージェントの読み書き禁止範囲に加えます。
+
+`runtime.local.json` は起動環境専用でGit対象外です。モデル/API/プロキシ/作業フォルダー権限はアプリ内設定に保存され、このファイルにはAPIキーを書きません。`Launch-Configured.cmd` の引数は `--check` または `--help` の単独指定のみです。ポートなどはJSONを編集します。従来の `Launch.cmd` はJSONを読み込まず、セットアップ済み `.venv` を起動します。
+
+## 従来のセットアップ手順
 
 Python の導入・パス指定前に、展開先のコマンドプロンプトで `Setup.cmd --help` を実行すると手順とオプションを表示します。`Setup.cmd -h` / `Setup.cmd /?` も同じです。ヘルプ指定は最初の引数として単独で使い、ほかの引数が続く場合はセットアップせずエラーになります。通常のオプションは別の実行に分けてください。ヘルプは Python を起動せず、`.venv` の作成、パッケージのインストール、ネットワーク接続、前提条件の診断も行いません。
 
@@ -129,4 +171,4 @@ Launch.cmd --state-dir "C:\Users\me\AppData\Local\AgentWorkbench-test"
 
 過去の notice・manifest・検証記録、および一部の検証用補助コードは履歴を保つため残しています。`requirements-build.lock` は旧同梱版専用の記録であり、インストールに使用しません。過去の再配布調査が完了しても、この同梱禁止方針が自動で変わることはありません。
 
-現在の導入手順は、この文書の `Setup.cmd` / `Launch.cmd` のみです。Python 本体の版・パッチ更新と利用許可は、組織の承認手順で別途管理してください。
+現在は、この文書の `Setup.cmd` / `Launch.cmd`、または導入済み環境を指定する `runtime.local.json` / `Launch-Configured.cmd` を使います。Python 本体の版・パッチ更新と利用許可は、組織の承認手順で別途管理してください。

@@ -1,0 +1,9 @@
+{
+  "python_executable": "C:/Approved/Python313/python.exe",
+  "library_paths": [
+    "C:/Approved/Python313/Lib/site-packages"
+  ],
+  "port": 8818,
+  "state_dir": "",
+  "open_browser": true
+}

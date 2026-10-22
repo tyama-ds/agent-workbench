@@ -14,7 +14,7 @@ FROZEN = bool(getattr(sys, 'frozen', False))
 ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parents[1]
 
 
-def main(argv=None):
+def main(argv=None, *, server_runner=None):
     parser = argparse.ArgumentParser(description=__doc__)
     if FROZEN:
         from workbench import __version__
@@ -50,6 +50,9 @@ def main(argv=None):
                     print('Agent Workbench is already running with a dynamic port. Use its existing console URL.')
                 print('If authentication was lost, stop the existing console with Ctrl+C and start again.')
                 return 0
+        if server_runner is not None:
+            print('Starting Agent Workbench. Keep this console open; Ctrl+C stops the server.', flush=True)
+            return server_runner(args)
         if FROZEN:
             import asyncio
             from workbench.server import serve
