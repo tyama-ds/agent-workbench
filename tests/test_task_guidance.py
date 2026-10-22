@@ -49,7 +49,8 @@ def test_essential_limit_is_persistent_and_describes_the_task_input():
     tree = Elements()
     task, help_text = tree.ids['taskInput'], tree.ids['taskHelp']
     assert task['attrs']['aria-describedby'].split() == ['taskHelp']
-    assert 'コマンド・ビルド・テストは実行できません' in help_text['text']
+    assert '任意のシェルコマンドは実行できません' in help_text['text']
+    assert 'Python を設定・有効化すると計算やデータ処理も実行できます' in help_text['text']
     assert '許可したファイル' in help_text['text']
     assert all(node['tag'] != 'details' and 'hidden' not in node['attrs'] for node in (*help_text['ancestors'], help_text))
     assert help_text['ancestors'][-1] is task['ancestors'][-1]
@@ -65,7 +66,7 @@ def test_examples_are_native_optional_static_help_without_actions():
     assert examples['children'][0]['tag'] == 'summary'
     assert examples['children'][0]['text'] == '依頼例と必要な設定'
     sections = [node for node in descendants(examples) if node['tag'] == 'section']
-    assert len(sections) == 3
+    assert len(sections) == 4
     assert not any(node['tag'] in {'a', 'input', 'button', 'select', 'textarea', 'form', 'script'} for node in descendants(examples))
     assert all(not any(attr.startswith('on') for attr in node['attrs']) for node in descendants(examples))
     assert 'taskExamples' not in APP and 'taskHelp' not in APP  # No new mutation/network handler.
@@ -75,7 +76,8 @@ def test_examples_are_native_optional_static_help_without_actions():
     assert all(text in sections[1]['text'] for text in ('既存フォルダーの絶対パス', '読み取りを許可する場所', '書き込みを許可する場所',
         '設定を保存してから新しい作業', '依頼文にパスを書くことだけでは許可されません', '許可した出力先の中',
         'サブフォルダー', '文章の起案だけ', '成果・保存記録', 'ファイル削除はできません'))
-    assert all(text in sections[2]['text'] for text in ('Web を有効', '検索サービスの接続先と必要なキー', '検索とページ取得の利用状態', '公開 HTTP(S) テキスト', 'ログインや JavaScript の実行はできません'))
+    assert all(text in sections[2]['text'] for text in ('既存の python.exe', '明示した入力', '明示した出力', '子プロセス', '同梱', '自動インストールは行いません'))
+    assert all(text in sections[3]['text'] for text in ('Web を有効', '検索サービスの接続先と必要なキー', '検索とページ取得の利用状態', '公開 HTTP(S) テキスト', 'ログインや JavaScript の実行はできません'))
 
 
 def test_text_only_example_is_admissible_without_files_web_or_tool_execution(tmp_path):
@@ -104,4 +106,4 @@ def test_initial_readme_uses_actual_control_labels_and_keeps_model_test_limits()
     assert '「モデル一覧を確認」' in text and '「接続を確認」' not in text
     assert '推論・ツール動作は未確認' in text and '有料リクエストの成功を保証するチェックではありません' in text
     assert '文章だけの作業には手順3のフォルダー登録や Web の設定は不要' in text
-    assert 'コマンド・ビルド・テストは実行できません' in text
+    assert 'Python' in text and 'シェル' in text

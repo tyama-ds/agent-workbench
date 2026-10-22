@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import hashlib
 import io
+import json
 import os
 import re
 import stat
@@ -377,6 +378,75 @@ class PathHarness:
                             return {"matches": matches, "truncated": True, "files_examined": visited}
         return {"matches": matches, "truncated": bool(pending) or visited >= 2000, "files_examined": visited}
 
+    def search_paths(self, value: str, query: str, *, kind: str = "any", case_sensitive: bool = False,
+                     max_results: int = 100, max_depth: int = 10, max_entries: int = 2000) -> dict:
+        """Find literal substrings in names; depth zero examines direct children.
+
+        Every encountered entry, including rejected entries, consumes the traversal
+        budget. Directory enumeration is streamed rather than sorted/materialized.
+        A truncated response is a partial search, never evidence of absence.
+        """
+        query = _string(query, "query", 500)
+        if not isinstance(kind, str) or kind not in {"any", "file", "directory"}:
+            raise HarnessError("kind must be any, file or directory")
+        case_sensitive = _bool(case_sensitive, "case_sensitive")
+        max_results = _integer(max_results, "max_results", 1, 500)
+        max_depth = _integer(max_depth, "max_depth", 0, 32)
+        max_entries = _integer(max_entries, "max_entries", 1, 20000)
+        needle = query if case_sensitive else query.casefold()
+        matches, examined, skipped, output_bytes, truncated = [], 0, 0, 0, False
+
+        def result():
+            return {"matches": sorted(matches, key=lambda item: item["path"].casefold()),
+                    "truncated": truncated, "entries_examined": examined, "skipped": skipped}
+
+        with self._lock:
+            root = self.resolve(value)
+            _inspect(root, directory=True)
+            pending = [(root, 0)]
+            while pending:
+                directory, depth = pending.pop()
+                try:
+                    directory = self.resolve(str(directory))
+                    _inspect(directory, directory=True)
+                    with os.scandir(directory) as entries:
+                        for entry in entries:
+                            if examined >= max_entries:
+                                truncated = True
+                                return result()
+                            examined += 1
+                            try:
+                                safe = self.resolve(str(directory / entry.name))
+                                info = _inspect(safe)
+                                entry_kind = "directory" if stat.S_ISDIR(info.st_mode) else "file"
+                            except (HarnessError, OSError):
+                                skipped += 1
+                                continue
+                            candidate = entry.name if case_sensitive else entry.name.casefold()
+                            if needle in candidate and kind in {"any", entry_kind}:
+                                match = {"name": entry.name, "path": str(safe), "kind": entry_kind,
+                                         "bytes": info.st_size if entry_kind == "file" else 0}
+                                size = len(json.dumps(match, ensure_ascii=False).encode("utf-8")) + 2
+                                # Leave room for the response envelope and counters.
+                                if output_bytes + size > MAX_OUTPUT - 1024:
+                                    truncated = True
+                                    return result()
+                                matches.append(match)
+                                output_bytes += size
+                                if len(matches) >= max_results:
+                                    truncated = True
+                                    return result()
+                            if entry_kind == "directory":
+                                if depth < max_depth:
+                                    pending.append((safe, depth + 1))
+                                else:
+                                    truncated = True
+                except (HarnessError, OSError) as exc:
+                    if directory == root:
+                        raise HarnessError("Directory cannot be searched") from exc
+                    skipped += 1
+        return result()
+
 
 def _office_kind(path: str, extension: str) -> None:
     suffix = Path(path).suffix.lower()
@@ -482,6 +552,7 @@ class ToolExecutor:
             ("list_directory", "List an allowed read folder; blocked links and denied entries are omitted.", {"path": path}, ("path",)),
             ("create_directory", "Create up to 32 missing directories, including the requested target, inside an existing allowed write folder. Existing directories are unchanged; failures may leave already-created parents. Use before saving files in a new folder.", {"path": path}, ("path",)),
             ("search_text", "Search literal text in allowed folders, with bounded traversal and no shell.", {"path": path, "query": text, "max_results": integer}, ("path", "query")),
+            ("search_paths", "Search literal substrings in file/directory names within allowed read folders; no glob or regex. Default case-insensitive, kind any/file/directory. max_depth=0 searches direct children; defaults: max_depth=10, max_entries=2000, max_results=100. Truncated means a partial search, not absence.", {"path": path, "query": text, "kind": {"type": "string", "enum": ["any", "file", "directory"]}, "case_sensitive": {"type": "boolean"}, "max_results": integer, "max_depth": integer, "max_entries": integer}, ("path", "query")),
             ("file_hash", "Read a file's SHA-256 for a later explicit edit.", {"path": path}, ("path",)),
             ("write_text", "Write UTF-8 text with optimistic hash checking; rejects known document/binary extensions, signatures and binary controls in original and output.", {**common, "text": text}, ("path", "text", "expected_sha256")),
             ("patch_text", "Replace one unique exact text match, preserving other UTF-8 text; uses the same format/control protection as write_text and requires both read and write access.", {**common, "find": text, "replace": text}, ("path", "find", "replace", "expected_sha256")),
@@ -561,6 +632,9 @@ class ToolExecutor:
             return self.harness.create_directory(path)
         if name == "search_text":
             return self.harness.search_text(path, args["query"], args.get("max_results", 100))
+        if name == "search_paths":
+            return self.harness.search_paths(path, args["query"], **{
+                key: args[key] for key in ("kind", "case_sensitive", "max_results", "max_depth", "max_entries") if key in args})
         if name == "file_hash":
             data = self.harness.read_bytes(path)
             return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}

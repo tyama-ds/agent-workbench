@@ -4,8 +4,8 @@ This application gives model-generated instructions a deliberately small set of 
 
 ## Enforced boundaries
 
-- Only the human-facing settings API can change provider profiles, budgets, or folder scope. Models cannot change settings, load plugins, execute shell commands, install packages, or launch processes. The GPU monitor runs a fixed `nvidia-smi` query from a trusted executable location; there is no model-controlled subprocess command.
-- All model-directed file operations use the same harness. Read and write roots are independent; deny wins. Empty roots deny all. Paths with traversal, Windows devices, alternate streams, UNC, symlinks, junctions, reparse points, or hard links are rejected. The application and state directories are always denied, including when a containing directory is allowed.
+- Only the human-facing settings API can change provider profiles, budgets, or folder scope. Models cannot change settings, load plugins, execute shell commands, or install packages. Optional Python execution launches only the explicitly configured existing interpreter inside the Windows boundary described below. The GPU monitor runs a fixed `nvidia-smi` query from a trusted executable location.
+- All host data transfers use the same harness. Read and write roots are independent; deny wins. Empty roots deny all. Paths with traversal, Windows devices, alternate streams, UNC, symlinks, junctions, reparse points, or hard links are rejected. The application and state directories are always denied for data operations, including when a containing directory is allowed.
 - File tools are serialized across teams. Reservations prevent other agents from operating on a reserved range. Writes compare the expected SHA-256, use bounded temporary files, and replace atomically. Windows parent directory handles resist rename/delete during file operations. This does not promise protection against every malicious same-user filesystem race or an external editor ignoring reservations.
 - Text reads/search require strict UTF-8 without NUL bytes. Text mutations additionally reject known PDF/Office/OpenDocument, image, archive and WAV/AVI suffixes (including new or empty targets), known document/container signatures even under another extension, and C0 controls other than TAB/CR/LF plus DEL/C1 controls. Both output and the locked existing hash-check snapshot are validated, including write-only folders. Patches preserve an existing BOM. This is conservative protection, not exhaustive binary/MIME detection. Ordinary empty UTF-8 text, CSV/JSON/SVG and BOM remain supported. Use the separate package-validated Office tools; PDF editing is unsupported. Keep valuable originals read-only.
 - ZIP expansion, XML, external relationships, macro packages, DDE fields, and formula behavior are checked before supported Office processing. This is a constrained document editor, not a complete Office malware scanner. Unknown complex packages can be rejected.
@@ -16,6 +16,40 @@ This application gives model-generated instructions a deliberately small set of 
 - Web search and page fetching use the explicit search proxy or explicit direct mode, never environment proxy fallback. Public page fetch validates and pins resolved public IPs, keeping the original Host and TLS identity; redirects are revalidated. Link-local, private, loopback, metadata, IPv4-mapped and transition addresses are rejected. Only the human-configured SearXNG search origin is allowed to be internal; HTTPS is required even on LAN, except HTTP at localhost/127.0.0.1/[::1]. Proxy connections may observe requested data; use a trusted proxy.
 
 Web-text decoding uses a fixed standard-library codec allowlist and strict errors, never arbitrary remote codec names, replacement fallback or statistical detection. Charset declarations can select only a decoder, not execute code. BOM/header precedence is separate from bounded conservative HTML-meta/XML-declaration inspection. The decoder does not resolve XML entities or DTDs. Errors omit response bytes and untrusted labels. UTF-32, contradictory ASCII XML UTF-16 declarations and NUL-bearing UTF-8 defaults/JSON are rejected. Declared encodings and well-formed decoded text do not certify the source's accuracy or safety. Network limits and destination validation are unchanged.
+
+## Optional Windows Python boundary
+
+Python is disabled by default. The human selects an existing CPython executable and
+existing library directories; no interpreter or package is bundled or downloaded.
+Scripts run in a fresh less privileged AppContainer (LPAC) with no network
+capabilities, a child-process restriction, and Job Object memory/process limits.
+Execution time and captured output are bounded; stop/timeout kills and drains the
+job before releasing file reservations. Failure to establish isolation refuses the
+request; there is no same-user unrestricted execution fallback.
+
+Host read/write roots are not granted directly to the child. Explicit inputs are
+read through the harness and staged in a private temporary workspace. After exit 0,
+only declared outputs are read back and published with the harness's path, size,
+reservation and expected-hash rules. Partial publication is reported truthfully.
+Python can modify/delete its temporary copies. Binary outputs
+are permitted and do not receive the specialized Office or text-tool content checks.
+
+Runtime and selected library files receive temporary read/execute grants for a
+fresh package SID, removed during cleanup. These paths are read exceptions, not
+writable data roots: select trusted package directories without secrets. Startup
+also requires Windows OS resources and the `registryRead` capability (HKLM read
+subject to OS ACLs); this is not a claim that only the configured data folders can
+be read. Resources already exposed by Windows ACLs to LPACs, including an explicit
+ALL RESTRICTED APPLICATION PACKAGES grant, may be readable even outside
+`read_roots` or within a configured `deny_roots`. Those harness lists govern
+staging/publication, not every direct Python system call. Private temporary
+workspace and AppContainer profile storage are writable. Environment variables
+are reduced rather than forwarding API keys or
+proxy credentials. Native extensions run inside the same OS boundary; packages
+requiring network, child processes, COM, or ordinary user settings can fail.
+This is Windows-only and is not a defense against kernel vulnerabilities, hostile
+administrators, or another malicious process running as the host user. Workspace
+size monitoring is a best-effort guard, not an OS disk quota.
 
 ## Prompt and data trust
 

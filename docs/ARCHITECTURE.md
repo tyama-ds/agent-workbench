@@ -12,6 +12,9 @@ flowchart LR
   Adapter --> Anthropic[Anthropic Messages API]
   Engine --> Harness[Folder and Office harness]
   Harness --> Files[Explicit allowed roots]
+  Engine --> Python[Opt-in Python runner]
+  Python --> Sandbox[Windows LPAC and Job Object]
+  Python -->|stage inputs / publish declared outputs| Harness
   Engine --> Web[Search and public fetch]
   Web --> Proxy[Optional explicit search proxy]
 ```
@@ -21,7 +24,9 @@ flowchart LR
 - `workbench/engine.py`: independently maintained conversations, role assignment, per-run budgets, worker mail, paused questions, reservations, shutdown/draining.
 - `workbench/providers.py`: stateless wire conversions. OpenAI native response output is replayed with encrypted reasoning; Anthropic thinking signatures/redacted blocks remain intact; Local native content/reasoning is retained. Display reasoning is separate from protocol data.
 - `workbench/resources.py`: shared Local admission control, queue limits, start interval, bounded retry settings, fixed NVIDIA query. A failed or cancelled request releases its slot.
-- `workbench/harness.py`: all model-directed filesystem operations and Office parsing/writing.
+- `workbench/harness.py`: host data transfers, bounded name/content searches and Office parsing/writing.
+- `workbench/python_runner.py`: explicit input/output mappings, trusted existing runtime selection, cancellation draining and per-file save receipts.
+- `workbench/windows_sandbox.py`: fresh LPAC, no-network/child policy, Job Object, runtime ACL cleanup and cross-process ACL mutex. OS-public/runtime read exceptions are described in SECURITY.md.
 - `workbench/webtools.py`: bounded search and fetch, proxy use, public address validation/pinning.
 - `workbench/webtext.py`: isolated strict declaration-aware decoding and provenance, with a fixed codec allowlist.
 - `static/`: dependency-free Japanese UI; polling and cards, settings, mail and expandable provider-returned reasoning.
@@ -30,6 +35,21 @@ flowchart LR
 ## Execution semantics
 
 PM starts from the exact visible user task plus the shared policy and verified runtime identity. `spawn_worker` starts another independent conversation on an allowed profile. Only PM can create workers; workers can contact existing teammates. Human messages are prioritized, preserving order. Worker completion messages wake PM without a human click. Repeated mail still consumes per-run calls and per-agent turns.
+
+One PM remains the default. Optional `pm_profiles` creates 1–16 independent PMs;
+repeated profile IDs intentionally create separate conversations. `pm_profile`
+remains the first PM for older clients. A worker's `parent_id` defines its authority
+and completion recipient, regardless of its textual role. PMs wait for their own
+workers; team completion considers every PM and worker. The configured worker
+limit excludes PMs and applies across the run. All PMs share the existing call,
+tool, time and automatic-collaboration budgets and Local admission gate.
+
+Optional `python_execute` is advertised only on Windows when the saved Python
+settings enable it. It holds the shared filesystem lock through execution and
+publication, checks every declared output against team reservations, and uses
+the run's frozen configuration. Stop and the run deadline cancel the isolated
+process, drain cleanup, and preserve receipts for already-published outputs.
+The normal tool-call budget applies; Python cannot change the settings or quotas.
 
 `limits.max_auto_collaborations` independently bounds automatic handoffs for the whole run (default 24, integer 0–1000). A successful worker spawn and initial assignment, a delivered `send_message`, and a delivered automatic worker completion/error notice each consume one unit. Human requests/replies, ordinary model/tool calls, and failed deliveries do not. Zero permits PM-only work without automated handoffs. The run snapshots expose `auto_collaborations`, `max_auto_collaborations`, and `collaboration_limit_reached`. Once exhausted, new delegation/mail is rejected while started and queued work may finish. A blocked handoff leaves a visible limit notice rather than automatically presenting the whole team as successfully done. Human follow-ups can direct PM to finish without further handoffs but never replenish this budget; changing settings requires a new run. The public limit notice persists to explain why further handoffs are unavailable even after a human follow-up. Existing settings files without this field inherit 24.
 

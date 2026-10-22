@@ -113,6 +113,30 @@ def validate_settings(raw):
                 raise ValueError(f'{name}: ドライブ全体ではなく既存の絶対フォルダーパスを指定してください')
             cleaned.append(str(path.absolute()))
         value['paths'][name] = list(dict.fromkeys(cleaned))
+    python = value['python']
+    if type(python['enabled']) is not bool:
+        raise ValueError('python.enabled: bool が必要です')
+    executable = text(python['executable'], 'python.executable', 4096)
+    if executable:
+        path = Path(executable)
+        if not path.is_absolute() or not path.is_file() or path.name.casefold() != 'python.exe':
+            raise ValueError('python.executable: インストール済みの python.exe の絶対パスを指定してください')
+        python['executable'] = str(path.absolute())
+    elif python['enabled']:
+        raise ValueError('Pythonを有効にするには既存の python.exe を指定してください')
+    libraries = python['library_paths']
+    if not isinstance(libraries, list) or len(libraries) > 16:
+        raise ValueError('python.library_paths: フォルダーを16個以内で指定してください')
+    cleaned = []
+    for item in libraries:
+        path = Path(text(item, 'python.library_paths', 4096, False))
+        if not path.is_absolute() or not path.is_dir() or path == Path(path.anchor):
+            raise ValueError('python.library_paths: 既存ライブラリの絶対フォルダーパスを指定してください')
+        cleaned.append(str(path.absolute()))
+    python['library_paths'] = list(dict.fromkeys(cleaned))
+    for key, (low, high) in {'timeout_seconds': (1, 600), 'max_memory_mb': (128, 8192),
+                            'max_output_bytes': (1024, 1048576)}.items():
+        number(python[key], f'python.{key}', low, high, integer=True)
     search = value['search']
     if type(search['enabled']) is not bool or search['provider'] not in {'searxng', 'brave'}:
         raise ValueError('検索設定が不正です')
@@ -177,6 +201,8 @@ class Settings:
                 'secret_status': {p['id']: bool(self.key(p)) for p in self.value['providers']} |
                     {'search': bool(self.secrets.get('search') or os.environ.get(self.value['search']['api_key_env'], ''))},
                 'capabilities': {'office': ['docx', 'xlsx', 'pptx'], 'shell': False,
+                    'python_isolation': 'windows_lpac' if os.name == 'nt' else None,
+                    'python_enabled': self.value['python']['enabled'],
                     'gpu_hard_limit': False, 'gpu_admission_guard': True, 'state_persistence': False}}
 
     def save(self, raw):

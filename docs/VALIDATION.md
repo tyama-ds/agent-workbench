@@ -1,5 +1,43 @@
 # Validation scope
 
+## Multiple PMs, Python, Office and local search (2026-10-22)
+
+The feature branch was checked on Windows 11 with an existing Python 3.13
+installation: **1704 passed, 14 skipped** for the full suite. The opt-in Python
+module separately passed **21 tests**, including real LPAC/Job execution, existing
+docx/openpyxl/pptx imports, Office generation and publication, private file/HKCU
+denial, blocked loopback sockets and child processes, timeout, memory/output
+limits, cancellation, and partial-ACL-failure rollback. No Python or libraries
+were installed or bundled. `pip check` and `git diff --check` passed.
+
+Native loopback HTTP fixtures cover Local/OpenAI/Anthropic payload conversion
+through the real Engine and file tools. They exercise default single-PM and
+multiple-PM teams, shared worker/collaboration budgets, worker completion mail,
+DOCX/XLSX/PPTX creation/read/edit/reread, and bounded name/content searches. These
+are deterministic provider fixtures, not paid cloud-model calls or evidence of
+model quality. Windows CI also opts into the real isolation tests; normal tests
+skip the opt-in cases and platform/privilege-dependent cases as marked.
+
+The Chrome GUI showed one PM by default and accepted two Local PMs with a shared
+two-worker limit. A live CPU-only `openai/gpt-oss-20b` attempt created one worker,
+but another PM exceeded the 300-second Local queue limit. The model also gave its
+worker an incomplete assignment. The run was stopped and its visible record
+saved locally; this is **not** a successful end-to-end autonomous demonstration.
+This 16-GB host reached about 110 MB free physical memory. One concurrent suite
+had transient Windows CopyFile2 errors and one app startup failed loading ctypes;
+the strict full suite subsequently passed after the model was unloaded. Resource
+pressure is a plausible contributor, not a proven sole cause. No error bypass or
+new skip was added to conceal those failures.
+
+The real isolation test deliberately verifies the documented exception: an
+outside folder already granted to ALL RESTRICTED APPLICATION PACKAGES can be
+read directly even if transfer `deny_roots` includes it. Private host files and a
+synthetic private HKCU key were denied. Staging/publication uses PathHarness;
+direct Python I/O uses Windows LPAC permissions. See SECURITY.md before enabling.
+Post-test scans found no temporary package-SID ACEs in the selected runtime and
+libraries and no leftover AppContainer profiles. This is bounded testing and
+independent source review, not a sandbox escape-proof certification.
+
 Commit-specific runs, artifact links and historical review records are indexed in
 [evidence/README.md](evidence/README.md). The archived PR snapshot is historical;
 use the live PR’s explicitly named head for current acceptance. Counts below describe

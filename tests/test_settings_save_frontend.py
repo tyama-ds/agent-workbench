@@ -10,6 +10,7 @@ SETUP = r'''
 async function setup(){
  await wire();$('systemPolicy').tagName='TEXTAREA';
  $('pathFields').querySelectorAll('textarea').forEach(node=>node.classList.add('path-input'));
+ $('pythonFields').querySelectorAll('textarea').forEach(node=>node.classList.add('path-input'));
  const bottom=element('button');bottom.type='submit';$('settingsForm').append(bottom);
  $('settingsForm').append($('discardSettings'));$('discardSettings').tagName='BUTTON';$('discardSettings').dataset.readonly='true';
 }

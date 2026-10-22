@@ -46,7 +46,7 @@ def test_settings_ui_covers_every_interface_field_without_persisting_raw_keys():
     prefix = APP[:APP.index("const STATUS_LABELS")]
     result = run_javascript(prefix + "console.log(JSON.stringify({groups:FIELD_GROUPS,profiles:PROFILE_FIELDS}));")
     config = json.loads((ROOT / "docs/interface.json").read_text(encoding="utf-8"))["config"]
-    for section in ("paths", "local", "search", "limits"):
+    for section in ("paths", "python", "local", "search", "limits"):
         assert {field[0] for field in result["groups"][section]} == set(config[section])
     assert {field[0] for field in result["profiles"]} | {"enabled"} == set(config["providers"][0])
     assert 'id="systemPolicy"' in HTML and 'id="policyPreview"' in HTML
@@ -90,7 +90,7 @@ def test_auto_collaboration_limit_exposes_integer_bounds_and_blocked_run_state()
 
 def test_run_and_reply_preserve_exact_visible_text_and_default_thinking_is_collapsed():
     assert "const task=$('taskInput').value" in APP
-    assert "body:{task,pm_profile:" in APP
+    assert "body:runPayload()" in APP
     assert "body:{text}" in APP
     assert "detail.open=expanded.has(id)" in APP
     assert "$('messageInput').value===text" in APP

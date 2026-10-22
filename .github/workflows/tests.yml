@@ -21,6 +21,11 @@ jobs:
       - run: python -m pip install -e . --no-deps --no-build-isolation
       - run: python -m pip check
       - run: python -m pytest -q
+      - name: Verify real Windows Python isolation
+        if: runner.os == 'Windows'
+        env:
+          AWB_TEST_WINDOWS_LPAC: '1'
+        run: python -m pytest -q tests/test_python_runner.py -k "real_windows or real_partial_acl"
       - name: Prepare locked Windows offline wheels
         if: runner.os == 'Windows'
         run: |
