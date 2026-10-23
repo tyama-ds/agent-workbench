@@ -8,6 +8,7 @@
     ],
     "paths":{"read_roots":[],"write_roots":[],"deny_roots":[]},
     "python":{"enabled":false,"network_enabled":false,"executable":"","library_paths":[],"timeout_seconds":60,"max_memory_mb":512,"max_output_bytes":65536},
+    "selenium":{"enabled":false,"browser":"edge","browser_executable":"","driver_executable":"","library_paths":[],"proxy_url":"","timeout_seconds":60,"max_memory_mb":1024,"max_output_chars":20000},
     "search":{"enabled":false,"provider":"searxng","endpoint":"","api_key_env":"BRAVE_SEARCH_API_KEY","proxy_url":"","timeout_seconds":20,"max_response_bytes":1048576},
     "local":{"max_concurrent_requests":1,"queue_timeout_seconds":300,"request_timeout_seconds":180,"min_interval_seconds":0,"max_retries":1,"retry_backoff_seconds":2,"gpu_guard_enabled":false,"gpu_guard_fail_closed":true,"gpu_index":0,"max_vram_mb":0,"max_gpu_utilization_percent":0,"gpu_wait_timeout_seconds":120,"gpu_poll_interval_seconds":2},
     "limits":{"max_workers":3,"max_auto_collaborations":24,"max_model_calls":100,"max_tool_calls":200,"max_turns_per_agent":20,"max_run_seconds":1800,"max_context_chars":100000,"max_output_tokens":4096,"max_file_bytes":10485760,"auto_compact":true,"context_trigger_percent":75,"context_recent_groups":4,"context_summary_chars":6000,"context_reserve_tokens":1024,"max_history_chars":400000},

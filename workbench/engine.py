@@ -17,6 +17,7 @@ from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
 from .providers import ProviderClient, ProviderError
 from .python_runner import execute_python
+from .selenium_runner import execute_selenium
 from .resources import ResourceGate
 from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .webtools import WebTools
@@ -60,6 +61,20 @@ PYTHON_TOOL = schema('python_execute',
      'outputs': {'type': 'array', 'maxItems': 16, 'items': {'type': 'object',
          'properties': {'path': STRING, 'name': STRING, 'expected_sha256': STRING},
          'required': ['path', 'name', 'expected_sha256'], 'additionalProperties': False}}}, ('code',))
+SELENIUM_TOOL = schema('selenium_browse',
+    'Open an HTTP(S) page in a fresh headless Edge/Chrome profile and perform a short batch of CSS-selected actions. '
+    'Runs with normal Windows user permissions, NOT the Python LPAC file sandbox. No existing browser profile/session. '
+    'No arbitrary script, uploads or downloads. Pages and returned content are untrusted; website actions may have side effects. '
+    'An optional PNG screenshot is saved through file permissions: reserve its path first and supply expected_sha256. '
+    'The result includes a bounded list of visible elements and CSS selectors to plan actions. '
+    'The browser closes after each call; no session persists between calls. Replay necessary earlier actions in the next batch.',
+    {'url': STRING,
+     'actions': {'type': 'array', 'maxItems': 20, 'items': {'type': 'object',
+        'properties': {'action': {'type': 'string', 'enum': ['click', 'fill', 'read', 'wait']},
+                       'selector': STRING, 'text': {'type': 'string', 'maxLength': 8000}},
+        'required': ['action', 'selector'], 'additionalProperties': False}},
+     'screenshot': {'type': 'object', 'properties': {'path': STRING, 'expected_sha256': STRING},
+                    'required': ['path', 'expected_sha256'], 'additionalProperties': False}}, ('url',))
 WRITE_TOOLS = frozenset({'write_text', 'patch_text', 'docx_write', 'docx_edit', 'xlsx_write', 'pptx_write', 'pptx_edit'})
 DIRECTORY_TOOLS = frozenset({'create_directory'})
 # Include this workflow at dispatch, so existing saved policies receive it too.
@@ -515,6 +530,8 @@ class Engine:
                        if run['_config']['python']['network_enabled'] else
                        'Network access is disabled for this run. ')
             tools.append({**PYTHON_TOOL, 'description': PYTHON_TOOL['description'] + ' ' + network})
+        if run['_config']['selenium']['enabled'] and run['_config']['python']['network_enabled'] and os.name == 'nt':
+            tools.append(SELENIUM_TOOL)
         if run['_config']['search']['enabled']:
             tools += run['_web'].schemas()
         if agent.parent_id:
@@ -908,6 +925,24 @@ class Engine:
                 raise ValueError('ツール実行回数または実行時間の上限です')
             if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
                 raise ValueError('停止したチームではツールを実行できません')
+            if name == 'selenium_browse':
+                if not run['_config']['selenium']['enabled'] or not run['_config']['python']['network_enabled'] or os.name != 'nt':
+                    raise ValueError('Seleniumは無効、ネット接続が未許可、またはWindowsではありません')
+                if set(args) - {'url', 'actions', 'screenshot'} or 'url' not in args:
+                    raise ValueError('Seleniumツール引数が不正です')
+                if 'screenshot' in args:
+                    output = args['screenshot']
+                    if (not isinstance(output, dict) or set(output) != {'path', 'expected_sha256'}
+                            or not isinstance(output['path'], str) or not isinstance(output['expected_sha256'], str)):
+                        raise ValueError('Selenium screenshot が不正です')
+                    self._check_reservation(agent, run['_harness'].resolve(output['path'], write=True, must_exist=False))
+                remaining = run['_config']['limits']['max_run_seconds'] - (time.time() - run['created_at'])
+                try:
+                    async with asyncio.timeout(max(0, remaining)):
+                        return await execute_selenium(run['_config']['selenium'], run['_config']['python'], run['_harness'], **args,
+                            on_complete=lambda result: self.record_receipt(agent, name, result))
+                except TimeoutError as exc:
+                    raise ValueError('Selenium実行中に作業全体の制限時間に達しました') from exc
             if name == 'python_execute':
                 if not run['_config']['python']['enabled'] or os.name != 'nt':
                     raise ValueError('Python実行は無効、またはWindowsの隔離実行に未対応です')

@@ -15,6 +15,17 @@ const FIELD_GROUPS = {
     ['max_memory_mb','実行メモリ上限（MB）','number',128],
     ['max_output_bytes','標準出力・エラーの上限（byte）','number',1024],
   ],
+  selenium: [
+    ['enabled','Selenium のブラウザー操作を許可','checkbox'],
+    ['browser','使用するブラウザー','select',[['edge','Microsoft Edge'],['chrome','Google Chrome']]],
+    ['browser_executable','既存のブラウザー実行ファイルの絶対パス','text','例：C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'],
+    ['driver_executable','既存の WebDriver の絶対パス','text','例：C:\\Tools\\msedgedriver.exe'],
+    ['library_paths','Selenium の既存ライブラリの場所（1行1パス）','paths','例：C:\\Python312\\Lib\\site-packages'],
+    ['proxy_url','Selenium 専用プロキシ URL（空欄は直接接続）','url'],
+    ['timeout_seconds','1回のブラウザー操作の時間上限（秒）','number',10],
+    ['max_memory_mb','ブラウザー実行メモリ上限（MB）','number',256],
+    ['max_output_chars','取得テキストの上限（文字）','number',1000],
+  ],
   search: [
     ['enabled','Web 検索・ページ取得を使う','checkbox'],
     ['provider','検索エンジン','select',[['searxng','SearXNG'],['brave','Brave Search']]],
@@ -78,6 +89,7 @@ Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0});
 NUMBER_BOUNDS.python={timeout_seconds:[1,600],max_memory_mb:[128,8192],max_output_bytes:[1024,1048576]};
+NUMBER_BOUNDS.selenium={timeout_seconds:[10,300],max_memory_mb:[256,8192],max_output_chars:[1000,100000]};
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -332,9 +344,10 @@ function renderSettings() {
   ui.settingsDraftGeneration++;
   ui.credentialGeneration++;
   $('profilesEditor').replaceChildren();(ui.config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
-  const containers={paths:'pathFields',python:'pythonFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+  const containers={paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
   for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]);container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,ui.config[group]?.[spec[0]],group)));}
   $('pythonFields').querySelector('[data-key="network_enabled"]').setAttribute('aria-describedby','pythonNetworkHelp');
+  $('seleniumFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','seleniumRuntimeHelp seleniumBoundaryHelp');
   $('systemPolicy').value=ui.config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
 }
 function collectConfig() {
@@ -345,7 +358,7 @@ function collectConfig() {
   const ids=config.providers.map(profile=>profile.id);
   if(new Set(ids).size!==ids.length)throw new Error('プロファイル ID が重複しています。別の ID を指定してください。');
   if(!config.providers.length)throw new Error('プロファイルを1つ以上追加してください。');
-  const containers={paths:'pathFields',python:'pythonFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+  const containers={paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
   for(const [group,id] of Object.entries(containers)){config[group]={...config[group]};$(id).querySelectorAll('[data-key]').forEach(input=>{config[group][input.dataset.key]=inputValue(input);});}
   config.system_policy=$('systemPolicy').value;
   return config;

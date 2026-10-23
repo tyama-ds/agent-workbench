@@ -11,6 +11,7 @@ Node.prototype.remove=function(){if(this.parentElement)this.parentElement.childr
 async function setup(){
   await wire();
   $('pythonFields').querySelectorAll('textarea').forEach(node=>node.classList.add('path-input'));
+  $('seleniumFields').querySelectorAll('textarea').forEach(node=>node.classList.add('path-input'));
   ui.config.providers.push({...ui.config.providers[0],id:'alternate',label:'Alternate'});
   renderProfileChoices();showView('work');setBriefOpen(true);clearTimeout(ui.preflightTimer);
   $('maxWorkers').value='0';trackTaskDraft();

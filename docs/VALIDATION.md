@@ -1,5 +1,52 @@
 # Validation scope
 
+## Optional Selenium browser operation
+
+The default-off checkbox gates only the managed `selenium_browse` tool. Settings
+tests cover migration, strict types/bounds, explicit existing executable/library
+paths, the network prerequisite, frozen run permissions, disabled-platform
+admission, reservations, deadlines and redacted save receipts. Frontend tests
+cover save/reload, independent proxy settings and running-team locks.
+
+The dedicated Job runner is tested with real Windows child/grandchild processes:
+normal exit, cancellation and timeout stop the whole tree, breakaway is denied,
+and memory/output/process limits apply. Unconfirmed termination preserves private
+storage. No LPAC, installed-file ACL or firewall changes are made by this tool.
+Browser downloads/uploads and arbitrary model scripts/options are not exposed.
+Fixed Selenium operations and screenshot publication have deterministic tests.
+
+Opt-in `tests/test_selenium_live.py` uses only a synthetic loopback page and an
+existing Python 3.13 / Selenium 4.32.0 installation. Browser/driver/library paths
+must be explicitly supplied as the environment variables documented in that
+file. The tests exercise fill/click/wait/read, PNG saving and rejection of file
+input filling. They are not cloud-model or autonomous agent-quality evaluations.
+The returned visible-control list is bounded and supplies actionable CSS
+selectors. Synthetic cases cover escaped/duplicate IDs and omission of password
+and textarea input values from control labels. The product never downloads Python,
+libraries, browsers or WebDriver. Matching
+drivers used for local verification were obtained separately from the vendors:
+Chrome 155.0.8059.85 / ChromeDriver 155.0.8059.84 and Edge/WebDriver 155.0.4283.62.
+
+An initial Edge negative case exited with empty stderr; its exit reason was not
+captured. A synthetic concurrent cache create/rename/delete test then reproduced
+the same symptoms with `workspace_changed`. The browser-only live scanner now
+tolerates disappearing descendant entries; root, links/ADS, other access errors,
+entry/byte limits and the strict final scan remain enforced. The general Python
+LPAC scanner is unchanged. This reproducible watchdog defect was fixed, but the
+uncaptured initial Edge failure cannot conclusively be attributed to it.
+
+After this fix, both live cases passed consecutively on Chrome and on Edge
+(four browser cases total). The native Job suite passed all 26 cases, including
+cache churn. Focused configuration, Engine, worker and Job unit checks passed
+112 cases with nine native opt-in cases skipped in that invocation. The full
+regression suite and Windows/Linux CI are checked separately on the final head.
+
+This feature uses ordinary Windows user permissions, not a filesystem/network
+sandbox. Existing browser profiles are not reused; enterprise SSO and browser
+traffic are not comprehensively isolated. URL checks are not an OS boundary.
+Screenshots alone are published through PathHarness after all Job processes have
+stopped and private storage cleanup succeeded. See SECURITY.md for the limits.
+
 ## Python network opt-in
 
 `python.network_enabled` defaults to false for new and migrated settings. Tests

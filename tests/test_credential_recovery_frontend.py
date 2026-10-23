@@ -29,7 +29,7 @@ const flush=async()=>{for(let i=0;i<10;i++)await Promise.resolve();};
 const requests=[];
 async function wire(){
  await initialize();ui.authenticated=true;ui.config=structuredClone(CONFIG);ui.configRevision=4;
- $('settingsForm').append($('profilesEditor'),$('searchFields'),$('pathFields'),$('pythonFields'),$('localFields'),$('budgetFields'),$('searchSecret'),$('setSearchSecret'),$('systemPolicy'));
+ $('settingsForm').append($('profilesEditor'),$('searchFields'),$('pathFields'),$('pythonFields'),$('seleniumFields'),$('localFields'),$('budgetFields'),$('searchSecret'),$('setSearchSecret'),$('systemPolicy'));
  $('searchSecret').dataset.credential='true';$('setSearchSecret').dataset.credential='true';
  $('searchSecret').type='password';$('taskInput').value='Exact task draft';$('pmProfile').value='local';$('maxWorkers').value='1';
  renderSettings();renderProfileChoices();showView('settings');

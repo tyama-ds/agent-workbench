@@ -66,7 +66,7 @@ def test_examples_are_native_optional_static_help_without_actions():
     assert examples['children'][0]['tag'] == 'summary'
     assert examples['children'][0]['text'] == '依頼例と必要な設定'
     sections = [node for node in descendants(examples) if node['tag'] == 'section']
-    assert len(sections) == 4
+    assert len(sections) == 5
     assert not any(node['tag'] in {'a', 'input', 'button', 'select', 'textarea', 'form', 'script'} for node in descendants(examples))
     assert all(not any(attr.startswith('on') for attr in node['attrs']) for node in descendants(examples))
     assert 'taskExamples' not in APP and 'taskHelp' not in APP  # No new mutation/network handler.
@@ -79,6 +79,9 @@ def test_examples_are_native_optional_static_help_without_actions():
     assert all(text in sections[2]['text'] for text in ('既存の python.exe', '明示した入力', '明示した出力',
         'ネットワーク接続は既定でオフ', '設定で許可すると直接通信できます', 'シェル・子プロセスの起動はできません', '同梱', '自動インストールは行いません'))
     assert all(text in sections[3]['text'] for text in ('Web を有効', '検索サービスの接続先と必要なキー', '検索とページ取得の利用状態', '公開 HTTP(S) テキスト', 'ログインや JavaScript の実行はできません'))
+    assert all(text in sections[4]['text'] for text in ('Selenium ブラウザー操作', 'WebDriver', 'ライブラリ',
+        'Python の実行ファイル', 'ネットワーク接続の許可', '通常の Python スクリプト実行を有効にする必要はありません',
+        '画面なしで毎回起動', 'フォルダー隔離は適用されません', '任意の JavaScript 実行', 'アップロード・ダウンロードはできません'))
 
 
 def test_text_only_example_is_admissible_without_files_web_or_tool_execution(tmp_path):

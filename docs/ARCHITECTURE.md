@@ -15,6 +15,11 @@ flowchart LR
   Engine --> Python[Opt-in Python runner]
   Python --> Sandbox[Windows LPAC and Job Object]
   Python -->|stage inputs / publish declared outputs| Harness
+  Engine --> Selenium[Opt-in Selenium runner]
+  Selenium --> BrowserJob[Windows user Job Object]
+  BrowserJob --> Browser[Fresh headless Edge or Chrome]
+  Selenium -->|publish optional PNG| Harness
+  Browser --> BrowserProxy[Dedicated Selenium proxy or direct]
   Engine --> Web[Search and public fetch]
   Web --> Proxy[Optional explicit search proxy]
 ```
@@ -27,6 +32,9 @@ flowchart LR
 - `workbench/harness.py`: host data transfers, bounded name/content searches and Office parsing/writing.
 - `workbench/python_runner.py`: explicit input/output mappings, trusted existing runtime selection, cancellation draining and per-file save receipts.
 - `workbench/windows_sandbox.py`: fresh LPAC, network disabled by default with explicit capability opt-in, child-process restriction, Job Object, runtime ACL cleanup and cross-process ACL mutex. OS-public/runtime read exceptions are described in SECURITY.md.
+- `workbench/selenium_runner.py`: explicit existing runtime/browser/driver selection, bounded browser requests, cancellation draining and PNG publication through the harness.
+- `workbench/selenium_worker.py`: fixed headless browser options and CSS action dispatcher; no model-supplied scripts/options or existing browser profile.
+- `workbench/windows_browser_job.py`: ordinary-user Windows Job Object for the Selenium worker and browser descendants, resource limits and verified process cleanup. This is not LPAC or a folder/network sandbox.
 - `workbench/webtools.py`: bounded search and fetch, proxy use, public address validation/pinning.
 - `workbench/webtext.py`: isolated strict declaration-aware decoding and provenance, with a fixed codec allowlist.
 - `static/`: dependency-free Japanese UI; polling and cards, settings, mail and expandable provider-returned reasoning.
@@ -54,6 +62,35 @@ The normal tool-call budget applies; Python cannot change the settings or quotas
 and is reflected in the model's tool description. It controls Windows network
 capabilities, not the Web tool or its proxy. Enabling it does not add loopback
 exemptions or alter the file/process limits.
+
+Optional `selenium_browse` is advertised only on Windows with both
+`selenium.enabled` and `python.network_enabled` true in the run's frozen config.
+It uses `python.executable` even when `python.enabled` is false. Selenium
+(`>=4.32,<5`) and its dependencies are existing trusted libraries; the user
+selects their folders and explicit compatible browser/driver executables.
+Driver services receive the configured executable path, without Selenium
+Manager or automatic installation. Both Python and Selenium library paths
+are available to this separate worker.
+
+Each call creates a fresh headless Edge/Chrome profile in an ordinary-user
+Windows Job Object, outside LPAC. The API accepts an HTTP(S) URL, up to 20
+CSS-selected `click`/`fill`/`read`/`wait` actions and an optional PNG output;
+it cannot accept arbitrary script, browser options, CDP commands, uploads,
+downloads or an existing browser session. Fixed internal JS implements
+fill/read and a fixed CDP command denies downloads. Page scripts run normally.
+The Selenium proxy is a separate setting: blank requests direct access,
+without inheriting the Web search proxy. URL checks do not mediate all browser
+traffic or establish a file-access/SSO isolation boundary.
+
+The usual tool/run budgets and shared filesystem lock apply. A screenshot
+destination is checked against team reservations and published through the
+harness only after the worker and browser Job have stopped; saved outputs
+produce normal receipts. Stop/deadline drains process cleanup before releasing
+the lock. Browser storage and ordinary-user OS access are not confined by
+the harness roots. Disabling Selenium denies this dedicated tool, not raw
+WebDriver HTTP requests from separately enabled network-capable Python.
+See [the Selenium boundary](../SECURITY.md#optional-selenium-browser-boundary)
+for the distinction between process/resource management and OS isolation.
 
 `limits.max_auto_collaborations` independently bounds automatic handoffs for the whole run (default 24, integer 0–1000). A successful worker spawn and initial assignment, a delivered `send_message`, and a delivered automatic worker completion/error notice each consume one unit. Human requests/replies, ordinary model/tool calls, and failed deliveries do not. Zero permits PM-only work without automated handoffs. The run snapshots expose `auto_collaborations`, `max_auto_collaborations`, and `collaboration_limit_reached`. Once exhausted, new delegation/mail is rejected while started and queued work may finish. A blocked handoff leaves a visible limit notice rather than automatically presenting the whole team as successfully done. Human follow-ups can direct PM to finish without further handoffs but never replenish this budget; changing settings requires a new run. The public limit notice persists to explain why further handoffs are unavailable even after a human follow-up. Existing settings files without this field inherit 24.
 
@@ -154,6 +191,9 @@ Implement narrowly scoped operations through `ToolExecutor` or a similarly valid
 - [OpenAI reasoning](https://developers.openai.com/api/docs/guides/reasoning)
 - [Anthropic tool calls](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls)
 - [Anthropic extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking)
+- [Selenium driver services](https://www.selenium.dev/documentation/webdriver/drivers/service/)
+- [Microsoft Edge WebDriver versions](https://learn.microsoft.com/en-us/microsoft-edge/webdriver/)
+- [ChromeDriver version selection](https://developer.chrome.com/docs/chromedriver/downloads/version-selection)
 
 The transport supports reasoning blocks that the provider actually returns. There is currently no UI to configure provider-specific thinking budgets or model-server loading parameters. Model availability and account permissions are supplied by the user, not hard-coded.
 
