@@ -111,13 +111,16 @@ def test_python_settings_cover_config_and_numeric_bounds():
     assert {field[0] for field in fields['fields']} == set(DEFAULT['python'])
     assert fields['bounds'] == {'timeout_seconds': [1, 600], 'max_memory_mb': [128, 8192], 'max_output_bytes': [1024, 1048576]}
     check(r'''
-await setup();const fields=$('pythonFields');assert.equal(fields.querySelectorAll('[data-key]').length,6);
+await setup();const fields=$('pythonFields');assert.equal(fields.querySelectorAll('[data-key]').length,7);
 assert.equal(fields.querySelector('[data-key="enabled"]').checked,false);
+const network=fields.querySelector('[data-key="network_enabled"]');
+assert.equal(network.type,'checkbox');assert.equal(network.checked,false);
+assert.equal(network.getAttribute('aria-describedby'),'pythonNetworkHelp');
 fields.querySelector('[data-key="enabled"]').checked=true;
 fields.querySelector('[data-key="executable"]').value='C:\\ExistingPython\\python.exe';
 fields.querySelector('[data-key="library_paths"]').value='C:\\Library One\nC:\\Library Two';
 fields.querySelector('[data-key="timeout_seconds"]').value='90';
-const config=collectConfig();assert(config.python.enabled);assert.equal(config.python.timeout_seconds,90);
+const config=collectConfig();assert(config.python.enabled);assert.equal(config.python.network_enabled,false);assert.equal(config.python.timeout_seconds,90);
 assert.deepEqual(config.python.library_paths,['C:\\Library One','C:\\Library Two']);
 assert.equal(fields.querySelector('[data-key="max_memory_mb"]').max,'8192');
 ui.state.runs=[{id:'working',status:'running'}];setSettingsLock();assert(fields.querySelectorAll('[data-key]').every(node=>node.disabled));
@@ -129,5 +132,10 @@ def test_python_help_explains_existing_runtime_and_explicit_file_access():
     tree = Elements()
     panel = tree.ids['pythonFields']['ancestors'][-1]['text']
     for term in ('既定は無効', '同梱・自動インストールは行いません', '隔離実行', '停止', '無制限な実行へ切り替えません',
-                 'ネットワーク通信', '子プロセス', '読み取り制限の例外', '明示した入力', '明示した出力'):
+                 'ネットワーク接続は既定でオフ', '子プロセス', '読み取り制限の例外', '明示した入力', '明示した出力'):
         assert term in panel
+    network = tree.ids['pythonNetworkHelp']
+    for term in ('Web 検索のプロキシ設定を使わず直接通信', '入力ファイル・ライブラリ', '読み取れるデータを外部へ送信',
+                 'LAN 内からの着信も許可対象', '保存後に開始した新しい作業に適用', 'localhost（loopback）', 'Windows の制限が残る'):
+        assert term in network['text']
+    assert not any(node['tag'] == 'details' or 'hidden' in node['attrs'] for node in (*network['ancestors'], network))

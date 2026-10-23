@@ -109,7 +109,7 @@ async function firstTaskAcceptance({page,stateDir,providerRequests,artifacts,rep
   assert.equal(await examples.count(),4,'Exactly four examples, including configured Python execution');
   assert.deepEqual(await examples.locator('h3').allTextContents(),['文章だけで始める','許可したファイルを使う','Python で計算・データ処理をする','公開 Web の資料を調べる']);
   const pythonExample=await examples.nth(2).textContent();
-  for(const phrase of ['既存の python.exe','入力ファイル','明示した出力','許可先','ネットワーク通信やシェル・子プロセスの起動はできません','Python の同梱やパッケージの自動インストールは行いません'])
+  for(const phrase of ['既存の python.exe','入力ファイル','明示した出力','許可先','ネットワーク接続は既定でオフ','設定で許可すると直接通信できます','シェル・子プロセスの起動はできません','Python の同梱やパッケージの自動インストールは行いません'])
     assert(pythonExample.includes(phrase),'Python guidance explains its runtime and access boundary: '+phrase);
   assert.equal(await details.locator('.task-example-list').locator('a,button,input,textarea,select,summary,[tabindex],[contenteditable],[role="button"]').count(),0,
     'Examples are text, not preset buttons or settings controls');
@@ -129,7 +129,7 @@ async function firstTaskAcceptance({page,stateDir,providerRequests,artifacts,rep
     await summary.click();assert.equal(await details.evaluate(element=>element.open),false);
     await helpVisible();await unchanged('Guidance complete');page.off('request',observe);
     report.checks.push(phase==='fresh'?
-      'fresh first-task guidance: persistent accessible capabilities, explicitly enabled Python and arbitrary-shell limit after typing; exactly four text-only examples including existing-runtime Python, copied inputs, explicit outputs and no networking/child processes or bundled installs; native Enter/Space and pointer disclosure; unchanged draft, PM, workers, limit and config with no implicit run/provider traffic; expansion survives real preflight, close/reopen and settings round trip; collapsed/expanded 1366x768, 820x900, 390x844 screenshots plus examples/reachable controls with no horizontal clipping':
+      'fresh first-task guidance: persistent accessible capabilities, explicitly enabled Python and arbitrary-shell limit after typing; exactly four text-only examples including existing-runtime Python, copied inputs, explicit outputs, networking disabled unless explicitly allowed, and no child processes or bundled installs; native Enter/Space and pointer disclosure; unchanged draft, PM, workers, limit and config with no implicit run/provider traffic; expansion survives real preflight, close/reopen and settings round trip; collapsed/expanded 1366x768, 820x900, 390x844 screenshots plus examples/reachable controls with no horizontal clipping':
       'configured first-task guidance: local PM, local+openai workers, max 1 and exact draft survive native guidance toggles, real ready preflight, Escape/reopen and settings shortcut round trip; examples stay expanded and settings stay unchanged with no implicit run/provider traffic');
   }};
 }

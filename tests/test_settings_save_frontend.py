@@ -39,6 +39,26 @@ assert.equal($('settingsStatus').textContent,'設定を保存しました。');a
 ''')
 
 
+def test_python_network_switch_is_saved_explicitly_and_keeps_search_and_file_settings():
+    check(r'''
+await setup();const before=structuredClone(ui.config),network=()=>$('pythonFields').querySelector('[data-key="network_enabled"]');
+assert.equal(network().checked,false);assert.equal(ui.config.python.network_enabled,false);
+network().checked=true;$('settingsForm').listeners.change({target:network()});
+assert(ui.settingsDirty);assert.equal(requests.length,0);assert.equal(ui.config.python.network_enabled,false);
+const on=submit();assert.equal(requests.length,1);assert.equal(requests[0].path,'/api/config');
+const submitted=requests[0].options.body.config;assert.equal(submitted.python.network_enabled,true);
+assert.deepEqual(submitted.python,{...before.python,network_enabled:true});
+assert.deepEqual(submitted.search,before.search);assert.deepEqual(submitted.paths,before.paths);
+assert(network().disabled);accept();await on;assert.equal(ui.config.python.network_enabled,true);
+renderSettings();assert.equal(network().checked,true);assert(!network().disabled);
+for(const id of ['pathFields','pythonFields'])$(id).querySelectorAll('textarea').forEach(node=>node.classList.add('path-input'));
+network().checked=false;$('settingsForm').listeners.change({target:network()});
+const off=submit();assert.equal(requests.length,2);assert.equal(requests[1].options.body.config.python.network_enabled,false);
+accept(1);await off;renderSettings();assert.equal(network().checked,false);assert.equal(ui.config.python.network_enabled,false);
+clearTimeout(ui.preflightTimer);
+''')
+
+
 def test_save_preserves_exact_task_and_chat_drafts_empty_workers_and_over_limit():
     check(r'''
 await setup();$('taskInput').value='  Exact\n task  ';$('messageInput').value='  Exact chat  ';ui.drafts.set('agent-a','  Stored chat  ');

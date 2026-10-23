@@ -22,10 +22,26 @@ Web-text decoding uses a fixed standard-library codec allowlist and strict error
 Python is disabled by default. The human selects an existing CPython executable and
 existing library directories; no interpreter or package is bundled or downloaded.
 Scripts run in a fresh less privileged AppContainer (LPAC) with no network
-capabilities, a child-process restriction, and Job Object memory/process limits.
+capabilities by default, a child-process restriction, and Job Object memory/process limits.
 Execution time and captured output are bounded; stop/timeout kills and drains the
 job before releasing file reservations. Failure to establish isolation refuses the
 request; there is no same-user unrestricted execution fallback.
+
+`python.network_enabled` is an explicit boolean, default `false` including older
+settings. Enabling it adds `internetClient` and `privateNetworkClientServer`
+capabilities to the isolated process; the latter also permits private-network
+inbound traffic under Windows policy. Windows firewall and loopback isolation
+still apply. The app does not add firewall rules or register loopback exemptions.
+Network-enabled scripts can send any data they can read, including staged inputs
+and runtime/library or OS-public resources. This is direct Python networking:
+the Web tool proxy, public-address checks, destination/response limits and secret
+redaction do not mediate these connections. No destination allowlist or per-request
+approval is provided. Proxy credentials and API-key environment variables remain
+excluded from the child environment; scripts can explicitly configure their own
+connections. The setting is frozen with each run and cannot be changed by tool
+arguments. The network opt-in does not loosen the filesystem, child-process or
+Job Object boundary. Keep both Python networking and Web disabled when external
+transfer through tools is prohibited.
 
 Host read/write roots are not granted directly to the child. Explicit inputs are
 read through the harness and staged in a private temporary workspace. After exit 0,
@@ -46,7 +62,8 @@ staging/publication, not every direct Python system call. Private temporary
 workspace and AppContainer profile storage are writable. Environment variables
 are reduced rather than forwarding API keys or
 proxy credentials. Native extensions run inside the same OS boundary; packages
-requiring network, child processes, COM, or ordinary user settings can fail.
+requiring child processes, COM, ordinary user settings, or network access without
+the explicit opt-in can fail.
 This is Windows-only and is not a defense against kernel vulnerabilities, hostile
 administrators, or another malicious process running as the host user. Workspace
 size monitoring is a best-effort guard, not an OS disk quota.

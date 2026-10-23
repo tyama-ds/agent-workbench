@@ -8,6 +8,7 @@ const FIELD_GROUPS = {
   ],
   python: [
     ['enabled','Python スクリプト実行を有効にする','checkbox'],
+    ['network_enabled','Python のネットワーク接続を許可','checkbox'],
     ['executable','既存の python.exe の絶対パス','text','例：C:\\Python312\\python.exe'],
     ['library_paths','既存ライブラリの場所（1行1パス）','paths','例：C:\\Python312\\Lib\\site-packages'],
     ['timeout_seconds','1回の実行時間上限（秒）','number',1],
@@ -333,6 +334,7 @@ function renderSettings() {
   $('profilesEditor').replaceChildren();(ui.config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
   const containers={paths:'pathFields',python:'pythonFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
   for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]);container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,ui.config[group]?.[spec[0]],group)));}
+  $('pythonFields').querySelector('[data-key="network_enabled"]').setAttribute('aria-describedby','pythonNetworkHelp');
   $('systemPolicy').value=ui.config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
 }
 function collectConfig() {

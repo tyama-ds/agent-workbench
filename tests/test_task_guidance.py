@@ -76,7 +76,8 @@ def test_examples_are_native_optional_static_help_without_actions():
     assert all(text in sections[1]['text'] for text in ('既存フォルダーの絶対パス', '読み取りを許可する場所', '書き込みを許可する場所',
         '設定を保存してから新しい作業', '依頼文にパスを書くことだけでは許可されません', '許可した出力先の中',
         'サブフォルダー', '文章の起案だけ', '成果・保存記録', 'ファイル削除はできません'))
-    assert all(text in sections[2]['text'] for text in ('既存の python.exe', '明示した入力', '明示した出力', '子プロセス', '同梱', '自動インストールは行いません'))
+    assert all(text in sections[2]['text'] for text in ('既存の python.exe', '明示した入力', '明示した出力',
+        'ネットワーク接続は既定でオフ', '設定で許可すると直接通信できます', 'シェル・子プロセスの起動はできません', '同梱', '自動インストールは行いません'))
     assert all(text in sections[3]['text'] for text in ('Web を有効', '検索サービスの接続先と必要なキー', '検索とページ取得の利用状態', '公開 HTTP(S) テキスト', 'ログインや JavaScript の実行はできません'))
 
 

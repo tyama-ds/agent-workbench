@@ -50,7 +50,7 @@ TEAM_TOOLS = [
 TEAM_NAMES = {t['name'] for t in TEAM_TOOLS}
 PYTHON_TOOL = schema('python_execute',
     'Run a normal Python script with the human-selected existing libraries in a Windows sandbox. '
-    'Use relative paths in a private working directory, not host paths. No network or subprocesses. '
+    'Use relative paths in a private working directory, not host paths. No subprocesses. '
     'Declare each input file to copy in and each output file to publish. Reserve output paths first; '
     'create host output folders with create_directory. Only outputs with successful save receipts were saved. '
     'Files are published only after successful execution. File edits need the current expected_sha256.',
@@ -510,7 +510,11 @@ class Engine:
     def _model_tools(self, run, agent):
         tools = [*TEAM_TOOLS, *run['_executor'].schemas()]
         if run['_config']['python']['enabled'] and os.name == 'nt':
-            tools.append(PYTHON_TOOL)
+            network = ('Network access is enabled by the human for this run; scripts connect directly, '
+                       'without the Web tool proxy or destination restrictions. Windows loopback/firewall restrictions still apply. '
+                       if run['_config']['python']['network_enabled'] else
+                       'Network access is disabled for this run. ')
+            tools.append({**PYTHON_TOOL, 'description': PYTHON_TOOL['description'] + ' ' + network})
         if run['_config']['search']['enabled']:
             tools += run['_web'].schemas()
         if agent.parent_id:

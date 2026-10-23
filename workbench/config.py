@@ -114,8 +114,9 @@ def validate_settings(raw):
             cleaned.append(str(path.absolute()))
         value['paths'][name] = list(dict.fromkeys(cleaned))
     python = value['python']
-    if type(python['enabled']) is not bool:
-        raise ValueError('python.enabled: bool が必要です')
+    for key in ('enabled', 'network_enabled'):
+        if type(python[key]) is not bool:
+            raise ValueError(f'python.{key}: bool が必要です')
     executable = text(python['executable'], 'python.executable', 4096)
     if executable:
         path = Path(executable)

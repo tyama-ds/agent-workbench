@@ -1,6 +1,7 @@
 """Python transfers, fail-closed behavior, and opt-in real Windows isolation."""
 import asyncio
 import hashlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -15,6 +16,7 @@ from workbench.harness import HarnessError, PathHarness
 from workbench import python_runner as runner
 from workbench.windows_sandbox import SandboxError
 from workbench.windows_sandbox import _prune_private_links
+from workbench.windows_sandbox import _capability_names
 
 
 @pytest.fixture
@@ -101,6 +103,46 @@ def test_disabled_execution_does_not_probe_or_launch(setup, monkeypatch):
     setup[1]['enabled'] = False
     monkeypatch.setattr(runner, 'run_isolated', lambda *a, **k: pytest.fail('Must not launch'))
     with pytest.raises(HarnessError, match='disabled'):
+        execute(setup)
+
+
+@pytest.mark.parametrize('enabled,expected', [
+    (False, ('registryRead',)),
+    (True, ('registryRead', 'internetClient', 'privateNetworkClientServer')),
+])
+def test_network_capabilities_are_minimal(enabled, expected):
+    assert _capability_names(enabled) == expected
+
+
+@pytest.mark.parametrize('value', [None, 0, 1, 'false', 'true'])
+def test_network_requires_boolean_before_native_launch(value, monkeypatch):
+    from workbench import windows_sandbox as sandbox
+    monkeypatch.setattr(sandbox, '_Native', lambda: pytest.fail('Must not touch Windows'))
+    with pytest.raises(SandboxError, match='boolean'):
+        sandbox.run_isolated([], Path('.'), [], timeout=1, memory_mb=128,
+                             output_limit=1024, workspace_limit=1024, network_enabled=value)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows transfer integration')
+@pytest.mark.parametrize('enabled', [None, False, True])
+def test_network_setting_reaches_native_runner(setup, monkeypatch, enabled):
+    if enabled is not None:
+        setup[1]['network_enabled'] = enabled
+    calls = []
+    def child(*args, **limits):
+        calls.append(limits['network_enabled'])
+        return {'exit_code': 0, 'termination_reason': None, 'stdout': '', 'stderr': ''}
+    monkeypatch.setattr(runner, 'run_isolated', child)
+    execute(setup)
+    assert calls == [enabled is True]
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows transfer integration')
+def test_invalid_network_setting_fails_before_runtime_probe(setup, monkeypatch):
+    setup[1]['network_enabled'] = 'true'
+    monkeypatch.setattr(runner, '_runtime', lambda *a: pytest.fail('Must not probe runtime'))
+    monkeypatch.setattr(runner, 'run_isolated', lambda *a, **k: pytest.fail('Must not launch'))
+    with pytest.raises(HarnessError, match='boolean'):
         execute(setup)
 
 
@@ -273,7 +315,8 @@ print('隔離OK')
 
 @pytest.mark.skipif(os.name != 'nt' or os.environ.get('AWB_TEST_WINDOWS_LPAC') != '1',
                     reason='Set AWB_TEST_WINDOWS_LPAC=1 for real Windows LPAC tests')
-def test_real_windows_limits_and_job_cancellation(tmp_path):
+@pytest.mark.parametrize('network_enabled', [False, True])
+def test_real_windows_limits_and_job_cancellation(tmp_path, network_enabled):
     from workbench.windows_sandbox import run_isolated
     import ctypes
     root = Path(sys.base_prefix)
@@ -285,7 +328,7 @@ def test_real_windows_limits_and_job_cancellation(tmp_path):
     def run(code, *, timeout=5, cancel=None, output=1024):
         return run_isolated([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8', '-c', code],
                             tmp_path, access, timeout=timeout, memory_mb=128, output_limit=output,
-                            workspace_limit=1024*1024, cancel=cancel)
+                            workspace_limit=1024*1024, cancel=cancel, network_enabled=network_enabled)
     timed = run('while True: pass', timeout=.2)
     assert timed['termination_reason'] == 'timeout', timed
     combined = run("import sys;sys.stdout.write('x'*800);sys.stderr.write('y'*800)")
@@ -361,3 +404,130 @@ def test_real_partial_acl_failure_rolls_back(tmp_path, monkeypatch):
     # SetSecurityInfo may mark an existing DACL auto-inherited (AI); all ACEs
     # and other protection flags must remain identical after removing our SID.
     assert [dacl(path).replace('D:AI', 'D:') for path in (runtime, child)] == [value.replace('D:AI', 'D:') for value in before]
+
+
+def _minimal_network_runtime():
+    root = Path(sys.base_prefix)
+    executable = root / 'python.exe'
+    access = [(root, False), (root/'Lib', False), (executable, False), (root/'DLLs', True)]
+    access += [(item, False) for item in root.glob('*.dll')]
+    access += [(item, False) for item in (root/'Lib').glob('*.py')]
+    access += [(root/'Lib'/name, True) for name in ('encodings', 'collections', 'importlib', 're', 'ctypes', 'json')]
+    return executable, access
+
+
+_TOKEN_CAPABILITIES_PROBE = r'''
+import ctypes,json,socket,subprocess,sys
+from ctypes import wintypes as W
+kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+advapi=ctypes.WinDLL('advapi32',use_last_error=True)
+kernel.GetCurrentProcess.restype=W.HANDLE
+kernel.CloseHandle.argtypes=[W.HANDLE]
+kernel.LocalFree.argtypes=[ctypes.c_void_p]
+kernel.LocalFree.restype=ctypes.c_void_p
+advapi.OpenProcessToken.argtypes=[W.HANDLE,W.DWORD,ctypes.POINTER(W.HANDLE)]
+advapi.GetTokenInformation.argtypes=[W.HANDLE,ctypes.c_int,ctypes.c_void_p,W.DWORD,ctypes.POINTER(W.DWORD)]
+advapi.ConvertSidToStringSidW.argtypes=[ctypes.c_void_p,ctypes.POINTER(ctypes.c_void_p)]
+class SidAttributes(ctypes.Structure):
+    _fields_=[('sid',ctypes.c_void_p),('attributes',W.DWORD)]
+class Groups(ctypes.Structure):
+    _fields_=[('count',W.DWORD),('groups',SidAttributes*1)]
+token=W.HANDLE()
+assert advapi.OpenProcessToken(kernel.GetCurrentProcess(),8,ctypes.byref(token)),ctypes.get_last_error()
+capabilities=[]
+try:
+    size=W.DWORD()
+    advapi.GetTokenInformation(token,30,None,0,ctypes.byref(size))
+    buffer=ctypes.create_string_buffer(size.value)
+    assert advapi.GetTokenInformation(token,30,buffer,size,ctypes.byref(size)),ctypes.get_last_error()
+    count=W.DWORD.from_buffer(buffer).value
+    groups=(SidAttributes*count).from_buffer(buffer,Groups.groups.offset)
+    for item in groups:
+        text=ctypes.c_void_p()
+        assert advapi.ConvertSidToStringSidW(item.sid,ctypes.byref(text)),ctypes.get_last_error()
+        try: capabilities.append(ctypes.wstring_at(text))
+        finally: kernel.LocalFree(text)
+finally: kernel.CloseHandle(token)
+try: subprocess.run([sys.executable,'-c','pass'])
+except OSError: pass
+else: raise AssertionError('Child creation escaped')
+print(json.dumps({'capabilities':capabilities}))
+'''
+
+
+@pytest.mark.skipif(os.name != 'nt' or os.environ.get('AWB_TEST_WINDOWS_LPAC') != '1',
+                    reason='Set AWB_TEST_WINDOWS_LPAC=1 for real Windows LPAC tests')
+@pytest.mark.parametrize('network_enabled', [False, True])
+def test_real_windows_network_token_and_loopback_boundary(tmp_path, network_enabled):
+    import socket
+    from workbench.windows_sandbox import run_isolated
+    executable, access = _minimal_network_runtime()
+    private = tmp_path/'private.txt'
+    private.write_text('synthetic secret')
+    workspace = tmp_path/'workspace'
+    workspace.mkdir()
+    # A listening socket proves denial is policy, not a closed port. No bytes
+    # are exchanged. Windows normally blocks same-host AppContainer sockets.
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        code = _TOKEN_CAPABILITIES_PROBE + f'''
+for mode in ('r','w'):
+    try: open({str(private)!r},mode)
+    except PermissionError: pass
+    else: raise AssertionError('Private host access escaped')
+try:
+    with socket.socket() as probe:
+        probe.settimeout(2)
+        probe.connect(('127.0.0.1',{port}))
+except OSError as error:
+    # Depending on Windows filtering, loopback can be refused immediately or
+    # silently dropped. With networking disabled the socket is denied outright.
+    assert getattr(error,'winerror',None)==10013 or ({network_enabled!r} and isinstance(error,TimeoutError)),repr(error)
+else: raise AssertionError('Unexpected loopback exemption')
+'''
+        result = run_isolated([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8', '-c', code],
+                              workspace, access, timeout=10, memory_mb=128, output_limit=4096,
+                              workspace_limit=1024*1024, network_enabled=network_enabled)
+        listener.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            listener.accept()
+    assert result['exit_code'] == 0 and result['termination_reason'] is None, result
+    caps = set(json.loads(result['stdout'])['capabilities'])
+    assert ('S-1-15-3-1' in caps) is network_enabled
+    assert ('S-1-15-3-3' in caps) is network_enabled
+    assert 'S-1-15-3-2' not in caps  # No public-network inbound capability.
+    assert result['network'] == ('enabled' if network_enabled else 'disabled')
+    assert result['network_capabilities'] == (['internetClient', 'privateNetworkClientServer'] if network_enabled else [])
+    assert private.read_text() == 'synthetic secret'
+
+
+@pytest.mark.skipif(os.name != 'nt' or os.environ.get('AWB_TEST_WINDOWS_NETWORK') != '1',
+                    reason='Set AWB_TEST_WINDOWS_NETWORK=1 for opt-in external TCP connectivity check')
+@pytest.mark.parametrize('network_enabled', [False, True])
+def test_real_windows_external_tcp_without_payload(tmp_path, network_enabled):
+    import socket
+    from workbench.windows_sandbox import run_isolated
+    executable, access = _minimal_network_runtime()
+    # This opt-in check contacts only a fixed public test domain. It sends no
+    # application payload, credentials, user files or HTTP requests.
+    # Resolve in the parent for OFF so a DNS refusal cannot mask socket policy.
+    address = 'example.com' if network_enabled else socket.gethostbyname('example.com')
+    code = f'''
+import socket
+try:
+    with socket.create_connection(({address!r},443),timeout=8): pass
+except OSError as error:
+    if {network_enabled!r}: raise
+    assert error.winerror==10013,repr(error)
+    print('network denied')
+else:
+    assert {network_enabled!r},'Network escaped'
+    print('connected without payload')
+'''
+    result = run_isolated([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8', '-c', code],
+                          tmp_path, access, timeout=12, memory_mb=128, output_limit=1024,
+                          workspace_limit=1024*1024, network_enabled=network_enabled)
+    assert result['exit_code'] == 0 and result['termination_reason'] is None, result
+    assert result['stdout'].strip() == ('connected without payload' if network_enabled else 'network denied')

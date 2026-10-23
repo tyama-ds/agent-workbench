@@ -79,6 +79,30 @@ class _ExtendedLimits(ctypes.Structure):
                 ('job_memory', ctypes.c_size_t), ('peak_process', ctypes.c_size_t), ('peak_job', ctypes.c_size_t)]
 
 
+def _capability_names(network_enabled):
+    if type(network_enabled) is not bool:
+        raise SandboxError('Python network_enabled must be a boolean')
+    # Internet client excludes unsolicited public inbound connections. Windows
+    # exposes LAN connectivity only as the combined client/server capability.
+    return ('registryRead', 'internetClient', 'privateNetworkClientServer') if network_enabled else ('registryRead',)
+
+
+def _derive_capabilities(native, names, allocations):
+    """Keep every allocated SID alive through process creation and track cleanup."""
+    cap_sids = []
+    for name in names:
+        group_array, cap_array = ctypes.c_void_p(), ctypes.c_void_p()
+        group_count, cap_count = W.DWORD(), W.DWORD()
+        native.check(native.b.DeriveCapabilitySidsFromName(name, ctypes.byref(group_array), ctypes.byref(group_count),
+                                                         ctypes.byref(cap_array), ctypes.byref(cap_count)), 'DeriveCapabilitySidsFromName')
+        for array, count in ((group_array, group_count), (cap_array, cap_count)):
+            entries = ctypes.cast(array, ctypes.POINTER(ctypes.c_void_p))
+            allocations.extend(entries[index] for index in range(count.value))
+            allocations.append(array)
+        cap_sids.extend(ctypes.cast(cap_array, ctypes.POINTER(ctypes.c_void_p))[index] for index in range(cap_count.value))
+    return (_SidAttributes * len(cap_sids))(*[_SidAttributes(value, 4) for value in cap_sids])
+
+
 class _Native:
     def __init__(self):
         if os.name != 'nt':
@@ -237,12 +261,14 @@ def _prune_private_links(directory: Path):
 
 def run_isolated(command: list[str], workspace: Path, runtime_roots: list[tuple[Path, bool]], *,
                  timeout: float, memory_mb: int, output_limit: int,
-                 workspace_limit: int, cancel: threading.Event | None = None) -> dict:
-    """Run a trusted interpreter plus untrusted code in a no-network LPAC.
+                 workspace_limit: int, cancel: threading.Event | None = None,
+                 network_enabled: bool = False) -> dict:
+    """Run a trusted interpreter plus untrusted code in LPAC; network defaults off.
 
     Temporary ACEs use a fresh SID and are removed without replacing other ACL
     entries. The suspended child enters its Job before any Python code executes.
     """
+    names = _capability_names(network_enabled)
     native = _Native()
     k = native.k
     name = 'AgentWorkbench.Python.' + uuid.uuid4().hex
@@ -283,8 +309,12 @@ def run_isolated(command: list[str], workspace: Path, runtime_roots: list[tuple[
                 raise SandboxError('Cannot acquire runtime permissions lock')
             if cancel is not None and cancel.is_set():
                 raise SandboxError('Python execution cancelled before setup')
+        # The profile and child token receive the same declared capabilities.
+        # No loopback exemption or firewall policy is registered by this runner.
+        cap_entries = _derive_capabilities(native, names, capability_allocations)
+        cap_pointer = ctypes.cast(cap_entries, ctypes.c_void_p)
         result = native.u.CreateAppContainerProfile(name, 'Agent Workbench Python', 'Temporary isolated Python execution',
-                                                   None, 0, ctypes.byref(sid))
+                                                   cap_pointer, len(cap_entries), ctypes.byref(sid))
         if result < 0:
             raise SandboxError(f'Cannot create isolated Python profile (HRESULT {result & 0xffffffff:08x})')
         profile_created = True
@@ -346,20 +376,9 @@ def run_isolated(command: list[str], workspace: Path, runtime_roots: list[tuple[
         attributes = ctypes.create_string_buffer(size.value)
         native.check(k.InitializeProcThreadAttributeList(attributes, 4, 0, ctypes.byref(size)), 'InitializeProcThreadAttributeList')
         attributes_initialized = True
-        # CPython/Windows DLL initialization needs the read-only system registry
-        # capability. No network, COM, clipboard, credentials or library caps.
-        group_array, cap_array = ctypes.c_void_p(), ctypes.c_void_p()
-        group_count, cap_count = W.DWORD(), W.DWORD()
-        native.check(native.b.DeriveCapabilitySidsFromName('registryRead', ctypes.byref(group_array), ctypes.byref(group_count),
-                                                         ctypes.byref(cap_array), ctypes.byref(cap_count)), 'DeriveCapabilitySidsFromName')
-        cap_sids = []
-        for array, count in ((group_array, group_count), (cap_array, cap_count)):
-            entries = ctypes.cast(array, ctypes.POINTER(ctypes.c_void_p))
-            capability_allocations.extend(entries[index] for index in range(count.value))
-            capability_allocations.append(array)
-        cap_sids = [ctypes.cast(cap_array, ctypes.POINTER(ctypes.c_void_p))[index] for index in range(cap_count.value)]
-        cap_entries = (_SidAttributes * len(cap_sids))(*[_SidAttributes(value, 4) for value in cap_sids])
-        capabilities = _Capabilities(sid, ctypes.cast(cap_entries, ctypes.c_void_p), len(cap_sids), 0)
+        # CPython/Windows DLL initialization requires registryRead. Network
+        # capabilities are explicit opt-in; COM/credentials remain ungranted.
+        capabilities = _Capabilities(sid, cap_pointer, len(cap_entries), 0)
         lpac, no_children = W.DWORD(1), W.DWORD(1)
         inherit = (W.HANDLE * len(child_handles))(*child_handles)
         for attribute, value in ((0x20009, capabilities), (0x2000F, lpac), (0x2000E, no_children), (0x20002, inherit)):
@@ -427,7 +446,8 @@ def run_isolated(command: list[str], workspace: Path, runtime_roots: list[tuple[
                 reason = 'workspace_limit'
         return {'exit_code': code.value, 'stdout': bytes(data['stdout']).decode('utf-8', errors='replace'),
                 'stderr': bytes(data['stderr']).decode('utf-8', errors='replace'), 'termination_reason': reason,
-                'isolation': 'windows-lpac', 'network': 'disabled',
+                'isolation': 'windows-lpac', 'network': 'enabled' if network_enabled else 'disabled',
+                'network_capabilities': list(names[1:]),
                 'read_exceptions': ['selected_runtime_and_libraries', 'windows_lpac_accessible_resources'],
                 'registry_capability': 'registryRead'}
     finally:

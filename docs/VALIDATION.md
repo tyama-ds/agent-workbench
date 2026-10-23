@@ -1,5 +1,24 @@
 # Validation scope
 
+## Python network opt-in
+
+`python.network_enabled` defaults to false for new and migrated settings. Tests
+cover strict boolean validation, explicit GUI save/reload in both directions,
+unchanged Web proxy/file settings, frozen per-run authority and tool descriptions,
+and rejection of model-supplied network-setting arguments. Independent review
+found no major issue in the opt-in boundary.
+
+Real Windows checks confirmed that ON adds the Internet client/private-LAN
+capability SIDs while leaving public inbound capability absent. Private host
+files and child processes stay blocked; timeout, memory, output, ADS and
+cancellation checks passed with networking both ON and OFF. Same-host loopback
+was blocked in both modes (ON timed out, OFF returned access denied). A separate
+opt-in TCP test connected to `example.com:443` with ON and received WinError 10013
+with OFF. No application payload, credentials or user files were transmitted.
+The external TCP checks require `AWB_TEST_WINDOWS_NETWORK=1` and are not required
+by ordinary/CI tests, which must not depend on external reachability. OS capability
+and local isolation checks use `AWB_TEST_WINDOWS_LPAC=1` on Windows CI.
+
 ## Multiple PMs, Python, Office and local search (2026-10-22)
 
 The feature branch was checked on Windows 11 with an existing Python 3.13

@@ -41,15 +41,30 @@ def test_old_settings_migrate_to_disabled_python_and_round_trip(tmp_path):
     settings = Settings(tmp_path)
     assert settings.value['python'] == DEFAULT['python']
     assert settings.value['python']['enabled'] is False
+    assert settings.value['python']['network_enabled'] is False
     settings.save(settings.value)
     assert Settings(tmp_path).value['python'] == DEFAULT['python']
     assert settings.public()['capabilities']['python_enabled'] is False
 
 
+def test_existing_python_settings_default_network_off_and_persist_opt_in(tmp_path):
+    old = copy.deepcopy(DEFAULT)
+    del old['python']['network_enabled']
+    (tmp_path / 'settings.json').write_text(json.dumps(old), encoding='utf-8')
+    settings = Settings(tmp_path)
+    assert settings.value['python']['network_enabled'] is False
+    for enabled in (True, False):
+        settings.value['python']['network_enabled'] = enabled
+        settings.save(settings.value)
+        assert Settings(tmp_path).value['python']['network_enabled'] is enabled
+
+
 @pytest.mark.parametrize('value', [None, [], 'enabled', {'unexpected': True}, {'enabled': 1},
     {'enabled': 'true'}, {'enabled': None}, {'enabled': True}, {'executable': True},
     {'library_paths': 'site-packages'}, {'library_paths': [True]}, {'library_paths': ['']},
-    {'library_paths': ['relative']}, {'library_paths': ['missing'] * 17}])
+    {'library_paths': ['relative']}, {'library_paths': ['missing'] * 17},
+    {'network_enabled': 1}, {'network_enabled': 0}, {'network_enabled': 'true'},
+    {'network_enabled': None}, {'network_enabled': []}])
 def test_python_config_rejects_wrong_shapes_and_missing_enabled_runtime(value):
     with pytest.raises(ValueError):
         validate_settings({'python': value})
@@ -86,6 +101,7 @@ def test_python_paths_must_exist_be_absolute_and_libraries_are_deduplicated(tmp_
 def test_python_schema_describes_typed_input_output_mappings_without_extra_properties():
     spec = PYTHON_TOOL['parameters']
     assert spec['required'] == ['code'] and spec['additionalProperties'] is False
+    assert 'network_enabled' not in spec['properties']
     assert spec['properties']['code'] == {'type': 'string', 'maxLength': 200000}
     for key, required in (('inputs', {'path', 'name'}), ('outputs', {'path', 'name', 'expected_sha256'})):
         field = spec['properties'][key]
@@ -122,6 +138,40 @@ async def test_python_tools_and_runtime_use_per_run_settings_snapshot(tmp_path, 
         with pytest.raises(ValueError, match='Python'):
             await engine.execute_tool(new, lead, 'python_execute', {'code': 'print(42)'})
         assert len(captured) == 1
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('network_enabled', [False, True])
+async def test_python_network_snapshot_reaches_runner_and_tool_description(
+        tmp_path, monkeypatch, windows_engine, network_enabled):
+    engine, _ = configured(tmp_path, ScriptClient([]))
+    engine.kick = lambda agent: None
+    captured = []
+
+    async def fake(config, harness, code, **kwargs):
+        captured.append(config['network_enabled'])
+        return {'exit_code': 0, 'stdout': '', 'stderr': '', 'outputs': [], 'termination_reason': None}
+
+    monkeypatch.setattr(engine_module, 'execute_python', fake)
+    try:
+        enable_python(engine, tmp_path)
+        engine.settings.value['python']['network_enabled'] = network_enabled
+        run, pm = await start(engine)
+        worker = engine._new_agent(run, 'local', 'helper', pm.id)
+        engine.settings.value['python']['network_enabled'] = not network_enabled
+        for agent in (pm, worker):
+            tool = next(tool for tool in engine._model_tools(run, agent) if tool['name'] == 'python_execute')
+            assert ('Network access is enabled' if network_enabled else 'Network access is disabled') in tool['description']
+            await engine.execute_tool(run, agent, 'python_execute', {'code': 'pass'})
+        new, lead = await start(engine)
+        await engine.execute_tool(new, lead, 'python_execute', {'code': 'pass'})
+        with pytest.raises(ValueError):
+            await engine.execute_tool(run, pm, 'python_execute',
+                                      {'code': 'pass', 'network_enabled': not network_enabled})
+        assert captured == [network_enabled, network_enabled, not network_enabled]
+        assert 'Network access is' not in PYTHON_TOOL['description']
     finally:
         await engine.close()
 

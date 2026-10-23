@@ -178,6 +178,9 @@ def _execute(config, harness, code, inputs, outputs, on_complete, cancel):
     timeout = _integer(config, 'timeout_seconds', 60, 1, 600)
     memory = _integer(config, 'max_memory_mb', 512, 128, 8192)
     output_limit = _integer(config, 'max_output_bytes', 65536, 1024, 1048576)
+    network_enabled = config.get('network_enabled', False)
+    if type(network_enabled) is not bool:
+        raise HarnessError('Python network_enabled must be a boolean')
     with _execution_lock(cancel) as acquired:
         if not acquired or cancel.is_set():
             return {'exit_code': None, 'termination_reason': 'cancelled', 'outputs': [], 'stdout': '', 'stderr': ''}
@@ -221,7 +224,8 @@ def _execute(config, harness, code, inputs, outputs, on_complete, cancel):
             try:
                 result = run_isolated([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8', str(bootstrap)],
                                       workspace, access, timeout=timeout, memory_mb=memory,
-                                      output_limit=output_limit, workspace_limit=64 * 1024 * 1024, cancel=cancel)
+                                      output_limit=output_limit, workspace_limit=64 * 1024 * 1024, cancel=cancel,
+                                      network_enabled=network_enabled)
             except SandboxError as exc:
                 if exc.preserve_private:
                     private.preserve = True

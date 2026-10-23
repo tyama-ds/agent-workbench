@@ -26,7 +26,7 @@ flowchart LR
 - `workbench/resources.py`: shared Local admission control, queue limits, start interval, bounded retry settings, fixed NVIDIA query. A failed or cancelled request releases its slot.
 - `workbench/harness.py`: host data transfers, bounded name/content searches and Office parsing/writing.
 - `workbench/python_runner.py`: explicit input/output mappings, trusted existing runtime selection, cancellation draining and per-file save receipts.
-- `workbench/windows_sandbox.py`: fresh LPAC, no-network/child policy, Job Object, runtime ACL cleanup and cross-process ACL mutex. OS-public/runtime read exceptions are described in SECURITY.md.
+- `workbench/windows_sandbox.py`: fresh LPAC, network disabled by default with explicit capability opt-in, child-process restriction, Job Object, runtime ACL cleanup and cross-process ACL mutex. OS-public/runtime read exceptions are described in SECURITY.md.
 - `workbench/webtools.py`: bounded search and fetch, proxy use, public address validation/pinning.
 - `workbench/webtext.py`: isolated strict declaration-aware decoding and provenance, with a fixed codec allowlist.
 - `static/`: dependency-free Japanese UI; polling and cards, settings, mail and expandable provider-returned reasoning.
@@ -50,6 +50,10 @@ publication, checks every declared output against team reservations, and uses
 the run's frozen configuration. Stop and the run deadline cancel the isolated
 process, drain cleanup, and preserve receipts for already-published outputs.
 The normal tool-call budget applies; Python cannot change the settings or quotas.
+`python.network_enabled` defaults to false, is frozen in that same configuration,
+and is reflected in the model's tool description. It controls Windows network
+capabilities, not the Web tool or its proxy. Enabling it does not add loopback
+exemptions or alter the file/process limits.
 
 `limits.max_auto_collaborations` independently bounds automatic handoffs for the whole run (default 24, integer 0–1000). A successful worker spawn and initial assignment, a delivered `send_message`, and a delivered automatic worker completion/error notice each consume one unit. Human requests/replies, ordinary model/tool calls, and failed deliveries do not. Zero permits PM-only work without automated handoffs. The run snapshots expose `auto_collaborations`, `max_auto_collaborations`, and `collaboration_limit_reached`. Once exhausted, new delegation/mail is rejected while started and queued work may finish. A blocked handoff leaves a visible limit notice rather than automatically presenting the whole team as successfully done. Human follow-ups can direct PM to finish without further handoffs but never replenish this budget; changing settings requires a new run. The public limit notice persists to explain why further handoffs are unavailable even after a human follow-up. Existing settings files without this field inherit 24.
 
