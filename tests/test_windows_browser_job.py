@@ -25,23 +25,49 @@ def test_environment_does_not_forward_host_secrets_or_profile(tmp_path, monkeypa
     assert 'must-not-forward' not in env.values()
 
 
-def _fake_job(active, *, query=True, terminate=True):
+def _fake_job(active, *, query=True, terminate=True, total=2, wait=0):
     counts = iter(active)
     calls = []
     def stop(handle, code):
         calls.append((handle, code))
         return terminate
     def info(handle, kind, output, size, returned):
-        ctypes.cast(output, ctypes.POINTER(browser_job._Accounting)).contents.active_processes = next(counts)
+        if kind == 1:
+            value = ctypes.cast(output, ctypes.POINTER(browser_job._Accounting)).contents
+            value.active_processes = next(counts)
+            value.total_processes = total
+        elif kind == 3:
+            value = ctypes.cast(output, ctypes.POINTER(browser_job._ProcessIds)).contents
+            value.assigned = value.listed = 2
+            value.pids[0], value.pids[1] = 11, 12
+        elif kind == 9:
+            value = ctypes.cast(output, ctypes.POINTER(browser_job._ExtendedLimits)).contents
+            value.basic.flags, value.basic.active = 0x2308, 32
+            value.job_memory = 12345
         return query
-    return SimpleNamespace(k=SimpleNamespace(TerminateJobObject=stop, QueryInformationJobObject=info)), calls
+    def seal(handle, kind, value, size):
+        limits = ctypes.cast(value, ctypes.POINTER(browser_job._ExtendedLimits)).contents
+        assert limits.basic.active == 0
+        assert limits.basic.flags == 0x2308 and limits.job_memory == 12345
+        calls.append('sealed')
+        return True
+    def member(handle, job, output):
+        ctypes.cast(output, ctypes.POINTER(ctypes.wintypes.BOOL)).contents.value = True
+        return True
+    def wait_for(handle, millis):
+        calls.append(('wait', handle))
+        return wait
+    return SimpleNamespace(k=SimpleNamespace(
+        TerminateJobObject=stop, QueryInformationJobObject=info, SetInformationJobObject=seal,
+        OpenProcess=lambda access, inherit, pid: pid + 100, IsProcessInJob=member,
+        WaitForSingleObject=wait_for, CloseHandle=lambda handle: calls.append(('close', handle)))), calls
 
 
 def test_stop_waits_for_all_descendants(monkeypatch):
     native, calls = _fake_job([3, 1, 0])
     monkeypatch.setattr(browser_job.time, 'sleep', lambda _: None)
     browser_job._stop_job(native, 'job')
-    assert calls == [('job', 1)]
+    assert calls == ['sealed', ('job', 1), ('wait', 111), ('wait', 112), ('close', 111), ('close', 112)]
 
 
 def test_failed_terminate_is_ok_only_if_independently_empty():
@@ -55,6 +81,44 @@ def test_unknown_or_live_descendants_preserve_private_storage(active, query):
     with pytest.raises(SandboxError) as caught:
         browser_job._stop_job(native, 'job', timeout=0)
     assert caught.value.preserve_private
+
+
+def test_zero_job_accounting_is_not_a_process_exit_barrier():
+    native, calls = _fake_job([0], wait=258)
+    with pytest.raises(SandboxError, match='termination is unconfirmed') as caught:
+        browser_job._stop_job(native, 'job', timeout=0)
+    assert caught.value.preserve_private
+    assert ('wait', 111) in calls and ('close', 112) in calls
+
+
+def test_missing_lifetime_handle_never_certifies_termination():
+    native, calls = _fake_job([0], total=3)
+    with pytest.raises(SandboxError, match='history is incomplete') as caught:
+        browser_job._stop_job(native, 'job')
+    assert caught.value.preserve_private
+    assert ('wait', 111) in calls and ('wait', 112) in calls
+
+
+def test_member_capture_refuses_truncated_snapshot():
+    def info(handle, kind, output, size, returned):
+        value = ctypes.cast(output, ctypes.POINTER(browser_job._ProcessIds)).contents
+        value.assigned, value.listed = 3, 2
+        return True
+    native = SimpleNamespace(k=SimpleNamespace(QueryInformationJobObject=info))
+    with pytest.raises(SandboxError, match='enumerate every') as caught:
+        browser_job._capture_members(native, 'job', {})
+    assert caught.value.preserve_private
+
+
+def test_member_capture_rejects_reused_pid_and_bounds_history():
+    native, calls = _fake_job([0])
+    native.k.IsProcessInJob = lambda handle, job, output: True  # BOOL remains false.
+    members = {}
+    browser_job._capture_members(native, 'job', members)
+    assert not members
+    assert calls == [('close', 111), ('close', 112)]
+    with pytest.raises(SandboxError, match='history limit'):
+        browser_job._capture_members(native, 'job', {pid: pid for pid in range(100, 4196)})
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows argument handling')
@@ -89,6 +153,26 @@ def test_stream_scan_ignores_only_missing_live_entries(error):
         with pytest.raises(SandboxError):
             browser_job._named_stream(native, 'cache', live=True)
     with pytest.raises(SandboxError):
+        browser_job._named_stream(native, 'cache', live=False)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows stream errors')
+@pytest.mark.parametrize('error', [5, 32, 303])
+def test_stream_scan_retries_transient_errors_but_requires_verified_result(error, monkeypatch):
+    monkeypatch.setattr(browser_job.time, 'sleep', lambda _: None)
+    errors = iter([error, 2])
+    def first(*args):
+        ctypes.set_last_error(next(errors))
+        return ctypes.c_void_p(-1).value
+    native = SimpleNamespace(k=SimpleNamespace(FindFirstStreamW=first))
+    assert browser_job._named_stream(native, 'cache', live=True) is None
+    errors = iter([error, 38])
+    assert browser_job._named_stream(native, 'cache', live=True) is False
+    errors = iter([error]*4)
+    with pytest.raises(SandboxError, match=f'Windows error {error}'):
+        browser_job._named_stream(native, 'cache', live=True)
+    errors = iter([error])
+    with pytest.raises(SandboxError, match=f'Windows error {error}'):
         browser_job._named_stream(native, 'cache', live=False)
 
 
@@ -133,20 +217,14 @@ def _run_python(code, workspace, *, timeout=8, cancel=None, output=4096, memory=
                                        output_limit=output, workspace_limit=workspace_limit, cancel=cancel)
 
 
-def _assert_dead(pids):
+def _process_api():
     from ctypes import wintypes as W
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [W.DWORD, W.BOOL, W.DWORD]
     kernel.OpenProcess.restype = W.HANDLE
     kernel.WaitForSingleObject.argtypes = [W.HANDLE, W.DWORD]
     kernel.CloseHandle.argtypes = [W.HANDLE]
-    for pid in pids:
-        handle = kernel.OpenProcess(0x100000, False, pid)
-        if handle:
-            try:
-                assert kernel.WaitForSingleObject(handle, 0) == 0, f'PID {pid} is still alive'
-            finally:
-                kernel.CloseHandle(handle)
+    return kernel
 
 
 NATIVE = pytest.mark.skipif(os.name != 'nt' or os.environ.get('AWB_TEST_WINDOWS_BROWSER_JOB') != '1',
@@ -157,6 +235,7 @@ NATIVE = pytest.mark.skipif(os.name != 'nt' or os.environ.get('AWB_TEST_WINDOWS_
 @pytest.mark.parametrize('root_mode', ['exit', 'timeout', 'cancel'])
 def test_real_job_stops_root_child_and_grandchild(tmp_path, root_mode):
     child_file, grandchild_file = tmp_path/'child.pid', tmp_path/'grandchild.pid'
+    root_file, ready_file = tmp_path/'root.pid', tmp_path/'handles-held'
     grandchild = f"import os,time;open({str(grandchild_file)!r},'w').write(str(os.getpid()));time.sleep(60)"
     child = f'''import os,subprocess,sys,time
 open({str(child_file)!r},'w').write(str(os.getpid()))
@@ -164,38 +243,60 @@ subprocess.Popen([sys.executable,'-I','-S','-c',{grandchild!r}])
 time.sleep(60)
 '''
     code = f'''import json,os,subprocess,sys,time
+open({str(root_file)!r},'w').write(str(os.getpid()))
 subprocess.Popen([sys.executable,'-I','-S','-c',{child!r}])
 deadline=time.monotonic()+5
-while not os.path.exists({str(grandchild_file)!r}):
-    assert time.monotonic()<deadline,'grandchild did not start'
+while not os.path.exists({str(ready_file)!r}):
+    assert time.monotonic()<deadline,'test did not retain child handles'
     time.sleep(.01)
 print(json.dumps({{'root':os.getpid()}}),flush=True)
 {'pass' if root_mode=='exit' else 'time.sleep(60)'}
 '''
     cancel = threading.Event()
-    cancel_thread = None
-    if root_mode == 'cancel':
-        def cancel_after_ready():
+    kernel, held, errors = _process_api(), {}, []
+    finished = threading.Event()
+    def hold_before_stop():
+        try:
             deadline = time.monotonic()+8
-            while not grandchild_file.exists() and time.monotonic()<deadline:
-                time.sleep(.01)
-            time.sleep(.05)
+            while len(held) < 3 and not finished.is_set():
+                assert time.monotonic()<deadline, 'process identity handshake timed out'
+                for path in (root_file, child_file, grandchild_file):
+                    if path in held or not path.exists():
+                        continue
+                    text = path.read_text()
+                    if not text:
+                        continue
+                    handle = kernel.OpenProcess(0x100000, False, int(text))
+                    assert handle, f'Could not retain live PID {text}'
+                    held[path] = handle
+                    assert kernel.WaitForSingleObject(handle, 0) == 258, 'Process exited before test retained identity'
+                time.sleep(.005)
+            if len(held) != 3:
+                return
+            ready_file.touch()
+            if root_mode == 'cancel':
+                cancel.set()
+        except BaseException as exc:
+            errors.append(exc)
             cancel.set()
-        cancel_thread = threading.Thread(target=cancel_after_ready)
-        cancel_thread.start()
+    observer = threading.Thread(target=hold_before_stop)
+    observer.start()
     try:
-        result = _run_python(code, tmp_path, timeout=1 if root_mode=='timeout' else 10, cancel=cancel)
+        result = _run_python(code, tmp_path, timeout=2 if root_mode=='timeout' else 10, cancel=cancel)
+        assert not errors, errors
+        assert child_file.exists() and grandchild_file.exists(), result
+        assert result['termination_reason'] == {'exit':None, 'timeout':'timeout', 'cancel':'cancelled'}[root_mode], result
+        if root_mode == 'exit':
+            assert result['exit_code'] == 0, result
+        assert len(held) == 3
+        for path, handle in held.items():
+            # Identity was retained while alive; PID reuse cannot affect this.
+            assert kernel.WaitForSingleObject(handle, 0) == 0, f'{path.name} is still alive'
     finally:
-        if cancel_thread:
-            cancel_thread.join(10)
-    assert child_file.exists() and grandchild_file.exists(), result
-    assert result['termination_reason'] == {'exit':None, 'timeout':'timeout', 'cancel':'cancelled'}[root_mode], result
-    if root_mode == 'exit':
-        assert result['exit_code'] == 0, result
-    pids = [int(child_file.read_text()), int(grandchild_file.read_text())]
-    if result['stdout'].strip():
-        pids.append(json.loads(result['stdout'])['root'])
-    _assert_dead(pids)
+        finished.set()
+        observer.join(10)
+        for handle in held.values():
+            kernel.CloseHandle(handle)
 
 
 @NATIVE
@@ -250,9 +351,9 @@ print('kernel limits verified')
 @NATIVE
 def test_real_job_preserves_storage_when_termination_cannot_be_certified(tmp_path, monkeypatch):
     original = browser_job._stop_job
-    def uncertain(native, job, timeout=5):
+    def uncertain(native, job, timeout=5, **kwargs):
         # Actually stop our test process before injecting the uncertainty.
-        original(native, job, timeout)
+        original(native, job, timeout, **kwargs)
         raise SandboxError('synthetic unknown termination', preserve_private=True)
     monkeypatch.setattr(browser_job, '_stop_job', uncertain)
     marker = tmp_path/'keep.txt'

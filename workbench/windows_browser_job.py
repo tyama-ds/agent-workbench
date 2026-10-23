@@ -31,6 +31,59 @@ class _Accounting(ctypes.Structure):
     ]
 
 
+class _ProcessIds(ctypes.Structure):
+    # The Job limits concurrent membership to 32; allow room for accounting of
+    # rejected associations, but never accept a truncated snapshot.
+    _fields_ = [('assigned', W.DWORD), ('listed', W.DWORD),
+                ('pids', ctypes.c_size_t * 256)]
+
+
+def _accounting(native, job):
+    value = _Accounting()
+    if not native.k.QueryInformationJobObject(job, 1, ctypes.byref(value), ctypes.sizeof(value), None):
+        raise SandboxError('Cannot verify browser Job accounting; private storage retained', preserve_private=True)
+    return value
+
+
+def _capture_members(native, job, members):
+    """Keep identity-bound handles, including members of nested browser Jobs."""
+    value = _ProcessIds()
+    if (not native.k.QueryInformationJobObject(job, 3, ctypes.byref(value), ctypes.sizeof(value), None)
+            or value.assigned != value.listed or value.listed > len(value.pids)):
+        raise SandboxError('Cannot enumerate every browser Job member; private storage retained', preserve_private=True)
+    for pid in value.pids[:value.listed]:
+        if pid in members:
+            continue
+        if len(members) >= 4096:
+            raise SandboxError('Browser process history limit exceeded; private storage retained', preserve_private=True)
+        handle = native.k.OpenProcess(0x100000 | 0x1000, False, pid)  # SYNCHRONIZE / QUERY_LIMITED_INFORMATION.
+        if not handle:
+            # A naturally exited PID may already be gone. Do not assume that
+            # it stopped: final lifetime-accounting coverage must still match.
+            if ctypes.get_last_error() == 87:
+                continue
+            raise SandboxError('Cannot retain browser process identity; private storage retained', preserve_private=True)
+        member = W.BOOL()
+        if not native.k.IsProcessInJob(handle, job, ctypes.byref(member)):
+            native.k.CloseHandle(handle)
+            raise SandboxError('Cannot verify browser process ownership; private storage retained', preserve_private=True)
+        if not member.value:  # The PID changed before OpenProcess.
+            native.k.CloseHandle(handle)
+            continue
+        members[pid] = handle
+
+
+def _seal_job(native, job):
+    """Disallow further associations before taking the final live snapshot."""
+    limits = _ExtendedLimits()
+    if not native.k.QueryInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits), None):
+        raise SandboxError('Cannot read browser Job limits; private storage retained', preserve_private=True)
+    limits.basic.flags |= 0x8
+    limits.basic.active = 0
+    if not native.k.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+        raise SandboxError('Cannot seal browser Job membership; private storage retained', preserve_private=True)
+
+
 def _environment(workspace: Path) -> dict[str, str]:
     # Runtime paths and browser profiles are supplied explicitly by the trusted
     # worker. Never forward API keys, proxy variables, PATH or host profile paths.
@@ -38,7 +91,7 @@ def _environment(workspace: Path) -> dict[str, str]:
             'TEMP': str(workspace), 'TMP': str(workspace), 'LOCALAPPDATA': str(workspace)}
 
 
-def _named_stream(native, path, *, live):
+def _named_stream_once(native, path, *, live):
     """Inspect ADS; only a disappearing live entry can be ignored.
 
     Browser caches routinely rename/delete files between directory enumeration
@@ -53,7 +106,7 @@ def _named_stream(native, path, *, live):
             return False
         if live and error in (2, 3):  # FILE_NOT_FOUND / PATH_NOT_FOUND.
             return None
-        raise SandboxError(f'Cannot inspect browser storage streams (Windows error {error})')
+        raise ctypes.WinError(error)
     try:
         while True:
             if data.name != '::$DATA':
@@ -64,9 +117,29 @@ def _named_stream(native, path, *, live):
                     return False
                 if live and error in (2, 3):
                     return None
-                raise SandboxError(f'Cannot inspect browser storage streams (Windows error {error})')
+                raise ctypes.WinError(error)
     finally:
         native.k.FindClose(handle)
+
+
+def _live_storage_call(operation, *, live):
+    # Delete-pending/cache-sharing races can report ACCESS_DENIED, SHARING_
+    # VIOLATION or DELETE_PENDING rather than FILE_NOT_FOUND. Retry the actual
+    # inspection, never declare an access error safe merely because it is live.
+    for attempt in range(4):
+        try:
+            return operation()
+        except OSError as exc:
+            if not live or getattr(exc, 'winerror', None) not in (5, 32, 303) or attempt == 3:
+                raise
+            time.sleep(.005)
+
+
+def _named_stream(native, path, *, live):
+    try:
+        return _live_storage_call(lambda: _named_stream_once(native, path, live=live), live=live)
+    except OSError as exc:
+        raise SandboxError(f'Cannot inspect browser storage streams (Windows error {exc.winerror})') from exc
 
 
 def _workspace_ok(directory: Path, maximum: int, native, *, live=False, max_entries=2048):
@@ -83,7 +156,7 @@ def _workspace_ok(directory: Path, maximum: int, native, *, live=False, max_entr
     while pending:
         current = pending.pop()
         try:
-            info = current.lstat()
+            info = _live_storage_call(current.lstat, live=live and current != directory)
             if not stat.S_ISDIR(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
                 return False
             streams = _named_stream(native, current, live=live and current != directory)
@@ -91,13 +164,13 @@ def _workspace_ok(directory: Path, maximum: int, native, *, live=False, max_entr
                 continue
             if streams:
                 return False
-            with os.scandir(current) as entries:
+            with _live_storage_call(lambda: os.scandir(current), live=live and current != directory) as entries:
                 for entry in entries:
                     count += 1
                     if count > max_entries:
                         return False
                     try:
-                        info = entry.stat(follow_symlinks=False)
+                        info = _live_storage_call(lambda: entry.stat(follow_symlinks=False), live=live)
                         if getattr(info, 'st_file_attributes', 0) & 0x400 or stat.S_ISLNK(info.st_mode):
                             return False
                         if stat.S_ISDIR(info.st_mode):
@@ -120,21 +193,38 @@ def _workspace_ok(directory: Path, maximum: int, native, *, live=False, max_entr
     return True
 
 
-def _stop_job(native, job, timeout=5.0):
-    # Even a naturally exited root can leave a browser/driver grandchild alive.
-    # Check the accounting after termination; a failed TerminateJobObject is
-    # harmless only if the Job is independently confirmed empty.
-    native.k.TerminateJobObject(job, 1)
+def _stop_job(native, job, timeout=5.0, *, members=None):
+    # TerminateJobObject can remove membership BEFORE process handles signal.
+    # ActiveProcesses==0 alone is therefore not an exit barrier. Retain every
+    # observed identity and require lifetime coverage as well as actual waits.
+    owned = members is None
+    members = {} if members is None else members
     deadline = time.monotonic() + timeout
-    accounting = _Accounting()
-    while True:
-        if not native.k.QueryInformationJobObject(job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
-            raise SandboxError('Cannot verify browser Job termination; private storage retained', preserve_private=True)
-        if accounting.active_processes == 0:
-            return
-        if time.monotonic() >= deadline:
-            raise SandboxError('Browser descendants did not stop; private storage retained', preserve_private=True)
-        time.sleep(.025)
+    terminated = False
+    try:
+        _seal_job(native, job)
+        _capture_members(native, job, members)
+        native.k.TerminateJobObject(job, 1)
+        terminated = True
+        for handle in members.values():
+            remaining = max(0, int((deadline - time.monotonic()) * 1000))
+            if native.k.WaitForSingleObject(handle, remaining) != 0:
+                raise SandboxError('Browser process termination is unconfirmed; private storage retained', preserve_private=True)
+        while True:
+            accounting = _accounting(native, job)
+            if accounting.total_processes != len(members):
+                raise SandboxError('Browser process history is incomplete; private storage retained', preserve_private=True)
+            if accounting.active_processes == 0:
+                return
+            if time.monotonic() >= deadline:
+                raise SandboxError('Browser descendants did not stop; private storage retained', preserve_private=True)
+            time.sleep(.025)
+    finally:
+        if not terminated:
+            native.k.TerminateJobObject(job, 1)
+        if owned:
+            for handle in members.values():
+                native.k.CloseHandle(handle)
 
 
 def run_browser_job(command: list[str], workspace: Path, *, timeout: float,
@@ -158,7 +248,10 @@ def run_browser_job(command: list[str], workspace: Path, *, timeout: float,
     k = native.k
     k.QueryInformationJobObject.argtypes = [W.HANDLE, ctypes.c_int, ctypes.c_void_p, W.DWORD, ctypes.c_void_p]
     k.QueryInformationJobObject.restype = W.BOOL
+    k.OpenProcess.argtypes, k.OpenProcess.restype = [W.DWORD, W.BOOL, W.DWORD], W.HANDLE
+    k.IsProcessInJob.argtypes, k.IsProcessInJob.restype = [W.HANDLE, W.HANDLE, ctypes.POINTER(W.BOOL)], W.BOOL
     handles, readers = set(), []
+    members = {}
     process = _Process()
     job, workspace_handle, attributes = None, None, None
     assigned = initialized = drained = False
@@ -227,6 +320,7 @@ def run_browser_job(command: list[str], workspace: Path, *, timeout: float,
         handles.update((process.process, process.thread))
         native.check(k.AssignProcessToJobObject(job, process.process), 'AssignProcessToJobObject(browser)')
         assigned = True
+        members[process.pid] = process.process
         for handle in child_handles:
             close(handle)
         for thread in readers:
@@ -235,6 +329,7 @@ def run_browser_job(command: list[str], workspace: Path, *, timeout: float,
             raise SandboxError('Cannot resume browser worker')
         start, reason = time.monotonic(), None
         while True:
+            _capture_members(native, job, members)
             status = k.WaitForSingleObject(process.process, 50)
             if status == 0:
                 break
@@ -250,11 +345,15 @@ def run_browser_job(command: list[str], workspace: Path, *, timeout: float,
                 try:
                     if not _workspace_ok(workspace, workspace_limit, native, live=True):
                         reason = 'workspace_limit'
-                except (OSError, SandboxError):
+                except (OSError, SandboxError) as exc:
                     reason = 'workspace_changed'
+                    diagnostic = f'Browser storage monitor: {str(exc)[:400]}\n'.encode('utf-8', errors='replace')
+                    with output_lock:
+                        available = max(0, int(output_limit) - sum(len(value) for value in data.values()))
+                        data['stderr'].extend(diagnostic[:available])
             if reason:
                 break
-        _stop_job(native, job)
+        _stop_job(native, job, members=members)
         drained = True
         code = W.DWORD()
         native.check(k.GetExitCodeProcess(process.process, ctypes.byref(code)), 'GetExitCodeProcess(browser)')
@@ -277,12 +376,15 @@ def run_browser_job(command: list[str], workspace: Path, *, timeout: float,
                 cleanup_error = SandboxError('Unassigned browser worker did not stop; private storage retained', preserve_private=True)
         if job and not drained:
             try:
-                _stop_job(native, job)
+                _stop_job(native, job, members=members)
             except SandboxError as exc:
                 cleanup_error = exc
         for thread in readers:
             if thread.ident:
                 thread.join(5)
+        for handle in members.values():
+            if handle not in handles:
+                k.CloseHandle(handle)
         for handle in list(handles):
             close(handle)
         if initialized:

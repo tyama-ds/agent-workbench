@@ -41,6 +41,16 @@ cache churn. Focused configuration, Engine, worker and Job unit checks passed
 112 cases with nine native opt-in cases skipped in that invocation. The full
 regression suite and Windows/Linux CI are checked separately on the final head.
 
+The initial Windows Server CI also demonstrated that Job accounting reaching zero
+does not establish that each process handle is signaled. The browser runner now
+retains identity-bound handles during execution, seals the Job against new process
+associations before stopping, waits on every retained handle, and checks lifetime
+process-count coverage as well as the final active count. Incomplete history or an
+unconfirmed exit retains private storage and prohibits screenshot publication.
+Live storage access/sharing/delete-pending errors receive a bounded reinspection;
+only an actual successful inspection or confirmed disappearance permits progress.
+Persistent errors still fail and now include a bounded diagnostic.
+
 This feature uses ordinary Windows user permissions, not a filesystem/network
 sandbox. Existing browser profiles are not reused; enterprise SSO and browser
 traffic are not comprehensively isolated. URL checks are not an OS boundary.

@@ -70,6 +70,12 @@ size monitoring is a best-effort guard, not an OS disk quota.
 
 ## Optional Selenium browser boundary
 
+Browser cleanup retains process handles while running, seals Job membership before
+termination, waits for those handles to signal and requires lifetime process-count
+coverage. An empty active-process count alone is not treated as proof of exit.
+Incomplete capture (including a rapidly exiting helper or a rejected association)
+fails closed: no PNG is published and private storage is retained for diagnosis.
+
 `selenium.enabled` defaults to `false`. The tool also requires
 `python.network_enabled` and an existing, explicitly selected Python executable;
 `python.enabled` can remain false. It uses trusted existing `selenium>=4.32,<5`
