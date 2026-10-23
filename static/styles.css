@@ -69,6 +69,8 @@ dialog{color:var(--ink);background:#131921;border:1px solid #54504a;border-radiu
 
 .task-reuse-preview:focus-visible{outline:2px solid #e3bc79;outline-offset:-2px}
 
+.additional-pm-settings{border:1px solid var(--line);border-radius:5px;padding:12px;margin-top:16px}.additional-pm-settings>summary{cursor:pointer;font-size:11px;color:#cbbb9d;line-height:1.8}.additional-pm-settings>summary span{margin-left:10px;color:#d9bd8a}.additional-pm-settings>.field-help{margin:10px 0}.additional-pm-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end;margin:12px 0}.additional-pm-row>.button{min-height:38px}.additional-pm-row select{min-width:0}#pythonFields .path-input{min-height:90px}
+
 /* Input presence is a local navigation aid, separate from runtime/send status. */
 .message-input-navigation{padding:0 12px 10px;flex:none;display:grid;gap:5px}.message-input-navigation .button{justify-self:start;white-space:normal;text-align:left}.message-input-navigation p:not(.sr-only){font-size:9px;line-height:1.6;color:var(--muted)}.input-presence-badge{display:inline-block;border:1px solid #655b45;border-radius:3px;padding:2px 5px;color:#d4c39e;font:9px var(--mono);white-space:nowrap}.agent-state-line{grid-column:2;grid-row:2;display:flex;align-items:center;flex-wrap:wrap;gap:4px}.question-run-line{display:flex;align-items:center;flex-wrap:wrap;gap:5px}.question-run-line .input-presence-badge{font-size:8px;padding:1px 4px}
 .agent-card .agent-name,.agent-card .agent-model{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}

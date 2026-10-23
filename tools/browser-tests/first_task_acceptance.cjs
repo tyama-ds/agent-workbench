@@ -39,7 +39,8 @@ async function firstTaskAcceptance({page,stateDir,providerRequests,artifacts,rep
     assert.equal(await help.isVisible(),true,'Essential guidance remains visible after typing and when examples are closed');
     assert.equal(await help.evaluate(element=>element.closest('details')===null),true,'Essential limits cannot be hidden inside a disclosure');
     assert.match(await help.textContent(),/文章.*ファイル.*読み書き/);
-    assert.match(await help.textContent(),/コマンド・ビルド・テストは実行できません/);
+    assert.match(await help.textContent(),/Python を設定・有効化すると計算やデータ処理も実行できます/);
+    assert.match(await help.textContent(),/任意のシェルコマンドは実行できません/);
     assert((await page.locator('#taskInput').getAttribute('aria-describedby')||'').split(/\s+/).includes('taskHelp'),
       'Task input has persistent accessible help, not only a disappearing placeholder');
   };
@@ -90,7 +91,7 @@ async function firstTaskAcceptance({page,stateDir,providerRequests,artifacts,rep
         }
         // Native modal scrolling is allowed, but all existing controls must be
         // genuinely reachable, including the Start/settings actions below it.
-        for(const selector of ['#toggleBrief','#taskInput','#taskExamples > summary','#pmProfile','#maxWorkers','#workerProfiles input','#preflightSettings','#startRun'])
+        for(const selector of ['#toggleBrief','#taskInput','#taskExamples > summary','#pmProfile','#maxWorkers','#additionalPMSettings > summary','#workerProfiles input','#preflightSettings','#startRun'])
           await reachable(selector,label);
         await assertDialogLayout(page,'#taskDialog',label+' controls');
         await page.screenshot({path:path.join(artifacts,`workbench-first-task-${name}-${state}-controls.png`),fullPage:false,animations:'disabled'});
@@ -105,8 +106,14 @@ async function firstTaskAcceptance({page,stateDir,providerRequests,artifacts,rep
   assert.equal(await summary.textContent(),'依頼例と必要な設定');
   assert.equal(await details.evaluate(element=>element.open),false,phase+': examples begin collapsed');
   const examples=details.locator('.task-example-list > section');
-  assert.equal(await examples.count(),3,'Exactly three examples');
-  assert.deepEqual(await examples.locator('h3').allTextContents(),['文章だけで始める','許可したファイルを使う','公開 Web の資料を調べる']);
+  assert.equal(await examples.count(),5,'Exactly five examples, including separately enabled Python and Selenium');
+  assert.deepEqual(await examples.locator('h3').allTextContents(),['文章だけで始める','許可したファイルを使う','Python で計算・データ処理をする','公開 Web の資料を調べる','ブラウザー画面を操作する']);
+  const pythonExample=await examples.nth(2).textContent();
+  for(const phrase of ['既存の python.exe','入力ファイル','明示した出力','許可先','ネットワーク接続は既定でオフ','設定で許可すると直接通信できます','シェル・子プロセスの起動はできません','Python の同梱やパッケージの自動インストールは行いません'])
+    assert(pythonExample.includes(phrase),'Python guidance explains its runtime and access boundary: '+phrase);
+  const seleniumExample=await examples.nth(4).textContent();
+  for(const phrase of ['Selenium ブラウザー操作','WebDriver','Python の実行ファイル','ネットワーク接続の許可','通常の Python スクリプト実行を有効にする必要はありません','画面なしで毎回起動','フォルダー隔離は適用されません','任意の JavaScript 実行','アップロード・ダウンロードはできません'])
+    assert(seleniumExample.includes(phrase),'Selenium guidance explains its separate permission and boundary: '+phrase);
   assert.equal(await details.locator('.task-example-list').locator('a,button,input,textarea,select,summary,[tabindex],[contenteditable],[role="button"]').count(),0,
     'Examples are text, not preset buttons or settings controls');
   await helpVisible();
@@ -125,7 +132,7 @@ async function firstTaskAcceptance({page,stateDir,providerRequests,artifacts,rep
     await summary.click();assert.equal(await details.evaluate(element=>element.open),false);
     await helpVisible();await unchanged('Guidance complete');page.off('request',observe);
     report.checks.push(phase==='fresh'?
-      'fresh first-task guidance: persistent accessible capabilities and command/build/test limit after typing; exactly three text-only examples; native Enter/Space and pointer disclosure; unchanged draft, PM, workers, limit and config with no implicit run/provider traffic; expansion survives real preflight, close/reopen and settings round trip; collapsed/expanded 1366x768, 820x900, 390x844 screenshots plus examples/reachable controls with no horizontal clipping':
+      'fresh first-task guidance: persistent accessible capabilities, explicitly enabled Python and arbitrary-shell limit after typing; exactly five text-only examples including existing-runtime Python, explicit network permission and separate headless Selenium without Python folder isolation or arbitrary JavaScript/upload/download; no general Python child processes or bundled installs; native Enter/Space and pointer disclosure; unchanged draft, PM, workers, limit and config with no implicit run/provider traffic; expansion survives real preflight, close/reopen and settings round trip; collapsed/expanded 1366x768, 820x900, 390x844 screenshots plus examples/reachable controls with no horizontal clipping':
       'configured first-task guidance: local PM, local+openai workers, max 1 and exact draft survive native guidance toggles, real ready preflight, Escape/reopen and settings shortcut round trip; examples stay expanded and settings stay unchanged with no implicit run/provider traffic');
   }};
 }

@@ -3,18 +3,24 @@ from .providers import _endpoint
 
 
 def summarize(prepared):
-    _, config, pm, workers, _, harness, web = prepared
-    selected = dict.fromkeys([pm, *workers])
+    _, config, pms, workers, _, harness, web = prepared
+    selected = dict.fromkeys([*pms, *workers])
     destinations = []
     for profile in config['providers']:
         if profile['id'] not in selected:
             continue
         protocol = {'local': '/chat/completions', 'openai': '/responses', 'anthropic': '/messages'}[profile['kind']]
         destinations.append({'profile_id': profile['id'], 'label': profile['label'], 'model': profile['model'],
-            'role': 'PM' if profile['id'] == pm else 'worker', 'kind': profile['kind'],
+            'role': 'PM' if profile['id'] in pms else 'worker', 'kind': profile['kind'],
+            'pm_count': pms.count(profile['id']), 'worker_available': profile['id'] in workers,
             'endpoint': _endpoint(profile['base_url'], protocol, allow_local_network=profile['kind'] == 'local'),
             'protocol': protocol, 'proxy': profile['proxy_url'] if profile['kind'] != 'local' else ''})
     warnings = []
+    if config['selenium']['enabled']:
+        warnings.append({'code': 'selenium_normal_user', 'message':
+            'Selenium は通常の Windows ユーザー権限で新規ブラウザーを起動します。'
+            'Python の LPAC フォルダー隔離は適用されません。ファイル許可はツール経由のスクリーンショット保存に適用されます。'
+            'ページ操作は外部サイトを変更する場合があります。'})
     for kind, roots in (('read', harness.read_roots), ('write', harness.write_roots)):
         if not roots:
             action = ('入力フォルダーを「読み取りを許可する場所」に登録してください。' if kind == 'read' else

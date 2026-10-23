@@ -6,6 +6,26 @@ const FIELD_GROUPS = {
     ['write_roots','書き込みを許可する場所','paths','例：C:\\Projects\\output'],
     ['deny_roots','アクセスを拒否する場所','paths','例：C:\\Users\\you\\.ssh'],
   ],
+  python: [
+    ['enabled','Python スクリプト実行を有効にする','checkbox'],
+    ['network_enabled','Python のネットワーク接続を許可','checkbox'],
+    ['executable','既存の python.exe の絶対パス','text','例：C:\\Python312\\python.exe'],
+    ['library_paths','既存ライブラリの場所（1行1パス）','paths','例：C:\\Python312\\Lib\\site-packages'],
+    ['timeout_seconds','1回の実行時間上限（秒）','number',1],
+    ['max_memory_mb','実行メモリ上限（MB）','number',128],
+    ['max_output_bytes','標準出力・エラーの上限（byte）','number',1024],
+  ],
+  selenium: [
+    ['enabled','Selenium のブラウザー操作を許可','checkbox'],
+    ['browser','使用するブラウザー','select',[['edge','Microsoft Edge'],['chrome','Google Chrome']]],
+    ['browser_executable','既存のブラウザー実行ファイルの絶対パス','text','例：C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'],
+    ['driver_executable','既存の WebDriver の絶対パス','text','例：C:\\Tools\\msedgedriver.exe'],
+    ['library_paths','Selenium の既存ライブラリの場所（1行1パス）','paths','例：C:\\Python312\\Lib\\site-packages'],
+    ['proxy_url','Selenium 専用プロキシ URL（空欄は直接接続）','url'],
+    ['timeout_seconds','1回のブラウザー操作の時間上限（秒）','number',10],
+    ['max_memory_mb','ブラウザー実行メモリ上限（MB）','number',256],
+    ['max_output_chars','取得テキストの上限（文字）','number',1000],
+  ],
   search: [
     ['enabled','Web 検索・ページ取得を使う','checkbox'],
     ['provider','検索エンジン','select',[['searxng','SearXNG'],['brave','Brave Search']]],
@@ -67,6 +87,9 @@ Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,
 Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
+Object.assign(ui,{additionalPMSequence:0});
+NUMBER_BOUNDS.python={timeout_seconds:[1,600],max_memory_mb:[128,8192],max_output_bytes:[1024,1048576]};
+NUMBER_BOUNDS.selenium={timeout_seconds:[10,300],max_memory_mb:[256,8192],max_output_chars:[1000,100000]};
 const $ = id => document.getElementById(id);
 
 function element(tag, className, text) {
@@ -321,8 +344,10 @@ function renderSettings() {
   ui.settingsDraftGeneration++;
   ui.credentialGeneration++;
   $('profilesEditor').replaceChildren();(ui.config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
-  const containers={paths:'pathFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+  const containers={paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
   for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]);container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,ui.config[group]?.[spec[0]],group)));}
+  $('pythonFields').querySelector('[data-key="network_enabled"]').setAttribute('aria-describedby','pythonNetworkHelp');
+  $('seleniumFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','seleniumRuntimeHelp seleniumBoundaryHelp');
   $('systemPolicy').value=ui.config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
 }
 function collectConfig() {
@@ -333,7 +358,7 @@ function collectConfig() {
   const ids=config.providers.map(profile=>profile.id);
   if(new Set(ids).size!==ids.length)throw new Error('プロファイル ID が重複しています。別の ID を指定してください。');
   if(!config.providers.length)throw new Error('プロファイルを1つ以上追加してください。');
-  const containers={paths:'pathFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+  const containers={paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
   for(const [group,id] of Object.entries(containers)){config[group]={...config[group]};$(id).querySelectorAll('[data-key]').forEach(input=>{config[group][input.dataset.key]=inputValue(input);});}
   config.system_policy=$('systemPolicy').value;
   return config;
@@ -355,10 +380,42 @@ function renderProfileChoices(preserveDraft=false) {
   profiles.forEach(profile=>{const option=element('option','',profileLabel(profile));option.value=profile.id;$('pmProfile').appendChild(option);});
   if(preserveDraft&&previous&&!profiles.some(profile=>profile.id===previous)){const option=element('option','',`${previous}（保存済み設定では利用不可）`);option.value=previous;$('pmProfile').appendChild(option);}
   if(preserveDraft||profiles.some(profile=>profile.id===previous))$('pmProfile').value=previous;
+  $('additionalPMs').querySelectorAll('select').forEach(select=>fillAdditionalPMChoice(select,select.value));
+  syncAdditionalPMControls();
   const choices=[...profiles,...(preserveDraft?[...checked].filter(id=>!profiles.some(profile=>profile.id===id)).map(id=>({id,label:`${id}（保存済み設定では利用不可）` })):[])];
   choices.forEach(profile=>{const label=element('label','choice'),input=element('input');input.type='checkbox';input.value=profile.id;input.dataset.focusKey=`task-worker:${profile.id}`;input.checked=preserveDraft||checked.size?checked.has(profile.id):profile.id===$('pmProfile').value;label.append(input,element('span','',profile.label||profile.id));$('workerProfiles').appendChild(label);});
   const limit=Number(ui.config.limits?.max_workers??3);$('maxWorkers').max=String(limit);if(!preserveDraft)$('maxWorkers').value=String(Math.min(Number($('maxWorkers').value),limit));
   $('policyPreview').textContent=ui.config.system_policy||'設定された共通方針はありません。';trackTaskDraft();syncStartControl();
+}
+function fillAdditionalPMChoice(select,previous) {
+  const profiles=(ui.config?.providers||[]).filter(profile=>profile.enabled!==false&&profile.model&&profile.base_url);
+  select.replaceChildren();
+  profiles.forEach(profile=>{const option=element('option','',profileLabel(profile));option.value=profile.id;select.appendChild(option);});
+  if(!profiles.some(profile=>profile.id===previous)){
+    const option=element('option','',previous?`${previous}（保存済み設定では利用不可）`:'設定でモデル名を指定してください');
+    option.value=previous;select.appendChild(option);
+  }
+  select.value=previous;
+}
+function syncAdditionalPMControls() {
+  const rows=[...$('additionalPMs').children];
+  rows.forEach((row,index)=>{row.querySelector('label').textContent=`PM ${index+2} のプロファイル`;row.querySelector('button').setAttribute('aria-label',`PM ${index+2} を取り除く`);});
+  $('additionalPMCount').textContent=`PM ${rows.length+1} 人`;
+  $('addPM').disabled=rows.length>=15||!(ui.config?.providers||[]).some(profile=>profile.enabled!==false&&profile.model&&profile.base_url);
+}
+function addPM() {
+  if($('additionalPMs').children.length>=15||$('addPM').disabled)return;
+  const row=element('div','additional-pm-row'),field=element('div','field');
+  const label=element('label'),select=element('select'),remove=element('button','button minor','削除');
+  select.id=`additional-pm-${++ui.additionalPMSequence}`;select.dataset.focusKey=select.id;select.required=true;label.htmlFor=select.id;
+  fillAdditionalPMChoice(select,$('pmProfile').value);field.append(label,select);remove.type='button';row.append(field,remove);
+  remove.addEventListener('click',()=>{
+    const rows=[...$('additionalPMs').children],index=rows.indexOf(row);row.remove();syncAdditionalPMControls();
+    trackTaskDraft({type:'change'});syncStartControl();schedulePreflight();
+    ($('additionalPMs').children[index]?.querySelector('select')||$('addPM')).focus();
+  });
+  $('additionalPMs').appendChild(row);$('additionalPMSettings').open=true;syncAdditionalPMControls();
+  trackTaskDraft({type:'change'});syncStartControl();schedulePreflight();select.focus();
 }
 function showView(view) {
   if(view==='settings') { if(!$('settingsDialog').open){ui.workspaceGeneration++;$('settingsDialog').showModal();} }
@@ -366,7 +423,10 @@ function showView(view) {
   reconcileTaskReuse();
 }
 function runPayload() {
-  return {task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value)};
+  const payload={task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value)};
+  const extra=[...($('additionalPMs')?.querySelectorAll('select')||[])].map(select=>select.value);
+  if(extra.length)payload.pm_profiles=[payload.pm_profile,...extra];
+  return payload;
 }
 function trackTaskDraft(event) {
   // An actual edit also invalidates a choice when numeric parsing would hide
@@ -378,7 +438,7 @@ function trackTaskDraft(event) {
   if(ui.taskReuseSource&&$('taskInput').value!==ui.taskReuseSource.text){ui.taskReuseSource=null;$('taskReuseProvenance').hidden=true;}
   showPendingStart();
 }
-function syncStartControl() { $('startRun').disabled=Boolean(ui.startingRun||ui.taskReuseCandidate)||!$('pmProfile').value;syncTaskReuseControl(); }
+function syncStartControl() { $('startRun').disabled=Boolean(ui.startingRun||ui.taskReuseCandidate)||!$('pmProfile').value||[...($('additionalPMs')?.querySelectorAll('select')||[])].some(select=>!select.value);syncTaskReuseControl(); }
 function taskEditorText(text) { return text.replace(/\r\n?/g,'\n'); }
 function taskReuseDraftKey() { return JSON.stringify([runPayload(),$('maxWorkers').value]); }
 function taskReuseIssue(run) {
@@ -511,7 +571,7 @@ async function refreshPreflight(request) {
     const target=$('preflightDetails'),scopeOpen=Boolean(target.querySelector('.readiness-scope')?.open);target.replaceChildren();
     if(response.destinations){
       target.append(element('p','small','送信される可能性のある接続先（実際の呼び出し記録ではありません）'));
-      for(const p of response.destinations)target.append(element('p','readiness-destination',`${p.role} · ${p.label} · ${p.model} — ${p.endpoint}${p.proxy?' · proxy: '+p.proxy:''}`));
+      for(const p of response.destinations)target.append(element('p','readiness-destination',`${p.pm_count?`PM ${p.pm_count} 人${p.worker_available?' / 作業者候補':''}`:p.role} · ${p.label} · ${p.model} — ${p.endpoint}${p.proxy?' · proxy: '+p.proxy:''}`));
       const scope=response.scope||{};
       const details=element('details','readiness-scope');details.open=scopeOpen;details.append(element('summary','','許可・拒否するフォルダーを確認'));
       for(const [key,label] of [['read_roots','読み取り'],['write_roots','書き込み'],['deny_roots','拒否（アプリ・設定保存先の自動保護を含む）']])details.append(element('p','small',`${label}: ${(scope[key]||[]).join(' / ')||'なし'}`));
@@ -1036,8 +1096,9 @@ async function initialize() {
   window.addEventListener('pointerup',releaseStartPointer);
   window.addEventListener('pointercancel',releaseStartPointer);
   window.addEventListener('blur',releaseStartPointer);
-  $('runForm').addEventListener('input',event=>{trackTaskDraft(event);schedulePreflight();});
-  $('runForm').addEventListener('change',event=>{trackTaskDraft(event);schedulePreflight();});
+  $('runForm').addEventListener('input',event=>{trackTaskDraft(event);syncStartControl();schedulePreflight();});
+  $('runForm').addEventListener('change',event=>{trackTaskDraft(event);syncStartControl();schedulePreflight();});
+  $('addPM').addEventListener('click',addPM);
   $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;clearTaskReuse();releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
   $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
   $('discardSettings').addEventListener('click',discardSettings);
@@ -1069,7 +1130,7 @@ async function initialize() {
     const action={navigationGeneration:ui.navigationGeneration,dialogGeneration:ui.taskDialogGeneration,draftGeneration:ui.taskDraftGeneration,workspaceGeneration:ui.workspaceGeneration,noticeGeneration:ui.noticeGeneration,runId:null};
     ui.startOperation=action;ui.startingRun=true;syncStartControl();inlineStatus($('runFormStatus'),'チームを準備しています…');
     try {
-      const response=await api('/api/runs',{method:'POST',body:{task,pm_profile:$('pmProfile').value,worker_profiles:workerProfiles,max_workers:Number($('maxWorkers').value)}});
+      const response=await api('/api/runs',{method:'POST',body:runPayload()});
       const id=response.run?.id||response.id||response.run_id;
       if(typeof id!=='string'||!id){const failure=new Error('開始応答の実行 ID を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
       action.runId=id;

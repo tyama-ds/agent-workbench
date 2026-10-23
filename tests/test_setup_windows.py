@@ -14,6 +14,15 @@ setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 
 
+def test_dependency_lock_decodes_on_windows_legacy_code_pages():
+    # pip in the selected existing interpreter can use the Windows locale when
+    # reading requirements, even if the outer launcher used UTF-8 mode. Keep
+    # comments and requirements portable without changing the user's locale.
+    data = (ROOT / 'requirements.lock').read_bytes()
+    expected = data.decode('ascii')
+    assert data.decode('cp1252') == data.decode('cp932') == data.decode('utf-8') == expected
+
+
 @pytest.fixture(scope='module')
 def standard_python():
     """Use the installed interpreter behind pytest's venv, never a launcher alias."""
