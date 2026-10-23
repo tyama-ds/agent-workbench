@@ -3,7 +3,7 @@
 # Optional Selenium browser tool: supply existing selenium>=4.32,<5 and its
 # dependencies in explicitly configured library_paths, plus a matching existing
 # Edge/Chrome browser and driver. These are NOT installed by this lock or Setup.
-# See README.md, "Selenium によるブラウザー操作"; no Selenium Manager/download.
+# See the optional Selenium section in README.md; no Selenium Manager/download.
 
 aiohappyeyeballs==2.7.1 \
     --hash=sha256:065665c041c42a5938ed220bdcd7230f22527fbec085e1853d2402c8a3615d9d \

@@ -39,7 +39,9 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           python scripts/setup_windows.py --wheelhouse "${{ runner.temp }}/workbench-wheels"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/setup_windows.py --wheelhouse "${{ runner.temp }}/workbench-wheels"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./.venv/Scripts/python.exe -m pip check
       - name: Exercise CMD explicit approved interpreter and actual launcher
         if: runner.os == 'Windows'
