@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 _MAX_URL = 8192
 _PNG = b'\x89PNG\r\n\x1a\n'
+_DETACHED_PROCESS = 0x00000008  # Win32 constant; worker always runs on Windows.
 _FILL = """
 const e = arguments[0], value = arguments[1];
 const tag = e.tagName.toLowerCase();
@@ -200,8 +201,11 @@ def create_driver(job, workspace):
         options, factory = webdriver.ChromeOptions(), webdriver.Chrome
     else:
         raise ValueError('Selenium browser must be edge or chrome')
+    # Do not create a console host that could exit before the parent Job runner
+    # captures its process handle. Pipes still carry the service's standard I/O.
     service = Service(executable_path=job['driver_executable'],
-                      service_args=['--allowed-ips=127.0.0.1'], log_output=subprocess.DEVNULL)
+                      service_args=['--allowed-ips=127.0.0.1'], log_output=subprocess.DEVNULL,
+                      popen_kw={'creation_flags': _DETACHED_PROCESS})
     return factory(service=service, options=_options(options, job, workspace))
 
 

@@ -213,7 +213,10 @@ def _stop_job(native, job, timeout=5.0, *, members=None):
         while True:
             accounting = _accounting(native, job)
             if accounting.total_processes != len(members):
-                raise SandboxError('Browser process history is incomplete; private storage retained', preserve_private=True)
+                raise SandboxError(
+                    f'Browser process history is incomplete (total={accounting.total_processes}, '
+                    f'held={len(members)}, active={accounting.active_processes}); private storage retained',
+                    preserve_private=True)
             if accounting.active_processes == 0:
                 return
             if time.monotonic() >= deadline:
@@ -314,7 +317,11 @@ def run_browser_job(command: list[str], workspace: Path, *, timeout: float,
         environment = _environment(workspace)
         env = ctypes.create_unicode_buffer('\0'.join(f'{key}={value}' for key, value in sorted(environment.items())) + '\0\0')
         cmd = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
-        flags = 0x80000 | 0x8000000 | 0x400 | 0x4  # Extended, NO_WINDOW, Unicode, suspended.
+        # DETACHED_PROCESS keeps the controller console-free. CREATE_NO_WINDOW
+        # can create a hidden conhost that exits before the first PID poll for
+        # short workers, making complete lifetime-handle coverage impossible.
+        # Explicit STARTF_USESTDHANDLES pipes still provide all standard I/O.
+        flags = 0x80000 | 0x8 | 0x400 | 0x4  # Extended, detached, Unicode, suspended.
         native.check(k.CreateProcessW(command[0], cmd, None, None, True, flags, env, str(workspace),
                                      ctypes.byref(startup), ctypes.byref(process)), 'CreateProcessW(browser worker)')
         handles.update((process.process, process.thread))

@@ -51,6 +51,19 @@ Live storage access/sharing/delete-pending errors receive a bounded reinspection
 only an actual successful inspection or confirmed disappearance permits progress.
 Persistent errors still fail and now include a bounded diagnostic.
 
+A later Windows CI run exposed a short-lived `conhost.exe` started by
+`CREATE_NO_WINDOW`, even for a one-line Python worker. Local image-path and Job
+accounting probes confirmed the extra process. The fixed worker uses
+`DETACHED_PROCESS` with explicit standard-I/O pipes to avoid creating that
+console host; process-history coverage is still required rather than waived.
+The native regression exercises repeated short worker lifetimes and verifies
+that each Job contains exactly one process.
+
+Windows offline-installer validation also exposed locale-dependent pip decoding
+of a non-ASCII comment in `requirements.lock`. The comment is ASCII, a regression
+checks locale compatibility, and CI checks each installer exit code before
+continuing to the repeated-install and launcher checks.
+
 This feature uses ordinary Windows user permissions, not a filesystem/network
 sandbox. Existing browser profiles are not reused; enterprise SSO and browser
 traffic are not comprehensively isolated. URL checks are not an OS boundary.

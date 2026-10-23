@@ -239,12 +239,12 @@ def test_real_job_stops_root_child_and_grandchild(tmp_path, root_mode):
     grandchild = f"import os,time;open({str(grandchild_file)!r},'w').write(str(os.getpid()));time.sleep(60)"
     child = f'''import os,subprocess,sys,time
 open({str(child_file)!r},'w').write(str(os.getpid()))
-subprocess.Popen([sys.executable,'-I','-S','-c',{grandchild!r}])
+subprocess.Popen([sys.executable,'-I','-S','-c',{grandchild!r}],creationflags=0x8)
 time.sleep(60)
 '''
     code = f'''import json,os,subprocess,sys,time
 open({str(root_file)!r},'w').write(str(os.getpid()))
-subprocess.Popen([sys.executable,'-I','-S','-c',{child!r}])
+subprocess.Popen([sys.executable,'-I','-S','-c',{child!r}],creationflags=0x8)
 deadline=time.monotonic()+5
 while not os.path.exists({str(ready_file)!r}):
     assert time.monotonic()<deadline,'test did not retain child handles'
@@ -297,6 +297,26 @@ print(json.dumps({{'root':os.getpid()}}),flush=True)
         observer.join(10)
         for handle in held.values():
             kernel.CloseHandle(handle)
+
+
+@NATIVE
+def test_real_short_workers_do_not_create_a_transient_console_host(tmp_path, monkeypatch):
+    original = browser_job._accounting
+    totals = []
+    def record(native, job):
+        value = original(native, job)
+        totals.append(value.total_processes)
+        return value
+    monkeypatch.setattr(browser_job, '_accounting', record)
+    # CREATE_NO_WINDOW used to create conhost.exe; on faster hosts that helper
+    # could exit between PID snapshots. DETACHED_PROCESS needs no such helper.
+    # Keep lifetime accounting exact rather than allowing unknown extra PIDs.
+    for _ in range(20):
+        result = _run_python("import sys;print('short stdout');sys.stderr.write('short stderr')", tmp_path)
+        assert result['exit_code'] == 0 and result['termination_reason'] is None, result
+        assert result['stdout'].strip() == 'short stdout'
+        assert result['stderr'] == 'short stderr'
+    assert totals and set(totals) == {1}, totals
 
 
 @NATIVE

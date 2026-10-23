@@ -487,6 +487,7 @@ def test_driver_uses_explicit_service_binary_and_fresh_profile(tmp_path, monkeyp
     assert worker.create_driver(job, tmp_path) == 'driver'
     assert created['service_args']['executable_path'] == job['driver_executable']
     assert created['service_args']['service_args'] == ['--allowed-ips=127.0.0.1']
+    assert created['service_args']['popen_kw'] == {'creation_flags': 0x00000008}
     options = created['options']
     assert options.binary_location == job['browser_executable']
     assert f'--user-data-dir={tmp_path / "profile"}' in options.arguments
