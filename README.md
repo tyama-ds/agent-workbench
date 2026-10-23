@@ -14,11 +14,31 @@ Codex CLI / Claude Code / WSL / Docker / Microsoft Office のインストール�
 
 必要なもの: Windows 11、承認済みの通常版 **64-bit CPython 3.11〜3.13**（3.13 推奨）、Edge または Chrome。
 
+### 既存の Python とライブラリを JSON で指定する
+
+既にパッケージが用意されている場合は、**[runtime.example.json](runtime.example.json) を `runtime.local.json` にコピー**し、次の2項目を実際の絶対パスに変更します。コードの編集や `Setup.cmd` の実行は不要です。
+
+```json
+{
+  "python_executable": "C:/Approved/Python313/python.exe",
+  "library_paths": ["C:/Approved/Python313/Lib/site-packages"],
+  "port": 8818,
+  "state_dir": "",
+  "open_browser": true
+}
+```
+
+`Launch-Configured.cmd --check` で確認後、**`Launch-Configured.cmd` をダブルクリック**します。指定するのは導入済みの `site-packages` で、`.whl` の置き場ではありません。必要なパッケージは **[用途・バージョン一覧](docs/DEPENDENCIES.md)** と **[実行用17件のlock](requirements-runtime.lock)** にまとめています。確認と起動では、このlockとのバージョン一致とimportを検査し、不足・版違いがあれば表示して停止します。インストールは行いません。
+
+この起動方式だけ、Windows標準のPowerShellでJSONからPythonの場所を読みます。実行ポリシーの変更はしません。`runtime.local.json` はPC固有のためGit対象外です。API接続先や作業フォルダー権限は、従来どおりアプリ内の設定で管理します。詳しい項目と制約は [Windows セットアップガイド](docs/WINDOWS_SETUP.md#既存の-python-とライブラリを使うjson-設定) を参照してください。
+
+### パッケージをセットアップする従来の方式
+
 1. ソース ZIP を、自分が書き込めるローカルフォルダーにすべて展開します。
 2. 展開先のコマンドプロンプトで、IT 担当が指定した実際の Python のフルパスを `WORKBENCH_PYTHON` に設定し、`Setup.cmd` を実行します。`Setup complete` を確認します。
 3. **`Launch.cmd` をダブルクリック**します。起動したコンソールで Ctrl+C を押すと停止します。
 
-通常のセットアップ・起動に PowerShell、管理者権限、Git、ビルドツールは不要です。**Python は同梱しません。組織の認可を受け、アプリとは別にインストールしてください。** アプリが Python 本体をダウンロード・インストールすることはありません。社内ポリシーによる実行禁止やセキュリティ警告を回避する設定は行いません。
+この従来のセットアップ・起動に PowerShell、管理者権限、Git、ビルドツールは不要です。**Python は同梱しません。組織の認可を受け、アプリとは別にインストールしてください。** アプリが Python 本体をダウンロード・インストールすることはありません。社内ポリシーによる実行禁止やセキュリティ警告を回避する設定は行いません。
 
 Python の指定前でも `Setup.cmd --help`（`-h` / `/?` も可）で手順とオプションを確認できます。ヘルプは最初の引数として単独で指定し、ほかのオプションは別の実行に分けてください。Python の起動、インストール、通信は行いません。`WORKBENCH_PYTHON` の `set` は同じコマンドプロンプト内だけの指定で、永続的な設定変更は不要です。
 
