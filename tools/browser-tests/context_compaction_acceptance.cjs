@@ -53,7 +53,7 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
     const watchKeys=request=>{if(new URL(request.url()).pathname==='/api/secrets')keyPosts.push(request.postDataJSON());};
     page.on('request',watchKeys);
     // These are synthetic browser event flags, not native OS IME validation.
-    for(const selector of [`#profile-${localIndex}-secret`,'#searchSecret']){
+    for(const selector of [`#profile-${localIndex}-secret`]){
       const input=page.locator(selector);await input.fill('[SYNTHETIC] unfinished composition');
       for(const flags of [{isComposing:true,keyCode:13},{isComposing:true,keyCode:229},{isComposing:false,keyCode:229}]){
         assert.equal(await input.evaluate((node,flags)=>node.dispatchEvent(new KeyboardEvent('keydown',
@@ -63,7 +63,7 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
       await input.clear();
     }
     await poll();assert.deepEqual(keyPosts,[]);page.off('request',watchKeys);
-    report.checks.push('credential-composition: real Edge inputs ignore six synthetic isComposing/keyCode-229 Enter cases without canceling events, clearing values or sending key requests; native OS IME remains untested');
+    report.checks.push('credential-composition: real Edge inputs ignore three synthetic isComposing/keyCode-229 Enter cases without canceling events, clearing values or sending key requests; native OS IME remains untested');
     await page.locator('#limits-auto_compact').uncheck();await save();
     assert.equal((await api('/api/config')).config.limits.auto_compact,false);
     await page.reload();await page.getByText('Workbench 接続中',{exact:true}).waitFor({state:'attached'});

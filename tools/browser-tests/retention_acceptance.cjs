@@ -165,6 +165,8 @@ async function retentionAcceptance({page,context,origin,workspace,stateDir,provi
       'Text-only help adds no keyboard stops before existing conversation controls');
     for(const [name,width,height] of [['desktop',1366,768],['tablet',820,900],['narrow',390,844]]) {
       await sibling.setViewportSize({width,height});
+      if(width<=1100&&await sibling.locator('#inspectorView').getAttribute('aria-pressed')!=='true')
+        await sibling.locator('#inspectorView').click();
       for(const expanded of [false,true]) {
         const state=expanded?'expanded':'collapsed',label=`retention ${name} ${state}`;
         if(await details.evaluate(element=>element.open)!==expanded)await summary.click();

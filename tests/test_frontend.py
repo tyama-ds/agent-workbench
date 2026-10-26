@@ -35,7 +35,7 @@ def test_javascript_parses():
 def test_assets_are_local_and_untrusted_content_has_no_html_sink():
     assert not re.search(r'<script[^>]*>(?!\s*</script>)', HTML)
     assert re.findall(r'<script[^>]+src="([^"]+)"', HTML) == ["/app.js"]
-    assert re.findall(r'<link[^>]+href="([^"]+)"', HTML) == ["/styles.css"]
+    assert re.findall(r'<link[^>]+href="([^"]+)"', HTML) == ["/agent-workbench.ico", "/styles.css"]
     assert not re.search(r"\son(?:click|load|error|submit)\s*=", HTML)
     for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function(", "localStorage", "sessionStorage"):
         assert sink not in APP
@@ -46,8 +46,10 @@ def test_settings_ui_covers_every_interface_field_without_persisting_raw_keys():
     prefix = APP[:APP.index("const STATUS_LABELS")]
     result = run_javascript(prefix + "console.log(JSON.stringify({groups:FIELD_GROUPS,profiles:PROFILE_FIELDS}));")
     config = json.loads((ROOT / "docs/interface.json").read_text(encoding="utf-8"))["config"]
-    for section in ("paths", "python", "selenium", "local", "search", "limits"):
-        assert {field[0] for field in result["groups"][section]} == set(config[section])
+    for section in ("work_board", "orchestration", "paths", "python", "selenium", "local", "search", "limits"):
+        hidden = {"api_key_env"} if section == "search" else set()
+        assert {field[0] for field in result["groups"][section]} == set(config[section]) - hidden
+    assert config["search"]["api_key_env"] == ""
     assert {field[0] for field in result["profiles"]} | {"enabled"} == set(config["providers"][0])
     assert 'id="systemPolicy"' in HTML and 'id="policyPreview"' in HTML
     assert "config.system_policy=$('systemPolicy').value" in APP
@@ -156,7 +158,8 @@ console.log(JSON.stringify({calls}));
 """)
     assert result['calls'] == 1
     assert 'if(signature===ui.rosterSignature)return' in APP
-    assert 'if(signature===ui.mapSignature)return' in APP
+    assert 'if(layoutKey!==ui.networkLayoutKey)' in APP
+    assert 'ui.networkNodes.get(agent.id)' in APP
     assert 'if(signature===ui.tabsSignature)return' in APP
     assert 'if(signature===ui.runsSignature)return' in APP
 

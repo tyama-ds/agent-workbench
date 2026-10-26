@@ -1,8 +1,10 @@
 """Real local HTTP fixtures; no external search or model service is contacted."""
 import asyncio
+import html
 import json
 import socket
 import sys
+import urllib.parse
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -161,20 +163,143 @@ def test_mixed_public_private_dns_is_rejected(monkeypatch):
     asyncio.run(run())
 
 
-def test_brave_secret_stays_in_header_and_response_never_contains_it(monkeypatch):
+def ddg_result(url="https://example.com/article", title="調査結果", snippet="資料の抜粋", *, classes="result results_links web-result"):
+    return (f'<div class="{classes}"><h2 class="result__title">'
+            f'<a class="result__a" href="{html.escape(url, quote=True)}">{title}</a></h2>'
+            f'<div><a class="result__snippet">{snippet}</a></div></div>')
+
+
+@pytest.mark.parametrize("provider", ["duckduckgo", "brave"])
+def test_duckduckgo_fixed_public_endpoint_and_no_search_credentials(monkeypatch, provider):
     async def run():
         requests = []
-        async def proxy(request):
-            requests.append((request.raw_path, dict(request.headers)))
-            return web.json_response({"web": {"results": [{"url": "https://example.com/x", "title": "Answer", "description": "Source"}]}})
+        async def request(url, **kwargs):
+            requests.append((url, kwargs))
+            return ddg_result().encode(), "text/html; charset=utf-8", url
+        monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "old-env-secret")
+        tools = WebTools(config(provider=provider, endpoint="http://old-brave.example/search", api_key="runtime-secret"))
+        monkeypatch.setattr(tools, "_request", request)
+        result = await tools.execute("web_search", {"query": "日本語 & robotics", "limit": 2})
+        url, options = requests[0]
+        assert url.startswith("https://html.duckduckgo.com/html/?")
+        assert urllib.parse.parse_qs(urllib.parse.urlsplit(url).query) == {"q": ["日本語 & robotics"]}
+        assert options == {"headers": {"Accept": "text/html"}, "trusted_search": False}
+        assert tools.api_key == "" and tools.provider == "duckduckgo"
+        assert result == {"query": "日本語 & robotics", "results": [
+            {"title": "調査結果", "url": "https://example.com/article", "snippet": "資料の抜粋"}], "untrusted": True}
+        assert "runtime-secret" not in json.dumps(requests + [result])
+        assert "old-env-secret" not in json.dumps(requests + [result])
+    asyncio.run(run())
+
+
+def test_duckduckgo_parses_nested_text_redirect_links_deduplicates_and_limits(monkeypatch):
+    async def run():
+        target = "https://example.com/article?literal=%2F&name=robot"
+        wrapped = "//duckduckgo.com/l/?uddg=" + urllib.parse.quote(target, safe="") + "&rut=ignored"
+        body = (ddg_result("https://ad.example/", classes="result web-result result--ad result--ad--small")
+                + ddg_result(wrapped, "研究 <b>成果</b> &amp; 資料", "日本語<br>抜粋<script>ignore()</script>")
+                + ddg_result(target, "duplicate")
+                + ddg_result("https://example.org/second", "Second", "Summary")
+                + ddg_result("https://example.net/third"))
+        tools = WebTools(config(provider="duckduckgo"))
+        async def request(url, **kwargs):
+            return body.encode(), "text/html; charset=utf-8", url
+        monkeypatch.setattr(tools, "_request", request)
+        rows = (await tools.execute("web_search", {"query": "robot", "limit": 2}))["results"]
+        assert rows == [
+            {"title": "研究 成果 & 資料", "url": target, "snippet": "日本語 抜粋"},
+            {"title": "Second", "url": "https://example.org/second", "snippet": "Summary"}]
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("href", [
+    "javascript:alert(1)", "file:///secret", "https://user:password@example.com/", "/relative",
+    "https://duckduckgo.com/l/?uddg=javascript%3Aalert%281%29", "https://duckduckgo.com/l/?rut=missing",
+    "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fa.example&uddg=https%3A%2F%2Fb.example",
+    "https://duckduckgo.com/y.js?ad=1", "https://duckduckgo.com/l/?uddg=https%253A%252F%252Fexample.com",
+    "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fy.js%3Fad%3D1",
+])
+def test_duckduckgo_invalid_targets_are_not_returned(href):
+    parser = module._DuckDuckGoHTML()
+    parser.feed(ddg_result(href) + ddg_result("https://safe.example/"))
+    parser.close()
+    assert [row["url"] for row in parser.rows(5)] == ["https://safe.example/"]
+
+
+def test_duckduckgo_never_unwraps_lookalike_host():
+    address = "https://duckduckgo.com.evil.example/l/?uddg=https%3A%2F%2Fexample.com"
+    assert module._duckduckgo_result_url(address) == address
+    target = "https://example.com/x?literal=%2F"
+    wrapped = "/l/?uddg=" + urllib.parse.quote(target, safe="")
+    assert module._duckduckgo_result_url(wrapped) == target
+
+
+@pytest.mark.parametrize("body, message", [
+    ('<form id="challenge-form"><p>Verify you are human</p></form>', "verification"),
+    (ddg_result() + '<form id="challenge-form"></form>', "verification"),
+    ('<html><p>Something went wrong</p></html>', "recognizable"),
+    ('<html><title>DuckDuckGo</title><form><input name="q"></form></html>', "recognizable"),
+    ('<script>' + ddg_result() + '</script>', "recognizable"),
+    (ddg_result()[:-6], "recognizable"),
+    ('<div class="no-results">No results found', "recognizable"),
+    (ddg_result("javascript:invalid") + '<div class="no-results"></div>', "recognizable"),
+])
+def test_duckduckgo_blocked_unknown_or_incomplete_html_is_not_empty_success(body, message):
+    parser = module._DuckDuckGoHTML()
+    parser.feed(body)
+    parser.close()
+    with pytest.raises(WebToolError, match=message):
+        parser.rows(5)
+
+
+def test_duckduckgo_explicit_no_results_and_result_text_limits():
+    empty = module._DuckDuckGoHTML()
+    empty.feed('<div class="no-results"><div class="no-results__message">No results found</div></div>')
+    empty.close()
+    assert empty.rows(5) == []
+    parser = module._DuckDuckGoHTML()
+    parser.feed(ddg_result(title="t" * 600, snippet="s" * 4000))
+    parser.close()
+    row = parser.rows(5)[0]
+    assert len(row["title"]) == 500 and len(row["snippet"]) == 3000
+
+
+def test_duckduckgo_bounds_html_depth_and_result_candidates():
+    parser = module._DuckDuckGoHTML()
+    with pytest.raises(WebToolError, match="nesting limit"):
+        parser.feed("<div>" * 257)
+    parser = module._DuckDuckGoHTML()
+    parser.feed(ddg_result("javascript:invalid") * 100 + ddg_result("https://outside-cap.example/"))
+    parser.close()
+    with pytest.raises(WebToolError, match="recognizable"):
+        parser.rows(5)
+
+
+@pytest.mark.parametrize("data, content_type, message", [
+    (b'{"results": []}', "application/json", "HTML"),
+    (b'<p>\xff</p>', "text/html; charset=utf-8", "decode"),
+])
+def test_duckduckgo_rejects_non_html_or_invalid_encoding(monkeypatch, data, content_type, message):
+    async def run():
+        tools = WebTools(config(provider="duckduckgo"))
+        async def request(url, **kwargs):
+            return data, content_type, url
+        monkeypatch.setattr(tools, "_request", request)
+        with pytest.raises(WebToolError, match=message):
+            await tools.execute("web_search", {"query": "x"})
+    asyncio.run(run())
+
+
+def test_duckduckgo_resolver_is_not_the_searxng_private_network_exception(monkeypatch):
+    async def run():
+        calls = []
         async def addresses(host, port):
-            return ["93.184.216.34"]
+            calls.append((host, port))
+            raise WebToolError("Only public web destinations are allowed")
         monkeypatch.setattr(module, "_public_addresses", addresses)
-        async with http_server(proxy) as proxy_url:
-            tools = WebTools(config(provider="brave", endpoint="http://brave.example/search", api_key="runtime-secret", proxy_url=proxy_url))
-            result = await tools.execute("web_search", {"query": "test"})
-        assert requests[0][1]["X-Subscription-Token"] == "runtime-secret"
-        assert "runtime-secret" not in requests[0][0] and "runtime-secret" not in json.dumps(result)
+        with pytest.raises(WebToolError, match="public"):
+            await WebTools(config(provider="duckduckgo")).execute("web_search", {"query": "x"})
+        assert calls == [("html.duckduckgo.com", 443)]
     asyncio.run(run())
 
 

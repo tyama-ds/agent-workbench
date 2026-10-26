@@ -90,15 +90,142 @@ def _clean_text(value: str, limit: int = 200000) -> str:
     return "".join(c for c in value if c in "\n\t" or (ord(c) >= 32 and not 127 <= ord(c) <= 159))[:limit]
 
 
+DUCKDUCKGO_ENDPOINT = "https://html.duckduckgo.com/html/"
+
+
+def _duckduckgo_result_url(href: str) -> str:
+    """Unwrap only DDG's own result links, without visiting their targets."""
+    if href.startswith(("//", "/l/?")):
+        href = urllib.parse.urljoin(DUCKDUCKGO_ENDPOINT, href)
+    parsed = _url(href)
+    if parsed.hostname in {"duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com"}:
+        if parsed.path != "/l/" or parsed.port not in {None, 80, 443}:
+            raise WebToolError("Not an external DuckDuckGo result")
+        destinations = urllib.parse.parse_qs(parsed.query).get("uddg", [])
+        if len(destinations) != 1:
+            raise WebToolError("Invalid DuckDuckGo result link")
+        # parse_qs performs the one required percent decode. Do not decode the
+        # destination again: percent escapes may belong to the target's URL.
+        href = destinations[0]
+        destination = _url(href)
+        if destination.hostname in {"duckduckgo.com", "www.duckduckgo.com", "html.duckduckgo.com"}:
+            raise WebToolError("Not an external DuckDuckGo result")
+    return href
+
+
+class _DuckDuckGoHTML(HTMLParser):
+    """Extract complete organic HTML results; never interpret page instructions."""
+    _void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack: list[str] = []
+        self.ignored_depth: int | None = None
+        self.result_depth: int | None = None
+        self.capture: tuple[str, int] | None = None
+        self.current: dict | None = None
+        self.results: list[dict] = []
+        self.no_results = False
+        self.no_results_depths: list[int] = []
+        self.challenge = False
+        self.candidates = 0
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        classes = set((attributes.get("class") or "").split())
+        depth = len(self.stack)
+        if depth >= 256:
+            raise WebToolError("DuckDuckGo HTML exceeds the nesting limit")
+        if tag not in self._void_tags:
+            self.stack.append(tag)
+        if self.ignored_depth is not None:
+            return
+        if tag == "form" and attributes.get("id") == "challenge-form":
+            self.challenge = True
+        if tag in {"script", "style", "noscript", "svg", "form"}:
+            self.ignored_depth = depth
+            return
+        if self.current is None:
+            if tag not in self._void_tags and classes & {"no-results", "no-results__message"}:
+                self.no_results_depths.append(depth)
+            if (tag == "div" and "result" in classes and classes & {"web-result", "results_links"}
+                    and not any(item.startswith("result--ad") for item in classes)):
+                self.candidates += 1
+                if self.candidates <= 100:
+                    self.current = {"url": "", "title": [], "snippet": []}
+                    self.result_depth = depth
+            return
+        if tag == "a" and "result__a" in classes and not self.current["url"]:
+            self.current["url"] = attributes.get("href") or ""
+            self.capture = ("title", depth)
+        elif "result__snippet" in classes:
+            self.capture = ("snippet", depth)
+        elif tag == "br" and self.capture:
+            self.current[self.capture[0]].append(" ")
+
+    def handle_endtag(self, tag):
+        if tag not in self.stack:
+            return
+        depth = len(self.stack) - 1 - self.stack[::-1].index(tag)
+        del self.stack[depth:]
+        if self.ignored_depth is not None:
+            if depth <= self.ignored_depth:
+                self.ignored_depth = None
+            return
+        if any(candidate >= depth for candidate in self.no_results_depths):
+            self.no_results = True
+            self.no_results_depths = [candidate for candidate in self.no_results_depths if candidate < depth]
+        if self.capture and depth <= self.capture[1]:
+            self.capture = None
+        if self.current is not None and depth <= self.result_depth:
+            self.results.append(self.current)
+            self.current = None
+            self.result_depth = None
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in self._void_tags:
+            self.handle_endtag(tag)
+
+    def handle_data(self, data):
+        if self.ignored_depth is None and self.current is not None and self.capture:
+            self.current[self.capture[0]].append(data)
+
+    def rows(self, limit: int) -> list[dict]:
+        if self.challenge:
+            raise WebToolError("DuckDuckGo returned a verification page; search was not completed")
+        rows, seen = [], set()
+        for entry in self.results:
+            try:
+                address = _duckduckgo_result_url(entry["url"])
+            except WebToolError:
+                continue
+            title = _clean_text(" ".join("".join(entry["title"]).split()), 500)
+            if not title or address in seen:
+                continue
+            seen.add(address)
+            rows.append({"title": title, "url": address,
+                         "snippet": _clean_text(" ".join("".join(entry["snippet"]).split()), 3000)})
+            if len(rows) >= limit:
+                break
+        if not rows and not (self.no_results and not self.candidates):
+            raise WebToolError("DuckDuckGo did not return recognizable search results; the response may be blocked or changed")
+        return rows
+
+
 class WebTools:
     def __init__(self, settings: dict):
         if not isinstance(settings, dict) or not isinstance(settings.get("search", {}), dict):
             raise WebToolError("Search configuration must be an object")
         config = settings.get("search", {})
         self.enabled = config.get("enabled", False) is True
-        self.provider = config.get("provider", "searxng")
-        self.endpoint = config.get("endpoint", "")
-        self.api_key = config.get("api_key", "")
+        self.provider = config.get("provider", "duckduckgo")
+        # Settings normally migrates old Brave configurations. Also protect
+        # callers that construct WebTools directly from a saved legacy object.
+        if self.provider == "brave":
+            self.provider = "duckduckgo"
+        self.endpoint = DUCKDUCKGO_ENDPOINT if self.provider == "duckduckgo" else config.get("endpoint", "")
+        self.api_key = ""  # Search never receives runtime or environment secrets.
         self.proxy = config.get("proxy_url") or None
         self.timeout = config.get("timeout_seconds", 20)
         self.max_bytes = config.get("max_response_bytes", 1024 * 1024)
@@ -110,8 +237,8 @@ class WebTools:
             proxy = _url(self.proxy)
             if proxy.path not in {"", "/"} or proxy.query:
                 raise WebToolError("Proxy must be an HTTP(S) server origin")
-        if self.enabled and self.provider not in {"searxng", "brave"}:
-            raise WebToolError("Search provider must be searxng or brave")
+        if self.enabled and self.provider not in {"searxng", "duckduckgo"}:
+            raise WebToolError("Search provider must be duckduckgo or searxng")
         if self.enabled and self.endpoint:
             _url(self.endpoint)
 
@@ -161,10 +288,9 @@ class WebTools:
                             next_parsed = _url(next_url)
                             if parsed.scheme == "https" and next_parsed.scheme != "https":
                                 raise WebToolError("HTTPS downgrade redirects are forbidden")
-                            # Only configured search receives credentials. A
-                            # redirect cannot transfer them to another origin.
+                            # Keep configured search requests on their origin.
                             if headers and origin != (next_parsed.scheme, next_parsed.hostname, next_parsed.port or (443 if next_parsed.scheme == "https" else 80)):
-                                raise WebToolError("Search credentials cannot follow a cross-origin redirect")
+                                raise WebToolError("Search requests cannot follow a cross-origin redirect")
                             url = next_url
                             continue
                         if response.status != 200:
@@ -213,26 +339,33 @@ class WebTools:
             raise WebToolError("Search query must contain 1 to 1000 ordinary characters")
         if type(limit) is not int or not 1 <= limit <= 10:
             raise WebToolError("Search limit must be between 1 and 10")
-        endpoint = self.endpoint or ("https://api.search.brave.com/res/v1/web/search" if self.provider == "brave" else "")
+        endpoint = self.endpoint
         if not endpoint:
             raise WebToolError("A SearXNG JSON search endpoint must be configured")
         parsed = _url(endpoint)
         parameters = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         parameters = [(key, value) for key, value in parameters if key not in {"q", "format", "count"}]
         parameters += [("q", query)]
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "text/html" if self.provider == "duckduckgo" else "application/json"}
         if self.provider == "searxng":
             parameters.append(("format", "json"))
-        else:
-            if not isinstance(self.api_key, str) or not self.api_key or any(ord(c) < 32 for c in self.api_key):
-                raise WebToolError("Brave search requires a runtime API key")
-            parameters.append(("count", str(limit)))
-            headers["X-Subscription-Token"] = self.api_key
         request_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(parameters), ""))
         data, content_type, _ = await self._request(request_url, headers=headers, trusted_search=self.provider == "searxng")
+        if self.provider == "duckduckgo":
+            mime = content_type.split(";", 1)[0].strip().lower()
+            if mime not in {"text/html", "application/xhtml+xml"}:
+                raise WebToolError("DuckDuckGo did not return HTML search results")
+            try:
+                text, _ = decode_web_text(data, mime, content_type)
+            except TextDecodingError as exc:
+                raise WebToolError(str(exc)) from exc
+            parser = _DuckDuckGoHTML()
+            parser.feed(text)
+            parser.close()
+            return {"query": query, "results": parser.rows(limit), "untrusted": True}
         try:
             payload = json.loads(data)
-            source = payload.get("results", []) if self.provider == "searxng" else payload.get("web", {}).get("results", [])
+            source = payload.get("results", [])
             if not isinstance(source, list):
                 raise ValueError()
         except (ValueError, TypeError, AttributeError) as exc:

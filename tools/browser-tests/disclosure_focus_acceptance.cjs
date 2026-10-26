@@ -14,6 +14,7 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
     return {draft:input.value,start:input.selectionStart,end:input.selectionEnd,direction:input.selectionDirection,
       expanded:[...log.querySelectorAll('details[open]')].map(detail=>detail.dataset.logId),
       scroll:log.scrollTop,x:scrollX,y:scrollY,resultsOpen:document.querySelector('#resultsPanel').open,
+      briefOpen:document.querySelector('#inspectorBrief').open,cockpitView:document.querySelector('.app-shell').dataset.cockpitView,
       focusId:active.id,focusKey:active.dataset.focusKey,
       focusLog:active.localName==='summary'?active.parentElement.dataset.logId:null};
   });
@@ -24,7 +25,9 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
   const logs=owner=>Array.from({length:lastId-firstId+1},(_,index)=>({
     id:firstId+index,kind:'assistant',at:1791169300+index,
     thinking:`[SYNTHETIC] ${owner} の思考 ${index+1}`,
-    text:index===lastId-firstId?'[SYNTHETIC] 最後のログ。':
+    // A final disclosure without trailing answer text allows its summary and
+    // the true bottom-follow threshold to coexist in the narrow reading pane.
+    text:index===lastId-firstId?'':
       `[SYNTHETIC] Disclosure ${owner} log ${index+1}\n読み進めている位置と下書きを保持します。\nポーリングで新しいログが届きます。`,
   }));
   const appended=(id,text='新しく届いたログ。')=>({id,kind:'assistant',text:'[SYNTHETIC] '+text,at:1791169400+id});
@@ -103,11 +106,19 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
     if(before.resultsOpen){await page.locator('#resultsPanel > summary').focus();await page.keyboard.press('Enter');}
     for(const [name,width,height] of [['desktop',1366,768],['narrow',390,844]]) {
       await page.setViewportSize({width,height});
+      if(width<=1100&&await page.locator('#inspectorView').getAttribute('aria-pressed')!=='true')
+        await page.locator('#inspectorView').click();
       await poll(()=>{pm.logs=logs('PM');});
       const draft=`[SYNTHETIC] ${name} 未送信の下書き。\n選択範囲も保持します。`;
       await page.locator('#messageInput').fill(draft);
       // Enter the first native summary using Tab, not a synthetic click handler.
       await page.locator('#conversationHeading').focus();await page.keyboard.press('Tab');
+      assert.equal(await focused(page.locator('#inspectorBrief > summary')),true,'The inspector brief is the first native disclosure after the heading');
+      await page.keyboard.press('Tab');
+      if(await page.locator('#inspectorBrief').evaluate(element=>element.open)){
+        assert.equal(await focused(page.locator('#inspectAgentMail')),true,'The inspector communication action remains in native Tab order');
+        await page.keyboard.press('Tab');
+      }
       if(await page.locator('#humanQuestion').isVisible()){
         assert.equal(await focused(page.locator('#humanQuestion')),true,'The selected human question is a native keyboard reading region');
         await page.keyboard.press('Tab');
@@ -142,11 +153,19 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
 
       // Even within the normal <=70px bottom-follow threshold, a focused summary
       // must not be scrolled away when a large new arrival replaces the history.
+      // The current narrow inspector has an independently scrolling log. Fold
+      // its optional brief via the native control to create the reading area.
+      if(name==='narrow'&&await page.locator('#inspectorBrief').evaluate(element=>element.open)){
+        await page.locator('#inspectorBrief > summary').focus();await page.keyboard.press('Enter');
+        assert.equal(await page.locator('#inspectorBrief').evaluate(element=>element.open),false);
+      }
       await poll(()=>{pm.logs=logs('PM');});
       await summary(lastId).focus();await keyboardToggle(lastId,'Enter',true,name+' last disclosure');
       await page.locator('#conversationLog').evaluate(element=>{element.scrollTop=element.scrollHeight;});
       await summary(lastId).evaluate(element=>element.scrollIntoView({block:'nearest',inline:'nearest'}));await paint();
-      const nearBottom=await scroll();assert(nearBottom.bottom<=70,'Focused-summary case exercises the bottom-follow threshold');
+      const nearBottom=await scroll();
+      (report.disclosureReadingPositions||=[]).push({name,...nearBottom});
+      assert(nearBottom.bottom<=70,'Focused-summary case exercises the bottom-follow threshold');
       await visible(summary(lastId),name+' before near-bottom arrival');
       await poll(()=>pm.logs.push(appended(7202,'大きな新着ログ。\n'.repeat(40))));
       assert.equal(await focused(summary(lastId)),true);assert.equal(await details(lastId).evaluate(element=>element.open),true);
@@ -171,8 +190,8 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
       await capture(name+'-eviction',summary(fallbackId));
       if(name==='narrow'){
         await summary(fallbackId).evaluate(element=>element.scrollIntoView({block:'start',inline:'nearest'}));await paint();
-        assert(await page.locator('#conversationHeading').evaluate(element=>element.getBoundingClientRect().top<0),
-          'Narrow final eviction starts with the existing heading above the viewport');
+        assert.equal(await focused(summary(fallbackId)),true,'Narrow final eviction starts with the surviving log disclosure owning focus');
+        assert.equal(await page.evaluate(()=>scrollY),0,'The narrow cockpit keeps page-level scroll fixed');
       }
       await poll(()=>{pm.logs=[appended(7203,'思考の詳細を持たない長い履歴。\n'.repeat(40))];});
       assert.equal(await page.locator('#conversationLog summary').count(),0);
@@ -255,6 +274,11 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
     // disclosure, draft, viewport and reading position rather than test history.
     await poll(()=>Object.assign(fixture,structuredClone(original)));
     await page.setViewportSize(viewport);
+    if(await page.locator('#inspectorBrief').evaluate(element=>element.open)!==before.briefOpen){
+      await page.locator('#inspectorBrief > summary').focus();await page.keyboard.press('Enter');
+    }
+    if(await page.locator('.app-shell').getAttribute('data-cockpit-view')!==before.cockpitView)
+      await page.locator('#'+before.cockpitView+'View').click();
     for(const detail of await page.locator('#conversationLog details').all()){
       const id=await detail.getAttribute('data-log-id'),open=await detail.evaluate(element=>element.open);
       if(open!==before.expanded.includes(id)){await detail.locator(':scope > summary').focus();await page.keyboard.press('Enter');}

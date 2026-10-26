@@ -14,13 +14,14 @@ from workbench.server import APP_KEY
 
 
 MODEL_KEY = 'SYNTHETIC-config-model-key'
-SEARCH_KEY = 'SYNTHETIC-config-search-key'
+AUX_KEY = 'SYNTHETIC-config-auxiliary-model-key'
 NEXT_KEY = 'SYNTHETIC-config-next-key'
 NEXT_ENV = 'SYNTHETIC_CONFIG_NEXT_ENV'
 
 
 @pytest.fixture(autouse=True)
 def synthetic_credentials_only(monkeypatch):
+    monkeypatch.delenv('BRAVE_SEARCH_API_KEY', raising=False)
     for profile in [*DEFAULT['providers'], DEFAULT['search']]:
         if profile['api_key_env']:
             monkeypatch.delenv(profile['api_key_env'], raising=False)
@@ -44,11 +45,15 @@ async def configured(client, auth, app):
     config = public['config']
     config['providers'] = [dict(config['providers'][0], id='model', kind='openai', model='fixture',
                                 base_url='https://saved.example/v1', api_key_env='', proxy_url='')]
+    config['providers'].append(dict(config['providers'][0], id='auxiliary',
+                                    base_url='https://auxiliary.example/v1'))
     config['search'].update(provider='brave', endpoint='https://saved.example/search', api_key_env='', enabled=False)
     response = await put_config(client, auth, public['config_revision'], config)
     assert response.status == 200
     public = await response.json()
-    for ident, key in [('model', MODEL_KEY), ('search', SEARCH_KEY)]:
+    assert public['config']['search']['provider'] == 'duckduckgo'
+    assert public['secret_status']['search'] is False
+    for ident, key in [('model', MODEL_KEY), ('auxiliary', AUX_KEY)]:
         response = await client.post(auth.origin + '/api/secrets',
                                      json={'config_revision': public['config_revision'], 'id': ident, 'key': key},
                                      headers={'Origin': auth.origin})
@@ -62,6 +67,7 @@ def saved_state(engine):
         'config': copy.deepcopy(engine.settings.value),
         'revision': engine.settings.revision,
         'secrets': dict(engine.settings.secrets),
+        'retired_search_env_names': set(engine.settings._search_redaction_env_names),
         'redaction': copy.deepcopy(vars(engine._redaction)),
         'files': {path.name: path.read_bytes() for path in engine.settings.directory.iterdir()},
     }
@@ -73,7 +79,7 @@ async def assert_conflict(response):
     assert result['ok'] is False and result['code'] == 'settings_changed'
     assert set(result) == {'ok', 'code', 'error'}
     assert '読み直' in result['error']
-    assert all(key not in json.dumps(result) for key in [MODEL_KEY, SEARCH_KEY, NEXT_KEY])
+    assert all(key not in json.dumps(result) for key in [MODEL_KEY, AUX_KEY, NEXT_KEY])
 
 
 async def test_revision_in_get_and_success_response_advances_even_on_identical_save(tmp_path):
@@ -111,7 +117,7 @@ async def test_two_clients_stale_save_cannot_overwrite_newer_config_or_credentia
             assert response.status == 200
             winner = await response.json()
             assert winner['config_revision'] == original['config_revision'] + 1
-            assert engine.settings.secrets == {'model': MODEL_KEY, 'search': SEARCH_KEY}
+            assert engine.settings.secrets == {'model': MODEL_KEY, 'auxiliary': AUX_KEY}
 
             monkeypatch.setenv(NEXT_ENV, NEXT_KEY)
             stale['config']['providers'][0].update(base_url='https://stale.example/v1', api_key_env=NEXT_ENV)
@@ -205,7 +211,7 @@ async def test_simultaneous_saves_of_one_revision_have_exactly_one_winner(tmp_pa
             assert public == await read_config(first, auth)
             assert public['config'] == configs[winner] == engine.settings.value
             assert public['config_revision'] == original['config_revision'] + 1
-            assert engine.settings.secrets == {'model': MODEL_KEY, 'search': SEARCH_KEY}
+            assert engine.settings.secrets == {'model': MODEL_KEY, 'auxiliary': AUX_KEY}
             assert engine._redaction.value_count == 2
             assert json.loads(engine.settings.path.read_bytes()) == configs[winner]
 
@@ -300,7 +306,7 @@ async def test_save_failure_is_atomic_and_same_revision_remains_retryable(tmp_pa
             changed['limits']['max_model_calls'] = 0
         elif failure == 'redaction_capacity':
             engine._redaction = SecretRedactor(max_values=2)
-            engine._redaction.remember([MODEL_KEY, SEARCH_KEY])
+            engine._redaction.remember([MODEL_KEY, AUX_KEY])
         before = saved_state(engine)
         with monkeypatch.context() as patch:
             if failure == 'disk':
@@ -313,23 +319,23 @@ async def test_save_failure_is_atomic_and_same_revision_remains_retryable(tmp_pa
         assert result['ok'] is False
         if failure == 'redaction_capacity':
             assert result['code'] == 'redaction_capacity'
-        assert all(key not in json.dumps(result) for key in [MODEL_KEY, SEARCH_KEY, NEXT_KEY])
+        assert all(key not in json.dumps(result) for key in [MODEL_KEY, AUX_KEY, NEXT_KEY])
         assert saved_state(engine) == before
         assert engine._redaction.redact(NEXT_KEY) == NEXT_KEY
-        assert engine._redaction.redact(MODEL_KEY + SEARCH_KEY) == '[redacted][redacted]'
+        assert engine._redaction.redact(MODEL_KEY + AUX_KEY) == '[redacted][redacted]'
 
         # A failed attempt consumes no revision and leaves the same ownership usable.
         if failure == 'validation':
             changed['limits']['max_model_calls'] = public['config']['limits']['max_model_calls']
         elif failure == 'redaction_capacity':
             engine._redaction = SecretRedactor()
-            engine._redaction.remember([MODEL_KEY, SEARCH_KEY])
+            engine._redaction.remember([MODEL_KEY, AUX_KEY])
         response = await put_config(client, auth, public['config_revision'], changed)
         assert response.status == 200
         saved = await response.json()
         assert saved['config_revision'] == public['config_revision'] + 1
         assert saved['config'] == changed == engine.settings.value
-        assert engine.settings.secrets == {'search': SEARCH_KEY}
+        assert engine.settings.secrets == {'auxiliary': AUX_KEY}
         assert engine._redaction.redact(NEXT_KEY) == '[redacted]'
         assert 'config_revision' not in json.loads(engine.settings.path.read_bytes())
         assert list(engine.settings.directory.iterdir()) == [engine.settings.path]

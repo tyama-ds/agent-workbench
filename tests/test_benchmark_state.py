@@ -1,5 +1,6 @@
 """The state benchmark is bounded, reproducible and incapable of model work."""
 import json
+import os
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
@@ -154,6 +155,33 @@ async def test_registry_benchmark_uses_real_endpoints_without_operator_credentia
     assert report['views']['full']['body_bytes'] > report['views']['selected']['body_bytes'] > 0
     assert report['views']['selected']['agents_with_detail'] == 1
     assert not any(key in json.dumps(report) for key in registry_keys(mode))
+    for name in ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'BRAVE_SEARCH_API_KEY'):
+        assert os.environ[name] == 'operator-key-must-not-be-read-' + name
+    for measurement in report['views'].values():
+        assert measurement['redaction_revision'] == len(registry_keys(mode))
+        revision_field_bytes = len(json.dumps({'redaction_revision': measurement['redaction_revision']}).encode())
+        assert measurement['body_bytes'] == measurement['body_without_redaction_revision_bytes'] + revision_field_bytes
+
+
+@pytest.mark.parametrize('environment_present', [False, True])
+async def test_benchmark_restores_legacy_environment_on_failure(tmp_path, monkeypatch, environment_present):
+    name = 'BRAVE_SEARCH_API_KEY'
+    if environment_present:
+        monkeypatch.setenv(name, 'synthetic-retired-operator-value')
+    else:
+        monkeypatch.delenv(name, raising=False)
+    before = dict(os.environ)
+    original_clock = engine_module.time
+
+    async def fail(*args, **kwargs):
+        assert os.environ[name] == ''
+        raise RuntimeError('synthetic benchmark failure')
+
+    monkeypatch.setattr(benchmark_module, '_benchmark_fixture', fail)
+    with pytest.raises(RuntimeError, match='synthetic benchmark failure'):
+        await benchmark_fixture(tmp_path, FIXTURES[0])
+    assert dict(os.environ) == before
+    assert engine_module.time is original_clock
 
 
 def test_unknown_registry_fixture_mode_rejected():
@@ -187,4 +215,11 @@ def test_cli_json_survives_legacy_windows_stdout_encoding():
     assert [item['redaction_registry']['mode'] for item in report['redaction_registry_results']] == list(REDACTION_MODES)
     normal, near = report['redaction_registry_results']
     for view in ('full', 'selected'):
-        assert normal['views'][view]['body_bytes'] == near['views'][view]['body_bytes']
+        left, right = normal['views'][view], near['views'][view]
+        assert left['redaction_revision'] == len(registry_keys('normal'))
+        assert right['redaction_revision'] == len(registry_keys('near_capacity'))
+        assert left['body_without_redaction_revision_bytes'] == right['body_without_redaction_revision_bytes']
+        assert left['body_without_redaction_revision_sha256'] == right['body_without_redaction_revision_sha256']
+        for measurement in (left, right):
+            revision_field_bytes = len(json.dumps({'redaction_revision': measurement['redaction_revision']}).encode())
+            assert measurement['body_bytes'] == measurement['body_without_redaction_revision_bytes'] + revision_field_bytes

@@ -227,7 +227,8 @@ async def test_managed_bridge_keeps_queue_timeout_and_conversation_but_no_gpu_or
             admissions.append(config)
             yield {}
 
-    client = ProviderClient(Gate())
+    gate = Gate()
+    client = ProviderClient(gate, copilot_gate=gate)
     async def post(endpoint, body, headers, timeout, proxy):
         requests.append((endpoint, body, headers, timeout, proxy))
         raise ProviderError('Busy', status=503, retryable=True)

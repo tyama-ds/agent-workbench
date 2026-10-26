@@ -20,8 +20,8 @@ from pathlib import Path
 
 from aiohttp import ClientSession, ClientTimeout, web
 
-from .config import Settings, ROOT, COPILOT_PROFILE_ID, text
-from .engine import Engine
+from .config import Settings, ROOT, COPILOT_PROFILE_ID, SEARCH_KEY_UNSUPPORTED, preview_settings_import, text
+from .engine import Engine, WorkBoardError
 from .redaction import RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .runtime_paths import FROZEN
 
@@ -79,7 +79,7 @@ class BrowserAuth:
                     raise web.HTTPForbidden(text='Same-origin request required')
                 if request.content_type != 'application/json':
                     raise web.HTTPUnsupportedMediaType(text='JSON required')
-            public = request.path in {'/', '/index.html', '/app.js', '/styles.css', '/api/bootstrap'}
+            public = request.path in {'/', '/index.html', '/app.js', '/styles.css', '/agent-workbench.ico', '/api/bootstrap'}
             if not public and not hmac.compare_digest(request.cookies.get(self.cookie_name, '').encode(), self.session.encode()):
                 raise web.HTTPUnauthorized(text='起動ショートカットから認証してください')
             response = await handler(request)
@@ -88,6 +88,8 @@ class BrowserAuth:
         except RedactionCapacityError:
             response = web.json_response({'ok': False, 'error': REDACTION_CAPACITY_MESSAGE,
                                           'code': 'redaction_capacity'}, status=409)
+        except WorkBoardError as exc:
+            response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
         except (ValueError, KeyError, TypeError) as exc:
             try:
                 message = request.app[APP_KEY].redact(str(exc))[:1000]
@@ -139,7 +141,7 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
 
     async def static(request):
         name = request.match_info.get('name', 'index.html')
-        if name not in {'index.html', 'app.js', 'styles.css'}:
+        if name not in {'index.html', 'app.js', 'styles.css', 'agent-workbench.ico'}:
             raise web.HTTPNotFound()
         return web.FileResponse(STATIC / name)
 
@@ -158,6 +160,37 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
             engine.schedule_copilot_sync()
         return web.json_response(engine.public_config())
 
+    async def config_export(request):
+        return web.json_response(settings.export())
+
+    async def config_import_preview(request):
+        try:
+            value = await body(request)
+        except (ValueError, TypeError):
+            return web.json_response({'ok': False, 'error': '設定ファイルの JSON object が必要です。'}, status=400)
+        revision = value.get('config_revision')
+        if type(revision) is not int or revision != settings.revision:
+            return web.json_response({'ok': False, 'code': 'settings_changed',
+                'error': '保存済み設定を読み直してから設定ファイルを読み込んでください。'}, status=409)
+        if engine.active():
+            raise web.HTTPConflict(text='設定の読み込みは実行中のチームを停止してから行ってください')
+        # Ownership is checked after body receipt. No await or mutation occurs
+        # between that check and returning the validated, unsaved draft.
+        try:
+            if set(value) != {'config_revision', 'backup'}:
+                raise ValueError('Unexpected import fields')
+            draft, warnings = preview_settings_import(value['backup'])
+        except (ValueError, KeyError, TypeError):
+            # Do not echo untrusted file contents or remember imported secrets
+            # in the redactor, even when validation rejects the backup.
+            return web.json_response({'ok': False,
+                'error': '設定ファイルの形式・バージョン・値を確認してください。秘密情報を含む設定は読み込めません。'}, status=400)
+        return web.json_response({'config': draft, 'config_revision': settings.revision, 'warnings': warnings})
+
+    def recovery_required():
+        return web.json_response({'ok': False, 'code': 'settings_recovery_required',
+            'error': '保存済み設定のパスを確認し、現在のPCに合わせて保存してから再実行してください。'}, status=409)
+
     async def copilot_status(request):
         return web.json_response(engine.copilot_status())
 
@@ -169,6 +202,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
                 'error': '保存済み設定を読み直してから再接続してください。'}, status=409)
         if engine.active():
             raise web.HTTPConflict(text='再接続は実行中のチームを停止してから行ってください')
+        if settings.restore_warnings:
+            return recovery_required()
         if settings.value['copilot_agent']['enabled'] is not True:
             return web.json_response({'ok': False, 'code': 'copilot_agent_disabled',
                 'error': 'Copilot agent モードを有効にして保存してください。'}, status=409)
@@ -191,8 +226,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         key = text(value.get('key'), 'key', 4096)
         if any(ord(c) < 32 or ord(c) == 127 for c in key):
             raise ValueError('API キーに制御文字は使用できません')
-        if key and ident == 'search' and (settings.value['search']['provider'] != 'brave' or not settings.value['search']['endpoint']):
-            raise ValueError('検索キーは保存済みの接続先を持つ Brave Search だけで使用できます。SearXNG とページ取得では使用しません。')
+        if key and ident == 'search':
+            raise ValueError(SEARCH_KEY_UNSUPPORTED)
         # No await between saved-target validation and the atomic mutation.
         # Clearing an old value also requires the same revision precondition.
         engine.set_secret(ident, key)
@@ -220,8 +255,30 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         value = await body(request)
         return web.json_response(await engine.human_message(request.match_info['id'], value.get('text')))
 
+    async def work_board(request):
+        run_id = request.match_info['id']
+        if request.method == 'GET':
+            if set(request.query) - {'after_seq', 'limit'} or any(len(request.query.getall(key)) != 1 for key in request.query):
+                raise ValueError('掲示板の取得条件が不正です')
+            values = {}
+            for key, default in (('after_seq', '0'), ('limit', '20')):
+                raw = request.query.get(key, default)
+                if re.fullmatch(r'[0-9]{1,3}', raw) is None:
+                    raise ValueError('掲示板の取得条件は整数で指定してください')
+                values[key] = int(raw)
+            return web.json_response(engine.read_work_board(run_id, **values))
+        value = await body(request)
+        if set(value) - {'body', 'reply_to', 'client_post_id'} or not {'body', 'client_post_id'} <= set(value):
+            raise ValueError('掲示板の投稿形式が不正です。投稿者の指定はできません')
+        # Actual human session, current run and idempotency are checked after
+        # receipt; no await separates the validation/commit from this response.
+        return web.json_response(engine.post_work_board(run_id, value['body'],
+            reply_to=value.get('reply_to'), client_post_id=value['client_post_id']))
+
     async def provider_test(request):
         value = await body(request)
+        if settings.restore_warnings:
+            return recovery_required()
         profile = next((p for p in engine.public_config()['effective_providers']
                         if p['id'] == value.get('provider_id')), None)
         if profile is None:
@@ -243,6 +300,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_post('/api/bootstrap', auth.bootstrap)
     app.router.add_get('/api/config', config)
     app.router.add_put('/api/config', config)
+    app.router.add_get('/api/config/export', config_export)
+    app.router.add_post('/api/config/import-preview', config_import_preview)
     app.router.add_get('/api/copilot-agent-status', copilot_status)
     app.router.add_post('/api/copilot-agent-start', copilot_start)
     app.router.add_post('/api/secrets', secret)
@@ -251,6 +310,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_post('/api/run-preflight', preflight)
     app.router.add_post('/api/runs/{id}/stop', stop)
     app.router.add_post('/api/agents/{id}/message', message)
+    app.router.add_get('/api/runs/{id}/work-board', work_board)
+    app.router.add_post('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/provider-test', provider_test)
     app.router.add_get('/{name}', static)
     return app

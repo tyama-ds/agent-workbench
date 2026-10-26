@@ -7,11 +7,19 @@ import pytest
 
 from test_config_server import serving, bootstrap
 from test_engine import ScriptClient, reply, settled
+from workbench.config import DEFAULT
 from workbench.server import APP_KEY
 from workbench.redaction import SecretRedactor, RedactionCapacityError
 
 OLD = 'SYNTHETIC-recovery-old'
 NEW = 'SYNTHETIC-recovery-new'
+
+
+@pytest.fixture(autouse=True)
+def synthetic_credentials_only(monkeypatch):
+    for name in {'BRAVE_SEARCH_API_KEY', *(profile['api_key_env'] for profile in DEFAULT['providers'])}:
+        if name:
+            monkeypatch.delenv(name, raising=False)
 
 
 async def setup(auth, app, client):
@@ -24,7 +32,10 @@ async def setup(auth, app, client):
     config['search'].update(provider='brave', endpoint='https://saved.example/search', api_key_env='', enabled=False)
     response = await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)
     assert response.status == 200
-    return engine, config, headers, (await response.json())['config_revision']
+    public = await response.json()
+    assert public['config']['search']['provider'] == 'duckduckgo'
+    assert public['secret_status']['search'] is False
+    return engine, public['config'], headers, public['config_revision']
 
 
 async def set_key(client, auth, headers, revision, ident='model', key=NEW):
@@ -33,16 +44,17 @@ async def set_key(client, auth, headers, revision, ident='model', key=NEW):
 
 
 @pytest.mark.parametrize('revision', [None, True, False, -1, '1', 1.0, [], {}])
-async def test_invalid_revision_never_mutates_secret_or_masks(tmp_path, revision):
+@pytest.mark.parametrize('ident', ['model', 'search'])
+async def test_invalid_revision_never_mutates_secret_or_masks(tmp_path, revision, ident):
     async with serving(tmp_path) as (auth, app, client):
         engine, _, headers, _ = await setup(auth, app, client)
         before = (dict(engine.settings.secrets), engine._redaction.value_count)
-        response = await set_key(client, auth, headers, revision)
+        response = await set_key(client, auth, headers, revision, ident=ident)
         assert response.status == 409
         assert (await response.json())['code'] == 'settings_changed'
         assert (engine.settings.secrets, engine._redaction.value_count) == before
         assert NEW not in await response.text()
-        response = await client.post(auth.origin + '/api/secrets', json={'id': 'model', 'key': NEW}, headers=headers)
+        response = await client.post(auth.origin + '/api/secrets', json={'id': ident, 'key': NEW}, headers=headers)
         assert response.status == 409  # No unguarded legacy path.
 
 
@@ -92,20 +104,38 @@ async def test_revision_is_checked_after_request_body_arrives(tmp_path):
         assert engine.settings.secrets == {} and engine._redaction.value_count == 0
 
 
-async def test_search_destination_and_provider_namespaces_are_separate(tmp_path):
+async def test_keyless_search_rejects_new_keys_and_clears_retired_keys_without_touching_provider(tmp_path):
     async with serving(tmp_path) as (auth, app, client):
         engine, config, headers, revision = await setup(auth, app, client)
         assert (await set_key(client, auth, headers, revision, key=OLD)).status == 200
-        response = await set_key(client, auth, headers, revision, ident='search')
-        assert await response.json() == {'ok': True, 'id': 'search', 'config_revision': revision, 'configured': True}
-        assert engine.settings.secrets == {'model': OLD, 'search': NEW}
-        for provider, endpoint in [('searxng', 'https://saved.example/search'), ('brave', '')]:
+        for provider, endpoint in [('duckduckgo', ''), ('searxng', 'https://saved.example/search'),
+                                   ('brave', 'https://saved.example/legacy-search')]:
             config['search'].update(provider=provider, endpoint=endpoint)
             saved = await client.put(auth.origin + '/api/config', json={'config_revision': engine.settings.revision, 'config': config}, headers=headers)
-            revision = (await saved.json())['config_revision']
+            assert saved.status == 200
+            public = await saved.json()
+            revision = public['config_revision']
+            assert public['config']['search']['provider'] == ('duckduckgo' if provider == 'brave' else provider)
+            assert public['secret_status']['search'] is False
+            before = (dict(engine.settings.secrets), engine._redaction.value_count, engine.settings.path.read_bytes())
             response = await set_key(client, auth, headers, revision, ident='search')
             assert response.status == 400 and NEW not in await response.text()
+            assert (engine.settings.secrets, engine._redaction.value_count, engine.settings.path.read_bytes()) == before
             assert engine.settings.secrets == {'model': OLD}
+
+        # Simulate a retired in-memory value, not an accepted new search credential.
+        engine.settings.secrets['search'] = NEW
+        assert engine.settings.public()['secret_status']['search'] is False
+        assert engine.redact(NEW) == '[redacted]'
+        before = (dict(engine.settings.secrets), engine._redaction.value_count, engine.settings.path.read_bytes())
+        stale_clear = await set_key(client, auth, headers, revision - 1, ident='search', key='')
+        assert stale_clear.status == 409 and (await stale_clear.json())['code'] == 'settings_changed'
+        assert (engine.settings.secrets, engine._redaction.value_count, engine.settings.path.read_bytes()) == before
+        cleared = await set_key(client, auth, headers, revision, ident='search', key='')
+        assert cleared.status == 200
+        assert await cleared.json() == {'ok': True, 'id': 'search', 'config_revision': revision, 'configured': False}
+        assert engine.settings.secrets == {'model': OLD}
+        assert engine.redact(OLD + NEW) == '[redacted][redacted]'
         assert OLD not in engine.settings.path.read_text(encoding='utf-8')
         assert NEW not in engine.settings.path.read_text(encoding='utf-8')
 

@@ -78,7 +78,8 @@ def test_examples_are_native_optional_static_help_without_actions():
         'サブフォルダー', '文章の起案だけ', '成果・保存記録', 'ファイル削除はできません'))
     assert all(text in sections[2]['text'] for text in ('既存の python.exe', '明示した入力', '明示した出力',
         'ネットワーク接続は既定でオフ', '設定で許可すると直接通信できます', 'シェル・子プロセスの起動はできません', '同梱', '自動インストールは行いません'))
-    assert all(text in sections[3]['text'] for text in ('Web を有効', '検索サービスの接続先と必要なキー', '検索とページ取得の利用状態', '公開 HTTP(S) テキスト', 'ログインや JavaScript の実行はできません'))
+    assert all(text in sections[3]['text'] for text in ('Web を有効', 'DuckDuckGo は API キー不要', 'SearXNG を使う場合は検索サーバーの URL', '検索とページ取得の利用状態', '公開 HTTP(S) テキスト', 'ログインや JavaScript の実行はできません'))
+    assert '検索サービスの接続先と必要なキー' not in sections[3]['text']
     assert all(text in sections[4]['text'] for text in ('Selenium ブラウザー操作', 'WebDriver', 'ライブラリ',
         'Python の実行ファイル', 'ネットワーク接続の許可', '通常の Python スクリプト実行を有効にする必要はありません',
         '画面なしで毎回起動', 'フォルダー隔離は適用されません', '任意の JavaScript 実行', 'アップロード・ダウンロードはできません'))

@@ -15,7 +15,7 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       search:document.querySelector('#agentSearch').value,questions:document.querySelector('#needsYou').getAttribute('aria-pressed')==='true',
       task:document.querySelector('#taskInput').value,expanded:[...log.querySelectorAll('details[open]')].map(node=>node.dataset.logId),
       taskOpen:document.querySelector('#taskDialog').open,settingsOpen:document.querySelector('#settingsDialog').open,
-      resultsOpen:document.querySelector('#resultsPanel').open,scroll:log.scrollTop,x:scrollX,y:scrollY,
+      resultsOpen:document.querySelector('#resultsPanel').open,cockpitView:document.querySelector('.app-shell').dataset.cockpitView,scroll:log.scrollTop,x:scrollX,y:scrollY,
       railScroll:Object.fromEntries(['agentCards','runList'].map(id=>{const node=document.getElementById(id);return [id,{top:node.scrollTop,left:node.scrollLeft}];})),
       focusId:active.id,focusKey:active.dataset.focusKey,focusLog:active.localName==='summary'?active.parentElement.dataset.logId:null,
       local:storage(localStorage),session:storage(sessionStorage)};
@@ -81,6 +81,8 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
     assert.equal(await page.locator('#needsYou').getAttribute('aria-pressed'),String(questions));
   };
   const select=async agent=>{
+    if(page.viewportSize().width<=1100&&await page.locator('#inspectorView').getAttribute('aria-pressed')!=='true')
+      await page.locator('#inspectorView').click();
     if((await owner()).run!==agent.run_id)await runLink(agent.run_id).click();
     if((await owner()).agent!==agent.id)await page.locator(`#agentTabs [data-focus-key="tab:${agent.id}"]`).click();
     await page.locator('#conversationLog[aria-busy="false"]').waitFor();await paint();
@@ -417,6 +419,8 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       await detail.locator(':scope > summary').focus();await page.keyboard.press('Enter');
     }
     if(await page.locator('#resultsPanel').evaluate(node=>node.open)!==before.resultsOpen){await page.locator('#resultsPanel > summary').focus();await page.keyboard.press('Enter');}
+    if(await page.locator('.app-shell').getAttribute('data-cockpit-view')!==before.cockpitView)
+      await page.locator('#'+before.cockpitView+'View').click();
     await page.evaluate(saved=>{
       const input=document.querySelector('#messageInput'),log=document.querySelector('#conversationLog');input.setSelectionRange(saved.start,saved.end,saved.direction);
       const target=saved.focusLog?[...log.querySelectorAll('details > summary')].find(node=>node.parentElement.dataset.logId===saved.focusLog):

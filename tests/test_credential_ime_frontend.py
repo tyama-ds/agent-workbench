@@ -6,7 +6,7 @@ import pytest
 from test_credential_recovery_frontend import check
 
 
-@pytest.mark.parametrize('target', ['local', 'search'])
+@pytest.mark.parametrize('target', ['local', 'cloud'])
 @pytest.mark.parametrize('flags', [
     {'isComposing': True, 'keyCode': 13},
     {'isComposing': True, 'keyCode': 229},
@@ -15,7 +15,7 @@ from test_credential_recovery_frontend import check
 ])
 def test_composition_enter_leaves_native_input_and_credential_state_alone(target, flags):
     check(r'''
-await wire();const c=control(TARGET),text='  SYNTHETIC-にほん-未確定  ';
+await wire(true);const c=control(TARGET),text='  SYNTHETIC-にほん-未確定  ';
 c.input.value=text;c.input.focus();const feedback=c.result.textContent,revision=ui.settingsRevision;
 c.input.listeners.keydown({key:'Enter',...FLAGS,preventDefault(){throw Error('Composition canceled');}});
 await flush();assert.equal(requests.length,0);assert.equal(c.input.value,text);
@@ -25,13 +25,13 @@ assert.equal(ui.configRevision,4);assert(!ui.settingsDirty&&!c.input.disabled&&!
 '''.replace('TARGET', json.dumps(target)).replace('FLAGS', json.dumps(flags)))
 
 
-@pytest.mark.parametrize('target', ['local', 'search'])
+@pytest.mark.parametrize('target', ['local', 'cloud'])
 @pytest.mark.parametrize('activation', ['enter', 'button'])
 def test_explicit_activation_after_composition_keeps_exact_request_and_one_flight(target, activation):
     activate = ("c.input.listeners.keydown({key:'Enter',isComposing:false,keyCode:13,preventDefault(){prevented++;}});"
                 if activation == 'enter' else "void c.button.listeners.click();")
     check(r'''
-await wire();const c=control(TARGET),text='  SYNTHETIC-確定  ';c.input.value=text;let prevented=0;
+await wire(true);const c=control(TARGET),text='  SYNTHETIC-確定  ';c.input.value=text;let prevented=0;
 for(const flags of [{isComposing:true,keyCode:13},{isComposing:false,keyCode:229}]){
   c.input.listeners.keydown({key:'Enter',...flags,preventDefault(){throw Error('Composition canceled');}});
 }
@@ -50,24 +50,24 @@ assert(!c.input.disabled&&!c.button.disabled);assert(c.result.textContent.includ
           .replace('PREVENTED', '1' if activation == 'enter' else '0'))
 
 
-@pytest.mark.parametrize('target', ['local', 'search'])
+@pytest.mark.parametrize('target', ['local', 'cloud'])
 @pytest.mark.parametrize('key', ['Process', 'Escape', 'Tab'])
 def test_other_keys_do_not_set_credentials_or_cancel_native_behavior(target, key):
     check(r'''
-await wire();const c=control(TARGET);c.input.value='SYNTHETIC-retained';
+await wire(true);const c=control(TARGET);c.input.value='SYNTHETIC-retained';
 c.input.listeners.keydown({key:KEY,isComposing:false,keyCode:0,preventDefault(){throw Error('Other key canceled');}});
 assert.equal(requests.length,0);assert.equal(c.input.value,'SYNTHETIC-retained');
 '''.replace('TARGET', json.dumps(target)).replace('KEY', json.dumps(key)))
 
 
-@pytest.mark.parametrize('target', ['local', 'search'])
+@pytest.mark.parametrize('target', ['local', 'cloud'])
 @pytest.mark.parametrize('guard', [
     'ui.settingsDirty=true;', 'ui.configStale=true;', 'ui.authenticated=false;',
     'ui.settingsSaving=true;', 'ui.settingsReloading=true;',
 ])
 def test_ordinary_enter_cannot_bypass_existing_credential_guards(target, guard):
     check(r'''
-await wire();const c=control(TARGET);c.input.value='SYNTHETIC-retained';GUARD
+await wire(true);const c=control(TARGET);c.input.value='SYNTHETIC-retained';GUARD
 let prevented=0;c.input.listeners.keydown({key:'Enter',isComposing:false,keyCode:13,preventDefault(){prevented++;}});
 assert.equal(prevented,1);assert.equal(requests.length,0);assert.equal(c.input.value,'SYNTHETIC-retained');
 assert.equal(ui.credentialOperations.size,0);assert.equal(ui.configRevision,4);

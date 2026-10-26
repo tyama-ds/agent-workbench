@@ -388,14 +388,22 @@ async def test_token_window_overflow_is_shared_by_dispatch_and_admission(tmp_pat
 
 
 async def test_last_call_is_usable_below_hard_cap_without_optional_summary(tmp_path):
-    engine, run, agent = await seeded(tmp_path, ScriptClient([]))
+    # Include current policy/tool overhead while keeping this fixture in the
+    # optional-summary band; the separate hard-cap tests remain unchanged.
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=16)
     try:
+        profile, tools, limits = call_args(engine, run, agent)
+        ratio, chars, _ = pressure(profile, agent.conversation, tools, engine._policy(run, agent), limits)
+        assert limits['max_context_chars'] == 50000
+        assert limits['context_trigger_percent'] / 100 < ratio < 1
+        assert chars < limits['max_context_chars']
         run['model_calls'] = run['_config']['limits']['max_model_calls'] - 1
         before = copy.deepcopy(agent.conversation)
         assert engine.message_eligibility(agent)['allowed']
-        await engine._ensure_context(run, agent, *call_args(engine, run, agent))
+        await engine._ensure_context(run, agent, profile, tools, limits)
         assert agent.conversation == before and agent.compactions == 0
         assert run['model_calls'] == run['_config']['limits']['max_model_calls'] - 1
+        assert not engine.client.calls
     finally:
         await engine.close()
 
