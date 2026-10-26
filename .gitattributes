@@ -7,5 +7,6 @@
 *.md text eol=lf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+*.bat text eol=crlf
 # These reviewed notice bytes are checksum-pinned; do not rewrite line endings.
 tools/portable-notices/** -text

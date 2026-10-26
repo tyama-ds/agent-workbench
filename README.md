@@ -15,33 +15,34 @@ Codex CLI / Claude Code / WSL / Docker / Microsoft Office のインストール�
 必要なもの: Windows 11、承認済みの通常版 **64-bit CPython 3.11〜3.13**（3.13 推奨）、Edge または Chrome。
 
 1. ソース ZIP を、自分が書き込めるローカルフォルダーにすべて展開します。
-2. 展開先のコマンドプロンプトで、IT 担当が指定した実際の Python のフルパスを `WORKBENCH_PYTHON` に設定し、`Setup.cmd` を実行します。`Setup complete` を確認します。
-3. **`Launch.cmd` をダブルクリック**します。起動したコンソールで Ctrl+C を押すと停止します。
+2. **`Setup.bat` をダブルクリック**します。`Python path:` に、インストール済みの `python.exe` のフルパスを貼り付けて Enter を押し、`Setup complete` を確認します。エクスプローラーの「パスのコピー」で付く引用符もそのまま使えます。空欄で Enter を押すと中止します。
+3. **`Launch.bat` をダブルクリック**します。次回からはこれだけで起動でき、Python のパス入力も不要です。起動したコンソールで Ctrl+C を押すと停止します。
 
 通常のセットアップ・起動に PowerShell、管理者権限、Git、ビルドツールは不要です。**Python は同梱しません。組織の認可を受け、アプリとは別にインストールしてください。** アプリが Python 本体をダウンロード・インストールすることはありません。社内ポリシーによる実行禁止やセキュリティ警告を回避する設定は行いません。
 
-Python の指定前でも `Setup.cmd --help`（`-h` / `/?` も可）で手順とオプションを確認できます。ヘルプは最初の引数として単独で指定し、ほかのオプションは別の実行に分けてください。Python の起動、インストール、通信は行いません。`WORKBENCH_PYTHON` の `set` は同じコマンドプロンプト内だけの指定で、永続的な設定変更は不要です。
+通常はこの2つの BAT だけを使います。コマンド入力や環境変数の設定は不要です。既に `WORKBENCH_PYTHON` が設定されている場合だけ、そのパスを使って入力を省略します。従来の `Setup.cmd` / `Launch.cmd` も互換用に残しています。
+
+Python の指定前でも `Setup.bat --help`（`-h` / `/?` も可）で手順とオプションを確認できます。ヘルプは最初の引数として単独で指定し、ほかのオプションは別の実行に分けてください。Python の起動、インストール、通信は行いません。
 
 コマンドプロンプトから診断・プロキシ・オフラインインストールも指定できます。
 
 ```bat
-set "WORKBENCH_PYTHON=C:\Approved Python\python.exe"
-Setup.cmd --check
-Setup.cmd --proxy "http://proxy.example.local:8080"
-Setup.cmd --wheelhouse "C:\Approved Packages\wheelhouse"
+Setup.bat --check
+Setup.bat --proxy "http://proxy.example.local:8080"
+Setup.bat --wheelhouse "C:\Approved Packages\wheelhouse"
 ```
 
-上の Python パスとプロキシは例です。会社の指定値を使ってください。`py` / `python` の自動探索は行いません。証明書は `--certificate "C:\Certificates\company-ca.pem"` で指定できます。通常モードは既存 pip / proxy 設定を引き継ぎます。パッケージはハッシュを確認した wheel のみ利用し、依存のソースビルドや TLS 検証無効化は行いません。
+Python のパスは実行時に貼り付けます。上のプロキシは例です。会社の指定値を使ってください。`py` / `python` の自動探索は行いません。証明書は `--certificate "C:\Certificates\company-ca.pem"` で指定できます。通常モードは既存 pip / proxy 設定を引き継ぎます。パッケージはハッシュを確認した wheel のみ利用し、依存のソースビルドや TLS 検証無効化は行いません。
 
 `0.1.1.dev10` では、失敗したセットアップ段階と対処先を表示します。別の Python / インストール先へ切り替える pip 設定と TLS 検証を省く設定は、依存インストール前に停止します。通常の社内 proxy / CA / ミラーは引き続き使えます。詳しくは [Windows セットアップガイド](docs/WINDOWS_SETUP.md) の「どの段階で止まったか」を参照してください。
 
-既定ポートは `8818`。二重起動は既に起動中であることを表示します。既存のブラウザー画面を使ってください。別アプリが使っている場合は `Launch.cmd --port 8820` で起動してください。アプリはソースフォルダーを利用するため、セットアップ後にフォルダーを移動しないでください。
+既定ポートは `8818`。二重起動は既に起動中であることを表示します。既存のブラウザー画面を使ってください。別アプリが使っている場合は `Launch.bat --port 8820` で起動してください。アプリはソースフォルダーを利用するため、セットアップ後にフォルダーを移動しないでください。
 
 **詳しい手順・Python の指定・社内 CA・オフライン wheel の準備・エラー対処は [Windows 11 セットアップガイド](docs/WINDOWS_SETUP.md) を参照してください。**
 
 ### ソース版のみを提供
 
-`0.1.1.dev23` から、Python 同梱版の試作・ビルド・配布準備を終了しました。評価用も含め、旧ビルド入口は停止し、同梱版を作る CI ジョブを削除しています。利用するのは、別途認可された Python と `Setup.cmd` / `Launch.cmd` によるソース版です。
+`0.1.1.dev23` から、Python 同梱版の試作・ビルド・配布準備を終了しました。評価用も含め、旧ビルド入口は停止し、同梱版を作る CI ジョブを削除しています。利用するのは、別途認可された Python と `Setup.bat` / `Launch.bat` によるソース版です。
 
 過去のビルド・検証記録は履歴として残しています。それらは現在の配布物、今後の同梱版の計画、再配布の許可を意味しません。
 

@@ -27,7 +27,7 @@ STAGES = {
     'configuration': ('Check pip configuration', 'Ask IT to review pip configuration. No dependency packages were installed.'),
     'dependencies': ('Install locked dependencies', 'Check the preceding pip error: proxy/407 needs IT-approved connectivity/authentication; certificate errors need an approved CA bundle; missing wheels need the matching Python version and architecture. Retry with the same source or an approved offline wheelhouse.'),
     'application': ('Install local application', 'The local-only application install failed. Ask IT to check the source folder and locked build tools; no online fallback is used.'),
-    'consistency': ('Check package consistency', 'The private environment has inconsistent dependencies. Retry Setup.cmd using the same lock and approved package source.'),
+    'consistency': ('Check package consistency', 'The private environment has inconsistent dependencies. Retry Setup.bat using the same lock and approved package source.'),
     'imports': ('Check application imports', 'A required module could not load. Ask IT to review the preceding error and any application-control block; do not disable protection.'),
 }
 
@@ -101,7 +101,7 @@ def preflight(options):
         raise ValueError('Extract the entire ZIP to a local user-writable folder, not a network share.')
     for relative in ('requirements.lock', 'pyproject.toml', 'workbench/server.py', 'static/index.html', 'docs/interface.json'):
         if not (root / relative).is_file():
-            raise ValueError('Project files are missing. Extract the entire ZIP before running Setup.cmd.')
+            raise ValueError('Project files are missing. Extract the entire ZIP before running Setup.bat.')
     if options.certificate:
         options.certificate = options.certificate.resolve()
         if not options.certificate.is_file():
@@ -191,7 +191,7 @@ def install(options, *, runner=invoke):
     run_stage('application', runner, base + ['--no-index', '--no-deps', '--no-build-isolation', '-e', str(root)], cwd=root, env=child_env)
     run_stage('consistency', runner, pip + ['check'], cwd=root, env=child_env)
     run_stage('imports', runner, [python, '-c', 'import workbench.server, docx, openpyxl, pptx'], cwd=root, env=child_env)
-    print('Setup complete. Double-click Launch.cmd. Keep this folder in place.')
+    print('Setup complete. Double-click Launch.bat. Keep this folder in place.')
 
 
 def main(argv=None):

@@ -43,11 +43,15 @@ jobs:
           python scripts/setup_windows.py --wheelhouse "${{ runner.temp }}/workbench-wheels"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./.venv/Scripts/python.exe -m pip check
-      - name: Exercise CMD explicit approved interpreter and actual launcher
+      - name: Exercise BAT entrypoints and compatible CMD launchers
         if: runner.os == 'Windows'
         shell: cmd
         run: |
           set "WORKBENCH_PYTHON=%pythonLocation%\python.exe"
+          call Setup.bat --check < nul
+          if errorlevel 1 exit /b 1
+          call Launch.bat --help
+          if errorlevel 1 exit /b 1
           call Setup.cmd --check < nul
           if errorlevel 1 exit /b 1
           call Launch.cmd --help
