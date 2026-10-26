@@ -482,25 +482,43 @@ async def test_new_endpoint_cleans_owned_then_borrows_new_service(setup, tmp_pat
 
 
 @pytest.mark.skipif(cb.os.name != 'nt', reason='Native Windows Job process containment')
-async def test_real_windows_job_handshake_and_child_grandchild_cleanup(tmp_path, monkeypatch):
+@pytest.mark.parametrize('pause_before_publish', [False, True], ids=['normal', 'paused-receipt'])
+async def test_real_windows_job_handshake_and_child_grandchild_cleanup(tmp_path, monkeypatch, pause_before_publish):
     """Exercise the real bootstrap/Job with stdlib-only local fixture processes."""
-    monkeypatch.setattr(cb.subprocess, 'Popen', REAL_POPEN)
+    stderr_path = tmp_path / 'stub-stderr.txt'
+    stderr = stderr_path.open('wb')
+    def spawn(*args, **kwargs):
+        kwargs['stderr'] = stderr  # Keep fixture diagnostics; product logging stays disabled.
+        return REAL_POPEN(*args, **kwargs)
+    monkeypatch.setattr(cb.subprocess, 'Popen', spawn)
     ready = tmp_path / 'ready.json'
-    grandchild_code = ("import os,time; from pathlib import Path; "
-                       "Path('grandchild-ready.txt').write_text(str(os.getpid()),encoding='ascii'); time.sleep(60)")
+    grandchild_code = (
+        "import os,time\nfrom pathlib import Path\n"
+        "pending=Path('grandchild-ready.tmp')\n"
+        "with pending.open('w',encoding='ascii') as stream:\n"
+        f"    if {pause_before_publish!r}:\n"
+        "        Path('writing-receipt').touch()\n"
+        "        deadline=time.monotonic()+5\n"
+        "        while not Path('publish-receipt').exists():\n"
+        "            assert time.monotonic()<deadline\n"
+        "            time.sleep(.02)\n"
+        "    stream.write(str(os.getpid()))\n"
+        "pending.replace('grandchild-ready.txt')\n"
+        "time.sleep(60)\n")
     (tmp_path / 'server.py').write_text(
         "import json,os,subprocess,sys,time\n"
         "from pathlib import Path\n"
         f"child=subprocess.Popen([sys.executable,'-c',{grandchild_code!r}],"
-        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=open('grandchild-stderr.txt','wb'),"
         "creationflags=subprocess.CREATE_NO_WINDOW)\n"
         "deadline=time.monotonic()+5\n"
         "while not Path('grandchild-ready.txt').exists():\n"
         "    assert time.monotonic()<deadline\n"
         "    time.sleep(.02)\n"
-        "Path('ready.json').write_text(json.dumps({'pid':os.getpid(),'grandchild_launcher':child.pid,"
+        "Path('ready.tmp').write_text(json.dumps({'pid':os.getpid(),'grandchild_launcher':child.pid,"
         "'grandchild':int(Path('grandchild-ready.txt').read_text(encoding='ascii')),"
         "'argv':sys.argv[1:]}),encoding='utf-8')\n"
+        "Path('ready.tmp').replace('ready.json')\n"
         "time.sleep(60)\n", encoding='utf-8')
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -511,19 +529,27 @@ async def test_real_windows_job_handshake_and_child_grandchild_cleanup(tmp_path,
     kernel.WaitForSingleObject.restype = wintypes.DWORD
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
-    owned, handles, details = None, [], None
+    owned, handles, details, pause_observed = None, [], None, False
+    def diagnostics():
+        return repr({path.name: path.read_bytes()[-4096:] for path in
+                     (stderr_path, tmp_path / 'grandchild-stderr.txt') if path.exists()})
     try:
         owned = cb._spawn_owned(Path(sys.executable).resolve(), tmp_path, CONFIG, tmp_path / 'state')
         deadline = time.monotonic() + 10
         while details is None:
-            assert owned.poll() is None, 'Local stub exited before its ready receipt'
-            assert time.monotonic() < deadline, 'Local stub did not become ready'
+            assert owned.poll() is None, 'Local stub exited before its ready receipt: ' + diagnostics()
+            assert time.monotonic() < deadline, 'Local stub did not become ready: ' + diagnostics()
+            if pause_before_publish and not pause_observed and (tmp_path / 'writing-receipt').exists():
+                # Exists is not a commit signal for write_text: publish only
+                # the closed complete file, even while its staging file is empty.
+                assert (tmp_path / 'grandchild-ready.tmp').read_bytes() == b''
+                assert not (tmp_path / 'grandchild-ready.txt').exists() and not ready.exists()
+                (tmp_path / 'publish-receipt').touch()
+                pause_observed = True
             if ready.exists():
-                try:
-                    details = json.loads(ready.read_text(encoding='utf-8'))
-                except json.JSONDecodeError:
-                    pass
+                details = json.loads(ready.read_text(encoding='utf-8'))
             await asyncio.sleep(.02)
+        assert pause_observed is pause_before_publish
         assert details['argv'] == ['--host', '127.0.0.1', '--port', '8800', '--backend', 'edge',
                                    '--profile-mode', 'separate', '--log-dir', '']
         # Windows venv python.exe may launch the base interpreter. Check that
@@ -555,6 +581,7 @@ async def test_real_windows_job_handshake_and_child_grandchild_cleanup(tmp_path,
                           'child_pid': details['pid'], 'grandchild_launcher_pid': details['grandchild_launcher'],
                           'grandchild_pid': details['grandchild'], 'all_in_exact_job': True,
                           'observed_owned_process_count': len(pids),
+                          'paused_incomplete_receipt_was_not_published': pause_observed,
                           'all_process_handles_signaled': True, 'remaining_owned_processes': 0,
                           'actual_bridge_or_browser_started': False}))
     finally:
@@ -564,6 +591,7 @@ async def test_real_windows_job_handshake_and_child_grandchild_cleanup(tmp_path,
             if owned is not None and owned.job.handle is not None:
                 await owned.stop()
         finally:
+            stderr.close()
             for handle in handles:
                 try:
                     assert kernel.WaitForSingleObject(handle, 5000) == 0, 'Owned stub survived cleanup'
