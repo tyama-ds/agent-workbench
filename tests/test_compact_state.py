@@ -42,12 +42,13 @@ async def populated(tmp_path):
 def test_full_and_selected_field_parity_and_no_mutation(populated):
     engine, run, pm, worker, other_run, other_pm = populated
     before = engine.snapshot()
-    assert set(before) == {'runs', 'agents', 'events', 'resources'}
+    assert set(before) == {'runs', 'agents', 'events', 'resources', 'copilot_agent_status'}
     selected = engine.selected_snapshot(run_id=run['id'], agent_id=worker.id)
     assert set(selected) == set(before) | {'selection'}
     assert selected['selection'] == {'run_id': run['id'], 'agent_id': worker.id, 'detail_loaded': True}
     assert selected['runs'] == before['runs']
     assert selected['resources'] == before['resources']
+    assert selected['copilot_agent_status'] == before['copilot_agent_status']
     assert selected['events'] == [event for event in before['events'] if event['run_id'] == run['id']]
     assert len(selected['agents']) == len(before['agents'])
     for full, compact in zip(before['agents'], selected['agents']):
@@ -62,6 +63,7 @@ def test_full_and_selected_field_parity_and_no_mutation(populated):
     selected['agents'][1]['logs'][0]['text'] = 'Changed client copy'
     selected['runs'][0]['agent_ids'].clear()
     selected['events'][0]['text'] = 'Changed event'
+    selected['copilot_agent_status']['message'] = 'Changed connection status'
     assert engine.snapshot() == before
 
 
@@ -189,6 +191,10 @@ async def test_endpoint_contract_auth_headers_freshness_and_config(tmp_path, mon
         assert response.status == 401 and response.headers['Cache-Control'] == 'no-store'
         await bootstrap(auth, client)
         config_before = copy.deepcopy(engine.settings.public())
+        public_before = copy.deepcopy(engine.public_config())
+        assert set(public_before) == set(config_before) | {'effective_providers', 'copilot_agent_status'}
+        assert public_before['effective_providers'] == config_before['config']['providers']
+        assert public_before['copilot_agent_status']['enabled'] is False
         for params in ({}, {'run_id': 'ignored-without-view'}):
             response = await client.get(url, params=params)
             assert response.status == 200 and await response.json() == engine.snapshot()
@@ -227,6 +233,6 @@ async def test_endpoint_contract_auth_headers_freshness_and_config(tmp_path, mon
         assert result['agents'][0]['message_eligibility']['reason'] == 'time_limit'
         assert result['resources']['waiting'] == result['resources']['queued'] == 3
         response = await client.get(auth.origin + '/api/config')
-        assert response.status == 200 and await response.json() == config_before
+        assert response.status == 200 and await response.json() == public_before
         assert engine.settings.public() == config_before
         assert not engine.settings.path.exists()

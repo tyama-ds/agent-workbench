@@ -1,6 +1,14 @@
 'use strict';
 
 const FIELD_GROUPS = {
+  copilot_agent: [
+    ['enabled','Copilot-agent mode を有効にする','checkbox'],
+    ['bridge_directory','既存の copilot-bridge フォルダー','text','例：C:\\Tools\\copilot-bridge'],
+    ['python_executable','Bridge 用 python.exe の絶対パス','text','例：C:\\Python312\\python.exe'],
+    ['base_url','Bridge の API ベース URL','url','http://127.0.0.1:8800/v1'],
+    ['model','Bridge のモデル名','text','copilot'],
+    ['startup_timeout_seconds','Bridge 起動の待機上限（秒）','number',5,'1','Edge の準備とサインインを待つ時間です。',1200],
+  ],
   paths: [
     ['read_roots','読み取りを許可する場所','paths','例：C:\\Projects\\research'],
     ['write_roots','書き込みを許可する場所','paths','例：C:\\Projects\\output'],
@@ -88,6 +96,9 @@ Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0});
+Object.assign(ui,{effectiveProviders:null,copilotAgentStatus:null,copilotDefaultsPending:false,modelChoicesTouched:false,copilotReconnectOperation:null});
+const COPILOT_AGENT_DEFAULTS={enabled:false,bridge_directory:'',python_executable:'',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600};
+NUMBER_BOUNDS.copilot_agent={startup_timeout_seconds:[5,1200]};
 NUMBER_BOUNDS.python={timeout_seconds:[1,600],max_memory_mb:[128,8192],max_output_bytes:[1024,1048576]};
 NUMBER_BOUNDS.selenium={timeout_seconds:[10,300],max_memory_mb:[256,8192],max_output_chars:[1000,100000]};
 const $ = id => document.getElementById(id);
@@ -97,6 +108,50 @@ function element(tag, className, text) {
   if(className)node.className=className;
   if(text!==undefined)node.textContent=String(text);
   return node;
+}
+function availableProfiles() {
+  return (Array.isArray(ui.effectiveProviders)?ui.effectiveProviders:(ui.config?.providers||[])).filter(profile=>profile.enabled!==false&&profile.model&&profile.base_url);
+}
+function acceptConnectionSettings(response) {
+  ui.effectiveProviders=Array.isArray(response.effective_providers)?response.effective_providers:null;
+  if(ui.config?.copilot_agent?.enabled===true&&availableProfiles().some(profile=>profile.id==='copilot-agent'))ui.copilotDefaultsPending=true;
+  else ui.copilotDefaultsPending=false;
+  ui.copilotAgentStatus=response.copilot_agent_status||null;renderCopilotStatus();
+}
+function renderCopilotStatus() {
+  const status=ui.copilotAgentStatus,enabled=ui.config?.copilot_agent?.enabled===true;
+  const labels={disabled:'オフ',stopped:'未起動',starting:'起動中',ready:'接続可能',error:'起動・接続エラー',stopping:'停止中'};
+  const confirmed=status&&status.enabled===enabled;
+  const state=confirmed?status.state:(enabled?'unknown':'disabled');
+  let text=`Copilot Agent: ${labels[state]||'状態未確認'}`;
+  if(confirmed&&typeof status.message==='string'&&status.message)text+=` — ${status.message}`;
+  if(enabled&&state==='starting')text+=' Edge が開いた場合は、必要に応じてサインインしてください。準備完了を待っています。';
+  if(enabled&&state==='ready'&&status.ready!==true)text='Copilot Agent: 状態未確認';
+  for(const id of ['copilotAgentStatus','taskCopilotAgentStatus']){const node=$(id);if(!node)continue;node.hidden=id==='taskCopilotAgentStatus'&&!enabled;inlineStatus(node,text,state==='error');}
+  const reconnect=$('reconnectCopilotAgent');if(reconnect)reconnect.disabled=!canReconnectCopilot();
+}
+function canReconnectCopilot() {
+  return ui.authenticated&&ui.config?.copilot_agent?.enabled===true&&!ui.settingsLocked&&!ui.settingsDirty&&!ui.settingsSaving&&!ui.settingsReloading&&!ui.configStale&&!ui.copilotReconnectOperation&&!ui.credentialOperations.size&&Number.isSafeInteger(ui.configRevision)&&!['ready','starting','pending','stopping'].includes(ui.copilotAgentStatus?.state);
+}
+async function reconnectCopilotAgent() {
+  if(!canReconnectCopilot())return;
+  const action={revision:ui.configRevision,workspace:ui.workspaceGeneration};ui.copilotReconnectOperation=action;renderCopilotStatus();
+  inlineStatus($('copilotReconnectStatus'),'再接続を要求しています…');
+  const current=()=>ui.copilotReconnectOperation===action&&ui.configRevision===action.revision&&ui.workspaceGeneration===action.workspace;
+  try{
+    const response=await api('/api/copilot-agent-start',{method:'POST',body:{config_revision:action.revision}});
+    if(!current())return;
+    if(!validSavedSettings(response,action.revision)||JSON.stringify(response.config)!==JSON.stringify(ui.config)||!response.copilot_agent_status){const failure=new Error('再接続の応答を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
+    ui.copilotAgentStatus=response.copilot_agent_status;renderCopilotStatus();
+    inlineStatus($('copilotReconnectStatus'),'再接続の要求を受け付けました。接続状態は上の表示で確認できます。');
+  }catch(error){
+    if(!current())return;
+    if(error.code==='settings_changed')ui.configStale=true;
+    inlineStatus($('copilotReconnectStatus'),errorText(error)+(error.outcomeUnknown?' 自動で再送信しません。接続状態を確認してください。':''),true);
+  }finally{
+    if(ui.copilotReconnectOperation===action)ui.copilotReconnectOperation=null;
+    renderCopilotStatus();setSettingsLock(true);ui.preflightKey='';schedulePreflight();
+  }
 }
 function statusLabel(value) { return STATUS_LABELS[value]||String(value||'待機'); }
 function profileLabel(profile) { return profile ? `${profile.label||profile.id}${profile.model?' · '+profile.model:''}` : '未設定'; }
@@ -239,7 +294,7 @@ async function discardSettings() {
     const response=await api('/api/config');
     if(workspace!==ui.workspaceGeneration||!$('settingsDialog').open)return;
     if(!validSavedSettings(response,response.config_revision))throw new Error('保存済み設定を確認できませんでした。');
-    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status||{};
+    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);
     renderSettings();invalidateDiagnostics();renderProfileChoices(true);inlineStatus($('settingsStatus'),'未保存の変更を破棄し、保存済み設定を読み直しました。');
   } catch(error){if(workspace===ui.workspaceGeneration&&$('settingsDialog').open)inlineStatus($('settingsStatus'),errorText(error),true);}
   finally{ui.settingsReloading=false;setSettingsLock(true);schedulePreflight();}
@@ -253,7 +308,7 @@ function validSavedSettings(response,revision) {
   if(!Array.isArray(config.providers)||!config.providers.length||new Set(config.providers.map(p=>p?.id)).size!==config.providers.length)return false;
   if(!config.providers.every(p=>record(p)&&PROFILE_FIELDS.every(([key,,type])=>type==='number'?Number.isFinite(p[key]):typeof p[key]==='string')&&
     p.id&&Object.hasOwn(PROFILE_KINDS,p.kind)&&typeof p.enabled==='boolean'&&typeof status[p.id]==='boolean'))return false;
-  return Object.entries(FIELD_GROUPS).every(([group,specs])=>record(config[group])&&specs.every(([key,,type])=>{
+  return Object.entries(FIELD_GROUPS).every(([group,specs])=>group==='copilot_agent'&&config[group]===undefined||record(config[group])&&specs.every(([key,,type])=>{
     const value=config[group][key];
     if(type==='paths')return Array.isArray(value)&&value.every(path=>typeof path==='string');
     if(type==='checkbox')return typeof value==='boolean';
@@ -275,7 +330,7 @@ async function saveSettings(event) {
     // Acceptance updates the saved baseline even after close. It never submits,
     // discards, defaults or clamps the separate current task/settings drafts.
     let sameDraft=false;try{sameDraft=action.draft===ui.settingsDraftGeneration&&JSON.stringify(collectConfig())===JSON.stringify(action.config);}catch(_){}
-    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status;ui.credentialGeneration++;
+    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status;ui.credentialGeneration++;acceptConnectionSettings(response);
     ui.settingsDirty=!sameDraft;
     if(sameDraft)$('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card._credential.id=inputValue(card.querySelector('[data-key="id"]'));});
     if(owns())invalidateDiagnostics();else ui.settingsRevision++;
@@ -344,8 +399,9 @@ function renderSettings() {
   ui.settingsDraftGeneration++;
   ui.credentialGeneration++;
   $('profilesEditor').replaceChildren();(ui.config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
-  const containers={paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
-  for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]);container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,ui.config[group]?.[spec[0]],group)));}
+  const containers={copilot_agent:'copilotAgentFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+  for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]);container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,(ui.config[group]||(group==='copilot_agent'?COPILOT_AGENT_DEFAULTS:{}))[spec[0]],group)));}
+  $('copilotAgentFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','copilotAgentHelp');renderCopilotStatus();
   $('pythonFields').querySelector('[data-key="network_enabled"]').setAttribute('aria-describedby','pythonNetworkHelp');
   $('seleniumFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','seleniumRuntimeHelp seleniumBoundaryHelp');
   $('systemPolicy').value=ui.config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
@@ -358,8 +414,9 @@ function collectConfig() {
   const ids=config.providers.map(profile=>profile.id);
   if(new Set(ids).size!==ids.length)throw new Error('プロファイル ID が重複しています。別の ID を指定してください。');
   if(!config.providers.length)throw new Error('プロファイルを1つ以上追加してください。');
-  const containers={paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+  const containers={copilot_agent:'copilotAgentFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
   for(const [group,id] of Object.entries(containers)){config[group]={...config[group]};$(id).querySelectorAll('[data-key]').forEach(input=>{config[group][input.dataset.key]=inputValue(input);});}
+  if(ui.config.copilot_agent===undefined&&JSON.stringify(config.copilot_agent)===JSON.stringify(COPILOT_AGENT_DEFAULTS))delete config.copilot_agent;
   config.system_policy=$('systemPolicy').value;
   return config;
 }
@@ -371,15 +428,20 @@ function setSettingsLock(force=false) {
   refreshCredentialControls();$('discardSettings').disabled=Boolean(ui.settingsSaving||ui.settingsReloading||ui.credentialOperations.size);
   const lockText=(locked?'作業の実行中は接続先・モデル・権限を変更できません。保存済み接続先のキーだけ変更できます。':'')+(ui.configStale?' 保存済み設定が変わったか、保存結果が未確認です。変更内容を控えてから「変更を破棄・保存済み設定を読み直す」で確認してください。保存・キー更新・モデル確認はそれまで行いません。':'');
   if($('settingsLockStatus').textContent!==lockText)$('settingsLockStatus').textContent=lockText;
+  renderCopilotStatus();
 }
-function renderProfileChoices(preserveDraft=false) {
-  const previous=$('pmProfile').value,checked=new Set([...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value));
-  const profiles=(ui.config.providers||[]).filter(profile=>profile.enabled!==false&&profile.model&&profile.base_url);
+function renderProfileChoices(preserveDraft=false,preferDefault=false) {
+  let previous=$('pmProfile').value,checked=new Set([...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value));
+  const profiles=availableProfiles();
+  if((!preserveDraft||preferDefault)&&ui.copilotDefaultsPending&&!ui.modelChoicesTouched&&!$('taskInput').value.trim()&&!$('additionalPMs').children.length&&profiles.some(profile=>profile.id==='copilot-agent')){
+    previous='copilot-agent';checked=new Set(['copilot-agent']);ui.copilotDefaultsPending=false;
+  }
   $('pmProfile').replaceChildren();$('workerProfiles').replaceChildren();
   if(!profiles.length){const empty=element('option','','設定でモデル名を指定してください');empty.value='';$('pmProfile').appendChild(empty);$('workerProfiles').appendChild(element('span','muted small','設定でプロファイルを完成させると選択できます。'));}
   profiles.forEach(profile=>{const option=element('option','',profileLabel(profile));option.value=profile.id;$('pmProfile').appendChild(option);});
   if(preserveDraft&&previous&&!profiles.some(profile=>profile.id===previous)){const option=element('option','',`${previous}（保存済み設定では利用不可）`);option.value=previous;$('pmProfile').appendChild(option);}
   if(preserveDraft||profiles.some(profile=>profile.id===previous))$('pmProfile').value=previous;
+  else if(profiles.length)$('pmProfile').value=profiles[0].id;
   $('additionalPMs').querySelectorAll('select').forEach(select=>fillAdditionalPMChoice(select,select.value));
   syncAdditionalPMControls();
   const choices=[...profiles,...(preserveDraft?[...checked].filter(id=>!profiles.some(profile=>profile.id===id)).map(id=>({id,label:`${id}（保存済み設定では利用不可）` })):[])];
@@ -388,7 +450,7 @@ function renderProfileChoices(preserveDraft=false) {
   $('policyPreview').textContent=ui.config.system_policy||'設定された共通方針はありません。';trackTaskDraft();syncStartControl();
 }
 function fillAdditionalPMChoice(select,previous) {
-  const profiles=(ui.config?.providers||[]).filter(profile=>profile.enabled!==false&&profile.model&&profile.base_url);
+  const profiles=availableProfiles();
   select.replaceChildren();
   profiles.forEach(profile=>{const option=element('option','',profileLabel(profile));option.value=profile.id;select.appendChild(option);});
   if(!profiles.some(profile=>profile.id===previous)){
@@ -401,7 +463,7 @@ function syncAdditionalPMControls() {
   const rows=[...$('additionalPMs').children];
   rows.forEach((row,index)=>{row.querySelector('label').textContent=`PM ${index+2} のプロファイル`;row.querySelector('button').setAttribute('aria-label',`PM ${index+2} を取り除く`);});
   $('additionalPMCount').textContent=`PM ${rows.length+1} 人`;
-  $('addPM').disabled=rows.length>=15||!(ui.config?.providers||[]).some(profile=>profile.enabled!==false&&profile.model&&profile.base_url);
+  $('addPM').disabled=rows.length>=15||!availableProfiles().length;
 }
 function addPM() {
   if($('additionalPMs').children.length>=15||$('addPM').disabled)return;
@@ -429,6 +491,7 @@ function runPayload() {
   return payload;
 }
 function trackTaskDraft(event) {
+  if(['input','change'].includes(event?.type)&&(event.target===$('pmProfile')||event.target?.dataset?.focusKey?.startsWith('task-worker:')||event.target?.id?.startsWith('additional-pm-')))ui.modelChoicesTouched=true;
   // An actual edit also invalidates a choice when numeric parsing would hide
   // it (0 → blank, 1 → 01), or when the user re-enters the same value.
   if(ui.taskReuseCandidate&&['input','change'].includes(event?.type))clearTaskReuse('入力を変更したため、置き換えを取り消しました。現在の入力は残しています。');
@@ -585,7 +648,7 @@ async function refreshPreflight(request) {
   finally{if(current()){$('preflightStatus').setAttribute('aria-busy','false');$('preflightPending').textContent='';}}
 }
 function setBriefOpen(open,preview=true) {
-  if(open) { if(!$('taskDialog').open){ui.taskDialogGeneration++;$('taskDialog').showModal();}showPendingStart();syncStartControl();if(preview)schedulePreflight(); }
+  if(open) { if(!$('taskDialog').open){ui.taskDialogGeneration++;if(ui.copilotDefaultsPending)renderProfileChoices(true,true);$('taskDialog').showModal();}showPendingStart();syncStartControl();if(preview)schedulePreflight(); }
   else if($('taskDialog').open)$('taskDialog').close();
 }
 function needsHuman(agent) { return agent.status_reason==='human_input'||(Boolean(agent.question)&&['waiting','waiting_human','needs_input'].includes(agent.status)); }
@@ -1064,6 +1127,11 @@ function applyState(state,request) {
   const next={...state,runs:Array.isArray(state.runs)?state.runs:[],agents:Array.isArray(state.agents)?state.agents:[],events:Array.isArray(state.events)?state.events:[],resources:state.resources||{}};
   if(compact&&request.agent&&!next.agents.some(agent=>agent.run_id===request.run&&agent.id===request.agent&&['logs','results','output_receipts'].every(key=>Array.isArray(agent[key]))))throw new Error('選択した詳細の応答を確認できませんでした。');
   ui.state=next;ui.compactState=compact;ui.detailError=false;
+  if(Object.hasOwn(state,'copilot_agent_status')){
+    const changed=JSON.stringify(ui.copilotAgentStatus)!==JSON.stringify(state.copilot_agent_status);
+    ui.copilotAgentStatus=state.copilot_agent_status;renderCopilotStatus();
+    if(changed){ui.preflightKey='';schedulePreflight();}
+  }
   ui.loadedDetail=compact&&selection.detail_loaded?{...request}:null;ui.loadedEventsRun=compact?request.run:null;
 }
 async function pollState(fresh=false) {
@@ -1102,6 +1170,7 @@ async function initialize() {
   $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;clearTaskReuse();releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
   $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
   $('discardSettings').addEventListener('click',discardSettings);
+  $('reconnectCopilotAgent').addEventListener('click',reconnectCopilotAgent);
   $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
   $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));
   $('reuseTask').addEventListener('click',beginTaskReuse);
@@ -1178,7 +1247,7 @@ async function initialize() {
   try {
     const fragment=new URLSearchParams(location.hash.slice(1)),token=fragment.get('token');
     if(token){history.replaceState(null,'',location.pathname+location.search);await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}});}
-    const response=await api('/api/config');ui.config=response.config;ui.configRevision=response.config_revision;ui.secretStatus=response.secret_status||{};ui.authenticated=true;renderSettings();renderProfileChoices();await pollState();
+    const response=await api('/api/config');ui.config=response.config;ui.configRevision=response.config_revision;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);ui.authenticated=true;renderSettings();renderProfileChoices();await pollState();
   }catch(error){notice(errorText(error),true);setConnection(false,'Workbench 接続待ち');$('startRun').disabled=true;}
   window.setInterval(()=>pollState(),1000);
 }

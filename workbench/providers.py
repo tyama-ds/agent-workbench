@@ -326,6 +326,13 @@ class ProviderClient:
             if location == "lan" and local.get("gpu_guard_enabled", False):
                 raise ProviderError("GPU guard cannot monitor a remote inference server; use server-side GPU controls")
             local = {**local, "_remote_endpoint": location == "lan"}
+            if profile.get('id') == 'copilot-agent' and profile.get('_copilot_agent') is True:
+                # The managed bridge runs a cloud-backed browser session, not
+                # this machine's inference GPU. Keep ordinary queue/time limits
+                # but never gate on unrelated GPU usage or replay a UI request.
+                if location != 'loopback':
+                    raise ProviderError('Copilot Agent requires the local bridge')
+                local = {**local, 'gpu_guard_enabled': False, 'max_retries': 0}
         headers = _request_headers(kind, profile, conversation_id)
         payload = _request_payload(kind, model, profile, messages, definitions, system, maximum)
         proxy = None

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from aiohttp import ClientSession, ClientTimeout, web
 
-from .config import Settings, ROOT, text
+from .config import Settings, ROOT, COPILOT_PROFILE_ID, text
 from .engine import Engine
 from .redaction import RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .runtime_paths import FROZEN
@@ -127,9 +127,14 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app[APP_KEY] = engine
 
     async def clean(_app):
-        yield
-        await engine.close()
-        settings.secrets.clear()
+        engine.schedule_copilot_sync()
+        try:
+            yield
+        finally:
+            try:
+                await engine.close()
+            finally:
+                settings.secrets.clear()
     app.cleanup_ctx.append(clean)
 
     async def static(request):
@@ -149,8 +154,30 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
                 raise web.HTTPConflict(text='設定変更は実行中のチームを停止してから行ってください')
             # Recheck ownership after the body arrives; do not await between
             # this revision/active-run check and the atomic settings transition.
-            return web.json_response(engine.save_settings(value.get('config')))
-        return web.json_response(settings.public())
+            engine.save_settings(value.get('config'))
+            engine.schedule_copilot_sync()
+        return web.json_response(engine.public_config())
+
+    async def copilot_status(request):
+        return web.json_response(engine.copilot_status())
+
+    async def copilot_start(request):
+        value = await body(request)
+        revision = value.get('config_revision')
+        if type(revision) is not int or revision != settings.revision:
+            return web.json_response({'ok': False, 'code': 'settings_changed',
+                'error': '保存済み設定を読み直してから再接続してください。'}, status=409)
+        if engine.active():
+            raise web.HTTPConflict(text='再接続は実行中のチームを停止してから行ってください')
+        if settings.value['copilot_agent']['enabled'] is not True:
+            return web.json_response({'ok': False, 'code': 'copilot_agent_disabled',
+                'error': 'Copilot agent モードを有効にして保存してください。'}, status=409)
+        status = engine.copilot_status()
+        # A repeated click must not cancel and restart an in-flight launch.
+        # Ownership checks and scheduling are synchronous, as for config saves.
+        if status.get('ready') is not True and status.get('state') not in {'pending', 'starting'}:
+            engine.schedule_copilot_sync(force=True)
+        return web.json_response(engine.public_config())
 
     async def secret(request):
         value = await body(request)
@@ -195,9 +222,15 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
 
     async def provider_test(request):
         value = await body(request)
-        profile = next((p for p in settings.value['providers'] if p['id'] == value.get('provider_id')), None)
+        profile = next((p for p in engine.public_config()['effective_providers']
+                        if p['id'] == value.get('provider_id')), None)
         if profile is None:
             raise ValueError('未知のプロファイルです')
+        if settings.value['copilot_agent']['enabled'] and profile['id'] == COPILOT_PROFILE_ID:
+            status = engine.copilot_status()
+            if status.get('ready') is not True:
+                return web.json_response({'ok': False, 'code': 'copilot_bridge_unavailable',
+                    'error': status.get('message') or 'Copilot bridge の準備ができていません。'}, status=409)
         from .diagnostics import diagnose_provider
         key = settings.key(profile)
         engine._redaction.remember([*engine._secret_values(), key])
@@ -210,6 +243,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_post('/api/bootstrap', auth.bootstrap)
     app.router.add_get('/api/config', config)
     app.router.add_put('/api/config', config)
+    app.router.add_get('/api/copilot-agent-status', copilot_status)
+    app.router.add_post('/api/copilot-agent-start', copilot_start)
     app.router.add_post('/api/secrets', secret)
     app.router.add_get('/api/state', state)
     app.router.add_post('/api/runs', start)
