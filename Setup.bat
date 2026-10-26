@@ -31,7 +31,11 @@ for %%I in ("%WORKBENCH_PYTHON%") do (
   if not exist "%%~dpILib\venv\__init__.py" goto python_required
   if not exist "%%~dpILib\ensurepip\__init__.py" goto python_required
 )
-"%WORKBENCH_PYTHON%" "%~dp0scripts\setup_windows.py" %*
+rem Only a no-argument launch asks for network settings. Python reads those
+rem values directly so proxy URLs and certificate paths never become cmd code.
+set "workbench_interactive="
+if [%1]==[] set "workbench_interactive=--interactive"
+"%WORKBENCH_PYTHON%" "%~dp0scripts\setup_windows.py" %workbench_interactive% %*
 set "workbench_exit=%ERRORLEVEL%"
 if not "%workbench_exit%"=="0" echo Setup failed. See the error above and docs\WINDOWS_SETUP.md.
 pause
@@ -49,6 +53,8 @@ exit /b 1
 if not [%2]==[] goto help_arguments
 echo Agent Workbench source setup
 echo Double-click Setup.bat and paste the path of your installed python.exe.
+echo Then enter an IT-approved proxy URL and optional PEM CA path, or leave blank.
+echo Blank network entries keep existing pip/environment settings unchanged.
 echo After Setup complete, double-click Launch.bat.
 echo No environment-variable command is needed; the path is not saved globally.
 echo.
@@ -61,6 +67,7 @@ echo Use actual standard 64-bit CPython 3.11-3.13, not launcher aliases.
 echo If WORKBENCH_PYTHON is already set, its path is used without prompting.
 echo.
 echo Options:
+echo   --interactive           Ask for missing proxy and CA options before setup.
 echo   --check                 Check prerequisites without installing or network.
 echo   --proxy URL             IT-approved HTTP/HTTPS proxy origin; no credentials.
 echo   --certificate FILE      Existing IT-approved PEM CA bundle.

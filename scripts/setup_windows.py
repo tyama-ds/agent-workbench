@@ -36,6 +36,10 @@ class SetupStageError(RuntimeError):
     """Only fixed stage/recovery text is exposed; never child arguments or config."""
 
 
+class SetupCancelled(Exception):
+    """Interactive input ended before any installation commands ran."""
+
+
 def run_stage(stage, runner, arguments, **kwargs):
     label, recovery = STAGES[stage]
     print('Setup step: ' + label + '.', flush=True)
@@ -90,7 +94,38 @@ def parser():
     result.add_argument('--timeout', type=int, choices=range(5, 601), default=60, metavar='5..600')
     result.add_argument('--retries', type=int, choices=range(0, 11), default=3, metavar='0..10')
     result.add_argument('--check', action='store_true', help='Report prerequisites without installing or using network')
+    result.add_argument('--interactive', action='store_true', help='Ask for missing proxy and CA options before setup; blank keeps existing pip/environment settings')
     return result
+
+
+def interactive_options(options):
+    # CLI invocations remain unattended unless explicitly requested. Offline
+    # installs do not need (and must not accidentally acquire) network options.
+    if not options.interactive or options.wheelhouse:
+        return options
+    print('Optional network settings for this setup only. Blank keeps existing pip/environment settings.')
+    print('Use values supplied by IT. Do not enter a username/password or a PAC URL.')
+
+    def prompt(message):
+        try:
+            value = input(message).strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SetupCancelled from None
+        # Explorer Copy as path surrounds local filenames with quotes. Input
+        # remains Python data; it is never sent through cmd or persisted.
+        if len(value) >= 2 and value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        return value
+
+    if options.proxy is None:
+        proxy = prompt('Proxy URL (http://proxy.example:8080), or Enter to keep existing settings: ')
+        if proxy:
+            options.proxy = validate_proxy(proxy)
+    if options.certificate is None:
+        certificate = prompt('Approved PEM CA file path, or Enter to keep existing settings: ')
+        if certificate:
+            options.certificate = Path(certificate)
+    return options
 
 
 def preflight(options):
@@ -103,9 +138,12 @@ def preflight(options):
         if not (root / relative).is_file():
             raise ValueError('Project files are missing. Extract the entire ZIP before running Setup.bat.')
     if options.certificate:
-        options.certificate = options.certificate.resolve()
-        if not options.certificate.is_file():
-            raise ValueError('Certificate must be an existing organization-approved PEM CA bundle.')
+        try:
+            options.certificate = options.certificate.resolve()
+            if not options.certificate.is_file():
+                raise ValueError
+        except (OSError, ValueError):
+            raise ValueError('Certificate must be an existing organization-approved PEM CA bundle.') from None
     if options.wheelhouse:
         options.wheelhouse = options.wheelhouse.resolve()
         if not options.wheelhouse.is_dir() or not any(options.wheelhouse.glob('*.whl')):
@@ -196,8 +234,11 @@ def install(options, *, runner=invoke):
 
 def main(argv=None):
     try:
-        install(parser().parse_args(argv))
+        install(interactive_options(parser().parse_args(argv)))
         return 0
+    except SetupCancelled:
+        print('Setup cancelled before installation. No installation commands were run.', file=sys.stderr)
+        return 1
     except (ValueError, RuntimeError, OSError) as error:
         print(f'Setup stopped: {error}', file=sys.stderr)
         print('The existing .venv is retained. See the failed setup step and docs/WINDOWS_SETUP.md. '

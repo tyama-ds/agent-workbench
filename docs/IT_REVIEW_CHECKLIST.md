@@ -30,6 +30,8 @@
 ## 2. インストール時の通信と保存先
 
 - [ ] 承認済みパッケージ取得先・proxy・PEM CA、またはオフライン wheelhouse を選ぶ。
+  Setup.bat のダブルクリックで proxy / PEM CA を入力できる。空欄は既存設定を維持し、
+  入力値は今回だけ使用して保存しない。認証 / PAC / SSO は別途確認する。
   通常モードは既存の pip / proxy 設定を引き継ぐ。wheelhouse は同じソース版の
   lock と対象の Windows アーキテクチャ・Python minor 版に合わせて用意する。
 - [ ] wheelhouse モードはインデックス・外部 find-links・pip 設定ファイルを使わず、
