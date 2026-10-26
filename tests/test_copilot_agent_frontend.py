@@ -6,7 +6,7 @@ from test_settings_save_frontend import check as settings_check
 
 
 SETUP = r'''
-const COPILOT={enabled:false,bridge_directory:'C:\\Bridge',python_executable:'C:\\Python\\python.exe',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600};
+const COPILOT={enabled:false,bridge_directory:'C:\\Bridge',python_executable:'C:\\Python\\python.exe',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600,max_concurrent_requests:1};
 const bridgeProfile=()=>({...ui.config.providers[0],id:'copilot-agent',label:'Copilot Agent',kind:'local',base_url:COPILOT.base_url,model:'copilot',enabled:true});
 function status(state='starting'){return {enabled:true,state,ready:state==='ready',message:'Bridge fixture',owned:true};}
 async function boot(){await setup();ui.config.copilot_agent=structuredClone(COPILOT);renderSettings();for(const id of ['pathFields','pythonFields','seleniumFields'])$(id).querySelectorAll('textarea').forEach(node=>node.classList.add('path-input'));$('settingsForm').append($('copilotAgentFields'),$('reconnectCopilotAgent'));}
@@ -26,10 +26,12 @@ def check(source):
 def test_copilot_fields_and_bounds_are_explicit_and_not_credential_controls():
     prefix = APP[:APP.index('const $ =')]
     value = run_javascript(prefix + "console.log(JSON.stringify({fields:FIELD_GROUPS.copilot_agent,defaults:COPILOT_AGENT_DEFAULTS,bounds:NUMBER_BOUNDS.copilot_agent}));")
-    assert {row[0] for row in value['fields']} == {'enabled', 'bridge_directory', 'python_executable', 'base_url', 'model', 'startup_timeout_seconds'}
+    assert {row[0] for row in value['fields']} == {'enabled', 'bridge_directory', 'python_executable', 'base_url', 'model', 'startup_timeout_seconds', 'max_concurrent_requests'}
     assert value['defaults']['enabled'] is False
     assert value['defaults']['startup_timeout_seconds'] == 600
     assert value['bounds']['startup_timeout_seconds'] == [5, 1200]
+    assert value['defaults']['max_concurrent_requests'] == 1
+    assert value['bounds']['max_concurrent_requests'] == [1, 16]
     assert 'id="copilotAgentFields"' in HTML
     assert 'id="copilotAgentStatus"' in HTML and 'id="taskCopilotAgentStatus"' in HTML
     assert 'Copilotは外部サービスです' in HTML

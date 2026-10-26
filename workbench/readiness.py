@@ -1,8 +1,9 @@
 """Local admission preview. No network, inference, writes, or capability guesses."""
 from .providers import _endpoint
+from .config import ORCHESTRATION_DEFAULTS
 
 
-def summarize(prepared):
+def summarize(prepared, *, orchestration=None):
     _, config, pms, workers, _, harness, web = prepared
     selected = dict.fromkeys([*pms, *workers])
     destinations = []
@@ -35,13 +36,11 @@ def summarize(prepared):
         for root in roots:
             if any(root.is_relative_to(denied) for denied in harness.deny_roots):
                 warnings.append({'code': kind + '_scope_denied', 'message': f'{root}: 拒否範囲に含まれるため使用できません。'})
-    search_ready = web.enabled and not (web.provider == 'brave' and (not web.api_key or any(ord(c) < 32 for c in web.api_key)))
-    if web.enabled and not search_ready:
-        warnings.append({'code': 'search_key_missing', 'message': 'Brave 検索キーが未設定または無効です。検索は使えませんが、公開ページ取得とその他の作業は開始できます。'})
     return {'ok': True, 'can_start': True, 'blockers': [], 'warnings': warnings,
+        'orchestration': orchestration or {**ORCHESTRATION_DEFAULTS, **config.get('orchestration', {})},
         'inference_tested': False, 'tools_tested': False, 'destinations': destinations,
         'scope': {'read_roots': [str(p) for p in harness.read_roots],
                   'write_roots': [str(p) for p in harness.write_roots],
                   'deny_roots': [str(p) for p in harness.deny_roots]},
-        'web': {'enabled': web.enabled, 'search_configured': bool(search_ready), 'fetch_enabled': web.enabled,
+        'web': {'enabled': web.enabled, 'search_configured': bool(web.enabled), 'fetch_enabled': web.enabled,
                 'search_endpoint': web.endpoint if web.enabled else '', 'proxy': web.proxy if web.enabled else None}}

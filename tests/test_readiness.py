@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from workbench.config import Settings
+from workbench.config import Settings, DUCKDUCKGO_ENDPOINT
 from workbench.engine import Engine
 from test_config_server import serving, bootstrap
 
@@ -73,13 +73,16 @@ def test_scope_exclusions_web_and_potential_destinations(tmp_path, monkeypatch):
     engine.settings.value['paths'] = {'read_roots': [str(work)], 'write_roots': [str(work)], 'deny_roots': [str(work)]}
     engine.settings.value['providers'][1]['model'] = 'alias'
     monkeypatch.setenv('OPENAI_API_KEY', 'secret-do-not-return')
-    engine.settings.value['search'].update(enabled=True, provider='brave', endpoint='https://api.search.brave.com/res/v1/web/search')
+    engine.settings.value['search'].update(enabled=True, provider='duckduckgo', endpoint=DUCKDUCKGO_ENDPOINT)
     monkeypatch.delenv('BRAVE_SEARCH_API_KEY', raising=False)
     preview = engine.preflight(payload(max_workers=1, worker_profiles=['openai']))
     assert preview['can_start'] and len(preview['destinations']) == 2
     assert preview['destinations'][1]['protocol'] == '/responses'
-    assert preview['web']['fetch_enabled'] and not preview['web']['search_configured']
-    assert {'read_scope_denied', 'write_scope_denied', 'search_key_missing'} <= {w['code'] for w in preview['warnings']}
+    assert preview['web']['fetch_enabled'] and preview['web']['search_configured']
+    assert preview['web']['search_endpoint'] == DUCKDUCKGO_ENDPOINT
+    assert {'read_scope_denied', 'write_scope_denied'} <= {w['code'] for w in preview['warnings']}
+    assert 'search_key_missing' not in {w['code'] for w in preview['warnings']}
+    assert not preview['inference_tested'] and not preview['tools_tested']
     assert str(engine.settings.directory) in preview['scope']['deny_roots']
     assert 'secret-do-not-return' not in json.dumps(preview)
 

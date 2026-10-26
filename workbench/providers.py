@@ -294,8 +294,15 @@ def _request_payload(kind: str, model: str, profile: dict, messages: list[dict],
 
 
 class ProviderClient:
-    def __init__(self, resource_gate: ResourceGate | None = None, *, gate: ResourceGate | None = None):
+    def __init__(self, resource_gate: ResourceGate | None = None, *, gate: ResourceGate | None = None,
+                 copilot_gate: ResourceGate | None = None):
         self.resource_gate = resource_gate or gate or ResourceGate()
+        # Browser-backed Copilot requests do not consume local inference slots.
+        # Its configured limit admits HTTP requests, not additional browser windows.
+        self.copilot_resource_gate = copilot_gate if copilot_gate is not None else ResourceGate()
+
+    def copilot_resource_snapshot(self) -> dict:
+        return self.copilot_resource_gate.snapshot()
 
     async def complete(self, profile: dict, messages: list[dict], tools: list[dict],
                        system: str, limits: dict | None = None, *,
@@ -319,6 +326,7 @@ class ProviderClient:
         defaults = {"openai": "https://api.openai.com/v1", "anthropic": "https://api.anthropic.com/v1", "local": "http://127.0.0.1:1234/v1"}
         suffix = {"openai": "/responses", "anthropic": "/messages", "local": "/chat/completions"}[kind]
         endpoint = _endpoint(profile.get("base_url") or defaults[kind], suffix, allow_local_network=kind == "local")
+        request_gate = self.resource_gate
         if kind == "local":
             location = local_host_kind(urlsplit(endpoint).hostname)
             if location is None:
@@ -328,11 +336,16 @@ class ProviderClient:
             local = {**local, "_remote_endpoint": location == "lan"}
             if profile.get('id') == 'copilot-agent' and profile.get('_copilot_agent') is True:
                 # The managed bridge runs a cloud-backed browser session, not
-                # this machine's inference GPU. Keep ordinary queue/time limits
-                # but never gate on unrelated GPU usage or replay a UI request.
+                # this machine's inference GPU. Keep ordinary queue/time limits,
+                # using a separate admission limit, and never replay a UI request.
                 if location != 'loopback':
                     raise ProviderError('Copilot Agent requires the local bridge')
-                local = {**local, 'gpu_guard_enabled': False, 'max_retries': 0}
+                concurrent = profile.get('_copilot_max_concurrent_requests', 1)
+                if type(concurrent) is not int or not 1 <= concurrent <= 16:
+                    raise ProviderError('Copilot Agent concurrency must be an integer between 1 and 16')
+                local = {**local, 'gpu_guard_enabled': False, 'max_retries': 0,
+                         'max_concurrent_requests': concurrent}
+                request_gate = self.copilot_resource_gate
         headers = _request_headers(kind, profile, conversation_id)
         payload = _request_payload(kind, model, profile, messages, definitions, system, maximum)
         proxy = None
@@ -343,7 +356,7 @@ class ProviderClient:
         for attempt in range(retries + 1):
             try:
                 if kind == "local":
-                    async with self.resource_gate.slot(retry_config):
+                    async with request_gate.slot(retry_config):
                         response = await self._post(endpoint, payload, headers, timeout, None)
                 else:
                     response = await self._post(endpoint, payload, headers, timeout, proxy)

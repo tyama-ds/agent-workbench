@@ -77,6 +77,7 @@ def _bridge_directory(value):
         ROOT.parent / 'copilot-bridge',
         ROOT.parent / 'for-eigyo-pdf-lingua' / 'copilot-bridge',
         ROOT.parent / 'for-eigyo' / 'copilot-bridge',
+        ROOT.parent / 'for_eigyo' / 'copilot-bridge',
     ])
     for path in candidates:
         if (path.is_absolute() and (path / 'server.py').is_file()
@@ -354,6 +355,7 @@ class CopilotBridgeManager:
         self._config = None
         self._closed = False
         self._cleanup_failed = False
+        self._stage = 'existing_bridge_probe'
         self._state = self._status('disabled', False)
 
     def _status(self, state, ready=False, **extra):
@@ -428,11 +430,14 @@ class CopilotBridgeManager:
     async def _prepare_connect(self, cfg):
         if self._owned and self._owned.poll() is not None:
             await self._stop_owned()
+        self._stage = 'existing_bridge_probe'
         observed = await _probe(cfg)
         if observed is None:
             if self._owned:
                 await self._stop_owned()
+            self._stage = 'locating_bridge'
             directory = _bridge_directory(cfg['bridge_directory'])
+            self._stage = 'checking_python'
             python = None
             for candidate in _python_candidates(cfg['python_executable'], directory):
                 if await _has_dependencies(candidate):
@@ -440,18 +445,28 @@ class CopilotBridgeManager:
                     break
             if python is None:
                 raise BridgeFailure('dependencies_missing', '指定 Python に selenium と pyperclip が必要です。既存の依存導入済み Python を指定してください。')
+            self._stage = 'starting_bridge'
             self._owned = _spawn_owned(python, directory, cfg, self.state_directory)
+            self._stage = 'owned_bridge_probe'
             self._state = self._status('starting', message='Edge と Copilot の準備を待っています。必要なら開いた Edge でログインしてください。')
             while observed is None:
                 if self._owned.poll() is not None:
                     raise BridgeFailure('startup_failed', 'Copilot bridge が起動中に終了しました。Python・Edge ドライバー・Bridge 設定を確認してください。')
                 await asyncio.sleep(POLL_SECONDS)
-                observed = await _probe(cfg)
+                try:
+                    observed = await _probe(cfg)
+                except BridgeFailure as exc:
+                    # Only our already-started child is awaited here. A transient
+                    # transport failure is bounded by the outer startup deadline;
+                    # identity/contract failures still stop immediately.
+                    if exc.code != 'connection_failed':
+                        raise
             if self._owned.poll() is not None:
                 raise BridgeFailure('startup_failed', '起動した Copilot bridge の終了を検出しました。')
         return observed
 
     async def _connect(self, cfg):
+        self._stage = 'existing_bridge_probe'
         try:
             observed = await asyncio.wait_for(self._prepare_connect(cfg), cfg['startup_timeout_seconds'])
             self._state = self._status('ready', True, **observed,
@@ -460,6 +475,7 @@ class CopilotBridgeManager:
             await self._stop_owned()
             raise
         except Exception as exc:
+            failed_stage = self._stage
             if isinstance(exc, asyncio.TimeoutError):
                 exc = BridgeFailure('startup_timeout', 'Copilot bridge の起動待機が時間切れです。ログイン・ドライバー・待機時間を確認してください。')
             cleanup_failed = False
@@ -467,9 +483,19 @@ class CopilotBridgeManager:
                 await self._stop_owned()
             except Exception:
                 cleanup_failed = True
-            self._state = self._status('error', code='cleanup_failed' if cleanup_failed else getattr(exc, 'code', 'startup_failed'),
+            stage_message = {
+                'existing_bridge_probe': 'Bridge 起動前の接続確認で停止しました。',
+                'locating_bridge': 'Bridge フォルダーの確認で停止しました。',
+                'checking_python': '起動に使う Python・依存ライブラリの確認で停止しました。',
+                'starting_bridge': 'Bridge プロセスの起動処理で停止しました。',
+                'owned_bridge_probe': 'Bridge 起動後の API 接続待機で停止しました。',
+            }[failed_stage]
+            detail = (str(exc) if isinstance(exc, BridgeFailure) else
+                      'Copilot bridge の起動または確認に失敗しました。設定を確認してください。')
+            self._state = self._status('error', stage=failed_stage,
+                code='cleanup_failed' if cleanup_failed else getattr(exc, 'code', 'startup_failed'),
                 message=('所有 Bridge の停止確認に失敗しました。プロセス状態を確認してください。' if cleanup_failed else
-                         str(exc) if isinstance(exc, BridgeFailure) else 'Copilot bridge の起動または確認に失敗しました。設定を確認してください。'))
+                         stage_message + detail))
         return dict(self._state)
 
     async def ensure(self, config):

@@ -66,7 +66,7 @@ assert.equal($('messageInput').value,'Unsent draft');
 '''.replace('EXPANDED', str(expanded).lower()).replace('ACTION', action))
 
 
-@pytest.mark.parametrize('target', ['messageInput', 'conversationHeading', 'taskInput', 'searchSecret'])
+@pytest.mark.parametrize('target', ['messageInput', 'conversationHeading', 'taskInput', 'systemPolicy'])
 def test_log_update_never_steals_another_controls_focus(target):
     check(r'''
 await loadInitialSelection();await updateLogs([log(1),log(2)]);

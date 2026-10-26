@@ -1,6 +1,8 @@
 'use strict';
 
+const DUCKDUCKGO_SEARCH_ENDPOINT='https://html.duckduckgo.com/html/';
 const FIELD_GROUPS = {
+  work_board: [['enabled','新しい作業で共有掲示板を使う','checkbox']],
   copilot_agent: [
     ['enabled','Copilot-agent mode を有効にする','checkbox'],
     ['bridge_directory','既存の copilot-bridge フォルダー','text','例：C:\\Tools\\copilot-bridge'],
@@ -8,6 +10,11 @@ const FIELD_GROUPS = {
     ['base_url','Bridge の API ベース URL','url','http://127.0.0.1:8800/v1'],
     ['model','Bridge のモデル名','text','copilot'],
     ['startup_timeout_seconds','Bridge 起動の待機上限（秒）','number',5,'1','Edge の準備とサインインを待つ時間です。',1200],
+    ['max_concurrent_requests','Copilot の同時リクエスト上限','range',1,'1','作業者数とは別です。実際の並行処理は Bridge のウィンドウ数・サーバー容量にも制限されます。',16],
+  ],
+  orchestration: [
+    ['delegation_level','新しい作業の PM 分担方針','range',0,'1','PM中心／委任優先／委任必須。人数・権限・呼び出し予算は別の上限です。',2],
+    ['workers_per_pm','PM1人あたりの委任人数（既定値）','range',1,'1','委任優先では目標人数、委任必須では各 PM が満たす人数です。PM中心では使用しません。',16],
   ],
   paths: [
     ['read_roots','読み取りを許可する場所','paths','例：C:\\Projects\\research'],
@@ -36,15 +43,14 @@ const FIELD_GROUPS = {
   ],
   search: [
     ['enabled','Web 検索・ページ取得を使う','checkbox'],
-    ['provider','検索エンジン','select',[['searxng','SearXNG'],['brave','Brave Search']]],
-    ['endpoint','検索の接続先 URL','url'],
-    ['api_key_env','API キーの環境変数名','text','BRAVE_SEARCH_API_KEY'],
+    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['searxng','SearXNG']]],
+    ['endpoint','検索の接続先 URL（DuckDuckGo は固定）','url'],
     ['proxy_url','検索用プロキシ URL（任意）','url'],
     ['timeout_seconds','検索タイムアウト（秒）','number',1],
     ['max_response_bytes','検索応答の最大サイズ（byte）','number',1024],
   ],
   local: [
-    ['max_concurrent_requests','同時リクエスト数','number',1],
+    ['max_concurrent_requests','Local の同時リクエスト上限','range',1,'1','同じモデルの作業者が複数いても、この上限に従って順番待ちします。Copilot の上限とは別です。',16],
     ['queue_timeout_seconds','キューの待機上限（秒）','number',1],
     ['request_timeout_seconds','リクエスト上限（秒）','number',1],
     ['min_interval_seconds','開始間隔の下限（秒）','number',0,'any'],
@@ -93,12 +99,19 @@ const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resou
 Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map()});
 Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,credentialGeneration:0,credentialOperations:new Map()});
 Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
+Object.assign(ui,{settingsStorage:null,settingsTransferOperation:null});
+Object.assign(ui,{workBoards:new Map(),boardOwner:null,boardComposingRun:null,boardRedactionRevision:null});
+const WORK_BOARD_DEFAULTS={enabled:false};
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
-Object.assign(ui,{additionalPMSequence:0});
+Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
+Object.assign(ui,{cockpitView:'network',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
 Object.assign(ui,{effectiveProviders:null,copilotAgentStatus:null,copilotDefaultsPending:false,modelChoicesTouched:false,copilotReconnectOperation:null});
-const COPILOT_AGENT_DEFAULTS={enabled:false,bridge_directory:'',python_executable:'',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600};
-NUMBER_BOUNDS.copilot_agent={startup_timeout_seconds:[5,1200]};
+const COPILOT_AGENT_DEFAULTS={enabled:false,bridge_directory:'',python_executable:'',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600,max_concurrent_requests:1};
+const ORCHESTRATION_DEFAULTS={delegation_level:1,workers_per_pm:2};
+const DELEGATION_LABELS=['PM中心','委任優先','委任必須'];
+NUMBER_BOUNDS.copilot_agent={startup_timeout_seconds:[5,1200],max_concurrent_requests:[1,16]};
+NUMBER_BOUNDS.orchestration={delegation_level:[0,2],workers_per_pm:[1,16]};
 NUMBER_BOUNDS.python={timeout_seconds:[1,600],max_memory_mb:[128,8192],max_output_bytes:[1024,1048576]};
 NUMBER_BOUNDS.selenium={timeout_seconds:[10,300],max_memory_mb:[256,8192],max_output_chars:[1000,100000]};
 const $ = id => document.getElementById(id);
@@ -113,6 +126,7 @@ function availableProfiles() {
   return (Array.isArray(ui.effectiveProviders)?ui.effectiveProviders:(ui.config?.providers||[])).filter(profile=>profile.enabled!==false&&profile.model&&profile.base_url);
 }
 function acceptConnectionSettings(response) {
+  acceptSettingsStorage(response);
   ui.effectiveProviders=Array.isArray(response.effective_providers)?response.effective_providers:null;
   if(ui.config?.copilot_agent?.enabled===true&&availableProfiles().some(profile=>profile.id==='copilot-agent'))ui.copilotDefaultsPending=true;
   else ui.copilotDefaultsPending=false;
@@ -199,6 +213,8 @@ async function api(path,options={}) {
   return data;
 }
 
+function delegationLabel(value) { return Number.isInteger(value)&&value>=0&&value<=2?DELEGATION_LABELS[value]:'未記録'; }
+function rangeLabel(key,value) { return key==='delegation_level'?delegationLabel(Number(value)):key==='workers_per_pm'?`${value} 人`:`${value} リクエスト`; }
 function makeField(spec,value,prefix) {
   const [key,label,type,extra,step,help,max]=spec,id=`${prefix}-${key}`;
   const wrap=element('div','field'+(type==='checkbox'?' checkbox-field':''));
@@ -208,15 +224,20 @@ function makeField(spec,value,prefix) {
   else if(type==='paths') { input=element('textarea','path-input');input.rows=4;input.placeholder=extra||''; }
   else { input=element('input');input.type=type;if(['text','url'].includes(type))input.placeholder=extra||''; }
   input.id=id;input.dataset.key=key;input.autocomplete='off';
-  if(type==='number'){const bounds=prefix.startsWith('profile-')?(key==='context_window_tokens'?[0,2000000]:[5,1800]):NUMBER_BOUNDS[prefix]?.[key];input.min=String(bounds?.[0]??extra??0);input.step=step||'1';input.required=true;if(bounds||max!==undefined)input.max=String(bounds?.[1]??max);if(key==='max_vram_mb')input.step='1';}
+  if(type==='number'||type==='range'){const bounds=prefix.startsWith('profile-')?(key==='context_window_tokens'?[0,2000000]:[5,1800]):NUMBER_BOUNDS[prefix]?.[key];input.min=String(bounds?.[0]??extra??0);input.step=step||'1';input.required=true;if(bounds||max!==undefined)input.max=String(bounds?.[1]??max);if(key==='max_vram_mb')input.step='1';}
   if(type==='checkbox'){input.checked=value===true;wrap.append(input,name);}
   else {input.value=type==='paths'?(Array.isArray(value)?value.join('\n'):''):String(value??'');wrap.append(name,input);}
+  if(type==='range'){
+    const output=element('output','range-value');output.setAttribute('for',id);output.id=`${id}-value`;wrap.append(output);
+    const update=()=>{output.textContent=rangeLabel(key,input.value);input.setAttribute('aria-valuetext',output.textContent);};
+    input.addEventListener('input',update);input.addEventListener('change',update);update();
+  }
   if(help)wrap.appendChild(element('small','',help));
   return wrap;
 }
 function inputValue(input) {
   if(input.type==='checkbox')return input.checked;
-  if(input.type==='number'){const n=Number(input.value);if(!Number.isFinite(n)||input.value==='')throw new Error('数値の設定を確認してください。');return n;}
+  if(input.type==='number'||input.type==='range'){const n=Number(input.value);if(!Number.isFinite(n)||input.value==='')throw new Error('数値の設定を確認してください。');return n;}
   if(input.classList.contains('path-input'))return lines(input.value);
   return input.value.trim();
 }
@@ -226,26 +247,20 @@ function secretStatusText(configured) { return configured?'キー設定あり。
 function refreshSecretStatus(status) {
   ui.secretStatus=status||{};
   $('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{const id=card.querySelector('[data-key="id"]').value.trim();card.querySelector('.secret-status').textContent=secretStatusText(ui.secretStatus[id]);});
-  inlineStatus($('searchSecretStatus'),secretStatusText(ui.secretStatus.search));
 }
 
 function savedCredentialTarget(id) {
-  if(id==='search'){
-    const search=ui.config?.search;
-    return search?.provider==='brave'&&search.endpoint?{id,kind:'Brave Search',endpoint:search.endpoint,proxy:search.proxy_url||''}:null;
-  }
+  if(id==='search')return null;
   const profile=ui.config?.providers?.find(item=>item.id===id);
   return profile?{id,kind:PROFILE_KINDS[profile.kind],endpoint:profile.base_url,proxy:profile.proxy_url||''}:null;
 }
 function credentialTargetText(id) {
   const target=savedCredentialTarget(id);
   if(target)return `保存済み接続先: ${target.id} · ${target.kind} · ${target.endpoint} · プロキシ: ${target.proxy||'なし'}`;
-  if(id==='search')return ui.config?.search?.provider==='searxng'?'保存済み設定は SearXNG です。この接続方式とページ取得では API キーを使用しません。':'Brave Search の接続先 URL を入力して設定を保存してから、キーを入力してください。';
   return '新しいプロファイルは、接続先の設定を保存してからキーを入力してください。';
 }
 function credentialControls() {
-  const controls=[...$('profilesEditor').querySelectorAll('.profile-editor')].flatMap(card=>card._credential?[card._credential]:[]);
-  return [...controls,{id:'search',input:$('searchSecret'),button:$('setSearchSecret'),status:$('searchSecretStatus'),result:$('searchSecretStatus'),target:$('searchCredentialTarget')}];
+  return [...$('profilesEditor').querySelectorAll('.profile-editor')].flatMap(card=>card._credential?[card._credential]:[]);
 }
 function clearCredentialInputs() { credentialControls().forEach(control=>{control.input.value='';}); }
 function canSetCredential(id) {
@@ -266,7 +281,7 @@ async function setCredential(control) {
   const action={revision:ui.configRevision,generation:ui.credentialGeneration,workspace:ui.workspaceGeneration};
   const current=()=>ui.credentialOperations.get(id)===action&&action.revision===ui.configRevision&&action.generation===ui.credentialGeneration&&
     action.workspace===ui.workspaceGeneration&&$('settingsDialog').open&&control.id===id&&!ui.settingsDirty;
-  ui.credentialOperations.set(id,action);invalidateDiagnostics();setSettingsLock(true);
+  ui.credentialOperations.set(id,action);invalidateWorkBoardContent();invalidateDiagnostics();setSettingsLock(true);
   inlineStatus(control.result,'保存済み接続先のキーをセットしています…');
   try {
     const response=await api('/api/secrets',{method:'POST',body:{id,key,config_revision:action.revision}});
@@ -283,6 +298,7 @@ async function setCredential(control) {
     inlineStatus(control.result,errorText(error)+(error.outcomeUnknown?' 更新されたかどうかは未確認です。自動再送信はしません。キー設定の有無だけでは今回の更新を確認できません。':''),true);
   } finally {
     if(ui.credentialOperations.get(id)===action)ui.credentialOperations.delete(id);
+    invalidateWorkBoardContent();renderWorkBoard(getRun());
     invalidateDiagnostics();setSettingsLock(true);schedulePreflight();
   }
 }
@@ -308,12 +324,53 @@ function validSavedSettings(response,revision) {
   if(!Array.isArray(config.providers)||!config.providers.length||new Set(config.providers.map(p=>p?.id)).size!==config.providers.length)return false;
   if(!config.providers.every(p=>record(p)&&PROFILE_FIELDS.every(([key,,type])=>type==='number'?Number.isFinite(p[key]):typeof p[key]==='string')&&
     p.id&&Object.hasOwn(PROFILE_KINDS,p.kind)&&typeof p.enabled==='boolean'&&typeof status[p.id]==='boolean'))return false;
-  return Object.entries(FIELD_GROUPS).every(([group,specs])=>group==='copilot_agent'&&config[group]===undefined||record(config[group])&&specs.every(([key,,type])=>{
+  return Object.entries(FIELD_GROUPS).every(([group,specs])=>['copilot_agent','orchestration'].includes(group)&&config[group]===undefined||record(config[group])&&specs.every(([key,,type])=>{
     const value=config[group][key];
     if(type==='paths')return Array.isArray(value)&&value.every(path=>typeof path==='string');
     if(type==='checkbox')return typeof value==='boolean';
-    return type==='number'?Number.isFinite(value):typeof value==='string';
+    return type==='number'||type==='range'?Number.isFinite(value):typeof value==='string';
   }));
+}
+function acceptSettingsStorage(response) {
+  if(response.settings_storage&&typeof response.settings_storage.path==='string')ui.settingsStorage=response.settings_storage;
+  $('settingsStorage').textContent=ui.settingsStorage?.path?'保存先: '+ui.settingsStorage.path:'保存先は通常 %LOCALAPPDATA%\\AgentWorkbench\\settings.json です。';
+  const warnings=ui.settingsStorage?.warnings;
+  inlineStatus($('settingsRecovery'),Array.isArray(warnings)&&warnings.length?'保存済み設定を保持しています。見つからない場所を修正して保存するまで作業を開始できません。 '+warnings.join(' '):'',Boolean(warnings?.length));
+}
+function settingsTransferBlocked() {
+  return !ui.authenticated||ui.settingsLocked||ui.settingsSaving||ui.settingsReloading||ui.credentialOperations.size>0||ui.configStale||!Number.isSafeInteger(ui.configRevision);
+}
+async function exportSettings() {
+  if(settingsTransferBlocked())return;
+  const workspace=ui.workspaceGeneration;
+  try {
+    const backup=await api('/api/config/export');
+    if(workspace!==ui.workspaceGeneration||!$('settingsDialog').open)return;
+    if(backup.format!=='agent-workbench-settings'||backup.format_version!==1||!backup.config)throw new Error('設定のバックアップ応答を確認できませんでした。');
+    // Only the server's saved public configuration is downloaded, never form/key inputs.
+    downloadSettingsJson(JSON.stringify(backup,null,2)+'\n','AgentWorkbench-settings.json');
+    inlineStatus($('settingsTransferStatus'),'保存済み設定のダウンロードを開始しました。未保存の編集は含みません。');
+  } catch(error){if(workspace===ui.workspaceGeneration&&$('settingsDialog').open)inlineStatus($('settingsTransferStatus'),errorText(error),true);}
+}
+async function importSettingsFile(file) {
+  if(!file||settingsTransferBlocked())return;
+  if(file.size>512*1024){inlineStatus($('settingsTransferStatus'),'設定ファイルは512 KB以内にしてください。',true);return;}
+  const action={workspace:ui.workspaceGeneration,revision:ui.configRevision,draft:ui.settingsDraftGeneration};
+  const owns=()=>ui.settingsTransferOperation===action&&action.workspace===ui.workspaceGeneration&&action.revision===ui.configRevision&&action.draft===ui.settingsDraftGeneration&&$('settingsDialog').open&&!ui.settingsLocked&&!ui.configStale;
+  ui.settingsTransferOperation=action;ui.settingsReloading=true;clearCredentialInputs();setSettingsLock(true);
+  inlineStatus($('settingsTransferStatus'),'設定ファイルを確認しています…');
+  try {
+    const contents=await file.text();if(!owns())return;
+    let backup;try{backup=JSON.parse(contents.replace(/^\uFEFF/,''));}catch(_){throw new Error('JSON形式の設定ファイルを選んでください。');}
+    const response=await api('/api/config/import-preview',{method:'POST',body:{config_revision:action.revision,backup}});
+    if(!owns())return;
+    const status={...Object.fromEntries((response.config?.providers||[]).map(profile=>[profile.id,false])),search:false};
+    if(!validSavedSettings({...response,secret_status:status},action.revision)||!Array.isArray(response.warnings)||!response.warnings.every(w=>typeof w==='string'))throw new Error('読み込んだ設定を確認できませんでした。');
+    // Keep the saved baseline and task drafts intact until the normal Save succeeds.
+    renderSettings(response.config);markSettingsDirty();
+    inlineStatus($('settingsTransferStatus'),'設定を編集欄へ読み込みました。内容を確認して「設定を保存」を押してください。 '+response.warnings.join(' '));
+  } catch(error){if(owns()){if(error.code==='settings_changed')ui.configStale=true;inlineStatus($('settingsTransferStatus'),errorText(error),true);}}
+  finally{if(ui.settingsTransferOperation===action){ui.settingsTransferOperation=null;ui.settingsReloading=false;setSettingsLock(true);schedulePreflight();}}
 }
 async function saveSettings(event) {
   event.preventDefault();if(ui.settingsLocked||ui.settingsSaving||ui.settingsReloading||ui.credentialOperations.size||ui.configStale)return;
@@ -332,7 +389,10 @@ async function saveSettings(event) {
     let sameDraft=false;try{sameDraft=action.draft===ui.settingsDraftGeneration&&JSON.stringify(collectConfig())===JSON.stringify(action.config);}catch(_){}
     ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status;ui.credentialGeneration++;acceptConnectionSettings(response);
     ui.settingsDirty=!sameDraft;
-    if(sameDraft)$('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card._credential.id=inputValue(card.querySelector('[data-key="id"]'));});
+    if(sameDraft){
+      $('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card._credential.id=inputValue(card.querySelector('[data-key="id"]'));});
+      if(JSON.stringify(action.config.search)!==JSON.stringify(response.config.search))$('searchFields')._syncSavedSearch(response.config.search);
+    }
     if(owns())invalidateDiagnostics();else ui.settingsRevision++;
     preserveControlFocus(()=>renderProfileChoices(true),()=>$('pmProfile'));
     if(owns()&&sameDraft){refreshSecretStatus(response.secret_status);inlineStatus($('settingsStatus'),'設定を保存しました。');}
@@ -395,16 +455,37 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   secret.addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229)return;if(event.key==='Enter'){event.preventDefault();setCredential(card._credential);}});
   $('profilesEditor').appendChild(card);
 }
-function renderSettings() {
+function configureSearchFields(search) {
+  const container=$('searchFields'),provider=container.querySelector('[data-key="provider"]'),endpoint=container.querySelector('[data-key="endpoint"]');
+  let previous=provider.value,searxngEndpoint=search.provider==='searxng'?search.endpoint:'';
+  const update=()=>{
+    if(previous==='searxng')searxngEndpoint=endpoint.value;
+    endpoint.readOnly=provider.value==='duckduckgo';
+    endpoint.value=endpoint.readOnly?DUCKDUCKGO_SEARCH_ENDPOINT:searxngEndpoint;
+    previous=provider.value;
+  };
+  container._syncSavedSearch=saved=>{
+    for(const [key,,type] of FIELD_GROUPS.search){
+      const input=container.querySelector(`[data-key="${key}"]`);
+      if(type==='checkbox')input.checked=saved[key];
+      else if(input.value!==String(saved[key]??''))input.value=String(saved[key]??'');
+    }
+    previous=provider.value;searxngEndpoint=saved.provider==='searxng'?saved.endpoint:'';update();
+  };
+  provider.addEventListener('change',update);update();
+}
+function renderSettings(config=ui.config) {
   ui.settingsDraftGeneration++;
   ui.credentialGeneration++;
-  $('profilesEditor').replaceChildren();(ui.config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
-  const containers={copilot_agent:'copilotAgentFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
-  for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]);container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,(ui.config[group]||(group==='copilot_agent'?COPILOT_AGENT_DEFAULTS:{}))[spec[0]],group)));}
+  $('profilesEditor').replaceChildren();(config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
+  const containers={work_board:'workBoardFields',copilot_agent:'copilotAgentFields',orchestration:'orchestrationFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+  for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]),defaults=group==='copilot_agent'?COPILOT_AGENT_DEFAULTS:group==='orchestration'?ORCHESTRATION_DEFAULTS:group==='work_board'?WORK_BOARD_DEFAULTS:{};container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,({...defaults,...config[group]})[spec[0]],group)));}
+  configureSearchFields(config.search);
+  $('workBoardFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','workBoardSettingsHelp');
   $('copilotAgentFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','copilotAgentHelp');renderCopilotStatus();
   $('pythonFields').querySelector('[data-key="network_enabled"]').setAttribute('aria-describedby','pythonNetworkHelp');
   $('seleniumFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','seleniumRuntimeHelp seleniumBoundaryHelp');
-  $('systemPolicy').value=ui.config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
+  $('systemPolicy').value=config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
 }
 function collectConfig() {
   const config=structuredClone(ui.config);
@@ -414,9 +495,13 @@ function collectConfig() {
   const ids=config.providers.map(profile=>profile.id);
   if(new Set(ids).size!==ids.length)throw new Error('プロファイル ID が重複しています。別の ID を指定してください。');
   if(!config.providers.length)throw new Error('プロファイルを1つ以上追加してください。');
-  const containers={copilot_agent:'copilotAgentFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+  const containers={work_board:'workBoardFields',copilot_agent:'copilotAgentFields',orchestration:'orchestrationFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
   for(const [group,id] of Object.entries(containers)){config[group]={...config[group]};$(id).querySelectorAll('[data-key]').forEach(input=>{config[group][input.dataset.key]=inputValue(input);});}
+  config.search.api_key_env='';
+  if(config.search.provider==='duckduckgo')config.search.endpoint=DUCKDUCKGO_SEARCH_ENDPOINT;
   if(ui.config.copilot_agent===undefined&&JSON.stringify(config.copilot_agent)===JSON.stringify(COPILOT_AGENT_DEFAULTS))delete config.copilot_agent;
+  if(ui.config.orchestration===undefined&&JSON.stringify(config.orchestration)===JSON.stringify(ORCHESTRATION_DEFAULTS))delete config.orchestration;
+  if(ui.config.work_board===undefined&&JSON.stringify(config.work_board)===JSON.stringify(WORK_BOARD_DEFAULTS))delete config.work_board;
   config.system_policy=$('systemPolicy').value;
   return config;
 }
@@ -426,11 +511,13 @@ function setSettingsLock(force=false) {
   $('settingsForm').querySelectorAll('input,textarea,select,button').forEach(node=>{if(node.dataset.credential!=='true')node.disabled=disabled&&node.dataset.readonly!=='true'||ui.configStale&&(node.type==='submit'||node.dataset.probe==='true');});$('saveSettings').disabled=disabled||ui.configStale;
   if(!disabled)$('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card.querySelector('[data-key="proxy_url"]').disabled=card.querySelector('[data-key="kind"]').value==='local';});
   refreshCredentialControls();$('discardSettings').disabled=Boolean(ui.settingsSaving||ui.settingsReloading||ui.credentialOperations.size);
+  for(const id of ['exportSettings','importSettings','settingsImportFile'])$(id).disabled=Boolean(disabled||ui.configStale);
   const lockText=(locked?'作業の実行中は接続先・モデル・権限を変更できません。保存済み接続先のキーだけ変更できます。':'')+(ui.configStale?' 保存済み設定が変わったか、保存結果が未確認です。変更内容を控えてから「変更を破棄・保存済み設定を読み直す」で確認してください。保存・キー更新・モデル確認はそれまで行いません。':'');
   if($('settingsLockStatus').textContent!==lockText)$('settingsLockStatus').textContent=lockText;
   renderCopilotStatus();
 }
 function renderProfileChoices(preserveDraft=false,preferDefault=false) {
+  if(!ui.taskOrchestrationInitialized){applyTaskOrchestrationDefaults();ui.taskOrchestrationInitialized=true;}
   let previous=$('pmProfile').value,checked=new Set([...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value));
   const profiles=availableProfiles();
   if((!preserveDraft||preferDefault)&&ui.copilotDefaultsPending&&!ui.modelChoicesTouched&&!$('taskInput').value.trim()&&!$('additionalPMs').children.length&&profiles.some(profile=>profile.id==='copilot-agent')){
@@ -485,12 +572,13 @@ function showView(view) {
   reconcileTaskReuse();
 }
 function runPayload() {
-  const payload={task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value)};
+  const payload={task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value),delegation_level:Number($('delegationLevel').value),workers_per_pm:Number($('workersPerPM').value)};
   const extra=[...($('additionalPMs')?.querySelectorAll('select')||[])].map(select=>select.value);
   if(extra.length)payload.pm_profiles=[payload.pm_profile,...extra];
   return payload;
 }
 function trackTaskDraft(event) {
+  if(['input','change'].includes(event?.type)&&[ $('delegationLevel'),$('workersPerPM') ].includes(event.target))ui.taskOrchestrationInitialized=true;
   if(['input','change'].includes(event?.type)&&(event.target===$('pmProfile')||event.target?.dataset?.focusKey?.startsWith('task-worker:')||event.target?.id?.startsWith('additional-pm-')))ui.modelChoicesTouched=true;
   // An actual edit also invalidates a choice when numeric parsing would hide
   // it (0 → blank, 1 → 01), or when the user re-enters the same value.
@@ -501,7 +589,24 @@ function trackTaskDraft(event) {
   if(ui.taskReuseSource&&$('taskInput').value!==ui.taskReuseSource.text){ui.taskReuseSource=null;$('taskReuseProvenance').hidden=true;}
   showPendingStart();
 }
-function syncStartControl() { $('startRun').disabled=Boolean(ui.startingRun||ui.taskReuseCandidate)||!$('pmProfile').value||[...($('additionalPMs')?.querySelectorAll('select')||[])].some(select=>!select.value);syncTaskReuseControl(); }
+function applyTaskOrchestrationDefaults() {
+  const defaults=ui.config?.orchestration||ORCHESTRATION_DEFAULTS;
+  $('delegationLevel').value=String(defaults.delegation_level);$('workersPerPM').value=String(defaults.workers_per_pm);
+}
+function taskOrchestrationIssue() {
+  const level=Number($('delegationLevel').value),count=Number($('workersPerPM').value),total=Number($('maxWorkers').value);
+  if($('delegationLevel').value===''||!Number.isInteger(level)||level<0||level>2||$('workersPerPM').value===''||!Number.isInteger(count)||count<1||count>16)return 'PMの分担方針と委任人数を確認してください。';
+  const pms=1+($('additionalPMs')?.querySelectorAll('select')||[]).length,required=pms*count;
+  return level===2&&(!Number.isInteger(total)||total<required)?`委任必須には PM ${pms} 人 × ${count} 人 = ${required} 人分の作業者上限が必要です。現在の上限は ${total} 人です。人数または方針を変更してください。`:'';
+}
+function renderTaskOrchestration() {
+  const level=Number($('delegationLevel').value),label=delegationLabel(level),count=$('workersPerPM').value;
+  $('delegationLevelValue').textContent=label;$('delegationLevel').setAttribute('aria-valuetext',label);
+  $('workersPerPMValue').textContent=`${count} 人${level===0?'（PM中心では未使用）':''}`;$('workersPerPM').setAttribute('aria-valuetext',$('workersPerPMValue').textContent);
+  const issue=taskOrchestrationIssue();inlineStatus($('delegationStatus'),issue|| (level===0?'PM中心では、この委任人数を使用しません。':level===1?'目標人数です。PMが必要に応じて委任し、全体の作業者上限と予算を守ります。':'各PMの委任手順が必須です。成果の品質・成功を保証する設定ではなく、全体の権限・予算も増えません。'),Boolean(issue));
+  return issue;
+}
+function syncStartControl() { const issue=renderTaskOrchestration();$('startRun').disabled=Boolean(ui.startingRun||ui.taskReuseCandidate||issue)||!$('pmProfile').value||[...($('additionalPMs')?.querySelectorAll('select')||[])].some(select=>!select.value);syncTaskReuseControl(); }
 function taskEditorText(text) { return text.replace(/\r\n?/g,'\n'); }
 function taskReuseDraftKey() { return JSON.stringify([runPayload(),$('maxWorkers').value]); }
 function taskReuseIssue(run) {
@@ -632,6 +737,7 @@ async function refreshPreflight(request) {
     for(const issue of [...(response.blockers||[]),...(response.warnings||[])])parts.push(issue.message);
     inlineStatus($('preflightStatus'),(response.can_start?'開始に必要な設定を確認しました。推論・ツール動作は未確認です。':'開始前に修正が必要です。')+' '+parts.join(' '),!response.can_start);
     const target=$('preflightDetails'),scopeOpen=Boolean(target.querySelector('.readiness-scope')?.open);target.replaceChildren();
+    if(response.orchestration){const policy=response.orchestration;target.append(element('p','small',`確認した分担方針: ${delegationLabel(policy.delegation_level)} · PM1人あたり ${Number.isInteger(policy.workers_per_pm)?policy.workers_per_pm:'未記録'} 人${policy.delegation_level===0?'（未使用）':''}`));}
     if(response.destinations){
       target.append(element('p','small','送信される可能性のある接続先（実際の呼び出し記録ではありません）'));
       for(const p of response.destinations)target.append(element('p','readiness-destination',`${p.pm_count?`PM ${p.pm_count} 人${p.worker_available?' / 作業者候補':''}`:p.role} · ${p.label} · ${p.model} — ${p.endpoint}${p.proxy?' · proxy: '+p.proxy:''}`));
@@ -700,6 +806,7 @@ function openNextMessageInput() {
   if(!entries.length){renderMessageInputPresence();return;}
   const {run,agent}=entries[(index+1)%entries.length],changed=changeSelection(run.id,agent.id);
   if(changed)ui.navigationGeneration++;
+  revealInspector();
   renderState();
   // Focus belongs to this explicit action, never to a later detail response.
   ($('messageInput').disabled?$('conversationHeading'):$('messageInput')).focus();
@@ -755,6 +862,7 @@ function openQuestion(id) {
   if(!entry){renderState();return;}
   ui.navigationGeneration++;
   const changed=changeSelection(entry.run.id,id);
+  revealInspector();
   renderState();
   // This explicit navigation has current summary text immediately. Polling never
   // performs this focus move, including when a late detail response arrives.
@@ -799,21 +907,298 @@ function renderQuestions(entries) {
   if(focusedKey?.startsWith('question:')&&document.activeElement?.dataset.focusKey===focusedKey)
     document.activeElement.scrollIntoView({block:'nearest',inline:'nearest'});
 }
-function renderTeamMap(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.role])]);if(signature===ui.mapSignature)return;ui.mapSignature=signature;
-  const map=$('teamMap');map.replaceChildren();$('teamMapMeta').textContent=`${agents.length} AGENTS`;
-  if(!agents.length){map.appendChild(element('p','empty-small','チームの親子関係を表示します'));return;}
-  const ids=new Set(agents.map(agent=>agent.id));
-  const roots=agents.filter(agent=>!agent.parent_id||!ids.has(agent.parent_id));
-  const visited=new Set();
-  function node(agent,root=false) {
-    const group=element('div','map-branch'),button=element('button',root?'map-root':'map-node');button.type='button';button.dataset.focusKey=`map:${agent.id}`;button.setAttribute('aria-label',`${agent.name||agent.id} の作業ログ`);button.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
-    button.append(element('span','map-medallion',!agent.parent_id?'PM':'W'),element('span','map-label',agent.name||agent.id));button.addEventListener('click',()=>selectAgent(agent.id));group.appendChild(button);visited.add(agent.id);
-    const children=agents.filter(child=>child.parent_id===agent.id&&!visited.has(child.id));
-    if(children.length){const row=element('div','map-children');children.forEach(child=>row.appendChild(node(child)));group.appendChild(row);}return group;
+function workBoardState(runId) {
+  if(!ui.workBoards.has(runId))ui.workBoards.set(runId,{posts:new Map(),nodes:new Map(),cursor:0,lastSeq:0,loaded:false,loading:null,error:'',status:'',canPost:false,remaining:200,epoch:0,seenSeq:0,draft:{body:'',reply_to:null,revision:0},operation:null,view:{scroll:0,atBottom:true}});
+  return ui.workBoards.get(runId);
+}
+function workBoardEnabled(run) { return run?.work_board?.enabled===true; }
+function workBoardActive(run) { return Boolean(run&&ACTIVE_STATUSES.has(run.status)&&run.status!=='stopping'); }
+function saveWorkBoardDraft(event) {
+  if(!ui.boardOwner)return;
+  const draft=workBoardState(ui.boardOwner).draft,value=$('workBoardInput').value;
+  if(draft.body!==value||event?.type==='input'){draft.body=value;draft.revision++;}
+}
+function rememberWorkBoardView() {
+  if(ui.cockpitView!=='board'||!ui.boardOwner)return;
+  const board=workBoardState(ui.boardOwner),feed=$('workBoardFeed');
+  board.view.scroll=feed.scrollTop;board.view.atBottom=feed.scrollHeight-feed.clientHeight-feed.scrollTop<=40;
+  if(board.view.atBottom&&board.loaded)board.seenSeq=Math.max(board.seenSeq,board.cursor);
+}
+function invalidateWorkBoardContent() {
+  // Public history is re-read after a redaction change; old quotes must disappear too.
+  for(const board of ui.workBoards.values()){
+    board.epoch++;board.loading=null;board.posts.clear();board.nodes.clear();board.cursor=0;board.loaded=false;board.error='';board.canPost=false;
+    if(board.operation)board.operation.hidePreview=true;
   }
-  roots.forEach(agent=>map.appendChild(node(agent,true)));
-  agents.forEach(agent=>{if(!visited.has(agent.id))map.appendChild(node(agent,true));});
+  $('workBoardFeed').replaceChildren();$('workBoardReplyBody').textContent='';$('workBoardUncertainBody').textContent='';
+  $('workBoardStatus').textContent='公開内容を更新しています。再取得できるまで以前の投稿・引用は表示しません。';
+}
+function hideWorkBoardAfterRedactionFailure() {
+  invalidateWorkBoardContent();
+  for(const board of ui.workBoards.values())board.error='秘密情報を安全に伏せた表示を取得できませんでした。以前の投稿・引用は表示しません。再取得してください。';
+  if(currentRunBoard(ui.selectedRun))renderWorkBoard(getRun());
+}
+function workBoardPostValid(post,runId) {
+  return post&&post.run_id===runId&&Number.isSafeInteger(post.seq)&&post.seq>=1&&post.seq<=200&&
+    ['human','agent'].includes(post.author_kind)&&typeof post.author_name==='string'&&typeof post.body==='string'&&
+    (post.author_kind==='human'?post.author_id===null:typeof post.author_id==='string')&&
+    (post.reply_to===null||Number.isSafeInteger(post.reply_to)&&post.reply_to>0&&post.reply_to<post.seq)&&
+    typeof post.created_at==='number'&&Number.isFinite(post.created_at);
+}
+function workBoardQuote(board,seq) {
+  const parent=board.posts.get(seq);
+  return parent?`${parent.author_name}: ${parent.body}`:`参照 #${seq}（本文はまだ取得できていません）`;
+}
+function createWorkBoardPost(post,runId) {
+  const row=element('article',`board-post ${post.author_kind==='human'?'human':'agent'}`);
+  row.tabIndex=-1;row.dataset.focusKey=`board:${runId}:${post.seq}`;
+  const avatar=element('div','board-avatar',post.author_kind==='human'?'YOU':'A');avatar.setAttribute('aria-hidden','true');
+  const content=element('div','board-post-content'),bubble=element('div','board-bubble'),header=element('div','board-author');
+  const author=element('strong','',post.author_name),role=element('span',''),time=element('time','',localTime(post.created_at));
+  header.append(author,role,time);
+  const quote=element('button','board-quote');quote.type='button';quote.hidden=post.reply_to===null;
+  quote.addEventListener('click',()=>{
+    if(ui.boardOwner!==runId||ui.selectedRun!==runId)return;
+    const target=workBoardState(runId).nodes.get(post.reply_to)?.row;
+    if(target){target.scrollIntoView({block:'center',behavior:'auto'});target.focus({preventScroll:true});}
+  });
+  const body=element('p','board-body',post.body),footer=element('div','board-post-footer'),reply=element('button','button minor','返信');
+  reply.type='button';reply.dataset.focusKey=`board-reply:${runId}:${post.seq}`;
+  reply.addEventListener('click',()=>{
+    const run=getRun(),board=workBoardState(runId);
+    if(ui.boardOwner!==runId||run?.id!==runId||!workBoardActive(run)||!board.canPost)return;
+    board.draft.reply_to=post.seq;board.draft.revision++;renderWorkBoardControls(run);$('workBoardInput').focus();
+  });
+  footer.append(element('span','',`#${post.seq}`),reply);bubble.append(quote,body);content.append(header,bubble,footer);row.append(avatar,content);
+  return {row,quote,reply,role,avatar};
+}
+function renderWorkBoardUnread(run) {
+  const board=run?workBoardState(run.id):null,last=Math.max(run?.work_board?.last_seq||0,board?.lastSeq||0);
+  const count=workBoardEnabled(run)?Math.max(0,last-(board?.seenSeq||0)):0;
+  $('workBoardBadge').hidden=count===0;$('workBoardBadge').textContent=count?`未表示 ${count}`:'';
+  $('workBoardNew').hidden=!count||!board||board.view.atBottom||ui.cockpitView!=='board';
+  $('workBoardNew').textContent=`新しい投稿 ${count}件 · 下へ`;
+}
+function renderWorkBoardControls(run) {
+  if(!run||ui.boardOwner!==run.id)return;
+  const board=workBoardState(run.id),enabled=workBoardEnabled(run),active=workBoardActive(run),draft=board.draft,operation=board.operation;
+  const canPost=enabled&&active&&board.loaded&&board.canPost&&board.remaining>0;
+  $('workBoardForm').hidden=!enabled||!active;
+  $('workBoardInput').disabled=!enabled||!active;
+  $('workBoardSend').disabled=!canPost||Boolean(operation)||ui.boardComposingRun===run.id||!draft.body.trim()||[...draft.body].length>2000;
+  $('workBoardCharacters').textContent=`${[...draft.body].length} / 2000 文字`;
+  $('workBoardReply').hidden=draft.reply_to===null||!enabled;
+  $('workBoardReplyTitle').textContent=draft.reply_to===null?'':`投稿 #${draft.reply_to} への返信`;
+  $('workBoardReplyBody').textContent=draft.reply_to===null?'':workBoardQuote(board,draft.reply_to);
+  $('workBoardUncertain').hidden=!enabled||!operation||operation.status!=='unknown';
+  $('workBoardUncertainBody').textContent=operation?.status==='unknown'?(operation.hidePreview?'秘密情報の更新後のため、以前の送信本文は表示しません。確認時は元の投稿IDと本文をそのまま使用します。':operation.body):'';
+  $('workBoardRetry').disabled=!enabled||operation?.status!=='unknown';
+  $('workBoardMode').textContent=!enabled?'この作業では掲示板がオフです。設定で有効にして、新しい作業を開始してください。':!active?'この作業は終了しています。投稿は閲覧のみです。':board.loaded&&!board.canPost?'投稿上限に達しました。過去の投稿は閲覧できます。':'この作業の全員へ共有 · 投稿受付は、閲覧・理解・正式報告の証明ではありません。';
+  $('workBoardReload').hidden=!enabled;$('workBoardReload').disabled=Boolean(board.loading);
+  $('workBoardCount').textContent=enabled?`${board.posts.size} / ${Math.max(run.work_board.post_count||0,board.lastSeq)} 件取得 · 最大200件`:'';
+  inlineStatus($('workBoardStatus'),board.error||board.status,Boolean(board.error));
+  for(const node of board.nodes.values())node.reply.disabled=!canPost;
+}
+function renderWorkBoard(run) {
+  const visible=Boolean(run&&ui.cockpitView==='board');$('workBoardPanel').hidden=!visible;
+  if(!run){renderWorkBoardUnread(null);return;}
+  const board=workBoardState(run.id),enabled=workBoardEnabled(run),feed=$('workBoardFeed');
+  if(visible&&ui.boardOwner!==run.id){
+    ui.boardOwner=run.id;ui.boardComposingRun=null;feed.replaceChildren();board.nodes.clear();$('workBoardInput').value=board.draft.body;
+  }
+  renderWorkBoardUnread(run);
+  if(!visible)return;
+  feed.hidden=!enabled;$('workBoardEmpty').hidden=!enabled||!board.loaded||board.posts.size>0;
+  if(!enabled){feed.replaceChildren();board.nodes.clear();renderWorkBoardControls(run);return;}
+  for(const post of [...board.posts.values()].sort((a,b)=>a.seq-b.seq)){
+    let node=board.nodes.get(post.seq);
+    if(!node){node=createWorkBoardPost(post,run.id);board.nodes.set(post.seq,node);feed.appendChild(node.row);}
+    node.quote.textContent=post.reply_to===null?'':workBoardQuote(board,post.reply_to);
+    node.quote.disabled=!board.posts.has(post.reply_to);
+    const agent=ui.state.agents.find(agent=>agent.run_id===run.id&&agent.id===post.author_id);
+    node.role.textContent=post.author_kind==='human'?'あなた':agent?`${agent.parent_id?'作業者':'PM'} · ${stateLabel(agent)}`:'担当者';
+    node.avatar.textContent=post.author_kind==='human'?'YOU':agent&&!agent.parent_id?'PM':'W';
+  }
+  if(board.view.atBottom){feed.scrollTop=feed.scrollHeight;if(board.loaded)board.seenSeq=Math.max(board.seenSeq,board.cursor);}
+  else feed.scrollTop=board.view.scroll;
+  renderWorkBoardControls(run);renderWorkBoardUnread(run);
+  if(!board.loading&&!board.error&&(!board.loaded||board.cursor<Math.max(run.work_board.last_seq||0,board.lastSeq)))void loadWorkBoard(run);
+}
+async function loadWorkBoard(run,force=false) {
+  if(!workBoardEnabled(run)||run.id!==ui.selectedRun||ui.cockpitView!=='board'||ui.credentialOperations.size)return;
+  const board=workBoardState(run.id);
+  if(board.loading)return board.loading.promise;
+  if(board.error&&!force)return;
+  board.error='';
+  const action={generation:ui.selectionGeneration,epoch:board.epoch,promise:null};board.loading=action;
+  const current=()=>board.loading===action&&board.epoch===action.epoch&&ui.selectedRun===run.id&&ui.selectionGeneration===action.generation;
+  action.promise=(async()=>{
+    try{
+      for(let page=0;page<201;page++){
+        const cursor=board.cursor,response=await api(`/api/runs/${encodeURIComponent(run.id)}/work-board?after_seq=${cursor}&limit=50`);
+        if(!current())return;
+        if(!Number.isSafeInteger(response?.redaction_revision)||response.redaction_revision<0||ui.boardRedactionRevision!==null&&response.redaction_revision<ui.boardRedactionRevision)throw new Error('掲示板の秘密情報更新を確認できませんでした。');
+        if(response.redaction_revision!==ui.boardRedactionRevision){
+          invalidateWorkBoardContent();ui.boardRedactionRevision=response.redaction_revision;action.epoch=board.epoch;board.loading=action;
+          if(cursor>0)continue; // Re-fetch the entire public feed, never mix masking revisions.
+        }
+        if(response?.enabled!==true||response.run_id!==run.id||!Array.isArray(response.posts)||response.posts.length>50||
+          typeof response.has_more!=='boolean'||typeof response.can_post!=='boolean'||!Number.isSafeInteger(response.last_seq)||response.last_seq<cursor||response.last_seq>200||
+          !Number.isSafeInteger(response.next_after_seq)||!Number.isSafeInteger(response.remaining_posts)||response.remaining_posts<0||response.remaining_posts>200)throw new Error('掲示板の取得応答を確認できませんでした。');
+        let next=cursor;
+        for(const post of response.posts){if(!workBoardPostValid(post,run.id)||post.seq!==next+1)throw new Error('投稿の順番を確認できませんでした。');next=post.seq;}
+        if(response.next_after_seq!==next||next>response.last_seq||response.has_more!==(next<response.last_seq)||response.has_more&&next===cursor)throw new Error('掲示板の続きの位置を確認できませんでした。');
+        for(const post of response.posts)board.posts.set(post.seq,post);
+        board.cursor=next;board.lastSeq=Math.max(board.lastSeq,response.last_seq);board.canPost=response.can_post;board.remaining=response.remaining_posts;board.loaded=true;
+        renderWorkBoard(run);
+        if(!response.has_more)return;
+      }
+      throw new Error('掲示板の取得上限に達しました。');
+    }catch(error){if(current()){if(error.code==='redaction_capacity')hideWorkBoardAfterRedactionFailure();else board.error=errorText(error);}}
+    finally{if(board.loading===action){board.loading=null;if(currentRunBoard(run.id))renderWorkBoard(getRun());}}
+  })();
+  renderWorkBoardControls(run);return action.promise;
+}
+function currentRunBoard(runId) { return ui.selectedRun===runId&&ui.boardOwner===runId&&ui.cockpitView==='board'; }
+async function submitWorkBoardPost(retry=false) {
+  const run=getRun();if(!run||ui.boardOwner!==run.id||!workBoardEnabled(run))return;
+  const board=workBoardState(run.id);saveWorkBoardDraft();
+  let action=board.operation;
+  if(retry){if(action?.status!=='unknown')return;}
+  else{
+    if(action||!workBoardActive(run)||!board.loaded||!board.canPost||board.remaining<=0||ui.boardComposingRun===run.id||!board.draft.body.trim()||[...board.draft.body].length>2000)return;
+    action={id:crypto.randomUUID(),body:board.draft.body,reply_to:board.draft.reply_to,revision:board.draft.revision,status:'pending',hidePreview:false};board.operation=action;
+  }
+  action.status='pending';board.error='';board.status=retry?'前回の投稿の受付結果を確認しています…':'投稿を送信しています…';renderWorkBoardControls(run);
+  const epoch=board.epoch,body={body:action.body,client_post_id:action.id};if(action.reply_to!==null)body.reply_to=action.reply_to;
+  try{
+    const response=await api(`/api/runs/${encodeURIComponent(run.id)}/work-board`,{method:'POST',body});
+    if(response?.ok!==true||typeof response.duplicate!=='boolean'||!workBoardPostValid(response.post,run.id)||response.post.author_kind!=='human'){
+      const error=new Error('投稿の受付応答を確認できませんでした。');error.outcomeUnknown=true;throw error;
+    }
+    if(board.operation!==action)return;
+    board.lastSeq=Math.max(board.lastSeq,response.post.seq);
+    // A concurrent redaction change invalidates this body; the next GET supplies freshly masked text.
+    board.status=`投稿 #${response.post.seq} ${response.duplicate?'の受付を確認しました':'を受け付けました'}。閲覧・理解は未確認です。`;
+    if(board.epoch!==epoch)board.status+=' 公開本文を再取得します。';
+    if(board.draft.revision===action.revision&&board.draft.body===action.body&&board.draft.reply_to===action.reply_to&&ui.boardComposingRun!==run.id){
+      board.draft={body:'',reply_to:null,revision:board.draft.revision+1};if(ui.boardOwner===run.id)$('workBoardInput').value='';
+    }
+    board.operation=null;
+  }catch(error){
+    if(board.operation!==action)return;
+    if(error.outcomeUnknown||error.code==='redaction_capacity'){action.status='unknown';board.status='送信結果は未確認です。自動再送信はしません。';}
+    else{board.operation=null;board.status='投稿は確認できませんでした。下書きは保持しています。';}
+    board.error=board.epoch===epoch?errorText(error):'公開内容の更新中に投稿結果を取得できませんでした。';
+    if(error.code==='redaction_capacity')hideWorkBoardAfterRedactionFailure();
+  }finally{if(currentRunBoard(run.id)){renderWorkBoard(getRun());if(!board.operation)void loadWorkBoard(getRun(),true);}}
+}
+function setCockpitView(view) {
+  if(!['network','board','inspector'].includes(view))return;
+  rememberWorkBoardView();
+  ui.cockpitView=view;document.querySelector('.app-shell').dataset.cockpitView=view;
+  for(const [id,mode] of [['networkView','network'],['boardView','board'],['inspectorView','inspector']])$(id).setAttribute('aria-pressed',String(view===mode));
+  renderWorkBoard(getRun());
+}
+function revealInspector() { if(window.matchMedia?.('(max-width: 1100px)').matches)setCockpitView('inspector'); }
+function svgElement(tag,attributes={}) {
+  const node=document.createElementNS('http://www.w3.org/2000/svg',tag);
+  for(const [key,value] of Object.entries(attributes))node.setAttribute(key,String(value));
+  return node;
+}
+function retainedTeamEvents(run) {
+  if(!run||(ui.compactState&&ui.loadedEventsRun!==run.id))return [];
+  return ui.state.events.filter(event=>event.run_id===run.id).slice(-100);
+}
+function networkLayout(agents) {
+  const ids=new Set(agents.map(agent=>agent.id)),placed=new Map();let top=32;
+  const roots=agents.filter(agent=>!agent.parent_id||!ids.has(agent.parent_id));
+  for(const root of [...roots,...agents]) {
+    if(placed.has(root.id))continue;
+    placed.set(root.id,{x:280,y:top});let row=0;const descendants=[];
+    // Parent identity, not a model-written role label, defines the hierarchy.
+    const pending=agents.filter(agent=>agent.parent_id===root.id);
+    while(pending.length) {
+      const agent=pending.shift();if(placed.has(agent.id))continue;
+      placed.set(agent.id,{x:36+(row%3)*244,y:top+172+Math.floor(row/3)*152});row++;descendants.push(agent.id);
+      pending.push(...agents.filter(child=>child.parent_id===agent.id&&!placed.has(child.id)));
+    }
+    // Center the incomplete last row under its PM; 220px cards + 24px gaps.
+    const lastRowCount=row%3,offset=(3-lastRowCount)*(220+24)/2;
+    if(lastRowCount)for(const id of descendants.slice(-lastRowCount))placed.get(id).x+=offset;
+    top+=172+Math.ceil(row/3)*152+36;
+  }
+  return {positions:placed,width:840,height:Math.max(390,top)};
+}
+function currentMailLinks(agents,events) {
+  const ids=new Set(agents.map(agent=>agent.id)),pairs=new Map();
+  for(const event of events) {
+    if(event.kind!=='mail'||!ids.has(event.from_agent_id)||!ids.has(event.to_agent_id)||event.from_agent_id===event.to_agent_id)continue;
+    const key=JSON.stringify([event.from_agent_id,event.to_agent_id]);
+    pairs.delete(key);pairs.set(key,{from:event.from_agent_id,to:event.to_agent_id});
+  }
+  return [...pairs.values()].slice(-12);
+}
+function selectMailPair(from,to) {
+  ui.activityPair={from,to};ui.activityFilter='pair';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});
+}
+function networkMailPath(from,to,index) {
+  if(from.y===to.y) {
+    // The 28px row gap keeps this arch outside both sibling cards and the row above.
+    const arch=Math.max(8,from.y-18-(index%3)*4);
+    return `M ${from.x+110} ${from.y} C ${from.x+110} ${arch}, ${to.x+110} ${arch}, ${to.x+110} ${to.y}`;
+  }
+  const edge=Math.max(from.x,to.x)+254+(index%3)*12;
+  return `M ${from.x+220} ${from.y+64} C ${edge} ${from.y+64}, ${edge} ${to.y+64}, ${to.x+220} ${to.y+64}`;
+}
+function renderTeamMap(agents) {
+  const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,agents.map(agent=>[agent.id,agent.parent_id])]);
+  $('teamMapMeta').textContent=`${agents.length} AGENTS`;
+  const counts=[['作業中',agents.filter(a=>['working','running'].includes(a.status)).length],['待機',agents.filter(a=>['queued','waiting','idle'].includes(a.status)&&!needsHuman(a)).length],['要回答',agents.filter(needsHuman).length]];
+  $('networkCounts').textContent=counts.map(([label,count])=>`${label} ${count}`).join('  /  ');
+  if(layoutKey!==ui.networkLayoutKey) {
+    ui.networkLayoutKey=layoutKey;ui.networkMailKey='';ui.networkNodes=new Map();map.replaceChildren();
+    if(!agents.length){map.appendChild(element('p','network-empty','チームを開始すると、担当と連絡がここに並びます。'));ui.networkSvg=null;return;}
+    const layout=networkLayout(agents),canvas=element('div','network-canvas');ui.networkLayout=layout;
+    canvas.style.width=`${layout.width}px`;canvas.style.height=`${layout.height}px`;
+    const svg=svgElement('svg',{viewBox:`0 0 ${layout.width} ${layout.height}`,width:layout.width,height:layout.height,role:'group','aria-label':'親子関係とメールの方向',class:'network-lines'});
+    const defs=svgElement('defs'),marker=svgElement('marker',{id:'mailArrow',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'});
+    marker.appendChild(svgElement('path',{d:'M 0 0 L 10 5 L 0 10 z',fill:'currentColor'}));defs.appendChild(marker);svg.appendChild(defs);
+    for(const agent of agents) {
+      const here=layout.positions.get(agent.id),parent=layout.positions.get(agent.parent_id);
+      if(parent)svg.appendChild(svgElement('path',{d:`M ${parent.x+110} ${parent.y+124} C ${parent.x+110} ${parent.y+150}, ${here.x+110} ${here.y-24}, ${here.x+110} ${here.y}`,class:'network-parent-line','aria-hidden':'true'}));
+    }
+    ui.networkSvg=svgElement('g',{class:'network-mail-lines'});svg.appendChild(ui.networkSvg);canvas.appendChild(svg);
+    for(const agent of agents) {
+      const place=layout.positions.get(agent.id),button=element('button','network-node');button.type='button';button.dataset.agentId=agent.id;button.dataset.focusKey=`map:${agent.id}`;
+      button.style.left=`${place.x}px`;button.style.top=`${place.y}px`;
+      const role=element('span','network-role',agent.parent_id?'WORKER':'PM'),name=element('strong','network-name'),state=element('span','network-state'),task=element('span','network-task'),activity=element('span','network-activity');
+      button.append(role,state,name,task,activity);button.addEventListener('click',()=>selectAgent(agent.id));canvas.appendChild(button);
+      ui.networkNodes.set(agent.id,{button,name,state,task,activity});
+    }
+    map.appendChild(canvas);
+  }
+  for(const agent of agents) {
+    const node=ui.networkNodes.get(agent.id);if(!node)continue;
+    const status=Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'unknown';
+    node.button.className=`network-node ${status}${needsHuman(agent)?' human-input':''}${agent.id===ui.selectedAgent?' selected':''}`;
+    node.button.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
+    node.button.setAttribute('aria-label',`${agent.name||agent.id} · ${stateLabel(agent)} · 担当詳細を開く`);
+    node.name.textContent=agent.name||agent.id;node.state.textContent=stateLabel(agent);
+    const task=agent.assignment||'担当内容は未記録';node.task.textContent=task;node.task.title=task;
+    const latest=agent.activity?.latest_log;
+    node.activity.textContent=needsHuman(agent)?'人への質問あり':agent.last_error?'エラー記録あり':latest?`${localTime(latest.at)} · ${String(latest.text||'').slice(0,120)}`:'最新ログは未取得';
+  }
+  const links=currentMailLinks(agents,retainedTeamEvents(getRun())),mailKey=JSON.stringify(links);
+  if(ui.networkSvg&&mailKey!==ui.networkMailKey) {
+    ui.networkMailKey=mailKey;ui.networkSvg.replaceChildren();
+    links.forEach((link,index)=>{const from=ui.networkLayout.positions.get(link.from),to=ui.networkLayout.positions.get(link.to);
+      const line=svgElement('path',{d:networkMailPath(from,to,index),class:'network-mail-line','marker-end':'url(#mailArrow)',role:'button',tabindex:0,'aria-label':`${agents.find(a=>a.id===link.from)?.name||link.from} → ${agents.find(a=>a.id===link.to)?.name||link.to} の通信を見る`});
+      line.dataset.focusKey=`mail-line:${JSON.stringify([link.from,link.to])}`;line.addEventListener('click',()=>selectMailPair(link.from,link.to));
+      line.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();selectMailPair(link.from,link.to);}});ui.networkSvg.appendChild(line);
+    });
+  }
+  $('networkMailMeta').textContent=`表示中の最新100イベント内 · メール ${links.length} 方向（最大12）`;
 }
 function renderAgentTabs(agents) {
   const signature=JSON.stringify([ui.selectedAgent,agents.map(agent=>[agent.id,agent.name,agent.role,agent.parent_id])]);if(signature===ui.tabsSignature)return;ui.tabsSignature=signature;
@@ -834,6 +1219,8 @@ function rememberConversationView() {
 }
 function changeSelection(runId,id) {
   if(ui.selectedRun===runId&&ui.selectedAgent===id)return false;
+  if(ui.selectedRun!==runId&&ui.activityFilter==='pair'){ui.activityFilter='all';ui.activityPair=null;}
+  if(ui.selectedRun!==runId){saveWorkBoardDraft();rememberWorkBoardView();}
   saveAgentDraft();rememberConversationView();ui.selectedRun=runId;ui.selectedAgent=id;
   // An epoch, rather than an ID comparison, also rejects an old A response after A → B → A.
   ui.selectionGeneration++;ui.loadedDetail=null;ui.detailError=false;ui.logContext='';ui.logSignature='';ui.outputRequest++;
@@ -841,7 +1228,7 @@ function changeSelection(runId,id) {
   $('messageInput').value=ui.drafts.get(id)||'';inlineStatus($('messageStatus'),'');inlineStatus($('resultActionStatus'),'');
   return true;
 }
-function selectAgent(id) { if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;ui.navigationGeneration++;const changed=changeSelection(ui.selectedRun,id);renderRun();if(changed)void pollState(); }
+function selectAgent(id) { if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;ui.navigationGeneration++;const changed=changeSelection(ui.selectedRun,id);revealInspector();renderRun();if(changed)void pollState(); }
 function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;ui.navigationGeneration++;const agents=ui.state.agents.filter(agent=>agent.run_id===id),changed=changeSelection(id,agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null);inlineStatus($('messageStatus'),'');showView('work');setBriefOpen(false);renderState();if(changed)void pollState(); }
 
 function renderRunList() {
@@ -852,7 +1239,7 @@ function renderRunList() {
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
   [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
-const REASON_LABELS = {human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
+const REASON_LABELS = {human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
 function stateLabel(item) { return REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
 function badge(status,reason) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),REASON_LABELS[reason]||statusLabel(status)); }
 function renderAgents(agents) {
@@ -964,6 +1351,11 @@ async function copySelectedOutput() {
     outputFeedback(action,path?'パスをコピーしました。':'本文をコピーしました。');
   }catch(_){outputFeedback(action,'コピーできませんでした。表示されたテキストを選択してコピーするか、.txt 保存を使ってください。',true);}
 }
+function downloadSettingsJson(text,filename) {
+  const blob=new Blob([text],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(blob);let link;
+  try {link=element('a');link.href=url;link.download=filename;link.hidden=true;document.body.appendChild(link);link.click();}
+  finally {link?.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);}
+}
 function downloadPlainText(text,filename) {
   const blob=new Blob([text],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob);let link;
   try {link=element('a');link.href=url;link.download=filename;link.hidden=true;document.body.appendChild(link);link.click();}
@@ -974,7 +1366,18 @@ function exportSelectedOutput() {
   try {downloadPlainText(exportOutputText(agent,item),item.kind==='receipt'?'workbench-save-receipt.txt':'workbench-result.txt');outputFeedback(action,'選択した記録の .txt ダウンロードを開始しました（UTF-8）。');}
   catch(_){outputFeedback(action,'.txt ダウンロードを開始できませんでした。表示されたテキストを選択してコピーしてください。',true);}
 }
+function setVisibleText(node,text) { const value=String(text??'');if(node.textContent!==value)node.textContent=value; }
+function renderInspector(agent) {
+  const activity=agent?.activity,latest=activity?.latest_log;
+  setVisibleText($('inspectorAssignment'),agent?.assignment||'担当内容は未記録です。');
+  setVisibleText($('inspectorLatest'),latest?`${localTime(latest.at)} · ${latest.kind||'ログ'}\n${latest.text||''}`:'公開された最新ログはまだありません。');
+  const count=value=>Number.isInteger(value)&&value>=0?value:'未取得';
+  setVisibleText($('inspectorCounts'),`待機入力 ${count(activity?.pending_count)} · 報告 ${count(activity?.result_count)} · 保存 ${count(activity?.output_receipt_count)}`);
+  $('inspectorError').hidden=!agent?.last_error;setVisibleText($('inspectorError'),agent?.last_error||'');
+  $('inspectAgentMail').disabled=!agent;
+}
 function renderConversation(agent) {
+  renderInspector(agent);
   renderResults(agent);
   const available=Boolean(agent),run=getRun();$('messageForm').hidden=!available;
   const loaded=agentDetailLoaded(agent),loading=available&&!loaded,detailStatus=$('detailStatus');
@@ -1055,16 +1458,38 @@ function evictedLogFocusFallback(container,context,logs,loaded) {
     return target;
   };
 }
+function focusHumanRecipient(id) {
+  if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;
+  selectAgent(id);setCockpitView('inspector');($('messageInput').disabled?$('conversationHeading'):$('messageInput')).focus({preventScroll:true});
+}
 function renderActivity(run) {
-  const feed=$('activityFeed'),loading=Boolean(run)&&ui.compactState&&ui.loadedEventsRun!==run.id,events=!run||loading?[]:ui.state.events.filter(event=>event.run_id===run.id).slice(-100).reverse();
-  const signature=JSON.stringify([run?.id,loading,events]);if(signature===ui.activitySignature)return;ui.activitySignature=signature;
+  const feed=$('activityFeed'),loading=Boolean(run)&&ui.compactState&&ui.loadedEventsRun!==run.id,retained=retainedTeamEvents(run),mail=event=>['mail','mail_consumed'].includes(event.kind);
+  const events=retained.filter(event=>ui.activityFilter==='mail'?mail(event):ui.activityFilter==='selected'?mail(event)&&[event.from_agent_id,event.to_agent_id].includes(ui.selectedAgent):ui.activityFilter==='pair'?mail(event)&&((event.from_agent_id===ui.activityPair?.from&&event.to_agent_id===ui.activityPair?.to)||(event.from_agent_id===ui.activityPair?.to&&event.to_agent_id===ui.activityPair?.from)):true).reverse();
+  const signature=JSON.stringify([run?.id,loading,ui.activityFilter,ui.activityPair,ui.selectedAgent,events]);if(signature===ui.activitySignature)return;ui.activitySignature=signature;
+  for(const [id,filter] of [['activityAll','all'],['activityMail','mail'],['activitySelected','selected']])$(id).setAttribute('aria-pressed',String(ui.activityFilter===filter));
+  setVisibleText($('activityScope'),`${ui.activityFilter==='pair'?'選択した二者の通信 · ':ui.activityFilter==='selected'?'選択担当の通信 · ':''}最新100イベント内 ${events.length} 件。保持範囲外の履歴は含みません。`);
   const scroll=ui.activityRun===run?.id?feed.scrollTop:0;ui.activityRun=run?.id;feed.replaceChildren();feed.setAttribute('aria-busy',String(loading));
   if(loading){feed.appendChild(element('p','detail-loading','チームのメールと進捗を読み込み中…'));return;}
-  if(!events.length){feed.appendChild(element('p','empty-small','エージェント同士の連絡や作業の進捗がここに表示されます。'));return;}
+  if(!events.length){feed.appendChild(element('p','empty-small','この表示範囲に記録はありません。宛先IDのない過去のメールは「すべて」で確認できます。'));return;}
   events.forEach(event=>{const row=element('article','activity-item'),content=element('div');let title;
-    if(event.kind==='mail')title=`${event.from||'エージェント'} → ${Array.isArray(event.to)?event.to.join(', '):event.to||'チーム'}`;
+    if(mail(event))title=`${event.from||'エージェント'} → ${Array.isArray(event.to)?event.to.join(', '):event.to||'チーム'}`;
     else title=({spawn:'作業者が参加',question:'人への質問',error:'エラー',done:'作業完了',stopped:'作業を停止',tool:'ツール実行',collaboration_limit:'自動連携が上限に到達'})[event.kind]||event.kind||'進捗';
-    content.append(element('div','activity-title',title),element('div','activity-body',event.text||''));row.append(element('time','activity-time',localTime(event.at)),content);feed.appendChild(row);
+    content.appendChild(element('div','activity-title',title));
+    if(mail(event)) {
+      const kind=({peer_message:'相互メール',worker_report:'作業者の報告',worker_notice:'作業者の通知',worker_error:'作業者のエラー通知'})[event.message_type]||'メール';
+      const delivery=event.delivery_state==='context_consumed'?'会話へ取り込み済み':event.delivery_state==='queued'?'送信キューに受理（記録時点）':'配送状態は未記録';
+      content.appendChild(element('p','mail-delivery',`${kind} · ${delivery}（理解・完了の確認ではありません）`));
+      if(event.subject)content.appendChild(element('p','mail-subject',event.subject));
+      const participants=element('div','mail-participants');
+      for(const [label,id] of [['差出人',event.from_agent_id],['宛先',event.to_agent_id]]) {
+        const agent=ui.state.agents.find(item=>item.id===id&&item.run_id===run?.id);if(!agent)continue;
+        const button=element('button','button minor',`${label}: ${agent.name||agent.id}`);button.type='button';button.dataset.focusKey=`mail:${event.id}:${label}`;button.addEventListener('click',()=>selectAgent(id));participants.appendChild(button);
+      }
+      const sender=ui.state.agents.find(item=>item.id===event.from_agent_id&&item.run_id===run?.id);
+      if(sender){const reply=element('button','button minor','差出人へ人の指示を入力');reply.type='button';reply.dataset.focusKey=`mail-reply:${event.id}`;reply.addEventListener('click',()=>focusHumanRecipient(sender.id));participants.appendChild(reply);}
+      content.appendChild(participants);
+    }
+    content.appendChild(element('div','activity-body',event.text||''));row.append(element('time','activity-time',localTime(event.at)),content);feed.appendChild(row);
   });
   feed.scrollTop=scroll;
 }
@@ -1079,7 +1504,7 @@ function preserveControlFocus(render,fallback=null) {
 function renderRun() { preserveControlFocus(renderRunContent); }
 function renderRunContent() {
   reconcileTaskReuse();syncTaskReuseControl();
-  const run=getRun();$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;
+  const run=getRun();$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;$('networkWorkspace').hidden=!run;renderWorkBoard(run);
   const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderMessageInputSummary();
   $('rosterHeading').textContent=ui.needsOnly?'質問':'CREW';
   $('rosterScope').textContent=ui.needsOnly?'全チーム · チームの開始順。開くだけでは回答・再開しません。':run?`表示中のチーム · ${shortRunId(run)}`:'選択したチームの担当者';
@@ -1093,7 +1518,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0]],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0],['PMの分担方針',delegationLabel(run.delegation_level)],['PMごとの委任人数',Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録']],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }
@@ -1126,6 +1551,11 @@ function applyState(state,request) {
   if(compact&&(!selection||selection.run_id!==request.run||selection.agent_id!==request.agent||selection.detail_loaded!==Boolean(request.agent)))throw new Error('選択した詳細の応答を確認できませんでした。');
   const next={...state,runs:Array.isArray(state.runs)?state.runs:[],agents:Array.isArray(state.agents)?state.agents:[],events:Array.isArray(state.events)?state.events:[],resources:state.resources||{}};
   if(compact&&request.agent&&!next.agents.some(agent=>agent.run_id===request.run&&agent.id===request.agent&&['logs','results','output_receipts'].every(key=>Array.isArray(agent[key]))))throw new Error('選択した詳細の応答を確認できませんでした。');
+  if(Number.isSafeInteger(state.redaction_revision)&&state.redaction_revision>=0){
+    if(ui.boardRedactionRevision!==null&&state.redaction_revision<ui.boardRedactionRevision)throw new Error('公開内容の更新前の応答を受信しました。再取得します。');
+    if(ui.boardRedactionRevision!==state.redaction_revision)invalidateWorkBoardContent();
+    ui.boardRedactionRevision=state.redaction_revision;
+  }
   ui.state=next;ui.compactState=compact;ui.detailError=false;
   if(Object.hasOwn(state,'copilot_agent_status')){
     const changed=JSON.stringify(ui.copilotAgentStatus)!==JSON.stringify(state.copilot_agent_status);
@@ -1148,6 +1578,7 @@ async function pollState(fresh=false) {
           applyState(state,request);renderState();setConnection(true,'Workbench 接続中');
         } catch(error) {
           if(request.generation!==ui.selectionGeneration){ui.pollAgain=true;continue;}
+          if(error.code==='redaction_capacity')hideWorkBoardAfterRedactionFailure();
           setConnection(false,'接続を確認してください');ui.detailError=true;renderConversation(getAgent());if(!ui.authenticated)notice(errorText(error),true);
         }
         // Initial summary or a removed selection can choose the latest run/root during renderState.
@@ -1157,6 +1588,21 @@ async function pollState(fresh=false) {
   })();return ui.pollPromise;
 }
 async function initialize() {
+  applyTaskOrchestrationDefaults();
+  $('networkView').addEventListener('click',()=>setCockpitView('network'));
+  $('boardView').addEventListener('click',()=>setCockpitView('board'));
+  $('workBoardForm').addEventListener('submit',event=>{event.preventDefault();void submitWorkBoardPost();});
+  $('workBoardInput').addEventListener('input',event=>{saveWorkBoardDraft(event);renderWorkBoardControls(getRun());});
+  $('workBoardInput').addEventListener('compositionstart',()=>{ui.boardComposingRun=ui.boardOwner;saveWorkBoardDraft({type:'input'});});
+  $('workBoardInput').addEventListener('compositionend',()=>{saveWorkBoardDraft({type:'input'});ui.boardComposingRun=null;renderWorkBoardControls(getRun());});
+  $('workBoardFeed').addEventListener('scroll',()=>{rememberWorkBoardView();renderWorkBoardUnread(getRun());});
+  $('workBoardNew').addEventListener('click',()=>{const run=getRun();if(!run)return;const board=workBoardState(run.id);board.view.atBottom=true;$('workBoardFeed').scrollTop=$('workBoardFeed').scrollHeight;rememberWorkBoardView();renderWorkBoardUnread(run);});
+  $('workBoardReload').addEventListener('click',()=>{const run=getRun();if(run)void loadWorkBoard(run,true);});
+  $('workBoardCancelReply').addEventListener('click',()=>{const run=getRun();if(!run||ui.boardOwner!==run.id)return;const board=workBoardState(run.id);board.draft.reply_to=null;board.draft.revision++;renderWorkBoardControls(run);$('workBoardInput').focus();});
+  $('workBoardRetry').addEventListener('click',()=>{const run=getRun();if(run)void submitWorkBoardPost(true);});
+  $('inspectorView').addEventListener('click',()=>setCockpitView('inspector'));
+  for(const [id,filter] of [['activityAll','all'],['activityMail','mail'],['activitySelected','selected']])$(id).addEventListener('click',()=>{ui.activityFilter=filter;renderActivity(getRun());});
+  $('inspectAgentMail').addEventListener('click',()=>{ui.activityFilter='selected';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});});
   $('resultSelection').addEventListener('change',()=>{ui.outputSelections.set(outputOwner(),$('resultSelection').value);renderResults(getAgent());$('resultText').scrollTop=0;});
   $('copyResult').addEventListener('click',copySelectedOutput);$('exportResult').addEventListener('click',exportSelectedOutput);
   $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',()=>showView('settings'));
@@ -1167,6 +1613,7 @@ async function initialize() {
   $('runForm').addEventListener('input',event=>{trackTaskDraft(event);syncStartControl();schedulePreflight();});
   $('runForm').addEventListener('change',event=>{trackTaskDraft(event);syncStartControl();schedulePreflight();});
   $('addPM').addEventListener('click',addPM);
+  $('useOrchestrationDefaults').addEventListener('click',()=>{applyTaskOrchestrationDefaults();ui.taskOrchestrationInitialized=true;trackTaskDraft({type:'change'});syncStartControl();schedulePreflight();});
   $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;clearTaskReuse();releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
   $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
   $('discardSettings').addEventListener('click',discardSettings);
@@ -1186,13 +1633,17 @@ async function initialize() {
   document.addEventListener('keydown',revealAgentCardAfterTab);
   for(const id of ['taskDialog','settingsDialog']) { const dialog=$(id);dialog.addEventListener('click',event=>{if(event.target!==dialog)return;const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();}); }
   window.addEventListener('popstate',()=>{setBriefOpen(false);showView('work');});
-  $('settingsForm').addEventListener('input',event=>{if(event.target.type!=='password')markSettingsDirty();});
-  $('settingsForm').addEventListener('change',event=>{if(event.target.type!=='password')markSettingsDirty();});
+  $('exportSettings').addEventListener('click',exportSettings);
+  $('importSettings').addEventListener('click',()=>{if(!settingsTransferBlocked())$('settingsImportFile').click();});
+  $('settingsImportFile').addEventListener('change',event=>{const file=event.target.files?.[0];event.target.value='';return importSettingsFile(file);});
+  $('settingsForm').addEventListener('input',event=>{if(event.target.type!=='password'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
+  $('settingsForm').addEventListener('change',event=>{if(event.target.type!=='password'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
   $('settingsForm').addEventListener('invalid',event=>{const card=event.target.closest('.profile-editor');if(card&&card.querySelector('.profile-content').hidden)card.querySelector('[data-readonly]').click();},true);
   $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180,context_window_tokens:0},index,true,false);markSettingsDirty();});
   $('settingsForm').addEventListener('submit',saveSettings);
   $('runForm').addEventListener('submit',async event=>{
     event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun||ui.taskReuseCandidate)return;
+    const delegationIssue=taskOrchestrationIssue();if(delegationIssue){inlineStatus($('runFormStatus'),delegationIssue,true);return;}
     const workerProfiles=[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value);
     if(!workerProfiles.length&&Number($('maxWorkers').value)>0){inlineStatus($('runFormStatus'),'作業者に使ってよいプロファイルを1つ以上選んでください。',true);return;}
     trackTaskDraft();notice('');
@@ -1242,8 +1693,6 @@ async function initialize() {
     catch(error){if(owns())inlineStatus($('messageStatus'),errorText(error)+(error.outcomeUnknown?' 送信結果は未確認です。作業ログを確認してから再送信が必要か判断してください。':''),true);}
     finally{ui.busyMessage=false;renderConversation(getAgent());renderMessageInputPresence();}
   });
-  $('setSearchSecret').addEventListener('click',()=>setCredential(credentialControls().find(control=>control.id==='search')));
-  $('searchSecret').addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229)return;if(event.key==='Enter'){event.preventDefault();setCredential(credentialControls().find(control=>control.id==='search'));}});
   try {
     const fragment=new URLSearchParams(location.hash.slice(1)),token=fragment.get('token');
     if(token){history.replaceState(null,'',location.pathname+location.search);await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}});}

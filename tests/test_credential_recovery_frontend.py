@@ -10,7 +10,7 @@ from workbench.config import DEFAULT
 
 CONFIG = json.loads(json.dumps(DEFAULT))
 CONFIG['providers'] = [dict(CONFIG['providers'][0], model='fixture', api_key_env='')]
-CONFIG['search'].update(provider='brave', endpoint='https://saved.example/search', api_key_env='')
+CONFIG['search'].update(provider='duckduckgo', endpoint='https://html.duckduckgo.com/html/', api_key_env='')
 
 DOM = ACTION_DOM + r'''
 function matches(node,selector){
@@ -27,11 +27,11 @@ function matches(node,selector){
 Node.prototype.querySelectorAll=function(selector){const all=this.children.flatMap(node=>[node,...node.querySelectorAll('*')]);return all.filter(node=>selector.split(',').some(part=>matches(node,part)));};
 const flush=async()=>{for(let i=0;i<10;i++)await Promise.resolve();};
 const requests=[];
-async function wire(){
+async function wire(withCloud=false){
  await initialize();ui.authenticated=true;ui.config=structuredClone(CONFIG);ui.configRevision=4;
- $('settingsForm').append($('profilesEditor'),$('searchFields'),$('pathFields'),$('pythonFields'),$('seleniumFields'),$('localFields'),$('budgetFields'),$('searchSecret'),$('setSearchSecret'),$('systemPolicy'));
- $('searchSecret').dataset.credential='true';$('setSearchSecret').dataset.credential='true';
- $('searchSecret').type='password';$('taskInput').value='Exact task draft';$('pmProfile').value='local';$('maxWorkers').value='1';
+ if(withCloud)ui.config.providers.push({...ui.config.providers[0],id:'cloud',label:'Cloud fixture',kind:'openai',base_url:'https://saved.example/v1',api_key_env:'OPENAI_API_KEY'});
+ $('settingsForm').append($('profilesEditor'),$('searchFields'),$('pathFields'),$('pythonFields'),$('seleniumFields'),$('localFields'),$('budgetFields'),$('systemPolicy'));
+ $('taskInput').value='Exact task draft';$('pmProfile').value='local';$('maxWorkers').value='1';
  renderSettings();renderProfileChoices();showView('settings');
  api=(path,options)=>new Promise((resolve,reject)=>requests.push({path,options,resolve,reject}));
 }
@@ -50,9 +50,9 @@ def check(source):
 
 def test_waiting_unlocks_only_saved_credentials_and_preserves_poll_focus():
     check(r'''
-await wire();ui.state.runs=[{id:'run',status:'waiting'}];setSettingsLock(true);
-const provider=control(),search=control('search');
-assert(!provider.input.disabled&&!provider.button.disabled&&!search.input.disabled);
+await wire(true);ui.state.runs=[{id:'run',status:'waiting'}];setSettingsLock(true);
+const provider=control(),cloud=control('cloud');
+assert(!provider.input.disabled&&!provider.button.disabled&&!cloud.input.disabled);
 assert($('saveSettings').disabled);assert($('profilesEditor').querySelector('[data-key="base_url"]').disabled);
 assert($('budgetFields').querySelector('[data-key="max_model_calls"]').disabled);
 assert(provider.target.textContent.includes(CONFIG.providers[0].base_url));assert(provider.target.textContent.includes('local'));
@@ -78,12 +78,12 @@ assert.equal(requests.length,1);assert(!c.input.disabled);assert(!c.result.textC
 ''')
 
 
-def test_dirty_new_target_and_search_guards_clear_abandoned_keys():
+def test_dirty_new_target_and_model_guards_clear_abandoned_keys():
     check(r'''
-await wire();control().input.value='SYNTHETIC-abandoned';control('search').input.value='SYNTHETIC-search';
+await wire(true);control().input.value='SYNTHETIC-abandoned';control('cloud').input.value='SYNTHETIC-cloud';
 $('settingsForm').listeners.input({target:{type:'text'}});
 assert(ui.settingsDirty);assert(credentialControls().every(c=>c.input.disabled&&c.button.disabled&&c.input.value===''));
-await press();await press('search');assert.equal(requests.length,0);
+await press();await press('cloud');assert.equal(requests.length,0);
 $('addProfile').listeners.click();const added=[...$('profilesEditor').children].at(-1)._credential;
 assert.equal(added.id,null);assert(added.input.disabled);added.input.value='SYNTHETIC-never-sent';await added.button.listeners.click();
 assert.equal(requests.length,0);assert(added.target.textContent.includes('設定を保存'));
@@ -92,15 +92,15 @@ assert.equal(requests.length,0);assert(added.target.textContent.includes('設定
 
 def test_independent_targets_keep_other_pending_and_configuration_locked():
     check(r'''
-await wire();control().input.value='SYNTHETIC-provider';const a=press();
-assert(!control('search').input.disabled);control('search').input.value='SYNTHETIC-search';const b=press('search');
+await wire(true);control().input.value='SYNTHETIC-provider';const a=press();
+assert(!control('cloud').input.disabled);control('cloud').input.value='SYNTHETIC-cloud';const b=press('cloud');
 assert.equal(requests.length,2);assert.equal(ui.credentialOperations.size,2);
 accepted(0);await a;assert.equal(ui.credentialOperations.size,1);
-assert(control('search').input.disabled&&$('saveSettings').disabled&&$('discardSettings').disabled);
+assert(control('cloud').input.disabled&&$('saveSettings').disabled&&$('discardSettings').disabled);
 await $('settingsForm').listeners.submit({preventDefault(){}});await discardSettings();assert.equal(requests.length,2);
-requests[1].reject(new Error('Synthetic search failure'));await b;
-assert.equal(ui.credentialOperations.size,0);assert(!control().button.disabled&&!control('search').button.disabled);
-assert(control().result.textContent.includes('キーをセットしました'));assert(control('search').result.textContent.includes('Synthetic search failure'));
+requests[1].reject(new Error('Synthetic cloud failure'));await b;
+assert.equal(ui.credentialOperations.size,0);assert(!control().button.disabled&&!control('cloud').button.disabled);
+assert(control().result.textContent.includes('キーをセットしました'));assert(control('cloud').result.textContent.includes('Synthetic cloud failure'));
 ''')
 
 
@@ -131,12 +131,12 @@ assert.equal(ui.secretStatus.local,undefined);assert.equal(requests.length,1);
 ''')
 
 
-def test_conflict_requires_saved_config_reload_and_search_does_not_bypass_it():
+def test_conflict_requires_saved_config_reload_and_other_model_does_not_bypass_it():
     check(r'''
-await wire();control().input.value='SYNTHETIC-first';const pending=press();
+await wire(true);control().input.value='SYNTHETIC-first';const pending=press();
 const error=new Error('Saved config changed');error.code='settings_changed';requests[0].reject(error);await pending;
 assert(ui.configStale);assert(credentialControls().every(c=>c.input.disabled));
-await press('search');assert.equal(requests.length,1);
+await press('cloud');assert.equal(requests.length,1);
 const reload=$('discardSettings').listeners.click();assert.equal(requests[1].path,'/api/config');
 requests[1].resolve({config:CONFIG,config_revision:5,secret_status:{local:false,search:false}});await reload;
 assert(!ui.configStale&&!ui.settingsDirty);assert.equal(ui.configRevision,5);assert(!control().input.disabled);
@@ -175,19 +175,20 @@ assert(!ui.settingsReloading);
 ''')
 
 
-@pytest.mark.parametrize('search', [{'provider': 'searxng', 'endpoint': 'https://saved.example/search'}, {'provider': 'brave', 'endpoint': ''}])
-def test_unusable_saved_search_target_is_explained_and_cannot_send(search):
+@pytest.mark.parametrize('search', [{'provider': 'searxng', 'endpoint': 'https://saved.example/search'}, {'provider': 'duckduckgo', 'endpoint': 'https://html.duckduckgo.com/html/'}])
+def test_search_has_no_credential_target_or_submission(search):
     check(r'''
 await wire();Object.assign(ui.config.search,''' + json.dumps(search) + r''');refreshCredentialControls();
-const c=control('search');assert(c.input.disabled&&c.button.disabled);assert(c.target.textContent.length>10);
-c.input.value='SYNTHETIC-never-sent';await press('search');assert.equal(requests.length,0);
+assert.equal(control('search'),undefined);assert.equal(savedCredentialTarget('search'),null);assert(!canSetCredential('search'));
+await setCredential({id:'search',input:{value:'SYNTHETIC-never-sent'}});assert.equal(requests.length,0);
+assert(!control().input.disabled);
 ''')
 
 
-@pytest.mark.parametrize('ident', ['local', 'search'])
+@pytest.mark.parametrize('ident', ['local', 'cloud'])
 def test_enter_in_password_submits_only_that_key_not_the_settings_form(ident):
     check(r'''
-await wire();const c=control(''' + json.dumps(ident) + r''');let prevented=false;c.input.value='SYNTHETIC-key';
+await wire(true);const c=control(''' + json.dumps(ident) + r''');let prevented=false;c.input.value='SYNTHETIC-key';
 c.input.listeners.keydown({key:'Enter',preventDefault(){prevented=true;}});
 assert(prevented);assert.equal(requests.length,1);assert.equal(requests[0].path,'/api/secrets');
 assert.equal(requests[0].options.body.id,''' + json.dumps(ident) + r''');

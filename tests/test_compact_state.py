@@ -42,13 +42,15 @@ async def populated(tmp_path):
 def test_full_and_selected_field_parity_and_no_mutation(populated):
     engine, run, pm, worker, other_run, other_pm = populated
     before = engine.snapshot()
-    assert set(before) == {'runs', 'agents', 'events', 'resources', 'copilot_agent_status'}
+    assert set(before) == {'runs', 'agents', 'events', 'resources', 'copilot_resources', 'copilot_agent_status', 'redaction_revision'}
     selected = engine.selected_snapshot(run_id=run['id'], agent_id=worker.id)
     assert set(selected) == set(before) | {'selection'}
     assert selected['selection'] == {'run_id': run['id'], 'agent_id': worker.id, 'detail_loaded': True}
     assert selected['runs'] == before['runs']
     assert selected['resources'] == before['resources']
+    assert selected['copilot_resources'] == before['copilot_resources']
     assert selected['copilot_agent_status'] == before['copilot_agent_status']
+    assert type(selected['redaction_revision']) is int and selected['redaction_revision'] == before['redaction_revision']
     assert selected['events'] == [event for event in before['events'] if event['run_id'] == run['id']]
     assert len(selected['agents']) == len(before['agents'])
     for full, compact in zip(before['agents'], selected['agents']):
@@ -58,6 +60,12 @@ def test_full_and_selected_field_parity_and_no_mutation(populated):
             assert compact == {key: value for key, value in full.items() if key not in HEAVY_FIELDS}
             assert HEAVY_FIELDS.isdisjoint(compact)
         assert 'conversation' not in compact and 'pending' not in compact
+        assert {'worker_report_deliveries', 'worker_report_consumed', 'pending_worker_reports', 'pending_mail_metadata',
+                'finished_revision', 'waiting_for_workers', 'delegation_blocked'}.isdisjoint(compact)
+        assert compact['activity']['result_count'] == 1
+        assert compact['activity']['output_receipt_count'] == 1
+        assert set(compact['activity']['latest_log']) == {'kind', 'text', 'at'}
+        assert 'thinking' not in compact['activity']['latest_log']
     assert engine.snapshot() == before
     # The returned display objects must not be aliases into mutable engine data.
     selected['agents'][1]['logs'][0]['text'] = 'Changed client copy'

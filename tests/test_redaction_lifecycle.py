@@ -8,7 +8,7 @@ import pytest
 
 from test_engine import ScriptClient, configured, reply, settled, start
 from test_config_server import serving, bootstrap
-from workbench.config import Settings, validate_settings
+from workbench.config import DEFAULT, Settings, validate_settings
 from workbench.engine import Engine
 from workbench.redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from workbench.server import APP_KEY
@@ -18,6 +18,13 @@ from test_compact_frontend import DOM
 
 OLD = 'SYNTHETIC-lifecycle-old-credential'
 NEW = 'SYNTHETIC-lifecycle-new-credential'
+
+
+@pytest.fixture(autouse=True)
+def synthetic_credentials_only(monkeypatch):
+    for name in {'BRAVE_SEARCH_API_KEY', *(profile['api_key_env'] for profile in DEFAULT['providers'])}:
+        if name:
+            monkeypatch.delenv(name, raising=False)
 
 
 def isolate(engine):
@@ -174,31 +181,40 @@ async def test_delayed_committed_receipt_after_key_rotation(tmp_path):
         release.set(); await engine.close()
 
 
-async def test_new_search_dispatch_uses_current_key_and_keeps_inflight_headers(tmp_path, monkeypatch):
+async def test_keyless_search_ignores_rotated_retired_keys_while_request_is_inflight(tmp_path, monkeypatch):
     engine, _ = configured(tmp_path, ScriptClient([])); isolate(engine)
     engine.kick = lambda agent: None
-    engine.settings.value['search'].update(enabled=True, provider='brave',
-        endpoint='https://api.search.brave.com/res/v1/web/search')
-    engine.set_secret('search', OLD)
+    engine.settings.value['search'].update(enabled=True, provider='searxng',
+        endpoint='https://saved.example/search')
+    # Deliberately seed a retired value; the supported setter no longer accepts it.
+    engine.settings.secrets['search'] = OLD
     run, pm = await start(engine)
     assert run['_web'].api_key == ''
     entered, release = asyncio.Event(), asyncio.Event(); seen = []
     async def fake_request(self, url, **kwargs):
-        seen.append(kwargs['headers']['X-Subscription-Token'])
+        seen.append((url, dict(kwargs['headers']), self.api_key))
         if len(seen) == 1:
             entered.set(); await release.wait()
-        return b'{"web":{"results":[]}}', 'application/json', url
+        return b'{"results":[]}', 'application/json', url
     monkeypatch.setattr(type(run['_web']), '_request', fake_request)
     first = asyncio.create_task(engine.execute_tool(run, pm, 'web_search', {'query': 'one'}))
     try:
-        await entered.wait(); engine.set_secret('search', NEW)
+        await entered.wait()
+        engine.set_secret('local', NEW)
+        engine.settings.secrets['search'] = NEW
         await engine.execute_tool(run, pm, 'web_search', {'query': 'two'})
         release.set(); await first
-        assert seen == [OLD, NEW]
+        assert len(seen) == 2
+        assert engine.settings.key(engine.settings.value['providers'][0]) == NEW
+        assert all(key == '' and 'X-Subscription-Token' not in headers for _, headers, key in seen)
+        assert all(value not in json.dumps(seen) for value in [OLD, NEW])
         engine.set_secret('search', '')
-        with pytest.raises(ValueError, match='runtime API key'):
-            await engine.execute_tool(run, pm, 'web_search', {'query': 'three'})
-        assert seen == [OLD, NEW]
+        assert (await engine.execute_tool(run, pm, 'web_search', {'query': 'three'}))['results'] == []
+        assert len(seen) == 3
+        assert all(key == '' and 'X-Subscription-Token' not in headers for _, headers, key in seen)
+        assert all(value not in json.dumps(seen) for value in [OLD, NEW])
+        assert engine.settings.public()['secret_status']['search'] is False
+        assert engine.redact(OLD + NEW) == '[redacted][redacted]'
     finally:
         release.set(); await engine.close()
 
@@ -220,21 +236,26 @@ async def test_new_key_masks_already_retained_data_then_survives_removal(tmp_pat
         await engine.close()
 
 
-async def test_search_uses_current_env_and_saturation_blocks_dispatch(tmp_path, monkeypatch):
+async def test_keyless_search_ignores_current_env_and_saturation_blocks_dispatch(tmp_path, monkeypatch):
     engine, _ = configured(tmp_path, ScriptClient([])); isolate(engine)
     engine.kick = lambda agent: None
     monkeypatch.setenv('LIFECYCLE_SEARCH_OLD', OLD); monkeypatch.setenv('LIFECYCLE_SEARCH_NEW', NEW)
-    engine.settings.value['search'].update(enabled=True, provider='brave', api_key_env='LIFECYCLE_SEARCH_OLD',
-        endpoint='https://api.search.brave.com/res/v1/web/search', proxy_url='')
+    # Deliberate in-process legacy values remain masked, never search authentication.
+    engine.settings.value['search'].update(enabled=True, provider='searxng', api_key_env='LIFECYCLE_SEARCH_OLD',
+        endpoint='https://saved.example/search', proxy_url='')
     run, pm = await start(engine); seen = []
     async def fake_request(self, url, **kwargs):
-        seen.append((self.endpoint, self.proxy, kwargs['headers']['X-Subscription-Token']))
-        return b'{"web":{"results":[]}}', 'application/json', url
+        seen.append((self.endpoint, self.proxy, self.api_key, url, dict(kwargs['headers'])))
+        return b'{"results":[]}', 'application/json', url
     monkeypatch.setattr(type(run['_web']), '_request', fake_request)
     try:
         engine.settings.value['search'].update(api_key_env='LIFECYCLE_SEARCH_NEW', endpoint='https://unused.example', proxy_url='http://unused.example')
         await engine.execute_tool(run, pm, 'web_search', {'query': 'synthetic'})
-        assert seen == [('https://api.search.brave.com/res/v1/web/search', None, NEW)]
+        assert len(seen) == 1 and seen[0][:3] == ('https://saved.example/search', None, '')
+        assert seen[0][3].startswith('https://saved.example/search?')
+        assert 'X-Subscription-Token' not in seen[0][4]
+        assert all(value not in json.dumps(seen) for value in [OLD, NEW])
+        assert engine.redact(OLD + NEW) == '[redacted][redacted]'
         engine._redaction = SecretRedactor(max_values=1); engine._redaction.remember([NEW])
         engine.settings.secrets['unexpected'] = OLD
         with pytest.raises(RedactionCapacityError):
@@ -295,24 +316,29 @@ def test_frontend_refreshes_credential_status_without_rebuilding_settings():
 const labels=[new Node('p'),new Node('p')],ids=['local','renamed'];
 const cards=ids.map((id,index)=>({querySelector:selector=>selector==='[data-key="id"]'?{value:id}:labels[index]}));
 $('profilesEditor').querySelectorAll=()=>cards;
+const originalGet=document.getElementById.bind(document);
+document.getElementById=id=>{assert(!['searchSecret','setSearchSecret','searchSecretStatus','searchCredentialTarget'].includes(id));return originalGet(id);};
 refreshSecretStatus({local:true,renamed:false,search:true});
 assert(labels[0].textContent.includes('キー設定あり'));assert(labels[1].textContent.includes('キー未設定'));
-assert($('searchSecretStatus').textContent.includes('キー設定あり'));
 refreshSecretStatus({local:false,renamed:false,search:false});
 assert(labels.every(label=>label.textContent.includes('キー未設定')));
-assert($('searchSecretStatus').textContent.includes('キー未設定'));
 console.log(JSON.stringify({ok:true}));
 ''')
     assert result['ok']
     assert 'refreshSecretStatus(response.secret_status)' in APP
 
 
-def test_search_auth_status_tracks_identity_change(tmp_path):
+def test_retired_search_auth_is_never_reported_and_save_drops_it_but_keeps_mask(tmp_path):
     engine, _ = configured(tmp_path, ScriptClient([])); isolate(engine)
-    engine.set_secret('search', OLD)
-    assert engine.settings.public()['secret_status']['search']
+    before = (dict(engine.settings.secrets), engine._redaction.value_count)
+    with pytest.raises(ValueError, match='API キー不要'):
+        engine.set_secret('search', NEW)
+    assert (engine.settings.secrets, engine._redaction.value_count) == before
+    engine.settings.secrets['search'] = OLD  # Simulated value retained from the retired API.
+    assert engine.settings.public()['secret_status']['search'] is False
+    assert engine.redact(OLD) == '[redacted]'
     changed = copy.deepcopy(engine.settings.value)
-    changed['search']['endpoint'] = 'https://different.example/search'
+    changed['search'].update(provider='searxng', endpoint='https://different.example/search')
     response = engine.save_settings(changed)
     assert not response['secret_status']['search'] and 'search' not in engine.settings.secrets
     assert engine.redact(OLD) == '[redacted]'

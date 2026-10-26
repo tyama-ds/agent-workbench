@@ -6,7 +6,7 @@ DOM = r"""
 const assert=require('node:assert/strict');
 class Node {
   constructor(tag='div') {
-    this.tagName=tag.toUpperCase();this.children=[];this.dataset={};this.attributes={};
+    this.tagName=tag.toUpperCase();this.children=[];this.dataset={};this.attributes={};this.style={};
     this.textContent='';this.value='';this.hidden=false;this.disabled=false;this.open=false;
     this.scrollTop=0;this.scrollHeight=800;this.clientHeight=200;this.className='';
     this.classes=new Set();this.classList={
@@ -36,7 +36,7 @@ class Node {
 }
 const nodes=new Map();
 const document={body:new Node('body'),activeElement:null,addEventListener(){},
-  createElement:tag=>new Node(tag),getElementById(id){if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id);},
+  createElement:tag=>new Node(tag),createElementNS:(namespace,tag)=>{const node=new Node(tag);node.namespaceURI=namespace;return node;},getElementById(id){if(!nodes.has(id))nodes.set(id,new Node());return nodes.get(id);},
   querySelector(selector){return this.getElementById(selector);},
   querySelectorAll(selector){return [...nodes.values()].flatMap(node=>node.querySelectorAll(selector));}};
 document.activeElement=document.body;

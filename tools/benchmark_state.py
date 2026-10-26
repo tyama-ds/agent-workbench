@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import copy
+import hashlib
 import json
 import platform
 import socket
@@ -308,7 +309,11 @@ async def measure_endpoint(client, url):
 
 
 async def benchmark_fixture(directory, fixture, *, registry_mode=None):
-    with patch.object(engine_module, 'time', SimpleNamespace(time=lambda: CREATED_AT)):
+    # DDG retains the legacy search environment name for historical masking.
+    # This standalone synthetic benchmark must not import operator credentials,
+    # including during initial Engine construction or subsequent projections.
+    with patch.dict('os.environ', {'BRAVE_SEARCH_API_KEY': ''}), \
+            patch.object(engine_module, 'time', SimpleNamespace(time=lambda: CREATED_AT)):
         return await _benchmark_fixture(directory, fixture, registry_mode=registry_mode)
 
 
@@ -333,16 +338,25 @@ async def _benchmark_fixture(directory, fixture, *, registry_mode=None):
             if registry_mode is not None and any(key.encode() in body for key in registry_keys(registry_mode)):
                 raise AssertionError('Synthetic credential escaped an authenticated state endpoint')
             state = json.loads(body)
+            # Registry modes intentionally expose different revision numbers.
+            # Keep raw wire size above, and compare otherwise identical public
+            # content separately without changing the endpoint or its timing.
+            comparison_state = dict(state)
+            redaction_revision = comparison_state.pop('redaction_revision')
+            comparison_body = json.dumps(comparison_state).encode('utf-8')
             result['views'][name] = {
                 'endpoint': path,
                 'body_bytes': len(body),
+                'redaction_revision': redaction_revision,
+                'body_without_redaction_revision_bytes': len(comparison_body),
+                'body_without_redaction_revision_sha256': hashlib.sha256(comparison_body).hexdigest(),
                 'snapshot_median_ms': round(median_ms(project), 6),
                 'json_median_ms': round(median_ms(lambda: json.dumps(snapshot)), 6),
                 'endpoint_median_ms': round(endpoint_ms, 6),
                 'events_returned': len(state['events']),
                 'agents_with_detail': sum('logs' in agent for agent in state['agents']),
             }
-            del body, encoded, state, snapshot
+            del body, encoded, state, snapshot, comparison_state, comparison_body
         full_bytes = result['views']['full']['body_bytes']
         selected_bytes = result['views']['selected']['body_bytes']
         result['body_reduction_percent'] = round(100 * (1 - selected_bytes / full_bytes), 3)
@@ -399,7 +413,8 @@ async def run_benchmark(fixtures=FIXTURES, registry_modes=REDACTION_MODES):
             'snapshot_timing': 'Real engine projection, including redaction and message eligibility.',
             'endpoint_timing': 'Authenticated loopback GET through full body read; no JSON parse or browser rendering.',
             'body_bytes': 'Actual uncompressed response body; excludes HTTP headers and TCP overhead.',
-            'fixture_storage': 'In-memory synthetic records; temporary real Settings, no saved user settings.',
+            'body_without_redaction_revision': 'Additional comparison only: remove exactly the top-level redaction_revision, serialize with the same JSON defaults, and report bytes plus SHA256. Raw wire bytes and endpoint serialization equality remain unchanged.',
+            'fixture_storage': 'In-memory synthetic records; temporary real Settings, no saved user settings. Provider environment references are empty; the legacy BRAVE_SEARCH_API_KEY environment input is empty only inside each benchmark and restored on success or failure.',
             'network': '127.0.0.1 only; proxy environment ignored; no live model client or model calls.',
             'scope': 'Three bounded fixtures, not global worst-case capacity, production latency, or memory usage.',
             'redaction_registry': 'Two additional small fixtures compare 4 versus value-capacity-minus-1 synthetic exact values; one current value, the rest retained. Timings exclude initial registration/preparation. This is not a worst-case prefix or byte-capacity claim.',

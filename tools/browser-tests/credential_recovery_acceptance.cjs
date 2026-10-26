@@ -83,8 +83,8 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     await page.keyboard.press('Space');
   };
   const submitKey=async(id,key,index=0)=>{
-    const input=id==='search'?page.locator('#searchSecret'):card(index).locator('input[type="password"]');
-    const button=id==='search'?page.locator('#setSearchSecret'):keyButton(index);
+    const input=card(index).locator('input[type="password"]');
+    const button=keyButton(index);
     const response=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/secrets'&&
       response.request().postDataJSON().id===id);
     await fillKey(input,button,key);const received=await response;
@@ -92,7 +92,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     assert(Number.isInteger(payload.config_revision));assert.equal(payload.id,id);assert.equal(payload.key,key);
     const body=await received.json();masked(body,'Credential response');
     assert.equal(received.status(),200);assert.deepEqual(body,{ok:true,id,config_revision:payload.config_revision,configured:true});
-    await (id==='search'?page.locator('#searchSecretStatus'):card(index).locator('.credential-result'))
+    await card(index).locator('.credential-result')
       .filter({hasText:'キーをセットしました'}).waitFor();
     assert.equal(await input.inputValue(),'','Submitted passwords clear without being echoed');return body;
   };
@@ -100,8 +100,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     let capture;const captured=new Promise(resolve=>{capture=resolve;});
     await page.route('**/api/secrets',route=>{pending.add(route);capture(route);},{times:1});
     const requested=page.waitForRequest(request=>new URL(request.url()).pathname==='/api/secrets');
-    await fillKey(id==='search'?page.locator('#searchSecret'):card(index).locator('input[type="password"]'),
-      id==='search'?page.locator('#setSearchSecret'):keyButton(index),key);
+    await fillKey(card(index).locator('input[type="password"]'),keyButton(index),key);
     await requested;return captured;
   };
   const releaseReal=async(route,status=200)=>{
@@ -162,7 +161,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
       {id:otherId,label:'Synthetic independent provider',kind:'local',enabled:true,model:'synthetic-other-no-network',
         base_url:providerUrl+'/other',api_key_env:'',proxy_url:'',request_timeout_seconds:30},
     ];
-    Object.assign(config.search,{enabled:false,provider:'brave',endpoint:providerUrl+'/search',api_key_env:'',proxy_url:proxy});
+    Object.assign(config.search,{enabled:false,provider:'searxng',endpoint:providerUrl+'/search',api_key_env:'',proxy_url:proxy});
     Object.assign(config.limits,{max_workers:3,max_turns_per_agent:8,max_model_calls:20,max_tool_calls:30,
       max_auto_collaborations:7,max_run_seconds:600,max_context_chars:200000});
     const saved=await api('/api/config','PUT',config);assert(Number.isInteger(saved.config_revision));
@@ -170,15 +169,14 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     await page.reload();await page.getByText('Workbench 接続中',{exact:true}).waitFor({state:'attached'});await openSettings();
     const target=await card(0).locator('.credential-target').textContent();
     for(const part of [providerId,'OpenAI',providerUrl,proxy])assert(target.includes(part),'Provider target names saved '+part);
-    const searchTarget=await page.locator('#searchCredentialTarget').textContent();
-    for(const part of ['Brave',providerUrl+'/search',proxy])assert(searchTarget.includes(part),'Search target names saved '+part);
+    assert.equal(await page.locator('#searchSecret,#setSearchSecret,#searchCredentialTarget').count(),0,'API-free search has no credential controls');
+    assert.equal(await page.locator('#search-endpoint').inputValue(),providerUrl+'/search');
     assert.match(await page.locator('#credentialNotice').textContent(),/起動中/);
     assert.match(await page.locator('#credentialNotice').textContent(),/すべてのチーム|全.*チーム/);
     assert.match(await page.locator('#credentialNotice').textContent(),/以降|次|後/);
     assert.match(await page.locator('#credentialNotice').textContent(),/自動.*再|再.*自動/);
     await submitKey(providerId,scenario.old);
     assert.equal((await api('/api/config')).secret_status.search,false,'Provider key does not configure search');
-    await submitKey('search',scenario.search_old);
     await expand(1);await submitKey(otherId,scenario.other,1);
     assert.equal((await api('/api/config')).config_revision,saved.config_revision,'Credential writes do not revise configuration');
 
@@ -188,7 +186,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     await page.locator('#addProfile').click();
     assert.equal(await card(2).locator('input[type="password"]').isDisabled(),true);
     assert.equal(await keyButton(2).isDisabled(),true);assert.equal(await keyButton(0).isDisabled(),true);
-    assert.equal(await page.locator('#setSearchSecret').isDisabled(),true);
+    assert.equal(await page.locator('#searchSecret,#setSearchSecret').count(),0);
     await pointerAttempt(keyButton(2));await discard();
     assert.equal(await page.locator('.profile-editor').count(),2);assert.equal(secretPosts.length,postsBeforeDraft);
     assert.equal(configPuts.length,putBaseline,'Discard is read-only, including unsaved profile removal');
@@ -201,9 +199,8 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     await page.locator('#search-endpoint').fill(providerUrl+'/unsaved-search');
     await page.locator('#limits-max_model_calls').fill('99');
     assert.equal(await card(0).locator('.credential-target').textContent(),target,'Dirty fields cannot relabel the saved credential destination');
-    assert.equal(await page.locator('#searchCredentialTarget').textContent(),searchTarget);
-    for(const selector of ['#profile-0-secret','#searchSecret'])assert.equal(await page.locator(selector).isDisabled(),true);
-    await pointerAttempt(keyButton(0));await pointerAttempt(page.locator('#setSearchSecret'));
+    for(const selector of ['#profile-0-secret'])assert.equal(await page.locator(selector).isDisabled(),true);
+    await pointerAttempt(keyButton(0));
     assert.equal(secretPosts.length,postsBeforeDraft,'Dirty provider/search fields never produce a credential POST');
     await page.keyboard.press('Escape');await page.locator('#newRun').click();
     await page.locator('#pmProfile').selectOption(providerId);await page.locator('#maxWorkers').fill('0');
@@ -237,7 +234,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     assert.equal(await page.locator('#search-endpoint').inputValue(),providerUrl+'/search');
     assert.equal(await page.locator('#limits-max_model_calls').inputValue(),'20');
     assert.equal(await keyButton(0).isEnabled(),true,'Clean saved-target recovery is available during a waiting/error run');
-    assert.equal(await page.locator('#setSearchSecret').isEnabled(),true);
+    assert.equal(await page.locator('#searchSecret,#setSearchSecret').count(),0);
     assert.equal(await page.locator('#saveSettings').isDisabled(),true,'Credential recovery cannot unlock active-run configuration');
     assert.equal(configPuts.length,putBaseline);assert.equal(fs.readFileSync(path.join(stateDir,'settings.json'),'utf8'),savedBytes);
     await page.keyboard.press('Escape');assert.equal(await page.locator('#messageInput').inputValue(),draft);
@@ -254,9 +251,9 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     assert.equal(await page.locator('#saveSettings').isDisabled(),true);
     await page.keyboard.press('Enter');await page.keyboard.press('Space');await pointerAttempt(keyButton(0));await poll(2);
     assert.equal(secretPosts.length,postsBeforePending+1,'Pending provider write ignores duplicate native activation across polls');
-    assert.equal(await page.locator('#setSearchSecret').isEnabled(),true,'An independent saved search target remains usable');
-    await submitKey('search',scenario.search_new);
-    assert.equal(await keyButton(0).isDisabled(),true,'Search completion cannot release the provider pending guard');
+    await expand(1);assert.equal(await keyButton(1).isEnabled(),true,'An independent saved provider remains usable');
+    await submitKey(otherId,scenario.search_new,1);
+    assert.equal(await keyButton(0).isDisabled(),true,'Independent provider completion cannot release the pending guard');
     assert.equal(await page.locator('#discardSettings').isDisabled(),true);
     await closeSettingsDialog(page);assert.equal(await page.locator('#settingsDialog').isVisible(),false);
     await openSettings();assert.equal(await keyButton(0).isDisabled(),true,'Pending guard survives close/reopen');
@@ -268,7 +265,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     assert.equal(await keyButton(0).isEnabled(),true);await poll(2);
     assert.deepEqual(budget(await waitForState(runId,'waiting','error')),beforeRecovery,'Key writes/polling neither retry nor refill budgets');
 
-    await page.locator('#searchCredentialTarget').scrollIntoViewIfNeeded();await screenshot('search-target-desktop');
+    await card(1).locator('.credential-target').scrollIntoViewIfNeeded();await screenshot('independent-target-desktop');
     await page.setViewportSize({width:390,height:844});
     await card(0).locator('.credential-target').scrollIntoViewIfNeeded();await screenshot('recovery-ready-narrow');
     const replacement=await submitKey(providerId,scenario.new);
@@ -280,7 +277,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     assert.deepEqual(budget(await waitForState(runId,'waiting','error')),beforeRecovery,'Replacement itself cannot retry, create results, or reset counters');
     const afterKey=await api('/api/config');assert.deepEqual(afterKey.config,saved.config);
     assert.equal(afterKey.config_revision,saved.config_revision);assert.equal(afterKey.secret_status[otherId],true);
-    assert.equal(afterKey.secret_status.search,true);assert.equal(configPuts.length,putBaseline);
+    assert.equal(afterKey.secret_status.search,false);assert.equal(configPuts.length,putBaseline);
     assert.equal(fs.readFileSync(path.join(stateDir,'settings.json'),'utf8'),savedBytes);
     await page.keyboard.press('Escape');assert.equal(await page.locator('#messageInput').inputValue(),draft);
     await page.locator('#messageInput').fill(scenario.resume);
@@ -294,7 +291,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     assert(resumed.lead.results.some(result=>result.text.includes('Same run resumed with the replacement provider key.')));
     await page.locator('#activeRunStatus').filter({hasText:'完了'}).waitFor();await screenshot('resumed-desktop',false);
     await page.setViewportSize({width:390,height:844});await screenshot('resumed-narrow',false);
-    report.checks.push('credentials: native keyboard replacement during active error keeps configuration, revision, time/call/turn/collaboration budgets and drafts; provider/search writes stay distinct; per-target pending guards survive polls and close/reopen while independent search completes; late success cannot repaint; only explicit same-agent message resumes the same real run with the verified new key; desktop/narrow screenshots');
+    report.checks.push('credentials: native keyboard replacement during active error keeps configuration, revision, time/call/turn/collaboration budgets and drafts; provider writes stay distinct from unsupported search credentials; per-target pending guards survive polls and close/reopen while another provider key completes; late success cannot repaint; only explicit same-agent message resumes the same real run with the verified new key; desktop/narrow screenshots');
 
     // A second settings client can advance revision while the browser is idle.
     // A real 409, delayed across close/reopen, must not repaint newer UI.
@@ -332,27 +329,23 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     assert.deepEqual(budget(await waitForState(runId,'done','done')),budget(resumed));
     report.checks.push('credentials: every Discard preserves exact task text, PM, raw worker count, selected worker IDs and conversation draft; empty worker selection stays empty; changed saved configuration retains unavailable PM/worker choices and an out-of-limit draft without clamping or starting work');
 
-    // Search credentials have their own applicability rules, even when a
-    // provider credential is configured and the overall form is clean.
-    await page.locator('#search-provider').selectOption('searxng');
-    assert.equal(await keyButton(0).isDisabled(),true,'Dirty search settings guard provider credentials too');
-    await saveSettings();
-    assert.equal(await page.locator('#searchSecret').isDisabled(),true);
-    assert.equal(await page.locator('#setSearchSecret').isDisabled(),true);
-    assert.match((await page.locator('#searchCredentialTarget').textContent())+' '+(await page.locator('#searchSecretStatus').textContent()),/SearXNG/);
-    assert.match((await page.locator('#searchCredentialTarget').textContent())+' '+(await page.locator('#searchSecretStatus').textContent()),/使用しません|使いません|対応していません|不要/);
-    const beforeUnsupported=secretPosts.length;await pointerAttempt(page.locator('#setSearchSecret'));
-    assert.equal(secretPosts.length,beforeUnsupported);assert.equal(await keyButton(0).isEnabled(),true);
-    await page.locator('#search-provider').selectOption('brave');await page.locator('#search-endpoint').clear();await saveSettings();
-    assert.equal(await page.locator('#searchSecret').isDisabled(),true,'Brave requires an explicit saved nonempty destination');
-    assert.equal(await page.locator('#setSearchSecret').isDisabled(),true);
-    assert.match((await page.locator('#searchCredentialTarget').textContent())+' '+(await page.locator('#searchSecretStatus').textContent()),/接続先|endpoint/i);
-    await page.locator('#search-endpoint').fill(providerUrl+'/search');
-    assert.equal(await page.locator('#setSearchSecret').isDisabled(),true,'An unsaved Brave endpoint cannot receive a key');
-    await saveSettings();await submitKey('search',scenario.search_new);
-    assert.equal((await api('/api/config')).secret_status[providerId],true);
+    // Both supported search engines are API-key-free. A direct legacy key
+    // request must be refused by the real server, not merely hidden by the UI.
+    for(const engine of ['duckduckgo','searxng']){
+      await page.locator('#search-provider').selectOption(engine);
+      assert.equal(await keyButton(0).isDisabled(),true,'Dirty search settings guard provider credentials too');
+      if(engine==='searxng')await page.locator('#search-endpoint').fill(providerUrl+'/search');
+      await saveSettings();
+      assert.equal(await page.locator('#searchSecret,#setSearchSecret,#searchCredentialTarget').count(),0);
+      const current=(await api('/api/config'));
+      const denied=await api('/api/secrets','POST',{id:'search',key:scenario.search_old,config_revision:current.config_revision},400);
+      assert.equal(denied.ok,false);assert.match(denied.error,/使いません|使用しません|不要/);
+      assert.equal((await api('/api/config')).secret_status.search,false);
+      assert.equal((await api('/api/config')).secret_status[providerId],true);
+      assert.equal(await keyButton(0).isEnabled(),true);
+    }
     await page.setViewportSize({width:390,height:844});
-    await page.locator('#searchCredentialTarget').scrollIntoViewIfNeeded();await screenshot('search-target-narrow');
+    await page.locator('#searchFields').scrollIntoViewIfNeeded();await screenshot('search-without-credentials-narrow');
     await page.keyboard.press('Escape');
     masked(fs.readFileSync(path.join(stateDir,'settings.json'),'utf8'),'Persisted configuration');
     masked(await page.locator('body').innerText(),'Final visible UI');
@@ -361,7 +354,7 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     assert.deepEqual(report.externalRequests,externalBefore,'Credential recovery causes zero off-origin page requests');
     assert.equal(new URL(page.url()).origin,origin);
     assert.equal(pending.size,0);
-    report.checks.push('credentials: real revision conflict and late failure cannot repaint reopened settings; explicit saved-config reload recovers ownership; SearXNG key disabled with explanation, empty/unsaved Brave endpoint blocked, saved Brave target enabled; password values absent from response/UI/settings/browser storage; no external browser or provider requests');
+    report.checks.push('credentials: real revision conflict and late failure cannot repaint reopened settings; explicit saved-config reload recovers ownership; DuckDuckGo and SearXNG have no key controls and legacy search-key requests are rejected by the server; password values absent from response/UI/settings/browser storage; no external browser or provider requests');
   } finally {
     page.off('request',onRequest);
     for(const route of pending)await route.abort('aborted').catch(()=>{});

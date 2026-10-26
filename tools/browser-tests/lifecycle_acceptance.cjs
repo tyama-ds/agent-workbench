@@ -106,7 +106,7 @@ async function lifecycleAcceptance({page,agentContract,artifacts,report,assertLa
     const original='[SYNTHETIC] Accepted start survives state failure.';
     await openTask(original);
     const first=await takePost('start',()=>page.locator('#startRun').click());
-    assert.deepEqual(first.payload,{task:original,pm_profile:'local',worker_profiles:[],max_workers:0});
+    assert.deepEqual(first.payload,{task:original,pm_profile:'local',worker_profiles:[],max_workers:0,delegation_level:1,workers_per_pm:2});
     await page.keyboard.press('Enter');await page.keyboard.press('Space');await pointerAttempt('#startRun');await poll(2);
     await assertPendingStart('Deferred POST with keyboard and multiple pointer activation',1);
     assert.equal(await selectedRun(),'run:lifecycle-a');
@@ -130,10 +130,11 @@ async function lifecycleAcceptance({page,agentContract,artifacts,report,assertLa
     publish(accepted);
     await page.locator(`#runList .run-link.selected[data-focus-key="run:${accepted.run.id}"]`).waitFor();
     await page.locator('#taskDialog').waitFor({state:'hidden'});
+    await page.locator('#inspectorView').click();
     await page.locator('#conversationLog').filter({hasText:'Lifecycle log '+accepted.run.id}).waitFor();
     assert.equal(requests.start.length,1,'Recovered acceptance never replays POST');
     await screenshot('start-recovered-narrow');
-    await page.setViewportSize({width:1366,height:768});await screenshot('start-recovered-desktop');
+    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();await screenshot('start-recovered-desktop');
     report.checks.push('lifecycle: deferred native pointer/keyboard Start admits one POST; successful ID stays pending through 503 and healthy missing-ID polls; interval recovery selects/closes only the unchanged owner; no automatic replay; desktop/narrow pending and recovery screenshots');
 
     // A visible draft edited away and back is still a new editing generation.
@@ -186,7 +187,7 @@ async function lifecycleAcceptance({page,agentContract,artifacts,report,assertLa
     await page.setViewportSize({width:390,height:844});await screenshot('new-draft-recovery-narrow',true);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#messageInput').inputValue(),'[SYNTHETIC] Keep selected agent draft.');
-    await page.setViewportSize({width:1366,height:768});
+    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();
     report.checks.push('lifecycle: dismissed/reopened identical dialog and team A → B → A with a newer task draft survive late POST/state recovery; no selection, dialog, draft or focus theft');
 
     // Failure is retryable only by a new explicit user activation.

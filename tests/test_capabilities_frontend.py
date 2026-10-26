@@ -96,13 +96,12 @@ def test_topology_displays_independent_pm_roots_with_their_own_workers():
     check(r'''
 await setup();const agents=[{id:'p1',parent_id:null,name:'PM 1'},{id:'p2',parent_id:null,name:'PM 2'},
 {id:'w1',parent_id:'p1',name:'Writer',role:'pm'},{id:'w2',parent_id:'p2',name:'Reviewer'}];
-renderTeamMap(agents);assert.equal($('teamMap').children.length,2);
-const branches=$('teamMap').children;
-assert.equal(branches[0].querySelector('.map-root').dataset.focusKey,'map:p1');
-assert.equal(branches[1].querySelector('.map-root').dataset.focusKey,'map:p2');
-assert.equal(branches[0].querySelector('.map-node').dataset.focusKey,'map:w1');
-assert.equal(branches[1].querySelector('.map-node').dataset.focusKey,'map:w2');
-assert.equal(branches[0].querySelector('.map-node').children[0].textContent,'W');
+renderTeamMap(agents);assert.equal(ui.networkNodes.size,4);
+for(const id of ['p1','p2','w1','w2'])assert.equal(ui.networkNodes.get(id).button.dataset.focusKey,`map:${id}`);
+const positions=ui.networkLayout.positions;
+assert(positions.get('p1').y<positions.get('w1').y&&positions.get('w1').y<positions.get('p2').y);
+assert(positions.get('p2').y<positions.get('w2').y);
+assert.equal(ui.networkNodes.get('w1').button.children[0].textContent,'WORKER');
 ''')
 
 

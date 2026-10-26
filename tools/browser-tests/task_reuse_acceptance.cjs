@@ -13,7 +13,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
       draft:input.value,start:input.selectionStart,end:input.selectionEnd,direction:input.selectionDirection,
       search:document.querySelector('#agentSearch').value,questions:document.querySelector('#needsYou').getAttribute('aria-pressed')==='true',
       expanded:[...log.querySelectorAll('details[open]')].map(node=>node.dataset.logId),scroll:log.scrollTop,
-      resultsOpen:document.querySelector('#resultsPanel').open,x:scrollX,y:scrollY,focusId:active.id,
+      resultsOpen:document.querySelector('#resultsPanel').open,cockpitView:document.querySelector('.app-shell').dataset.cockpitView,x:scrollX,y:scrollY,focusId:active.id,
       focusKey:active.dataset.focusKey,focusLog:active.localName==='summary'?active.parentElement.dataset.logId:null,
       task:document.querySelector('#taskInput').value,pm:document.querySelector('#pmProfile').value,
       workers:[...document.querySelectorAll('#workerProfiles input:checked')].map(node=>node.value),
@@ -82,6 +82,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     await page.locator('#conversationLog[aria-busy="false"]').waitFor();await paint();
   };
   const reuse=async(key='Enter')=>{
+    if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
     await page.locator('#reuseTask').focus();await page.keyboard.press(key);
     await page.locator('#taskDialog').waitFor({state:'visible'});await paint();
     assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true,
@@ -136,7 +137,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     assert.equal(await page.locator('#activeRunTask').textContent(),sourceText);
     await reuse();await assertNoCandidate(sourceText,'Empty draft adopts immediately');
     await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
-    assert.deepEqual(preflights().at(-1).body,{task:sourceText,pm_profile:'local',worker_profiles:['openai'],max_workers:1},
+    assert.deepEqual(preflights().at(-1).body,{task:sourceText,pm_profile:'local',worker_profiles:['openai'],max_workers:1,delegation_level:1,workers_per_pm:2},
       'The only adoption POST is the normal read-only preflight with current choices');
     assert.equal(await page.locator('#taskReuseStatus').getAttribute('aria-live'),'polite');
     assert((await page.locator('#taskReuseProvenance').textContent()).includes(source.id.slice(-8)),'Copied text identifies its source team');
@@ -175,7 +176,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
 
     await candidate(existing);await page.locator('#replaceTaskDraft').focus();await page.keyboard.press('Enter');
     await assertNoCandidate(sourceText,'Replace copies only the task text');await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
-    assert.deepEqual(preflights().at(-1).body,{task:sourceText,pm_profile:'local',worker_profiles:['openai'],max_workers:1});
+    assert.deepEqual(preflights().at(-1).body,{task:sourceText,pm_profile:'local',worker_profiles:['openai'],max_workers:1,delegation_level:1,workers_per_pm:2});
     assert.equal(await page.locator('#taskDialog').isVisible(),true,'Replacement never starts or closes the new task');
     assert.deepEqual(await owner(),{run:source.id,agent:sourceAgent.id},'Copying never changes the selected retained team');
     await candidate(' \n\t ');await page.locator('#keepTaskDraft').click();await assertNoCandidate(' \n\t ','Whitespace-only is a real draft');
@@ -314,7 +315,9 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
       }
       await page.screenshot({path:path.join(artifacts,'workbench-task-reuse-'+name+'-controls.png'),fullPage:true,animations:'disabled'});
       await page.locator('#keepTaskDraft').focus();await page.keyboard.press('Enter');await close();
-      await assertLayout(page,'task reuse underlying '+name);await page.locator('#reuseTask').focus();await assertVisible('#reuseTask',name+' reuse entry');
+      await assertLayout(page,'task reuse underlying '+name);
+      if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+      await page.locator('#reuseTask').focus();await assertVisible('#reuseTask',name+' reuse entry');
       await page.screenshot({path:path.join(artifacts,'workbench-task-reuse-'+name+'-entry.png'),fullPage:true,animations:'disabled'});
     }
 
@@ -328,8 +331,11 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
     const reviewedTask=await page.locator('#taskInput').inputValue(),reviewedChoices=await choices();
     assert.equal(reviewedTask,editorText(admissionSource));assert.deepEqual(reviewedChoices,currentChoices);
+    const reviewedOrchestration={delegation_level:Number(await page.locator('#delegationLevel').inputValue()),
+      workers_per_pm:Number(await page.locator('#workersPerPM').inputValue())};
+    assert.deepEqual(reviewedOrchestration,{delegation_level:1,workers_per_pm:2},'Text reuse retains the current delegation controls');
     const expectedAdmission={task:reviewedTask,pm_profile:reviewedChoices.pm,
-      worker_profiles:reviewedChoices.workers,max_workers:Number(reviewedChoices.count)};
+      worker_profiles:reviewedChoices.workers,max_workers:Number(reviewedChoices.count),...reviewedOrchestration};
     heldStart=await holdNextRequest(page,'**/api/runs',()=>page.locator('#startRun').click());
     assert.deepEqual(heldStart.request().postDataJSON(),expectedAdmission,
       'Explicit Start posts the entire visible normalized task and current PM/worker/count selection, with no historical authority');
@@ -362,6 +368,8 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
       }
     }
     if(await page.locator('#resultsPanel').evaluate(node=>node.open)!==before.resultsOpen){await page.locator('#resultsPanel > summary').focus();await page.keyboard.press('Enter');}
+    if(await page.locator('.app-shell').getAttribute('data-cockpit-view')!==before.cockpitView)
+      await page.locator('#'+before.cockpitView+'View').click();
     await page.evaluate(saved=>{
       const input=document.querySelector('#messageInput'),log=document.querySelector('#conversationLog');input.setSelectionRange(saved.start,saved.end,saved.direction);
       const target=saved.focusLog?[...log.querySelectorAll('details > summary')].find(node=>node.parentElement.dataset.logId===saved.focusLog):

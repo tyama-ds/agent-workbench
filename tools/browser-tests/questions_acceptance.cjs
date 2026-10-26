@@ -12,7 +12,7 @@ async function allQuestionsAcceptance({page,fixture,compactFixture,artifacts,rep
       agent:document.querySelector('#agentTabs [aria-pressed="true"]')?.dataset.focusKey.slice(4),
       draft:input.value,start:input.selectionStart,end:input.selectionEnd,direction:input.selectionDirection,
       search:document.querySelector('#agentSearch').value,questions:document.querySelector('#needsYou').getAttribute('aria-pressed')==='true',
-      resultsOpen:document.querySelector('#resultsPanel').open,
+      resultsOpen:document.querySelector('#resultsPanel').open,cockpitView:document.querySelector('.app-shell').dataset.cockpitView,
       expanded:[...log.querySelectorAll('details[open]')].map(detail=>detail.dataset.logId),scroll:log.scrollTop,
       x:scrollX,y:scrollY,focusId:active.id,focusKey:active.dataset.focusKey,
       focusLog:active.localName==='summary'?active.parentElement.dataset.logId:null,
@@ -384,6 +384,8 @@ async function allQuestionsAcceptance({page,fixture,compactFixture,artifacts,rep
     // Clear the temporary question-mode search separately from the crew query.
     await questionsMode(true);await page.locator('#agentSearch').clear();await questionsMode(before.questions);
     await page.locator('#agentSearch').fill(before.search);
+    if(await page.locator('.app-shell').getAttribute('data-cockpit-view')!==before.cockpitView)
+      await page.locator('#'+before.cockpitView+'View').click();
     await page.evaluate(saved=>{
       const input=document.querySelector('#messageInput'),log=document.querySelector('#conversationLog');
       input.setSelectionRange(saved.start,saved.end,saved.direction);

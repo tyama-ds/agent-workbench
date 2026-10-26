@@ -60,7 +60,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
   };
   const checkPending=async()=>{
     await checkSaveDisabled();
-    for(const selector of ['#discardSettings','#profile-0-label','#limits-max_model_calls','#addProfile','#profile-0-secret','#searchSecret'])
+    for(const selector of ['#discardSettings','#profile-0-label','#limits-max_model_calls','#addProfile','#profile-0-secret'])
       assert.equal(await page.locator(selector).isDisabled(),true,'Pending Save locks '+selector);
     assert.equal(await keyButton(page).isDisabled(),true);assert.equal(await probeButton(page).isDisabled(),true);
     assert.equal(await disclosure(page).isEnabled(),true,'Read-only disclosure remains accessible');
@@ -238,6 +238,10 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab reaches optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false,'The default single-PM scenario keeps additional PM controls collapsed');
+    for(const id of ['delegationLevel','workersPerPM','useOrchestrationDefaults']){
+      await page.keyboard.press('Tab');
+      assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
+    }
     await page.keyboard.press('Tab');
     assert.equal(await retainedWorker.evaluate(node=>node===document.activeElement),true,'Native Tab reaches the retained worker checkbox');
     await retainedWorker.evaluate(node=>{window.settingsSaveFocusedWorker=node;});
@@ -271,6 +275,10 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab preserves the optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false);
+    for(const id of ['delegationLevel','workersPerPM','useOrchestrationDefaults']){
+      await page.keyboard.press('Tab');
+      assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
+    }
     await page.keyboard.press('Tab');await page.keyboard.press('Tab');
     assert.equal(await removedWorker.evaluate(node=>node===document.activeElement),true,'Native Tab reaches the unchecked worker about to disappear');
     await removedWorker.evaluate(node=>{window.settingsSaveFocusedWorker=node;});
@@ -350,7 +358,9 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     assert.deepEqual(await waitRun(activeRunId,'waiting'),waiting,'Credential recovery never resumes or resets the active run');
     await page.locator('#settingsLockStatus').scrollIntoViewIfNeeded();await screenshot('active-lock-desktop');
     await page.setViewportSize({width:390,height:844});await page.locator('#settingsLockStatus').scrollIntoViewIfNeeded();await screenshot('active-lock-narrow');
-    await closeSettingsDialog(page);await page.locator('#stopRun').click();await waitRun(activeRunId,'stopped');activeRunId=null;
+    await closeSettingsDialog(page);
+    if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+    await page.locator('#stopRun').click();await waitRun(activeRunId,'stopped');activeRunId=null;
     await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();await openSettings();
     assert.equal(await page.locator('#saveSettings').isEnabled(),true);await closeSettingsDialog(page);
     assert.deepEqual(providerRequests,providerBefore,'Settings-save acceptance sends no provider network traffic');
