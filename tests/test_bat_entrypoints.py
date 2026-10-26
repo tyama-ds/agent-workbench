@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -267,7 +268,7 @@ def test_prompt_unicode_has_verified_input_encoding(project, standard_python, un
     data = _verified_prompt_bytes(project, standard_python, selection, creationflags)
     result = _run(project, 'Setup.bat', env=_environment(project, standard_python),
                   data=data + b'\r\n', creationflags=creationflags)
-    _receipt(project, result, [], unicode_python, 'setup_windows.py')
+    _receipt(project, result, ['--interactive'], unicode_python, 'setup_windows.py')
 
 
 @WINDOWS
@@ -338,12 +339,140 @@ def test_executable_name_must_be_python_exe(project):
 @pytest.mark.parametrize('arguments', [
     ['--check', '--certificate', r'C:\会社 CA & ! 50% ^\証明書.pem', '--timeout', '120', '--retries', '2'],
     ['--wheelhouse', r'C:\Approved Packages & ! 50% ^\wheelhouse'],
-    ['--unknown'], ['--check', '/?'], ['--project-root', ''],
+    ['--unknown'], ['--check', '/?'], ['--project-root', ''], ['--interactive', '--check'],
+    [''], ['unknown words & ! (value) ^'],
 ])
 def test_setup_forwards_all_arguments_and_exit_status(project, standard_python, arguments, creationflags):
     result = _run(project, 'Setup.bat', arguments,
                   env=_environment(project, standard_python, standard_python), creationflags=creationflags)
     _receipt(project, result, arguments, standard_python, 'setup_windows.py')
+
+
+def _interactive_installer_fixture(project):
+    """Use the actual Python prompts/validation/planner; stub every child command.
+
+    No pip, environment creation, application or network can run behind this
+    fixture. Only the outer BAT and approved installed Python execute natively.
+    """
+    implementation = project / 'scripts/setup_implementation.py'
+    shutil.copy2(ROOT / 'scripts/setup_windows.py', implementation)
+    for relative in ('requirements.lock', 'pyproject.toml', 'workbench/server.py',
+                     'static/index.html', 'docs/interface.json'):
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('fixture', encoding='ascii')
+    (project / 'scripts/setup_windows.py').write_text(
+        'import importlib.util, json, os, sys\nfrom pathlib import Path\n'
+        'spec = importlib.util.spec_from_file_location("installer", '
+        'Path(__file__).with_name("setup_implementation.py"))\n'
+        'setup = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(setup)\n'
+        'calls = []\n'
+        'def runner(args, **kwargs):\n'
+        '    calls.append(list(map(str, args)))\n'
+        '    return setup.CONFIG_MARKER if kwargs.get("capture") else ""\n'
+        'original_install = setup.install\n'
+        'setup.install = lambda options: original_install(options, runner=runner)\n'
+        'code = setup.main()\n'
+        'record = {"args": sys.argv[1:], "executable": sys.executable, '
+        '"script": Path(__file__).name, "cwd": os.getcwd(), "calls": calls}\n'
+        'with Path("python-receipt.json").open("x", encoding="ascii") as stream:\n'
+        '    json.dump(record, stream, ensure_ascii=True)\n'
+        'print("\\nBAT_FIXTURE:" + json.dumps(record, ensure_ascii=True))\n'
+        'raise SystemExit(code)\n', encoding='ascii')
+
+
+def _run_prompted_interactive(project, executable, env, data, creationflags):
+    # cmd's set /p can read ahead and discard later lines from redirected
+    # input. Send the Python path alone, then wait for Python's actual prompt
+    # before supplying network answers, as a person using the console would.
+    cmd = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32/cmd.exe'
+    args = [str(cmd), '/d', '/v:off', '/c', 'Setup.bat']
+    process = subprocess.Popen(args, cwd=project, env=env, stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               creationflags=creationflags, bufsize=0)
+    prefix = bytearray()
+
+    def read_until_prompt():
+        while not prefix.endswith(b'Proxy URL '):
+            value = process.stdout.read(1)
+            if not value:
+                return
+            prefix.extend(value)
+
+    reader = threading.Thread(target=read_until_prompt, daemon=True)
+    reader.start()
+    try:
+        process.stdin.write((str(executable) + '\r\n').encode('ascii'))
+        process.stdin.flush()
+        reader.join(timeout=20)
+        if reader.is_alive():
+            process.kill()
+            reader.join(timeout=5)
+            pytest.fail('Interactive Python prompt was not reached: ' + repr(bytes(prefix)))
+        assert prefix.endswith(b'Proxy URL '), bytes(prefix)
+        out, err = process.communicate(data, timeout=20)
+        return subprocess.CompletedProcess(args, process.returncode, bytes(prefix) + out, err)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            stream.close()
+
+
+@WINDOWS
+@pytest.mark.parametrize('creationflags', CONSOLES, ids=['console', 'no-console'])
+@pytest.mark.parametrize('route', ['environment', 'prompt'])
+@pytest.mark.parametrize('network', ['proxy-ca', 'blank', 'invalid-proxy', 'invalid-ca', 'eof-first', 'eof-second'])
+def test_real_bat_to_interactive_python_keeps_network_input_out_of_cmd(
+        project, standard_python, route, network, creationflags):
+    _interactive_installer_fixture(project)
+    certificate = project / '会社 CA & ! 50% ^ (trusted).pem'
+    certificate.write_text('local fixture; no TLS operation is performed', encoding='ascii')
+    lines = {
+        'proxy-ca': 'http://approved.example:8080\n"' + str(certificate) + '"\n',
+        'blank': '\n\n',
+        'invalid-proxy': 'http://secret-user:secret-pass@proxy.example:8080\n\n',
+        'invalid-ca': '\nmissing-secret-ca.pem\n',
+        'eof-first': '',
+        'eof-second': 'http://approved.example:8080\n',
+    }[network]
+    env = _environment(project, standard_python,
+                       standard_python if route == 'environment' else None)
+    # This is the declared pipe transport. Real Windows console input is
+    # Unicode; cmd's Python-path prompt is ASCII for this integration fixture.
+    env['PYTHONIOENCODING'] = 'utf-8'
+    data = lines.replace('\n', '\r\n').encode('utf-8')
+    if route == 'prompt':
+        assert str(standard_python).isascii()
+        result = _run_prompted_interactive(project, standard_python, env, data, creationflags)
+    else:
+        result = _run(project, 'Setup.bat', env=env, data=data, creationflags=creationflags)
+    success = network in ('proxy-ca', 'blank')
+    _receipt(project, result, ['--interactive'], standard_python, 'setup_windows.py',
+             exit_code=0 if success else 1)
+    saved = json.loads((project / 'python-receipt.json').read_text(encoding='ascii'))
+    assert b'Proxy URL ' in result.stdout
+    assert not (project / '.venv').exists()
+    if success:
+        dep, app = [args for args in saved['calls'] if 'install' in args]
+        if network == 'proxy-ca':
+            assert dep[dep.index('--proxy') + 1] == 'http://approved.example:8080'
+            assert dep[dep.index('--cert') + 1] == str(certificate)
+        else:
+            assert '--proxy' not in dep and '--cert' not in dep
+        assert '--no-index' in app and '--proxy' not in app and '--cert' not in app
+    else:
+        assert saved['calls'] == []
+        if network.startswith('eof-'):
+            assert b'Setup cancelled before installation' in result.stderr
+        elif network == 'invalid-proxy':
+            assert b'Proxy must be an HTTP(S) origin' in result.stderr
+        elif network == 'invalid-ca':
+            assert b'Certificate must be an existing organization-approved PEM CA bundle.' in result.stderr
+        assert b'secret-user' not in result.stdout + result.stderr
+        assert b'secret-pass' not in result.stdout + result.stderr
+        assert b'missing-secret-ca' not in result.stdout + result.stderr
 
 
 @WINDOWS
