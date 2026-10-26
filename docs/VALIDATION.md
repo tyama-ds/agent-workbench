@@ -1,5 +1,132 @@
 # Validation scope
 
+## Optional Selenium browser operation
+
+The default-off checkbox gates only the managed `selenium_browse` tool. Settings
+tests cover migration, strict types/bounds, explicit existing executable/library
+paths, the network prerequisite, frozen run permissions, disabled-platform
+admission, reservations, deadlines and redacted save receipts. Frontend tests
+cover save/reload, independent proxy settings and running-team locks.
+
+The dedicated Job runner is tested with real Windows child/grandchild processes:
+normal exit, cancellation and timeout stop the whole tree, breakaway is denied,
+and memory/output/process limits apply. Unconfirmed termination preserves private
+storage. No LPAC, installed-file ACL or firewall changes are made by this tool.
+Browser downloads/uploads and arbitrary model scripts/options are not exposed.
+Fixed Selenium operations and screenshot publication have deterministic tests.
+
+Opt-in `tests/test_selenium_live.py` uses only a synthetic loopback page and an
+existing Python 3.13 / Selenium 4.32.0 installation. Browser/driver/library paths
+must be explicitly supplied as the environment variables documented in that
+file. The tests exercise fill/click/wait/read, PNG saving and rejection of file
+input filling. They are not cloud-model or autonomous agent-quality evaluations.
+The returned visible-control list is bounded and supplies actionable CSS
+selectors. Synthetic cases cover escaped/duplicate IDs and omission of password
+and textarea input values from control labels. The product never downloads Python,
+libraries, browsers or WebDriver. Matching
+drivers used for local verification were obtained separately from the vendors:
+Chrome 155.0.8059.85 / ChromeDriver 155.0.8059.84 and Edge/WebDriver 155.0.4283.62.
+
+An initial Edge negative case exited with empty stderr; its exit reason was not
+captured. A synthetic concurrent cache create/rename/delete test then reproduced
+the same symptoms with `workspace_changed`. The browser-only live scanner now
+tolerates disappearing descendant entries; root, links/ADS, other access errors,
+entry/byte limits and the strict final scan remain enforced. The general Python
+LPAC scanner is unchanged. This reproducible watchdog defect was fixed, but the
+uncaptured initial Edge failure cannot conclusively be attributed to it.
+
+After this fix, both live cases passed consecutively on Chrome and on Edge
+(four browser cases total). The native Job suite passed all 26 cases, including
+cache churn. Focused configuration, Engine, worker and Job unit checks passed
+112 cases with nine native opt-in cases skipped in that invocation. The full
+regression suite and Windows/Linux CI are checked separately on the final head.
+
+The initial Windows Server CI also demonstrated that Job accounting reaching zero
+does not establish that each process handle is signaled. The browser runner now
+retains identity-bound handles during execution, seals the Job against new process
+associations before stopping, waits on every retained handle, and checks lifetime
+process-count coverage as well as the final active count. Incomplete history or an
+unconfirmed exit retains private storage and prohibits screenshot publication.
+Live storage access/sharing/delete-pending errors receive a bounded reinspection;
+only an actual successful inspection or confirmed disappearance permits progress.
+Persistent errors still fail and now include a bounded diagnostic.
+
+A later Windows CI run exposed a short-lived `conhost.exe` started by
+`CREATE_NO_WINDOW`, even for a one-line Python worker. Local image-path and Job
+accounting probes confirmed the extra process. The fixed worker uses
+`DETACHED_PROCESS` with explicit standard-I/O pipes to avoid creating that
+console host; process-history coverage is still required rather than waived.
+The native regression exercises repeated short worker lifetimes and verifies
+that each Job contains exactly one process.
+
+Windows offline-installer validation also exposed locale-dependent pip decoding
+of a non-ASCII comment in `requirements.lock`. The comment is ASCII, a regression
+checks locale compatibility, and CI checks each installer exit code before
+continuing to the repeated-install and launcher checks.
+
+This feature uses ordinary Windows user permissions, not a filesystem/network
+sandbox. Existing browser profiles are not reused; enterprise SSO and browser
+traffic are not comprehensively isolated. URL checks are not an OS boundary.
+Screenshots alone are published through PathHarness after all Job processes have
+stopped and private storage cleanup succeeded. See SECURITY.md for the limits.
+
+## Python network opt-in
+
+`python.network_enabled` defaults to false for new and migrated settings. Tests
+cover strict boolean validation, explicit GUI save/reload in both directions,
+unchanged Web proxy/file settings, frozen per-run authority and tool descriptions,
+and rejection of model-supplied network-setting arguments. Independent review
+found no major issue in the opt-in boundary.
+
+Real Windows checks confirmed that ON adds the Internet client/private-LAN
+capability SIDs while leaving public inbound capability absent. Private host
+files and child processes stay blocked; timeout, memory, output, ADS and
+cancellation checks passed with networking both ON and OFF. Same-host loopback
+was blocked in both modes (ON timed out, OFF returned access denied). A separate
+opt-in TCP test connected to `example.com:443` with ON and received WinError 10013
+with OFF. No application payload, credentials or user files were transmitted.
+The external TCP checks require `AWB_TEST_WINDOWS_NETWORK=1` and are not required
+by ordinary/CI tests, which must not depend on external reachability. OS capability
+and local isolation checks use `AWB_TEST_WINDOWS_LPAC=1` on Windows CI.
+
+## Multiple PMs, Python, Office and local search (2026-10-22)
+
+The feature branch was checked on Windows 11 with an existing Python 3.13
+installation: **1704 passed, 14 skipped** for the full suite. The opt-in Python
+module separately passed **21 tests**, including real LPAC/Job execution, existing
+docx/openpyxl/pptx imports, Office generation and publication, private file/HKCU
+denial, blocked loopback sockets and child processes, timeout, memory/output
+limits, cancellation, and partial-ACL-failure rollback. No Python or libraries
+were installed or bundled. `pip check` and `git diff --check` passed.
+
+Native loopback HTTP fixtures cover Local/OpenAI/Anthropic payload conversion
+through the real Engine and file tools. They exercise default single-PM and
+multiple-PM teams, shared worker/collaboration budgets, worker completion mail,
+DOCX/XLSX/PPTX creation/read/edit/reread, and bounded name/content searches. These
+are deterministic provider fixtures, not paid cloud-model calls or evidence of
+model quality. Windows CI also opts into the real isolation tests; normal tests
+skip the opt-in cases and platform/privilege-dependent cases as marked.
+
+The Chrome GUI showed one PM by default and accepted two Local PMs with a shared
+two-worker limit. A live CPU-only `openai/gpt-oss-20b` attempt created one worker,
+but another PM exceeded the 300-second Local queue limit. The model also gave its
+worker an incomplete assignment. The run was stopped and its visible record
+saved locally; this is **not** a successful end-to-end autonomous demonstration.
+This 16-GB host reached about 110 MB free physical memory. One concurrent suite
+had transient Windows CopyFile2 errors and one app startup failed loading ctypes;
+the strict full suite subsequently passed after the model was unloaded. Resource
+pressure is a plausible contributor, not a proven sole cause. No error bypass or
+new skip was added to conceal those failures.
+
+The real isolation test deliberately verifies the documented exception: an
+outside folder already granted to ALL RESTRICTED APPLICATION PACKAGES can be
+read directly even if transfer `deny_roots` includes it. Private host files and a
+synthetic private HKCU key were denied. Staging/publication uses PathHarness;
+direct Python I/O uses Windows LPAC permissions. See SECURITY.md before enabling.
+Post-test scans found no temporary package-SID ACEs in the selected runtime and
+libraries and no leftover AppContainer profiles. This is bounded testing and
+independent source review, not a sandbox escape-proof certification.
+
 Commit-specific runs, artifact links and historical review records are indexed in
 [evidence/README.md](evidence/README.md). The archived PR snapshot is historical;
 use the live PR’s explicitly named head for current acceptance. Counts below describe

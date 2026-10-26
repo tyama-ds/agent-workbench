@@ -4,8 +4,8 @@ This application gives model-generated instructions a deliberately small set of 
 
 ## Enforced boundaries
 
-- Only the human-facing settings API can change provider profiles, budgets, or folder scope. Models cannot change settings, load plugins, execute shell commands, install packages, or launch processes. The GPU monitor runs a fixed `nvidia-smi` query from a trusted executable location; there is no model-controlled subprocess command.
-- All model-directed file operations use the same harness. Read and write roots are independent; deny wins. Empty roots deny all. Paths with traversal, Windows devices, alternate streams, UNC, symlinks, junctions, reparse points, or hard links are rejected. The application and state directories are always denied, including when a containing directory is allowed.
+- Only the human-facing settings API can change provider profiles, budgets, or folder scope. Models cannot change settings, load plugins, execute shell commands, or install packages. Optional Python execution launches only the explicitly configured existing interpreter inside the Windows boundary described below. The separate opt-in Selenium tool launches that interpreter and explicitly selected browser/driver with ordinary Windows user permissions, as described in its own boundary below. The GPU monitor runs a fixed `nvidia-smi` query from a trusted executable location.
+- Application-managed file transfers use the same harness. Read and write roots are independent; deny wins. Empty roots deny all. Paths with traversal, Windows devices, alternate streams, UNC, symlinks, junctions, reparse points, or hard links are rejected. The application and state directories are always denied for these data operations, including when a containing directory is allowed. These lists are not OS-wide access controls for the Selenium browser or all direct Python I/O.
 - File tools are serialized across teams. Reservations prevent other agents from operating on a reserved range. Writes compare the expected SHA-256, use bounded temporary files, and replace atomically. Windows parent directory handles resist rename/delete during file operations. This does not promise protection against every malicious same-user filesystem race or an external editor ignoring reservations.
 - Text reads/search require strict UTF-8 without NUL bytes. Text mutations additionally reject known PDF/Office/OpenDocument, image, archive and WAV/AVI suffixes (including new or empty targets), known document/container signatures even under another extension, and C0 controls other than TAB/CR/LF plus DEL/C1 controls. Both output and the locked existing hash-check snapshot are validated, including write-only folders. Patches preserve an existing BOM. This is conservative protection, not exhaustive binary/MIME detection. Ordinary empty UTF-8 text, CSV/JSON/SVG and BOM remain supported. Use the separate package-validated Office tools; PDF editing is unsupported. Keep valuable originals read-only.
 - ZIP expansion, XML, external relationships, macro packages, DDE fields, and formula behavior are checked before supported Office processing. This is a constrained document editor, not a complete Office malware scanner. Unknown complex packages can be rejected.
@@ -17,13 +17,122 @@ This application gives model-generated instructions a deliberately small set of 
 
 Web-text decoding uses a fixed standard-library codec allowlist and strict errors, never arbitrary remote codec names, replacement fallback or statistical detection. Charset declarations can select only a decoder, not execute code. BOM/header precedence is separate from bounded conservative HTML-meta/XML-declaration inspection. The decoder does not resolve XML entities or DTDs. Errors omit response bytes and untrusted labels. UTF-32, contradictory ASCII XML UTF-16 declarations and NUL-bearing UTF-8 defaults/JSON are rejected. Declared encodings and well-formed decoded text do not certify the source's accuracy or safety. Network limits and destination validation are unchanged.
 
+## Optional Windows Python boundary
+
+Python is disabled by default. The human selects an existing CPython executable and
+existing library directories; no interpreter or package is bundled or downloaded.
+Scripts run in a fresh less privileged AppContainer (LPAC) with no network
+capabilities by default, a child-process restriction, and Job Object memory/process limits.
+Execution time and captured output are bounded; stop/timeout kills and drains the
+job before releasing file reservations. Failure to establish isolation refuses the
+request; there is no same-user unrestricted execution fallback.
+
+`python.network_enabled` is an explicit boolean, default `false` including older
+settings. Enabling it adds `internetClient` and `privateNetworkClientServer`
+capabilities to the isolated process; the latter also permits private-network
+inbound traffic under Windows policy. Windows firewall and loopback isolation
+still apply. The app does not add firewall rules or register loopback exemptions.
+Network-enabled scripts can send any data they can read, including staged inputs
+and runtime/library or OS-public resources. This is direct Python networking:
+the Web tool proxy, public-address checks, destination/response limits and secret
+redaction do not mediate these connections. No destination allowlist or per-request
+approval is provided. Proxy credentials and API-key environment variables remain
+excluded from the child environment; scripts can explicitly configure their own
+connections. The setting is frozen with each run and cannot be changed by tool
+arguments. The network opt-in does not loosen the filesystem, child-process or
+Job Object boundary. Keep Python networking, Web and Selenium disabled when
+external transfer through tools is prohibited.
+
+Host read/write roots are not granted directly to the child. Explicit inputs are
+read through the harness and staged in a private temporary workspace. After exit 0,
+only declared outputs are read back and published with the harness's path, size,
+reservation and expected-hash rules. Partial publication is reported truthfully.
+Python can modify/delete its temporary copies. Binary outputs
+are permitted and do not receive the specialized Office or text-tool content checks.
+
+Runtime and selected library files receive temporary read/execute grants for a
+fresh package SID, removed during cleanup. These paths are read exceptions, not
+writable data roots: select trusted package directories without secrets. Startup
+also requires Windows OS resources and the `registryRead` capability (HKLM read
+subject to OS ACLs); this is not a claim that only the configured data folders can
+be read. Resources already exposed by Windows ACLs to LPACs, including an explicit
+ALL RESTRICTED APPLICATION PACKAGES grant, may be readable even outside
+`read_roots` or within a configured `deny_roots`. Those harness lists govern
+staging/publication, not every direct Python system call. Private temporary
+workspace and AppContainer profile storage are writable. Environment variables
+are reduced rather than forwarding API keys or
+proxy credentials. Native extensions run inside the same OS boundary; packages
+requiring child processes, COM, ordinary user settings, or network access without
+the explicit opt-in can fail.
+This is Windows-only and is not a defense against kernel vulnerabilities, hostile
+administrators, or another malicious process running as the host user. Workspace
+size monitoring is a best-effort guard, not an OS disk quota.
+
+## Optional Selenium browser boundary
+
+Browser cleanup retains process handles while running, seals Job membership before
+termination, waits for those handles to signal and requires lifetime process-count
+coverage. An empty active-process count alone is not treated as proof of exit.
+Incomplete capture (including a rapidly exiting helper or a rejected association)
+fails closed: no PNG is published and private storage is retained for diagnosis.
+
+`selenium.enabled` defaults to `false`. The tool also requires
+`python.network_enabled` and an existing, explicitly selected Python executable;
+`python.enabled` can remain false. It uses trusted existing `selenium>=4.32,<5`
+and its dependencies from the configured Selenium/Python library directories,
+plus explicit local Edge/Chrome and matching driver executable paths. There is
+no Selenium Manager discovery, package installation, or browser/driver download.
+Runtime and library selection grants code execution to those existing files:
+only select trusted installations. Settings are frozen per run.
+
+The dedicated worker, driver and browser run as the current Windows user in a
+Job Object, **not** in the Python LPAC. The Job bounds memory and lifetime and
+is drained on stop/timeout; it is not a filesystem, network or user-privilege
+sandbox. Each call uses a new temporary headless browser profile and closes it
+afterwards. The tool cannot attach to an existing profile, browser or session.
+This avoids deliberate reuse of the user's ordinary browser profile but does
+not guarantee isolation from Windows credentials, enterprise SSO, browser
+policies, or all OS resources accessible to the current user.
+
+The model-facing API accepts an HTTP(S) URL, at most 20 CSS-selected
+`click`/`fill`/`read`/`wait` actions, and an optional PNG screenshot destination.
+It accepts no arbitrary JavaScript/Python, browser options, CDP commands, file
+upload/download operation, or remote WebDriver endpoint. Page JavaScript still
+runs. Internal fixed scripts implement text filling/reading, and a fixed CDP
+command disables browser downloads; these are not model-supplied programs.
+Clicks and form submissions can change data or trigger other actions on a site.
+
+HTTP(S) URL syntax and the observable current URL are checked. These checks do
+not cover all browser traffic, DNS resolutions, redirects, subresources, SSO
+or OS file access, and do not provide the Web fetcher's public-IP pinning.
+Intranet access is possible. The dedicated `selenium.proxy_url` is independent
+of the Web search proxy; blank explicitly requests direct browser connections.
+Neither setting is a general outbound firewall. Browser text and pages remain
+untrusted data, and a site can receive model-supplied text, URLs or form values.
+
+Only the optional PNG screenshot is transferred to a selected host output by
+the tool: it uses the normal harness, shared file lock, reservation, size and
+expected-hash checks and produces a save receipt after success. File roots
+govern this transfer, not all browser reads/writes. Temporary browser storage,
+trusted runtime/library reads and other ordinary-user OS access are outside
+those folder permissions. Redaction applies to returned application records,
+not page contents, screenshots, form submissions or browser network traffic.
+
+Turning Selenium off denies the Workbench `selenium_browse` tool; it is not a
+ban on every implementation of the WebDriver protocol. If arbitrary Python
+execution and its networking are enabled, a script may contact an existing
+remote WebDriver server over raw HTTP within Windows network policy. Python's
+child-process restriction remains in force, but does not block such remote
+protocol requests. Disable Python networking as well when that access must be
+prevented, and use organizational OS/network controls for stronger guarantees.
+
 ## Prompt and data trust
 
 The default shared system policy is visible and editable. The runtime appends the verified agent ID, role, parent, allowed profiles, worker limit, and selected folder scope. Tool descriptions are in source. There are no hidden network-fetched prompts, scheduled commands, update checks, analytics, remote plugin loading, or mandatory external orchestration services.
 
 Incoming file text, web text and teammate messages are untrusted data. Labeling them does not guarantee that a model will ignore all prompt injections. The enforced tool boundaries remain necessary. An attacker who controls a permitted file can still influence the quality of the model's answer or cause unwanted edits **within** allowed write roots.
 
-Content read by a file tool enters the selected model conversation. Team mail may move content from a Local worker into a cloud PM. Search queries and URLs can also carry content. There is no per-document data-loss-prevention classifier. When external transfer is prohibited, disable Web and verify every PM and worker endpoint and its downstream handling against organizational requirements. Local accepts loopback or literal private-LAN endpoints; that address restriction does not establish organizational approval or prevent an endpoint from forwarding data. The application does not verify endpoint retention, training use, or onward transfer. Do not include unrelated secrets in permitted roots. Filename/role labels and error messages are not confidentiality boundaries.
+Content read by a file tool enters the selected model conversation. Team mail may move content from a Local worker into a cloud PM. Search queries, URLs and browser form values can also carry content. There is no per-document data-loss-prevention classifier. When external transfer is prohibited, disable Web, Python networking and Selenium, and verify every PM and worker endpoint and its downstream handling against organizational requirements. Local accepts loopback or literal private-LAN endpoints; that address restriction does not establish organizational approval or prevent an endpoint from forwarding data. The application does not verify endpoint retention, training use, or onward transfer. Do not include unrelated secrets in permitted roots. Filename/role labels and error messages are not confidentiality boundaries.
 
 ## Credentials and state
 

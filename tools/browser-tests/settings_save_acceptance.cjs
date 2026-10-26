@@ -236,6 +236,9 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await newTask(focusedDraft);
     const retainedWorker=page.locator('#workerProfiles input[value="local"]');
     await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');
+    assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab reaches optional PM disclosure before worker choices');
+    assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false,'The default single-PM scenario keeps additional PM controls collapsed');
+    await page.keyboard.press('Tab');
     assert.equal(await retainedWorker.evaluate(node=>node===document.activeElement),true,'Native Tab reaches the retained worker checkbox');
     await retainedWorker.evaluate(node=>{window.settingsSaveFocusedWorker=node;});
     const retainedView=await viewSnapshot(),beforeRetainedRelease=writes().length;
@@ -265,7 +268,10 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.setViewportSize({width:390,height:844});await newTask(removedDraft);
     const removedWorker=page.locator('#workerProfiles input[value="focus-removed"]');
     assert.equal(await removedWorker.isChecked(),false);
-    await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');await page.keyboard.press('Tab');
+    await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');
+    assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab preserves the optional PM disclosure before worker choices');
+    assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false);
+    await page.keyboard.press('Tab');await page.keyboard.press('Tab');
     assert.equal(await removedWorker.evaluate(node=>node===document.activeElement),true,'Native Tab reaches the unchecked worker about to disappear');
     await removedWorker.evaluate(node=>{window.settingsSaveFocusedWorker=node;});
     const removedView=await viewSnapshot(),beforeRemovedRelease=writes().length;

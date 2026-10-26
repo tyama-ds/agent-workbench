@@ -195,6 +195,7 @@ def populate(engine, fixture):
         run_id = f'r-{run_index}'
         run = {
             'id': run_id, 'task': fixture_text(160), 'pm_profile': 'local',
+            'pm_profiles': ['local'], 'pm_agent_ids': [f'a-{run_index}-0'],
             'worker_profiles': ['local'], 'max_workers': fixture.agents_per_run - 1,
             'status': 'done', 'created_at': CREATED_AT, 'model_calls': 10,
             'tool_calls': 10, 'auto_collaborations': 0, 'max_auto_collaborations': 24,

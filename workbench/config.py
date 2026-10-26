@@ -113,6 +113,60 @@ def validate_settings(raw):
                 raise ValueError(f'{name}: ドライブ全体ではなく既存の絶対フォルダーパスを指定してください')
             cleaned.append(str(path.absolute()))
         value['paths'][name] = list(dict.fromkeys(cleaned))
+    python = value['python']
+    for key in ('enabled', 'network_enabled'):
+        if type(python[key]) is not bool:
+            raise ValueError(f'python.{key}: bool が必要です')
+    executable = text(python['executable'], 'python.executable', 4096)
+    if executable:
+        path = Path(executable)
+        if not path.is_absolute() or not path.is_file() or path.name.casefold() != 'python.exe':
+            raise ValueError('python.executable: インストール済みの python.exe の絶対パスを指定してください')
+        python['executable'] = str(path.absolute())
+    elif python['enabled']:
+        raise ValueError('Pythonを有効にするには既存の python.exe を指定してください')
+    libraries = python['library_paths']
+    if not isinstance(libraries, list) or len(libraries) > 16:
+        raise ValueError('python.library_paths: フォルダーを16個以内で指定してください')
+    cleaned = []
+    for item in libraries:
+        path = Path(text(item, 'python.library_paths', 4096, False))
+        if not path.is_absolute() or not path.is_dir() or path == Path(path.anchor):
+            raise ValueError('python.library_paths: 既存ライブラリの絶対フォルダーパスを指定してください')
+        cleaned.append(str(path.absolute()))
+    python['library_paths'] = list(dict.fromkeys(cleaned))
+    for key, (low, high) in {'timeout_seconds': (1, 600), 'max_memory_mb': (128, 8192),
+                            'max_output_bytes': (1024, 1048576)}.items():
+        number(python[key], f'python.{key}', low, high, integer=True)
+    selenium = value['selenium']
+    if type(selenium['enabled']) is not bool or selenium['browser'] not in ('edge', 'chrome'):
+        raise ValueError('Selenium の有効設定は bool、browser は edge / chrome です')
+    expected = {'edge': ('msedge.exe', 'msedgedriver.exe'), 'chrome': ('chrome.exe', 'chromedriver.exe')}
+    for key, filename in zip(('browser_executable', 'driver_executable'), expected[selenium['browser']]):
+        supplied = text(selenium[key], f'selenium.{key}', 4096)
+        if supplied:
+            path = Path(supplied)
+            if not path.is_absolute() or not path.is_file() or path.name.casefold() != filename:
+                raise ValueError(f'selenium.{key}: 既存の {filename} の絶対パスを指定してください')
+            selenium[key] = str(path.absolute())
+        elif selenium['enabled']:
+            raise ValueError(f'Seleniumを有効にするには既存の {filename} を指定してください')
+    if selenium['enabled'] and (not python['executable'] or not python['network_enabled']):
+        raise ValueError('Seleniumには既存の python.exe と「Python のネット接続を許可」が必要です')
+    libraries = selenium['library_paths']
+    if not isinstance(libraries, list) or len(libraries) > 16:
+        raise ValueError('selenium.library_paths: フォルダーを16個以内で指定してください')
+    cleaned = []
+    for item in libraries:
+        path = Path(text(item, 'selenium.library_paths', 4096, False))
+        if not path.is_absolute() or not path.is_dir() or path == Path(path.anchor):
+            raise ValueError('selenium.library_paths: 既存ライブラリの絶対フォルダーパスを指定してください')
+        cleaned.append(str(path.absolute()))
+    selenium['library_paths'] = list(dict.fromkeys(cleaned))
+    selenium['proxy_url'] = url(selenium['proxy_url'], optional=True, proxy=True)
+    for key, (low, high) in {'timeout_seconds': (10, 300), 'max_memory_mb': (256, 8192),
+                            'max_output_chars': (1000, 100000)}.items():
+        number(selenium[key], f'selenium.{key}', low, high, integer=True)
     search = value['search']
     if type(search['enabled']) is not bool or search['provider'] not in {'searxng', 'brave'}:
         raise ValueError('検索設定が不正です')
@@ -177,6 +231,10 @@ class Settings:
                 'secret_status': {p['id']: bool(self.key(p)) for p in self.value['providers']} |
                     {'search': bool(self.secrets.get('search') or os.environ.get(self.value['search']['api_key_env'], ''))},
                 'capabilities': {'office': ['docx', 'xlsx', 'pptx'], 'shell': False,
+                    'python_isolation': 'windows_lpac' if os.name == 'nt' else None,
+                    'python_enabled': self.value['python']['enabled'],
+                    'selenium_available': os.name == 'nt',
+                    'selenium_isolation': 'windows_job_normal_user' if os.name == 'nt' else None,
                     'gpu_hard_limit': False, 'gpu_admission_guard': True, 'state_persistence': False}}
 
     def save(self, raw):
