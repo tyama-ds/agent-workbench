@@ -4,18 +4,16 @@
 
 ## 最短の手順
 
-Python の導入・パス指定前に、展開先のコマンドプロンプトで `Setup.cmd --help` を実行すると手順とオプションを表示します。`Setup.cmd -h` / `Setup.cmd /?` も同じです。ヘルプ指定は最初の引数として単独で使い、ほかの引数が続く場合はセットアップせずエラーになります。通常のオプションは別の実行に分けてください。ヘルプは Python を起動せず、`.venv` の作成、パッケージのインストール、ネットワーク接続、前提条件の診断も行いません。
+通常は以下の2つの BAT をダブルクリックするだけです。コマンド入力や環境変数の設定は不要です。
+
+オプションを調べたい場合は、Python の導入・パス指定前でも展開先のコマンドプロンプトで `Setup.bat --help` を実行すると手順とオプションを表示します。`Setup.bat -h` / `Setup.bat /?` も同じです。ヘルプ指定は最初の引数として単独で使い、ほかの引数が続く場合はセットアップせずエラーになります。通常のオプションは別の実行に分けてください。ヘルプは Python を起動せず、`.venv` の作成、パッケージのインストール、ネットワーク接続、前提条件の診断も行いません。
 
 1. 組織の認可を受け、アプリとは別に **64-bit の通常版 CPython 3.13** をインストールします。3.11 / 3.12 も対応対象です。管理者権限はアプリのセットアップには不要です。Python の導入に社内申請が必要なら IT 担当へ依頼してください。
 2. ソース ZIP を**すべて展開**し、自分が書き込めるローカルフォルダーに置きます。例: `%LOCALAPPDATA%\AgentWorkbenchApp`。ZIP の中から直接実行したり、Program Files、ネットワーク共有に置いたりしないでください。
-3. 展開先でコマンドプロンプトを開き、IT 担当が指定した実際の `python.exe` のフルパスを設定してから `Setup.cmd` を実行します。次のパスは例です。
+3. **`Setup.bat` をダブルクリック**します。`Python path:` と表示されたら、インストール済みの `python.exe` のフルパスを貼り付けて Enter を押します。例: `C:\Approved Python\python.exe`。エクスプローラーで対象の `python.exe` を右クリックし「パスのコピー」で取得した引用符付きのパスも使えます。空欄で Enter を押すと中止します。Python の場所が分からない場合は、導入した人または IT 担当に確認してください。
+4. `Setup complete` が出たらセットアップ画面を閉じ、**`Launch.bat` をダブルクリック**します。次回からは `Launch.bat` だけで起動できます。Python のパスを入力し直す必要はありません。
 
-   ```bat
-   set "WORKBENCH_PYTHON=C:\Approved Python\python.exe"
-   Setup.cmd
-   ```
-
-4. `Setup complete` が出たら `Launch.cmd` をダブルクリックします。起動のたびに Python のパスを設定し直す必要はありません。
+従来の `Setup.cmd` / `Launch.cmd` は互換用として残しています。BAT は CMD ファイルを経由せず、同じ Python のセットアップ・起動処理を直接実行します。
 
 Git、WSL、Docker、Node.js、Office、管理者 PowerShell は不要です。セットアップはプロジェクト内の `.venv` に依存ライブラリーを入れます。Python は同梱せず、本体のダウンロード・インストールも行いません。Windows の PATH、実行ポリシー、証明書ストア、プロキシ設定を変更しません。通常の利用に PowerShell は使いません。
 
@@ -29,25 +27,25 @@ Git、WSL、Docker、Node.js、Office、管理者 PowerShell は不要です。�
 
 ## Python が見つからないとき
 
-セットアップは `WORKBENCH_PYTHON` で指定された、別途認可・導入済みの実際の `python.exe` のみを使います。`py` / `python` エイリアスは未導入の Python を自動インストールする場合があるため、自動探索・実行しません。パスを指定していない場合や実行ファイルがない場合は停止します。ドライブ名で始まるローカルのフルパスを使い、Microsoft Store / Python Install Manager のエイリアスや `.venv` 内の Python は指定しないでください。実行前に標準インストールの `Lib\os.py`、`Lib\venv`、`Lib\ensurepip` を確認します。これは構成の確認であり、会社による認可をアプリが判定するものではありません。
+セットアップは画面に貼り付けた、別途認可・導入済みの実際の `python.exe` のみを使います。既に `WORKBENCH_PYTHON` が設定されている場合は、そのパスを使って入力を省略します。`py` / `python` エイリアスは未導入の Python を自動インストールする場合があるため、自動探索・実行しません。パスを空欄にした場合や実行ファイルがない場合は停止します。ドライブ名で始まるローカルのフルパスを使い、Microsoft Store / Python Install Manager のエイリアスや `.venv` 内の Python は指定しないでください。実行前に標準インストールの `Lib\os.py`、`Lib\venv`、`Lib\ensurepip` を確認します。これは構成の確認であり、会社による認可をアプリが判定するものではありません。
 
 32-bit、PyPy、free-threaded 版、未検証の 3.14 以降は利用対象外です。Python 3.13 の通常版 x64 を推奨します。ARM64 Windows は未検証であり、依存 wheel の対応を別途確認する必要があります。
 
-承認済み Python が別の場所にある場合は、コマンドプロンプトで指定できます。
+通常は `Setup.bat` の画面へパスを貼り付ければ十分です。自動実行などで入力を省きたい場合に限り、従来どおりコマンドプロンプトで指定できます。
 
 ```bat
 set "WORKBENCH_PYTHON=C:\Approved Python\python.exe"
-Setup.cmd
+Setup.bat
 ```
 
-この指定はそのコマンドプロンプトだけに適用されます。同じ画面から `Setup.cmd` を実行してください。Microsoft Store のエイリアスだけが存在する場合は、実際の Python を IT 担当に別途導入してもらってください。会社の設定・環境変数は変更しません。
+この指定はそのコマンドプロンプトだけに適用されます。同じ画面から `Setup.bat` を実行してください。Microsoft Store のエイリアスだけが存在する場合は、実際の Python を IT 担当に別途導入してもらってください。会社の設定・環境変数は変更しません。
 
 ## インストール前の確認
 
-展開先でコマンドプロンプトを開き、上の手順で `WORKBENCH_PYTHON` を指定します。
+展開先でコマンドプロンプトを開き、次を実行します。Python のパスは表示された入力欄へ貼り付けます。
 
 ```bat
-Setup.cmd --check
+Setup.bat --check
 ```
 
 Python の対応範囲、必要ファイル、フォルダーの書き込み可否、wheel フォルダー指定を確認します。パッケージをインストールせず、ネットワークにも接続しません。書き込み確認用の一時ファイルは直ちに削除します。既存 `.venv` の健全性、ネットワーク疎通、会社のアプリ実行許可までは保証しません。
@@ -59,7 +57,7 @@ Python の対応範囲、必要ファイル、フォルダーの書き込み可�
 会社の指定値を使います。アプリ内の API プロキシ設定とインストール時の設定は別です。
 
 ```bat
-Setup.cmd --proxy "http://proxy.example.local:8080" --certificate "C:\Certificates\company-ca.pem"
+Setup.bat --proxy "http://proxy.example.local:8080" --certificate "C:\Certificates\company-ca.pem"
 ```
 
 証明書指定が不要なら `--certificate` は省略します。プロキシは HTTP(S) のホスト・ポート指定に対応し、PAC URL や認証情報入り URL は拒否します。通常モードでは既存 pip 設定・`PIP_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` を引き継ぎます。認証方法、社内パッケージミラー、PEM CA バンドルについては IT 担当へ確認してください。Windows に CA が登録済みでも、同梱 pip のバージョンによっては明示した CA バンドルが必要です。pip を未固定で自動更新しません。
@@ -101,7 +99,7 @@ python -m pip download --only-binary=:all: --require-hashes -r requirements.lock
 ソース一式と `wheelhouse` を会社の承認済み手段で対象 PC に運び、実行します。
 
 ```bat
-Setup.cmd --wheelhouse "C:\Approved Packages\wheelhouse"
+Setup.bat --wheelhouse "C:\Approved Packages\wheelhouse"
 ```
 
 このモードはパッケージインデックスを利用せず、外部 find-links と pip 設定ファイルも読み込みません。依存ファイルのハッシュ照合は引き続き必須です。必要な wheel が欠けていたら停止し、オンラインにフォールバックしません。proxy / certificate オプションとは併用しません。Python 本体は別途必要です。`.venv` を他 PC からコピーしないでください。
@@ -111,11 +109,11 @@ Setup.cmd --wheelhouse "C:\Approved Packages\wheelhouse"
 ## 起動オプション・互換 PowerShell
 
 ```bat
-Launch.cmd --port 8820
-Launch.cmd --state-dir "C:\Users\me\AppData\Local\AgentWorkbench-test"
+Launch.bat --port 8820
+Launch.bat --state-dir "C:\Users\me\AppData\Local\AgentWorkbench-test"
 ```
 
-旧式の `-Port` / `-StateDir` / `-NoBrowser` も受け付けます。デスクトップから起動したい場合は、Explorer で `Launch.cmd` のショートカットを作成できます。
+旧式の `-Port` / `-StateDir` / `-NoBrowser` も受け付けます。デスクトップから起動したい場合は、Explorer で `Launch.bat` のショートカットを作成できます。
 
 既存の PowerShell スクリプトは互換入口として残っています。`-PythonExecutable` または `WORKBENCH_PYTHON` で、上記と同じ実際の Python のフルパスを指定してください。自動探索は行いません。会社の実行ポリシーで許可されている場合だけ利用してください。`Setup-Windows.ps1` の `-ProxyUrl` / `-CertificatePath` / `-PythonExecutable` / `-CreateDesktopShortcut` に加え、`-Wheelhouse` / `-CheckOnly` に対応します。実行ポリシーを変更する必要はありません。
 
@@ -129,4 +127,4 @@ Launch.cmd --state-dir "C:\Users\me\AppData\Local\AgentWorkbench-test"
 
 過去の notice・manifest・検証記録、および一部の検証用補助コードは履歴を保つため残しています。`requirements-build.lock` は旧同梱版専用の記録であり、インストールに使用しません。過去の再配布調査が完了しても、この同梱禁止方針が自動で変わることはありません。
 
-現在の導入手順は、この文書の `Setup.cmd` / `Launch.cmd` のみです。Python 本体の版・パッチ更新と利用許可は、組織の承認手順で別途管理してください。
+現在の導入手順は、この文書の `Setup.bat` / `Launch.bat` のみです。Python 本体の版・パッチ更新と利用許可は、組織の承認手順で別途管理してください。
