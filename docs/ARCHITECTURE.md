@@ -8,6 +8,10 @@ flowchart LR
   Engine --> Adapter[Provider adapters]
   Adapter --> Gate[Shared Local request gate]
   Gate --> Local[OpenAI-compatible Local API]
+  Engine --> BridgeManager[Opt-in Copilot bridge lifecycle]
+  BridgeManager --> Bridge[Existing copilot-bridge / owned or borrowed]
+  Gate --> Bridge
+  Bridge --> Copilot[M365 Copilot through Edge UI]
   Adapter --> OpenAI[OpenAI Responses API]
   Adapter --> Anthropic[Anthropic Messages API]
   Engine --> Harness[Folder and Office harness]
@@ -29,6 +33,7 @@ flowchart LR
 - `workbench/engine.py`: independently maintained conversations, role assignment, per-run budgets, worker mail, paused questions, reservations, shutdown/draining.
 - `workbench/providers.py`: stateless wire conversions. OpenAI native response output is replayed with encrypted reasoning; Anthropic thinking signatures/redacted blocks remain intact; Local native content/reasoning is retained. Display reasoning is separate from protocol data.
 - `workbench/resources.py`: shared Local admission control, queue limits, start interval, bounded retry settings, fixed NVIDIA query. A failed or cancelled request releases its slot.
+- `workbench/copilot_bridge.py`: background opt-in startup, bounded identity probes and owned-process cleanup. Existing bridges are borrowed. Managed starts use a dedicated Edge profile and no transcript log. The virtual Copilot profile shares the Local queue/time limits, omits local GPU admission and disables automatic HTTP retry. API readiness is not inference or login verification.
 - `workbench/harness.py`: host data transfers, bounded name/content searches and Office parsing/writing.
 - `workbench/python_runner.py`: explicit input/output mappings, trusted existing runtime selection, cancellation draining and per-file save receipts.
 - `workbench/windows_sandbox.py`: fresh LPAC, network disabled by default with explicit capability opt-in, child-process restriction, Job Object, runtime ACL cleanup and cross-process ACL mutex. OS-public/runtime read exceptions are described in SECURITY.md.

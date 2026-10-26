@@ -18,6 +18,28 @@ LOOPBACK = {'127.0.0.1', 'localhost', '::1'}
 LAN = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7')]
 
 
+COPILOT_PROFILE_ID = 'copilot-agent'
+
+
+def effective_profiles(config):
+    """Add the opt-in bridge without rewriting the user's saved profiles."""
+    profiles = copy.deepcopy(config['providers'])
+    bridge = config.get('copilot_agent', {})
+    if bridge.get('enabled') is True:
+        profiles.insert(0, {'id': COPILOT_PROFILE_ID, 'label': 'Copilot Agent', 'kind': 'local',
+            '_copilot_agent': True,
+            'base_url': bridge['base_url'], 'model': bridge['model'], 'api_key_env': '',
+            'proxy_url': '', 'enabled': True, 'request_timeout_seconds': config['local']['request_timeout_seconds'],
+            'context_window_tokens': 0})
+    return profiles
+
+
+def effective_config(config):
+    value = copy.deepcopy(config)
+    value['providers'] = effective_profiles(config)
+    return value
+
+
 def local_host(host):
     if host in LOOPBACK:
         return True
@@ -85,6 +107,8 @@ def validate_settings(raw):
             raise ValueError('プロファイル ID は重複しない英数字を指定してください')
         if profile['id'] == 'search':
             raise ValueError('プロファイル ID search は検索用に予約されています。別の ID を指定してください')
+        if profile['id'] == COPILOT_PROFILE_ID and value['copilot_agent']['enabled'] is True:
+            raise ValueError('オンの間はプロファイル ID copilot-agent が専用モードに予約されます。既存プロファイルの ID を変更してください')
         seen.add(profile['id'])
         if profile.get('kind') not in {'local', 'openai', 'anthropic'}:
             raise ValueError('provider kind が不正です')
@@ -102,6 +126,29 @@ def validate_settings(raw):
             raise ValueError('enabled は bool です')
         number(profile.setdefault('request_timeout_seconds', 180), 'API timeout', 5, 1800)
         number(profile.setdefault('context_window_tokens', 0), 'context_window_tokens', 0, 2000000, integer=True)
+    bridge = value['copilot_agent']
+    if type(bridge['enabled']) is not bool:
+        raise ValueError('copilot_agent.enabled: bool が必要です')
+    bridge['base_url'] = url(bridge['base_url'], local=True)
+    endpoint = urlsplit(bridge['base_url'])
+    if (endpoint.scheme != 'http' or endpoint.hostname not in {'127.0.0.1', 'localhost'}
+            or endpoint.path != '/v1' or endpoint.port is None):
+        raise ValueError('copilot-agent: 接続先は http://127.0.0.1:ポート/v1 を指定してください')
+    text(bridge['model'], 'copilot_agent.model', 200, False)
+    for field in ('model', 'bridge_directory', 'python_executable', 'base_url'):
+        supplied = text(bridge[field], f'copilot_agent.{field}', 4096)
+        if any(ord(c) < 32 or ord(c) == 127 for c in supplied):
+            raise ValueError(f'copilot_agent.{field}: 制御文字は使用できません')
+    number(bridge['startup_timeout_seconds'], 'copilot_agent.startup_timeout_seconds', 5, 1200, integer=True)
+    for field in ('bridge_directory', 'python_executable'):
+        supplied = text(bridge[field], f'copilot_agent.{field}', 4096)
+        if supplied:
+            path = Path(supplied)
+            valid = (path.is_dir() and (path / 'server.py').is_file() if field == 'bridge_directory' else
+                     path.is_file() and path.name.casefold() in {'python.exe', 'pythonw.exe', 'python', 'python3'})
+            if not path.is_absolute() or not valid:
+                raise ValueError(f'copilot_agent.{field}: 既存の bridge フォルダー / Python の絶対パスを指定してください')
+            bridge[field] = str(path.absolute())
     for name, roots in value['paths'].items():
         if not isinstance(roots, list) or len(roots) > 32:
             raise ValueError(f'{name}: フォルダーを32個以内で指定してください')

@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .context import (MEMORY_POLICY, SUMMARY_POLICY, encoded, parse_summary, plan_compaction, pressure, redacted_json, source_record)
-from .config import Settings, ROOT, number, text, validate_settings
+from .config import (Settings, ROOT, number, text, validate_settings, effective_profiles,
+                     effective_config, COPILOT_PROFILE_ID)
+from .copilot_bridge import CopilotBridgeManager
 from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
 from .providers import ProviderClient, ProviderError
@@ -175,6 +177,56 @@ class Engine:
         # Output-only masks: never consulted by Settings.key or an API request.
         # Like retained conversations, these live until this Engine is discarded.
         self._redaction = SecretRedactor()
+        self.copilot_bridge = CopilotBridgeManager(settings.directory)
+        self._copilot_sync_task = None
+        self._copilot_operation = None
+        self._copilot_desired = None
+        self._copilot_generation = 0
+        self._copilot_error = ''
+
+    def copilot_status(self):
+        config = self.settings.value['copilot_agent']
+        status = self.copilot_bridge.status(config)
+        if self._copilot_sync_task is not None and not self._copilot_sync_task.done():
+            status = {**status, 'enabled': config['enabled'], 'ready': False,
+                      'state': 'starting' if config['enabled'] else 'stopping',
+                      'message': 'copilot-bridge の起動・接続を確認しています。' if config['enabled'] else 'copilot-bridge を停止しています。'}
+        elif self._copilot_error:
+            status = {**status, 'ready': False, 'state': 'error', 'message': self._copilot_error}
+        return self._redact_tree(status)
+
+    def public_config(self):
+        return {**self.settings.public(), 'effective_providers': effective_profiles(self.settings.value),
+                'copilot_agent_status': self.copilot_status()}
+
+    def schedule_copilot_sync(self, *, force=False):
+        """Reconcile saved opt-in settings in the background, one operation at a time."""
+        if self.closed:
+            return
+        config = copy.deepcopy(self.settings.value['copilot_agent'])
+        if not force and config == self._copilot_desired:
+            return
+        self._copilot_desired = config
+        self._copilot_generation += 1
+        self._copilot_error = ''
+        if self._copilot_operation is not None and not self._copilot_operation.done():
+            if not self._copilot_operation.cancelling():
+                self._copilot_operation.cancel()
+        if self._copilot_sync_task is None or self._copilot_sync_task.done():
+            self._copilot_sync_task = asyncio.create_task(self._reconcile_copilot())
+
+    async def _reconcile_copilot(self):
+        while not self.closed:
+            generation = self._copilot_generation
+            config = copy.deepcopy(self._copilot_desired)
+            operation = asyncio.create_task(self.copilot_bridge.sync(config))
+            self._copilot_operation = operation
+            result = (await asyncio.gather(operation, return_exceptions=True))[0]
+            self._copilot_operation = None
+            if isinstance(result, Exception):
+                self._copilot_error = 'copilot-bridge の起動・接続を確認できませんでした。設定と起動状態を確認してください。'
+            if generation == self._copilot_generation:
+                return
 
     def event(self, run, agent, kind, message, **extra):
         self.sequence += 1
@@ -275,7 +327,7 @@ class Engine:
                          {'status_reason': self.run_status_reason(run)} for run in self.runs.values()],
                 'agents': [a.public(message_eligibility=self.message_eligibility(a), status_reason=self.agent_status_reason(a),
                                     configured_profile=self.configured_profile(a)) for a in self.agents.values()], 'events': list(self.events),
-                'resources': self.gate.snapshot()})
+                'resources': self.gate.snapshot(), 'copilot_agent_status': self.copilot_status()})
 
     def selected_snapshot(self, *, run_id=None, agent_id=None):
         """Live summaries plus the explicitly selected run/agent's display data.
@@ -308,7 +360,7 @@ class Engine:
                                 status_reason=self.agent_status_reason(a), include_detail=a.id == agent_id,
                                 configured_profile=self.configured_profile(a))
                        for a in self.agents.values()],
-            'events': events, 'resources': self.gate.snapshot(),
+            'events': events, 'resources': self.gate.snapshot(), 'copilot_agent_status': self.copilot_status(),
             'selection': {'run_id': run_id, 'agent_id': agent_id, 'detail_loaded': agent_id is not None},
         })
 
@@ -334,9 +386,9 @@ class Engine:
         if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
         task = text(payload.get('task'), 'task', 16000, False)
-        config = copy.deepcopy(self.settings.value)
+        config = effective_config(self.settings.value)
         profiles = {p['id']: p for p in config['providers'] if p['enabled']}
-        pm = payload.get('pm_profile')
+        pm = payload.get('pm_profile', COPILOT_PROFILE_ID if config['copilot_agent']['enabled'] else None)
         pms = payload.get('pm_profiles', [pm])
         if (not isinstance(pms, list) or not 1 <= len(pms) <= 16
                 or any(not isinstance(profile, str) or profile not in profiles for profile in pms)
@@ -348,6 +400,12 @@ class Engine:
         if not isinstance(workers, list) or (count and not workers) or any(not isinstance(w, str) for w in workers) or (count and any(w not in profiles for w in workers)):
             raise AdmissionError('invalid_selection', 'PM と worker の利用可能な API を選択してください', field='profiles')
         workers = workers if count else []
+        if config['copilot_agent']['enabled'] and COPILOT_PROFILE_ID in {*pms, *workers}:
+            status = self.copilot_status()
+            if status.get('ready') is not True:
+                raise AdmissionError('copilot_bridge_unavailable', status.get('message') or
+                    'copilot-bridge の準備ができていません。設定画面で接続状態を確認してください。',
+                    field='copilot_agent', profile_id=COPILOT_PROFILE_ID)
         for p in [profiles[k] for k in dict.fromkeys([*pms, *workers])]:
             if not p['model'].strip():
                 raise AdmissionError('model_missing', f'{p["label"]}: モデル名を設定してください', field='model', profile_id=p['id'])
@@ -378,6 +436,13 @@ class Engine:
 
     async def start_run(self, payload):
         task, config, pms, workers, count, harness, web_tools = self._prepare_run(payload)
+        if config['copilot_agent']['enabled'] and COPILOT_PROFILE_ID in {*pms, *workers}:
+            await self.copilot_bridge.ensure(config['copilot_agent'])
+            # Connection checks may await. Re-run all admission after a settings
+            # save, shutdown or another request instead of using stale authority.
+            if config != effective_config(self.settings.value):
+                raise AdmissionError('settings_changed', '設定が変更されました。接続先を確認してから開始してください。')
+            task, config, pms, workers, count, harness, web_tools = self._prepare_run(payload)
         run_id = 'r-' + secrets.token_hex(8)
         # Capture a small public descriptor while original secret references are
         # still available. Later profile/environment removal must not unredact it.
@@ -463,7 +528,7 @@ class Engine:
             reason, message = 'stopping', '停止処理中です。実行中の処理の終了を待っています。完了後、新しい仕事を開始してください'
         elif self.closed or agent.closing or run['status'] == 'stopped':
             reason, message = 'stopped', '停止したチームは再開できません。新しい仕事を開始してください'
-        elif run['_config'] != self.settings.value:
+        elif run['_config'] != effective_config(self.settings.value):
             reason, message = 'settings_changed', '設定が変更されています。現在の権限・API 設定で新しい仕事を開始してください'
         elif len(agent.pending) >= 32:
             reason, message = 'queue_full', '待機キューが満杯です。処理が進んでから送信してください'
@@ -1015,3 +1080,9 @@ class Engine:
     async def close(self):
         self.closed = True
         await asyncio.gather(*(self.stop_run(run) for run in self.runs), return_exceptions=True)
+        if self._copilot_operation is not None and not self._copilot_operation.done():
+            if not self._copilot_operation.cancelling():
+                self._copilot_operation.cancel()
+        if self._copilot_sync_task is not None:
+            await asyncio.gather(self._copilot_sync_task, return_exceptions=True)
+        await self.copilot_bridge.close()

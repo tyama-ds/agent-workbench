@@ -16,6 +16,10 @@ def summarize(prepared):
             'endpoint': _endpoint(profile['base_url'], protocol, allow_local_network=profile['kind'] == 'local'),
             'protocol': protocol, 'proxy': profile['proxy_url'] if profile['kind'] != 'local' else ''})
     warnings = []
+    if config['copilot_agent']['enabled'] and 'copilot-agent' in selected:
+        warnings.append({'code': 'copilot_bridge_destination', 'message':
+            'Copilot Agent はローカル bridge を経由して、ログイン中の Microsoft 365 Copilot に依頼とツール結果を送信します。'
+            '接続確認はモデル回答・ツール動作の成功を保証しません。'})
     if config['selenium']['enabled']:
         warnings.append({'code': 'selenium_normal_user', 'message':
             'Selenium は通常の Windows ユーザー権限で新規ブラウザーを起動します。'
