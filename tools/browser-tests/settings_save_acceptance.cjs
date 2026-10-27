@@ -5,6 +5,41 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {closeSettingsDialog} = require('./credential_recovery_acceptance.cjs');
 
+function assertUnchangedWaitingRun(before,after) {
+  const message='Credential recovery never resumes or resets the active run';
+  assert.equal(before.run.status,'waiting');assert.equal(after.run.status,'waiting');
+  for(const snapshot of [before,after]){
+    const {run}=snapshot,budget=run.budget;
+    assert(budget&&budget.time,'Waiting run includes its observed shared budget');
+    for(const value of [budget.observed_at,budget.started_at,budget.time.used_seconds,
+      budget.time.limit_seconds,budget.time.remaining_seconds]){
+      assert.equal(typeof value,'number');assert(Number.isFinite(value)&&value>=0,'Budget time is finite and nonnegative');
+    }
+    assert.equal(budget.started_at,run.created_at);assert.equal(budget.shared,true);
+    assert(budget.observed_at>=budget.started_at);
+    assert.equal(budget.time.used_seconds,budget.observed_at-budget.started_at);
+    assert.equal(budget.time.remaining_seconds,Math.max(0,budget.time.limit_seconds-budget.time.used_seconds));
+    for(const name of ['model_calls','tool_calls']){
+      const count=budget[name];assert(count,'Shared '+name+' budget exists');
+      for(const value of [count.used,count.limit,count.remaining])assert(Number.isSafeInteger(value)&&value>=0);
+      assert.equal(count.used,run[name]);assert.equal(count.remaining,Math.max(0,count.limit-count.used));
+    }
+  }
+  assert(after.run.budget.observed_at>=before.run.budget.observed_at,'Server observation cannot move backwards');
+  assert(after.run.budget.time.used_seconds>=before.run.budget.time.used_seconds,'Waiting time cannot be reset');
+  assert(after.run.budget.time.remaining_seconds<=before.run.budget.time.remaining_seconds,'Waiting time cannot be refilled');
+  // Compare detached copies only. All identities, counters, caps, histories and
+  // other fields remain under the original whole-payload equality assertion.
+  const comparable=[before,after].map(snapshot=>{
+    const copy=structuredClone(snapshot);
+    delete copy.run.budget.observed_at;
+    delete copy.run.budget.time.used_seconds;
+    delete copy.run.budget.time.remaining_seconds;
+    return copy;
+  });
+  assert.deepEqual(comparable[1],comparable[0],message);
+}
+
 async function settingsSaveAcceptance({page,context,origin,providerUrl,providerRequests,stateDir,artifacts,
   report,assertLayout,assertDialogLayout}) {
   const pending=new Set(),handlers=new Set(),mutations=[],providerBefore=structuredClone(providerRequests);
@@ -358,7 +393,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('.credential-result').first().filter({hasText:'キーをセットしました'}).waitFor();
     await checkSaveDisabled();assert.equal(writes().length,beforeKey);
     assert.equal((await api('/api/config')).config_revision,credentialRevision);
-    assert.deepEqual(await waitRun(activeRunId,'waiting'),waiting,'Credential recovery never resumes or resets the active run');
+    assertUnchangedWaitingRun(waiting,await waitRun(activeRunId,'waiting'));
     await page.locator('#settingsLockStatus').scrollIntoViewIfNeeded();await screenshot('active-lock-desktop');
     await page.setViewportSize({width:390,height:844});await page.locator('#settingsLockStatus').scrollIntoViewIfNeeded();await screenshot('active-lock-narrow');
     await closeSettingsDialog(page);

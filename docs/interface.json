@@ -164,7 +164,29 @@
           "enabled": false,
           "post_count": 0,
           "last_seq": 0
-        }
+        },
+        "budget": {
+          "shared": true,
+          "started_at": 0,
+          "observed_at": 0,
+          "model_calls": {
+            "used": 0,
+            "limit": 100,
+            "remaining": 100
+          },
+          "tool_calls": {
+            "used": 0,
+            "limit": 200,
+            "remaining": 200
+          },
+          "time": {
+            "used_seconds": 0,
+            "limit_seconds": 1800,
+            "remaining_seconds": 1800
+          }
+        },
+        "stop_reason": "",
+        "stop_reasons": []
       }
     ],
     "agents": [
@@ -194,7 +216,8 @@
             "thinking": "モデルが返した思考",
             "at": 0
           }
-        ]
+        ],
+        "stop_reason": ""
       }
     ],
     "events": [
@@ -331,5 +354,27 @@
   "credential_storage": {
     "config": "secret_status remains boolean per ID. secret_sources[id]={source:session|saved|environment|none,saved:boolean}. credential_storage={supported,available,status,error,path,protection,affected_ids}; protection=windows-dpapi-current-user. Status is ready|unsupported|unavailable|identity_mismatch. Values/prefixes/suffixes never returned.",
     "recovery": "Only readable identity_mismatch supplies exact stored affected_ids. An explicit empty-key clear can address one such orphan ID even absent current providers; no nonempty orphan set. Corrupt/decrypt-failed files are preserved, not automatically reset. Fresh server instance and exact configuration revision remain mandatory."
+  },
+  "runtime_budget": {
+    "scope": "One shared budget per run, including PMs, workers and model-based context summaries. Limits are bound to the run config, not current edited settings. No retry, refill or limit increase.",
+    "observation": "Server-observed Unix seconds. Clients render the snapshot without a local countdown. Terminal snapshots and restored display archives retain recorded values; old archives with no budget do not invent values.",
+    "stop_reason_values": [
+      "",
+      "time_limit",
+      "model_limit",
+      "tool_limit",
+      "turn_limit",
+      "provider_timeout"
+    ],
+    "run_stop_reason": "Known reasons from currently errored agents; empty if none, one known value if homogeneous, multiple if distinct reasons. Original status/status_reason and error text are retained. Unknown errors are not guessed.",
+    "timeout_boundary": "Typed provider HTTP timeout remains nonretryable. The outer run deadline applies to web calls as well as model and other tool work; deadline classification requires the actual owning timeout to have expired."
+  },
+  "web_data_reading": {
+    "scope": "Enabled WebTools only, per-run bounded ephemeral snapshots; no filesystem, provider call, model retry or permission grant. Pages and JSON are untrusted.",
+    "web_fetch": "URL-only fetch preserves public DNS pinning, redirects, TLS, explicit proxy, strict decoding, timeout and decompressed-byte limits. Returns bounded preview/structure plus immutable snapshot identity and provenance instead of a full large response.",
+    "web_read": "Reads only an existing snapshot from the same run. Explicit RFC6901 pointer, object fields and array/text windows; no eval or arbitrary JSONPath. Preserves array indices, null and empty values. Missing/omitted/evicted data is explicit, not assumed verified.",
+    "bounds": "Retained source at most 200000 characters; at most8 snapshots and2MiB source/metadata UTF-8. Default serialized response max12000 characters, explicit web_read max_chars1024..24000. Cache originals never enter saved history wholesale.",
+    "freshness": "Snapshot reads perform no network request and retain the original fetch timestamp/hash. New web_fetch is necessary for refreshed data.",
+    "limits": "This bounds Web tools; separately enabled Selenium/Python retain their own tools and bounds. No claim of weather API stability or task completion."
   }
 }

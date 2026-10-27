@@ -10,6 +10,7 @@ from workbench.config import DEFAULT, validate_settings
 from workbench.context import (SUMMARY_KEYS, SUMMARY_NOTICE, groups, parse_summary, plan_compaction,
                                pressure, request_size)
 from workbench.providers import ModelReply, _anthropic_messages, _local_messages, _openai_messages
+from workbench.engine import RuntimeBudgetError
 from test_engine import ScriptClient, configured, reply, settled, start
 
 
@@ -287,8 +288,9 @@ async def test_summary_timeout_preserves_history_and_prevents_normal_call(tmp_pa
         limits = run['_config']['limits']
         run['created_at'] = time.time() - limits['max_run_seconds'] + .08
         before = copy.deepcopy(agent.conversation)
-        with pytest.raises(TimeoutError):
+        with pytest.raises(RuntimeBudgetError) as caught:
             await engine._ensure_context(run, agent, *call_args(engine, run, agent))
+        assert caught.value.reason == 'time_limit'
         assert agent.conversation == before and not agent.compacting and run['model_calls'] == 1
     finally:
         await engine.close()
@@ -389,7 +391,7 @@ async def test_token_window_overflow_is_shared_by_dispatch_and_admission(tmp_pat
 async def test_last_call_is_usable_below_hard_cap_without_optional_summary(tmp_path):
     # Include current policy/tool overhead while keeping this fixture in the
     # optional-summary band; the separate hard-cap tests remain unchanged.
-    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=16)
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=15)
     try:
         profile, tools, limits = call_args(engine, run, agent)
         ratio, chars, _ = pressure(profile, agent.conversation, tools, engine._policy(run, agent), limits)

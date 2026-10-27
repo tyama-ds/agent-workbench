@@ -285,6 +285,8 @@ async def test_revision_and_active_lock_are_checked_after_streamed_body(tmp_path
                 if not pending.done():
                     pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
+                # This lock-only sentinel is not an admitted, persistable run.
+                engine.runs.pop('synthetic', None)
 
 
 @pytest.mark.parametrize('status', ['running', 'waiting', 'stopping'])
@@ -292,13 +294,16 @@ async def test_current_revision_still_respects_active_run_lock(tmp_path, status)
     async with serving(tmp_path) as (auth, app, client):
         engine, public = await configured(client, auth, app)
         engine.runs['synthetic'] = {'id': 'synthetic', 'status': status, 'agent_ids': []}
-        before = saved_state(engine)
-        changed = copy.deepcopy(public['config'])
-        changed['providers'][0]['base_url'] = 'https://blocked.example/v1'
-        response = await put_config(client, auth, public['config_revision'], changed)
-        assert response.status == 409
-        assert '実行中' in (await response.json())['error']
-        assert saved_state(engine) == before
+        try:
+            before = saved_state(engine)
+            changed = copy.deepcopy(public['config'])
+            changed['providers'][0]['base_url'] = 'https://blocked.example/v1'
+            response = await put_config(client, auth, public['config_revision'], changed)
+            assert response.status == 409
+            assert '実行中' in (await response.json())['error']
+            assert saved_state(engine) == before
+        finally:
+            engine.runs.pop('synthetic', None)
 
 
 @pytest.mark.parametrize('config', [None, [], '', 1, {'unsupported': 'value'}])

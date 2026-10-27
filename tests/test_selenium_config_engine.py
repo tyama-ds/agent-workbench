@@ -10,7 +10,7 @@ import pytest
 
 from workbench import engine as engine_module
 from workbench.config import DEFAULT, Settings, validate_settings
-from workbench.engine import SELENIUM_TOOL
+from workbench.engine import SELENIUM_TOOL, RuntimeBudgetError
 from test_engine import ScriptClient, configured, reply, settled, start
 
 
@@ -216,8 +216,9 @@ async def test_selenium_deadline_drains_cleanup_before_releasing_file_lock(tmp_p
         await asyncio.wait_for(cancelled.wait(), 2)
         assert engine.lock.locked() and not task.done()
         release.set()
-        with pytest.raises(ValueError, match='制限時間'):
+        with pytest.raises(RuntimeBudgetError) as deadline:
             await task
+        assert deadline.value.reason == 'time_limit'
         assert not engine.lock.locked()
     finally:
         release.set()

@@ -226,9 +226,12 @@ async def test_preview_respects_active_work_before_validation(tmp_path, monkeypa
         await bootstrap(auth, client)
         engine = app[APP_KEY]
         engine.runs['fixture'] = {'id': 'fixture', 'status': status, 'agent_ids': []}
-        monkeypatch.setattr(server, 'preview_settings_import', reject_call)
-        response = await preview(client, auth, 0, {})
-        assert response.status == 409 and '実行中' in (await response.json())['error']
+        try:
+            monkeypatch.setattr(server, 'preview_settings_import', reject_call)
+            response = await preview(client, auth, 0, {})
+            assert response.status == 409 and '実行中' in (await response.json())['error']
+        finally:
+            engine.runs.pop('fixture', None)  # Remove the non-admitted lock sentinel before cleanup.
 
 
 @pytest.mark.parametrize('race', ['save', 'active'])
@@ -269,6 +272,7 @@ async def test_preview_rechecks_ownership_after_awaiting_body(tmp_path, monkeypa
                 if not pending.done():
                     pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
+                engine.runs.pop('fixture', None)
 
 
 async def test_transfer_endpoints_enforce_browser_auth_origin_and_body_shape(tmp_path):

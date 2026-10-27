@@ -20,7 +20,7 @@ async def snapshot(case, run, agent):
     return await case.api('get', f'/api/state?view=selected&run_id={run["id"]}&agent_id={agent.id}')
 
 
-async def test_other_running_team_question_is_visible_without_loading_its_history_or_resuming(tmp_path):
+async def test_other_running_team_question_is_visible_without_loading_its_history_or_resuming(tmp_path, monkeypatch):
     async with session(tmp_path) as case:
         first, pm, initial = await case.start(workers=1)
         await case.finish(pm, initial, response(
@@ -31,6 +31,9 @@ async def test_other_running_team_question_is_visible_without_loading_its_histor
         second, other, initial = await case.start()
         await case.finish(other, initial, response(('ask_user', {'question': 'Other team decision?'})))
         assert first['status'] == 'running' and worker.status == 'working'
+        # Read-only projections compare one server observation, including elapsed budget.
+        observed = engine_module.time.time()
+        monkeypatch.setattr(engine_module, 'time', SimpleNamespace(time=lambda: observed))
         before = copy.deepcopy(case.engine.snapshot())
         calls = len(case.provider.history)
         for run, agent in [(second, other), (first, worker), (second, other)]:

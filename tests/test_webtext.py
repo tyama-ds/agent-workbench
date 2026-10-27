@@ -1,5 +1,6 @@
 """Pure/stubbed decoding matrix; remote content never initiates a real fetch."""
 import asyncio
+import hashlib
 import json
 
 import pytest
@@ -216,13 +217,41 @@ async def _fetch(monkeypatch, data, header):
 
 @pytest.mark.parametrize("length", [0, 199999, 200000, 200001])
 def test_cleaned_output_bound_and_provenance(monkeypatch, length):
-    result = asyncio.run(_fetch(monkeypatch, ('\x01' * 250000 + '字' * length).encode(), 'text/plain;charset=utf-8'))
-    assert result["text"] == '字' * min(length, 200000)
-    assert result["truncated"] is (length > 200000)
-    assert result["untrusted"] is True and result["url"] == "https://final.invalid/source"
-    serialized = json.dumps(result, ensure_ascii=False)
-    assert serialized.index('"encoding_source"') < serialized.index('"text"')
-    assert '"encoding_source"' in serialized[:12000]
+    async def run():
+        tools = WebTools({"search": {"enabled": True}})
+        data = ('\x01' * 250000 + '字' * length).encode()
+        calls = []
+        async def stub(url):
+            calls.append(url)
+            return data, 'text/plain;charset=utf-8', 'https://final.invalid/source'
+        monkeypatch.setattr(tools, '_request', stub)
+        result = await tools.execute('web_fetch', {'url': 'https://requested.invalid/'})
+        assert result["text"] == '字' * min(length, 6000)
+        assert result["truncated"] is (length > 6000)
+        assert result["source_truncated"] is (length > 200000)
+        assert result["retained_chars"] == min(length, 200000)
+        assert result['sha256'] == hashlib.sha256(data).hexdigest()
+        assert result['text_sha256'] == hashlib.sha256(('字' * min(length, 200000)).encode()).hexdigest()
+        assert result["untrusted"] is True and result["url"] == "https://final.invalid/source"
+        serialized = json.dumps(result, ensure_ascii=False)
+        assert len(serialized) <= 12000
+        assert serialized.index('"encoding_source"') < serialized.index('"text"')
+        assert '"encoding_source"' in serialized[:12000]
+        restored, offset = [], 0
+        while True:
+            page = await tools.execute('web_read', {'snapshot_id': result['snapshot_id'],
+                'offset': offset, 'limit': 10000, 'max_chars': 24000})
+            assert len(json.dumps(page, ensure_ascii=False)) <= 24000
+            assert page['sha256'] == result['sha256'] and page['text_sha256'] == result['text_sha256']
+            assert page['source_truncated'] is (length > 200000)
+            restored.append(page['text'])
+            if page['next_offset'] is None:
+                break
+            assert page['next_offset'] > offset
+            offset = page['next_offset']
+        assert ''.join(restored) == '字' * min(length, 200000)
+        assert calls == ['https://requested.invalid/']
+    asyncio.run(run())
 
 
 def test_fetch_extracts_decoded_japanese_and_flushes_trailing_text(monkeypatch):

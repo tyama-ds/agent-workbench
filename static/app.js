@@ -1741,6 +1741,31 @@ function preserveControlFocus(render,fallback=null) {
   }
 }
 function renderRun() { preserveControlFocus(renderRunContent); }
+function sharedBudgetCount(run,key,fallback) {
+  const value=run.budget?.[key];
+  if(run.budget?.shared!==true||!value||![value.used,value.limit,value.remaining].every(Number.isSafeInteger)||value.used!==fallback||value.used<0||value.limit<1||value.remaining!==Math.max(0,value.limit-value.used))return fallback;
+  return `${value.used} / ${value.limit}（残り ${value.remaining}）`;
+}
+function sharedBudgetMetrics(run) {
+  const budget=run.budget,rows=[];
+  if(budget?.shared!==true)return rows;
+  const duration=value=>{const seconds=Math.floor(value);return `${Math.floor(seconds/60)}分${seconds%60}秒`;};
+  const time=budget.time;
+  if(time&&[time.used_seconds,time.limit_seconds,time.remaining_seconds].every(value=>typeof value==='number'&&Number.isFinite(value)&&value>=0)&&time.limit_seconds>0&&Math.abs(time.remaining_seconds-Math.max(0,time.limit_seconds-time.used_seconds))<0.01){
+    rows.push(['実行時間（チーム共有）',`${duration(time.used_seconds)} / ${duration(time.limit_seconds)}（残り ${duration(time.remaining_seconds)}）`]);
+  }
+  if(typeof budget.observed_at==='number'&&Number.isFinite(budget.observed_at)&&budget.observed_at>0){
+    const observed=new Date(budget.observed_at*1000);
+    if(Number.isFinite(observed.getTime()))rows.push([archivedRun(run)?'予算の保存時点':'予算の観測時点',observed.toLocaleTimeString('ja-JP',{hour12:false})]);
+  }
+  return rows;
+}
+function runtimeStopMetrics(run) {
+  const labels={time_limit:'実行時間の上限',model_limit:'モデル呼び出し回数の上限',tool_limit:'ツール実行回数の上限',turn_limit:'担当のターン数上限',provider_timeout:'モデルAPIの応答待ちタイムアウト（自動再試行なし）'};
+  const reasons=Array.isArray(run.stop_reasons)?run.stop_reasons:[run.stop_reason];
+  const values=[...new Set(reasons.filter(reason=>typeof reason==='string'&&Object.hasOwn(labels,reason)))].map(reason=>labels[reason]);
+  return values.length?[['担当の停止理由',values.join(' / ')]]:[];
+}
 function renderRunContent() {
   reconcileTaskReuse();syncTaskReuseControl();
   const run=getRun();renderArchiveNotice(run);$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;$('networkWorkspace').hidden=!run;renderWorkBoard(run);
@@ -1757,7 +1782,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],['モデル呼び出し',run.model_calls||0],['ツール実行',run.tool_calls||0],['作業者の上限',run.max_workers||0],['PMの分担方針',delegationLabel(run.delegation_level)],['PMごとの委任人数',Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録']],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',delegationLabel(run.delegation_level)],['PMごとの委任人数',Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録']],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }

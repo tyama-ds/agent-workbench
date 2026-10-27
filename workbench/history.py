@@ -21,10 +21,11 @@ MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
     'delegation_level', 'workers_per_pm', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
-    'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids'))
+    'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
+    'budget', 'stop_reason', 'stop_reasons'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))
@@ -32,6 +33,7 @@ EVENT_FIELDS = frozenset(('id', 'run_id', 'agent_id', 'kind', 'text', 'at', 'mai
     'to_agent_id', 'from', 'to', 'subject', 'message_type', 'delivery_state'))
 POST_FIELDS = frozenset(('seq', 'run_id', 'author_kind', 'author_id', 'author_name', 'body', 'reply_to', 'created_at'))
 TERMINAL = frozenset(('done', 'stopped', 'error', 'interrupted'))
+STOP_REASONS = frozenset(('time_limit', 'model_limit', 'tool_limit', 'turn_limit', 'provider_timeout'))
 
 
 class HistoryError(ValueError):
@@ -83,9 +85,12 @@ def redact_document(document, redact):
     statuses = {'idle', 'queued', 'working', 'running', 'waiting', 'stopping', 'stopped', 'done', 'error', 'interrupted'}
     restore(document['run'], result['run'], ('id', 'agent_ids', 'pm_agent_ids'))
     enum(document['run'], result['run'], 'status', statuses)
+    # Validated diagnostics are fixed application metadata, never credential text.
+    restore(document['run'], result['run'], ('budget', 'stop_reason', 'stop_reasons'))
     for before, after in zip(document['agents'], result['agents']):
         restore(before, after, ('id', 'run_id', 'parent_id'))
         enum(before, after, 'status', statuses)
+        restore(before, after, ('stop_reason',))
         for old, new in zip(before.get('logs', []), after.get('logs', [])):
             enum(old, new, 'kind', {'system', 'user', 'assistant', 'tool', 'tool_call', 'tool_result', 'mail', 'result', 'error'})
         for old, new in zip(before.get('results', []), after.get('results', [])):
@@ -187,6 +192,26 @@ def _number(value):
     return type(value) is int and value >= 0
 
 
+def _budget(value):
+    if (not isinstance(value, dict) or set(value) != {'observed_at', 'started_at', 'shared', 'model_calls', 'tool_calls', 'time'}
+            or value['shared'] is not True or not all(_time(value[key]) and value[key] <= 253402300799
+                for key in ('observed_at', 'started_at')) or value['observed_at'] < value['started_at']):
+        raise HistoryError('履歴の共有予算の観測情報が不正です。')
+    for key, maximum in (('model_calls', 1000), ('tool_calls', 5000)):
+        row = value[key]
+        if (not isinstance(row, dict) or set(row) != {'used', 'limit', 'remaining'} or
+                not all(_number(n) and n <= 2147483647 for n in row.values()) or
+                not 1 <= row['limit'] <= maximum or row['remaining'] != max(0, row['limit'] - row['used'])):
+            raise HistoryError('履歴の共有予算の回数が不正です。')
+    row = value['time']
+    if (not isinstance(row, dict) or set(row) != {'used_seconds', 'limit_seconds', 'remaining_seconds'} or
+            not all(_time(n) and n <= 253402300799 for n in row.values()) or
+            not 10 <= row['limit_seconds'] <= 86400 or
+            not math.isclose(row['used_seconds'], value['observed_at'] - value['started_at'], abs_tol=1e-6) or
+            not math.isclose(row['remaining_seconds'], max(0, row['limit_seconds'] - row['used_seconds']), abs_tol=1e-6)):
+        raise HistoryError('履歴の共有予算の時間が不正です。')
+
+
 def validate(document):
     if not isinstance(document, dict) or set(document) != {'run', 'agents', 'events', 'board'}:
         raise HistoryError('履歴の構造が不正です。')
@@ -197,6 +222,20 @@ def validate(document):
     _text_fields(run, ('id', 'task', 'status'))
     if re.fullmatch(r'r-[0-9a-f]{16}', run['id']) is None or not _time(run.get('created_at')):
         raise HistoryError('履歴の作業識別子・時刻が不正です。')
+    if 'budget' in run:
+        _budget(run['budget'])
+        if (run['budget']['started_at'] != run['created_at'] or
+                any(not _number(run.get(key)) or run['budget'][key]['used'] != run[key]
+                    for key in ('model_calls', 'tool_calls'))):
+            raise HistoryError('履歴の共有予算の開始時刻・回数が作業と一致しません。')
+    if 'stop_reasons' in run:
+        reasons = run['stop_reasons']
+        if (not isinstance(reasons, list) or any(not isinstance(reason, str) or reason not in STOP_REASONS for reason in reasons)
+                or len(set(reasons)) != len(reasons) or
+                run.get('stop_reason') != (reasons[0] if len(reasons) == 1 else 'multiple' if reasons else '')):
+            raise HistoryError('履歴の停止理由が不正です。')
+    elif 'stop_reason' in run:
+        raise HistoryError('履歴の停止理由一覧がありません。')
     board_meta = run.get('work_board')
     if (not isinstance(board_meta, dict) or set(board_meta) != {'enabled', 'post_count', 'last_seq'} or
             type(board_meta['enabled']) is not bool or not _number(board_meta['post_count']) or not _number(board_meta['last_seq'])):
@@ -210,6 +249,8 @@ def validate(document):
             not set(run['pm_agent_ids']) <= ids):
         raise HistoryError('履歴の担当者一覧が作業と一致しません。')
     for agent in document['agents']:
+        if 'stop_reason' in agent and (not isinstance(agent['stop_reason'], str) or agent['stop_reason'] not in STOP_REASONS | {''}):
+            raise HistoryError('履歴の担当者の停止理由が不正です。')
         _text_fields(agent, ('id', 'run_id', 'name', 'role', 'profile_id', 'status', 'question', 'last_error', 'assignment'))
         if (agent['run_id'] != run['id'] or re.fullmatch(r'a-[0-9a-f]{16}', agent['id']) is None or
                 agent.get('parent_id') not in ids | {None} or agent.get('parent_id') == agent['id'] or

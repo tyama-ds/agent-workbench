@@ -86,7 +86,12 @@ async def test_queued_file_dispatch_rechecks_time_before_path_resolution(tmp_pat
             # path resolution or filesystem operation has started while queued.
             assert run['model_calls'] == 3 and run['tool_calls'] == 2 and agent.turns == 2
             assert not resolved and not (work / 'queued.txt').exists()
-            now[0] += {'before': 9.999, 'exact': 10, 'after': 10.001, 'stop': 10}[boundary]
+            # The before-success case must leave time for its real loopback
+            # HTTP completion. A 1ms remainder relied on the old 100ms floor;
+            # exact/after still exercise the unchanged 10-second boundary.
+            now[0] += {'before': 9.0, 'exact': 10, 'after': 10.001, 'stop': 10}[boundary]
+            if boundary == 'before':
+                assert run['_config']['limits']['max_run_seconds'] - (now[0] - run['created_at']) == 1.0
             if boundary == 'stop':
                 await engine.stop_run(run['id'])
                 assert agent.status == run['status'] == 'stopped'

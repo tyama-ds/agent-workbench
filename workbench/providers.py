@@ -27,6 +27,10 @@ class ProviderError(RuntimeError):
         self.retryable = retryable
 
 
+class ProviderTimeoutError(ProviderError):
+    """The provider HTTP deadline expired; never automatically replay it."""
+
+
 class ProviderOutputLimitError(ProviderError):
     """Explicit provider output-token exhaustion, never a usable partial reply."""
 
@@ -391,7 +395,7 @@ class ProviderClient:
         except ProviderError:
             raise
         except asyncio.TimeoutError:
-            raise ProviderError("Provider request timed out; no automatic retry") from None
+            raise ProviderTimeoutError("Provider request timed out; no automatic retry") from None
         except aiohttp.ClientError:
             raise ProviderError("Provider connection failed; check the endpoint and network settings") from None
         except (ValueError, TypeError, UnicodeError, RecursionError):

@@ -1,6 +1,7 @@
 """Selected state is a live projection, never full-state serialization plus pruning."""
 import copy
 import json
+import time
 
 import pytest
 
@@ -10,6 +11,14 @@ from test_engine import ScriptClient, configured, start
 
 
 HEAVY_FIELDS = {'logs', 'results', 'output_receipts'}
+
+
+@pytest.fixture(autouse=True)
+def fixed_observation_clock(monkeypatch):
+    # Projection equality compares the same server observation. The dedicated
+    # expiry tests below still advance this clock explicitly, preserving their assertions.
+    observed = time.time()
+    monkeypatch.setattr('workbench.engine.time.time', lambda: observed)
 
 
 async def populate(engine):
@@ -103,14 +112,17 @@ def test_unselected_histories_are_not_materialized_or_redacted(populated, monkey
             raise AssertionError('Summary must not inspect a history')
 
     selected_agent = engine.snapshot()['agents'][1]
-    for agent in (pm, other_pm):
+    # Keep the sentinels through every projection assertion, then restore actual
+    # histories before fixture teardown performs its legitimate durable save.
+    with monkeypatch.context() as histories:
+        for agent in (pm, other_pm):
+            for field in HEAVY_FIELDS:
+                histories.setattr(agent, field, UnreadableHistory())
+        assert engine.selected_snapshot(run_id=run['id'], agent_id=worker.id)['agents'][1] == selected_agent
         for field in HEAVY_FIELDS:
-            monkeypatch.setattr(agent, field, UnreadableHistory())
-    assert engine.selected_snapshot(run_id=run['id'], agent_id=worker.id)['agents'][1] == selected_agent
-    for field in HEAVY_FIELDS:
-        monkeypatch.setattr(worker, field, UnreadableHistory())
-    assert engine.selected_snapshot()['agents']
-    assert engine.selected_snapshot(run_id=run['id'])['agents']
+            histories.setattr(worker, field, UnreadableHistory())
+        assert engine.selected_snapshot()['agents']
+        assert engine.selected_snapshot(run_id=run['id'])['agents']
 
 
 def test_secret_redaction_covers_summaries_details_events_and_resources(populated, monkeypatch):

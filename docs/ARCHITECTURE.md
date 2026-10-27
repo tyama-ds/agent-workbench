@@ -284,8 +284,20 @@ response enters `decode_web_text`. `web_search` JSON handling is unchanged.
 The result adds `encoding` (actual Python codec), `encoding_source` and
 `encoding_assumed` before `text`, alongside URL, MIME, untrusted status and
 truncation. This keeps provenance visible in the existing 12,000-character tool
-log preview. `truncated` measures cleaned/extracted text, with a 200,000-character
-return bound. Full protocol history remains subject to existing context budgets.
+log preview. Since dev37, the 200,000-character bound applies to retained source
+text; the model receives a bounded preview and can use `web_read` for a bounded
+projection from the same in-memory snapshot. Full protocol history remains
+subject to existing context budgets.
+
+The dev37 Web result cap is measured on serialized model-facing tool JSON
+(12,000 characters by default, up to 24,000 on explicit snapshot reads). The
+existing public log/history redaction stage has its own limits; replacing a
+secret with a mask can increase displayed text length. This is not a claim that
+all later public rendering stays within the model-facing cap. Cached source
+text is bounded separately and is neither a provider message nor a persistent
+history archive. JSON selection keeps original array positions and null/empty
+values; malformed, ambiguous or non-roundtripping numeric JSON remains raw-only
+with an explicit reason rather than being silently repaired.
 
 Selection sources:
 - `bom`: UTF-8/UTF-16LE/UTF-16BE signature, removed only at the start and authoritative

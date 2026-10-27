@@ -42,7 +42,7 @@ def test_disabled_tools_and_exact_arguments():
         with pytest.raises(WebToolError, match="disabled"):
             await disabled.execute("web_fetch", {"url": "https://example.com"})
         tools = WebTools(config())
-        assert {item["name"] for item in tools.schemas()} == {"web_search", "web_fetch"}
+        assert {item["name"] for item in tools.schemas()} == {"web_search", "web_fetch", "web_read"}
         for name, args in (("web_search", {"query": "x", "endpoint": "http://localhost/"}),
                            ("web_fetch", {"url": "https://example.com", "proxy": "x"}),
                            ("web_search", {"query": "x", "limit": True}), ("web_search", {"query": "\n"})):
