@@ -10,7 +10,7 @@ import re
 import secrets
 import time
 from collections import deque
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,7 +21,7 @@ from .config import (Settings, ROOT, number, text, validate_settings, effective_
 from .copilot_bridge import CopilotBridgeManager
 from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
-from .providers import ProviderClient, ProviderError, ProviderOutputLimitError
+from .providers import ProviderClient, ProviderError, ProviderOutputLimitError, ProviderTimeoutError
 from .python_runner import execute_python
 from .selenium_runner import execute_selenium
 from .resources import ResourceGate
@@ -43,6 +43,17 @@ class WorkBoardError(ValueError):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
+
+class RuntimeBudgetError(ValueError):
+    """A specific existing run/agent hard limit, not a provider failure."""
+
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__({'time_limit': '作業全体の実行時間の上限です',
+                          'model_limit': 'モデル呼び出し回数の上限です',
+                          'tool_limit': 'ツール実行回数の上限です',
+                          'turn_limit': 'エージェントのターン上限です。新しい仕事で続けてください'}[reason])
 
 
 def schema(name, description, properties=None, required=()):
@@ -152,6 +163,7 @@ class Agent:
     status: str = 'queued'
     question: str = ''
     last_error: str = ''
+    stop_reason: str = ''
     turns: int = 0
     conversation: list = field(default_factory=list)
     original_history: deque = field(default_factory=deque)
@@ -187,7 +199,7 @@ class Agent:
     def public(self, *, message_eligibility=None, status_reason=None, include_detail=True, configured_profile=None,
                redact_activity=lambda value: value):
         value = {k: getattr(self, k) for k in ('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id',
-                                             'status', 'question', 'last_error', 'turns', 'assignment')}
+                                              'status', 'question', 'last_error', 'stop_reason', 'turns', 'assignment')}
         # Build summaries directly: unselected histories must not be copied or
         # traversed for redaction just to discard them afterwards.
         if include_detail:
@@ -337,7 +349,7 @@ class Engine:
             run = self.runs[ident]
             agents = [self.agents[key].public(configured_profile=self.configured_profile(self.agents[key]))
                       for key in run['agent_ids']]
-            document = public_document(run, agents, [row for row in self.events if row['run_id'] == ident],
+            document = public_document(run | self._run_diagnostics(run), agents, [row for row in self.events if row['run_id'] == ident],
                                        run.get('_work_board_posts', []))
             self._history_saved[ident] = self.history.save(document, self._redaction.redact)
         except (HistoryError, CredentialStorageError):
@@ -579,9 +591,53 @@ class Engine:
         """Only the original run's public identity, never current settings or a model claim."""
         return copy.deepcopy(self.runs[agent.run_id].get('_configured_profiles', {}).get(agent.profile_id))
 
+    def _budget_snapshot(self, run):
+        """Observed shared counters, from this run's immutable configuration."""
+        limits = run['_config']['limits']
+        now = max(run['created_at'], run.get('_budget_finished_at', time.time()))
+        elapsed = max(0, now - run['created_at'])
+        def count(name):
+            used, limit = run[name], limits['max_' + name]
+            return {'used': used, 'limit': limit, 'remaining': max(0, limit - used)}
+        return {'observed_at': now, 'started_at': run['created_at'], 'shared': True,
+                'model_calls': count('model_calls'), 'tool_calls': count('tool_calls'),
+                'time': {'used_seconds': elapsed, 'limit_seconds': limits['max_run_seconds'],
+                         'remaining_seconds': max(0, limits['max_run_seconds'] - elapsed)}}
+
+    def _run_diagnostics(self, run):
+        reasons = sorted({self.agents[ident].stop_reason for ident in run['agent_ids']
+                          if self.agents[ident].status == 'error' and self.agents[ident].stop_reason})
+        return {'budget': self._budget_snapshot(run), 'stop_reasons': reasons,
+                'stop_reason': reasons[0] if len(reasons) == 1 else 'multiple' if reasons else ''}
+
+    def _check_run_budget(self, run, *, tools=False):
+        limits = run['_config']['limits']
+        if time.time() - run['created_at'] >= limits['max_run_seconds']:
+            raise RuntimeBudgetError('time_limit')
+        if tools:
+            if run['tool_calls'] >= limits['max_tool_calls']:
+                raise RuntimeBudgetError('tool_limit')
+        elif run['model_calls'] >= limits['max_model_calls']:
+            raise RuntimeBudgetError('model_limit')
+
+    @asynccontextmanager
+    async def _run_deadline(self, run):
+        remaining = run['_config']['limits']['max_run_seconds'] - (time.time() - run['created_at'])
+        if remaining <= 0:
+            raise RuntimeBudgetError('time_limit')
+        deadline = asyncio.timeout(remaining)
+        try:
+            async with deadline:
+                yield
+        except TimeoutError:
+            # A provider's own TimeoutError must not masquerade as this deadline.
+            if deadline.expired():
+                raise RuntimeBudgetError('time_limit') from None
+            raise
+
     def snapshot(self):
         result = self._redact_tree({'runs': [{k: v for k, v in run.items() if not k.startswith('_')} |
-                         {'status_reason': self.run_status_reason(run)} for run in self.runs.values()],
+                         {'status_reason': self.run_status_reason(run)} | self._run_diagnostics(run) for run in self.runs.values()],
                 'agents': [a.public(message_eligibility=self.message_eligibility(a), status_reason=self.agent_status_reason(a),
                                     configured_profile=self.configured_profile(a), redact_activity=self.redact) for a in self.agents.values()], 'events': list(self.events),
                 'resources': self.gate.snapshot(), 'copilot_resources': self._copilot_resources(), 'copilot_agent_status': self.copilot_status()})
@@ -618,7 +674,7 @@ class Engine:
             events.reverse()
         result = self._redact_tree({
             'runs': [{k: v for k, v in run.items() if not k.startswith('_')} |
-                     {'status_reason': self.run_status_reason(run)} for run in self.runs.values()],
+                     {'status_reason': self.run_status_reason(run)} | self._run_diagnostics(run) for run in self.runs.values()],
             'agents': [a.public(message_eligibility=self.message_eligibility(a),
                                 status_reason=self.agent_status_reason(a), include_detail=a.id == agent_id,
                                 configured_profile=self.configured_profile(a), redact_activity=self.redact)
@@ -745,7 +801,8 @@ class Engine:
         run['pm_agent_ids'] = [lead.id for lead in leads]
         for lead in leads:
             self.enqueue(lead, task, human=True)
-        return {'ok': True, 'run': self._redact_tree({k: v for k, v in run.items() if not k.startswith('_')})}
+        return {'ok': True, 'run': self._redact_tree({k: v for k, v in run.items() if not k.startswith('_')} |
+                                                   self._run_diagnostics(run))}
 
     def _work_board_run(self, run_id):
         if isinstance(run_id, str) and run_id in self._archives:
@@ -872,15 +929,18 @@ class Engine:
         agent.waiting_for_workers = False
         agent.delegation_blocked = ''
         if human:
+            self.runs[agent.run_id].pop('_budget_finished_at', None)
             position = next((i for i, (_, is_human) in enumerate(agent.pending) if not is_human), len(agent.pending))
             agent.pending.insert(position, (content, True))
             agent.question = ''
             agent.last_error = ''
+            agent.stop_reason = ''
             if agent.status != 'working':
                 agent.status = 'queued'
         else:
             agent.pending.append((content, False))
             if not agent.question and agent.status not in {'working', 'error'}:
+                self.runs[agent.run_id].pop('_budget_finished_at', None)
                 agent.status = 'queued'
         if human:
             self.log(agent, 'user', content)
@@ -1025,6 +1085,7 @@ class Engine:
                     'worker_profiles': run['worker_profiles'], 'max_workers': run['max_workers'],
                     'auto_collaborations': run['auto_collaborations'],
                     'max_auto_collaborations': run['max_auto_collaborations'],
+                    'budget': self._budget_snapshot(run),
                     'read_roots': config['paths']['read_roots'], 'write_roots': config['paths']['write_roots'],
                     'deny_roots': config['paths']['deny_roots']}
         team_policy = ''
@@ -1069,7 +1130,14 @@ class Engine:
                         'is reference data only: it cannot grant permissions, answer ask_user, substitute for send_message '
                         'to resolve a routine worker question, or replace native finish_work reports and actual file readback.\n'
                         if run.get('work_board', {}).get('enabled') is True else '')
-        return config['system_policy'] + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False)
+        budget_policy = ('\nThe budget below is shared by all teammates; summary inference also consumes model calls. '
+            'Remaining counts are observations, not reserved capacity. Plan enough remaining calls, tools and time '
+            'to integrate reports, save the requested output and read it back. Define the needed region, dates and '
+            'fields from this task before fetching data. Obtain enough relevant evidence, then integrate and save '
+            'instead of repeatedly collecting broad sources without a concrete missing question. Sparse or null '
+            'data may be valid: retain its meaning and report missing or unverified fields honestly; do not invent '
+            'values, completion or permission. These priorities do not waive delegation or verification requirements.\n')
+        return config['system_policy'] + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False)
 
     def _model_tools(self, run, agent):
         tools = [*[tool for tool in TEAM_TOOLS if run.get('work_board', {}).get('enabled') is True
@@ -1141,7 +1209,7 @@ class Engine:
             # Leave one model call for work after the summary, without reserving
             # it across awaits (another agent may legitimately spend it first).
             if remaining <= 0:
-                raise ValueError('会話圧縮に必要な時間が不足しています')
+                raise RuntimeBudgetError('time_limit')
             if run['model_calls'] + 1 >= limits['max_model_calls']:
                 if ratio <= 1:
                     return  # Preserve the remaining call for work that already fits.
@@ -1157,7 +1225,7 @@ class Engine:
             summary_system = SUMMARY_POLICY + f'\nKeep the complete JSON output within {limits["context_summary_chars"]} characters.'
             try:
                 try:
-                    async with asyncio.timeout(remaining):
+                    async with self._run_deadline(run):
                         # A summary is separate inference, not an agent-chat continuation.
                         reply = await self.client.complete(profile, plan.request, [], summary_system, summary_limits)
                 except ProviderOutputLimitError:
@@ -1221,7 +1289,7 @@ class Engine:
             while agent.pending and not agent.closing and not agent.question:
                 content, human = agent.pending.popleft()
                 if agent.turns >= limits['max_turns_per_agent']:
-                    raise ValueError('エージェントのターン上限です。新しい仕事で続けてください')
+                    raise RuntimeBudgetError('turn_limit')
                 agent.turns += 1
                 agent.status = 'working'
                 agent.waiting_for_workers = False
@@ -1237,26 +1305,31 @@ class Engine:
                 turn_revision = agent.result_revision
                 agent._turn_revision = turn_revision
                 while not agent.closing:
-                    elapsed = time.time() - run['created_at']
-                    if elapsed >= limits['max_run_seconds'] or run['model_calls'] >= limits['max_model_calls']:
-                        raise ValueError('実行時間またはモデル呼び出し回数の上限です')
+                    self._check_run_budget(run)
                     profile = dict(next(p for p in run['_config']['providers'] if p['id'] == agent.profile_id))
                     profile['api_key'] = self.settings.key(profile)
                     self._redaction.remember([*self._secret_values(), profile['api_key']])
                     tools = self._model_tools(run, agent)
                     call_limits = {**limits, 'local': run['_config']['local']}
                     await self._ensure_context(run, agent, profile, tools, call_limits)
-                    elapsed = time.time() - run['created_at']
                     if agent.closing or self.closed:
                         break
-                    if elapsed >= limits['max_run_seconds'] or run['model_calls'] >= limits['max_model_calls']:
-                        raise ValueError('実行時間またはモデル呼び出し回数の上限です')
+                    self._check_run_budget(run)
                     profile['api_key'] = self.settings.key(profile)
                     self._redaction.remember([*self._secret_values(), profile['api_key']])
+                    # A summary/another teammate may have spent calls or time.
+                    # Measure this final observation once and send these exact
+                    # system bytes; charging this work call must not rebuild it.
+                    system = self._policy(run, agent)
+                    ratio, agent.context_chars, agent.context_token_estimate = pressure(
+                        profile, agent.conversation, tools, system, limits)
+                    if ratio > 1 and not self._use_context_excerpts(
+                            run, agent, profile, tools, system, limits, 'dispatch_policy_changed'):
+                        raise ValueError('文脈予算に収まりません。直近のやり取り・元の依頼を保持して停止しました。新しい仕事で続けるか文脈予算を見直してください')
                     run['model_calls'] += 1
                     self.event(run['id'], agent.id, 'inference', f'{agent.name}: 推論を待機・実行中')
-                    async with asyncio.timeout(max(.1, limits['max_run_seconds'] - elapsed)):
-                        reply = await self.client.complete(profile, agent.conversation, tools, self._policy(run, agent), call_limits,
+                    async with self._run_deadline(run):
+                        reply = await self.client.complete(profile, agent.conversation, tools, system, call_limits,
                                                            conversation_id=f'{run["id"]}/{agent.id}')
                     if agent.closing:
                         break
@@ -1274,18 +1347,21 @@ class Engine:
                             terminal_response = reply.text
                         break
                     stop = False
-                    exhausted = ''
+                    exhausted = None
                     unexpected_error = None
                     for call in reply.tool_calls:
                         if agent.closing:
                             break
                         # Closed batches still need results for skipped siblings;
                         # those siblings cannot introduce a new exhaustion error.
-                        if not stop and unexpected_error is None and not exhausted and (run['tool_calls'] >= limits['max_tool_calls'] or time.time() - run['created_at'] >= limits['max_run_seconds']):
-                            exhausted = 'ツール実行回数または実行時間の上限です'
+                        if not stop and unexpected_error is None and not exhausted:
+                            try:
+                                self._check_run_budget(run, tools=True)
+                            except RuntimeBudgetError as exc:
+                                exhausted = exc
                         if stop or exhausted:
                             self._append_context(agent, {'role': 'tool', 'tool_call_id': call['id'], 'name': call['name'],
-                                'content': json.dumps({'ok': False, 'error': exhausted or (
+                                'content': json.dumps({'ok': False, 'error': str(exhausted) if exhausted else (
                                     'Not executed: an earlier tool raised an unexpected error.' if unexpected_error is not None
                                     else 'Not executed: this turn is paused or finished.')})})
                             continue
@@ -1305,6 +1381,9 @@ class Engine:
                                 stop = True
                             except RedactionCapacityError:
                                 raise
+                            except RuntimeBudgetError as exc:
+                                result = {'ok': False, 'error': str(exc), 'stop_reason': exc.reason}
+                                exhausted = exc
                             except (ValueError, OSError, TypeError, KeyError) as exc:
                                 result = {'ok': False, 'error': self.redact(str(exc))[:1000]}
                             if not isinstance(result, dict):
@@ -1336,7 +1415,7 @@ class Engine:
                             stop = True
                             summary = args.get('summary', summary)
                     if exhausted:
-                        raise ValueError(exhausted)
+                        raise exhausted
                     if unexpected_error is not None:
                         raise RuntimeError('ツール処理で予期しないエラーが発生したため、このターンを停止しました。'
                                            '処理の完了は確認できません。保存記録とファイルの現状を確認し、追加指示を送ってください。'
@@ -1383,6 +1462,8 @@ class Engine:
             self._release(agent)
         except Exception as exc:
             agent.status = 'error'
+            agent.stop_reason = (exc.reason if isinstance(exc, RuntimeBudgetError) else
+                                 'provider_timeout' if isinstance(exc, ProviderTimeoutError) else '')
             try:
                 agent.last_error = self.redact(str(exc) or type(exc).__name__)[:1000]
             except RedactionCapacityError:
@@ -1410,6 +1491,10 @@ class Engine:
             run['status'] = 'waiting'
         else:
             run['status'] = 'done'
+        if run['status'] == 'done':
+            run.setdefault('_budget_finished_at', time.time())
+        else:
+            run.pop('_budget_finished_at', None)
         self._persist_run(run['id'])
 
     def _mail_event(self, actor, metadata, body, *, consumed=False):
@@ -1638,6 +1723,7 @@ class Engine:
             return result
         if name == 'list_team':
             return {'self': agent.id, 'max_workers': run['max_workers'], 'allowed_profiles': run['worker_profiles'],
+                    'budget': self._budget_snapshot(run),
                     **self._orchestration(run['_config'], run),
                     'pm_agent_ids': list(run['pm_agent_ids']),
                     'auto_collaborations': run['auto_collaborations'], 'max_auto_collaborations': run['max_auto_collaborations'],
@@ -1714,20 +1800,21 @@ class Engine:
                 for candidate in resolved:
                     self.reservations[candidate] = agent.id
             return {'ok': True, 'paths': resolved}
-        if name in {'web_search', 'web_fetch'}:
+        if name in {'web_search', 'web_fetch', 'web_read'}:
             if not run['_config']['search']['enabled']:
                 raise ValueError('Web 検索は無効です')
             if name == 'web_search':
                 # Preserve masks for retired keys without sending search credentials.
                 self._redaction.remember(self._secret_values())
-            return await run['_web'].execute(name, args)
+            async with self._run_deadline(run):
+                return await run['_web'].execute(name, args)
         # Serialize file tool operations to make optimistic hashes + reservations
         # meaningful for cooperating agents; no arbitrary shell is available.
         async with self.lock:
             # Waiting for another file operation does not start this one. The
             # run can expire while queued; only already-started saves may drain.
             if time.time() - run['created_at'] >= run['_config']['limits']['max_run_seconds']:
-                raise ValueError('ツール実行回数または実行時間の上限です')
+                raise RuntimeBudgetError('time_limit')
             if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
                 raise ValueError('停止したチームではツールを実行できません')
             # Reassignment or a new worker can invalidate accepted reports while
@@ -1744,13 +1831,9 @@ class Engine:
                             or not isinstance(output['path'], str) or not isinstance(output['expected_sha256'], str)):
                         raise ValueError('Selenium screenshot が不正です')
                     self._check_reservation(agent, run['_harness'].resolve(output['path'], write=True, must_exist=False))
-                remaining = run['_config']['limits']['max_run_seconds'] - (time.time() - run['created_at'])
-                try:
-                    async with asyncio.timeout(max(0, remaining)):
-                        return await execute_selenium(run['_config']['selenium'], run['_config']['python'], run['_harness'], **args,
-                            on_complete=lambda result: self.record_receipt(agent, name, result))
-                except TimeoutError as exc:
-                    raise ValueError('Selenium実行中に作業全体の制限時間に達しました') from exc
+                async with self._run_deadline(run):
+                    return await execute_selenium(run['_config']['selenium'], run['_config']['python'], run['_harness'], **args,
+                        on_complete=lambda result: self.record_receipt(agent, name, result))
             if name == 'python_execute':
                 if not run['_config']['python']['enabled'] or os.name != 'nt':
                     raise ValueError('Python実行は無効、またはWindowsの隔離実行に未対応です')
@@ -1763,13 +1846,9 @@ class Engine:
                     if not isinstance(output, dict) or not isinstance(output.get('path'), str):
                         raise ValueError('Python output path が不正です')
                     self._check_reservation(agent, run['_harness'].resolve(output['path'], write=True, must_exist=False))
-                remaining = run['_config']['limits']['max_run_seconds'] - (time.time() - run['created_at'])
-                try:
-                    async with asyncio.timeout(max(0, remaining)):
-                        return await execute_python(run['_config']['python'], run['_harness'], **args,
-                            on_complete=lambda result: self.record_receipt(agent, name, result))
-                except TimeoutError as exc:
-                    raise ValueError('Python実行中に作業全体の制限時間に達しました') from exc
+                async with self._run_deadline(run):
+                    return await execute_python(run['_config']['python'], run['_harness'], **args,
+                        on_complete=lambda result: self.record_receipt(agent, name, result))
             if isinstance(args.get('path'), str):
                 if name in DIRECTORY_TOOLS:
                     # Creating a missing parent also mutates that parent's scope.
@@ -1822,6 +1901,7 @@ class Engine:
             self.agents[i].status = 'stopped'
             self._release(self.agents[i])
         run['status'] = 'stopped'
+        run.setdefault('_budget_finished_at', time.time())
         self.event(run['id'], '', 'stopped', 'チームを停止しました')
 
     async def close(self):

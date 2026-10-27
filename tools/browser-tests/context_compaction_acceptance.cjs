@@ -113,6 +113,15 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
     const completed=await api('/api/state'),done=completed.agents.find(item=>item.id===agentId),doneRun=completed.runs.find(item=>item.id===runId);
     assert.equal(done.status,'done');assert.equal(doneRun.status,'done');assert.equal(done.context_memory.compactions,1);
     assert.equal(done.context_memory.compacting,false);assert.equal(done.context_memory.history_omitted,0);
+    assert.equal(doneRun.budget.shared,true);
+    assert.deepEqual(doneRun.budget.model_calls,{used:doneRun.model_calls,limit:edits.max_model_calls,remaining:edits.max_model_calls-doneRun.model_calls});
+    assert.deepEqual(doneRun.budget.tool_calls,{used:doneRun.tool_calls,limit:edits.max_tool_calls,remaining:edits.max_tool_calls-doneRun.tool_calls});
+    assert.equal(doneRun.budget.time.limit_seconds,edits.max_run_seconds);
+    assert(Number.isFinite(doneRun.budget.observed_at)&&doneRun.budget.observed_at>=doneRun.created_at);
+    assert(Math.abs(doneRun.budget.time.remaining_seconds-Math.max(0,edits.max_run_seconds-doneRun.budget.time.used_seconds))<0.01);
+    assert.deepEqual(doneRun.stop_reasons,[]);
+    const observedAgain=(await api('/api/state')).runs.find(item=>item.id===runId);
+    assert.deepEqual(observedAgain.budget,doneRun.budget,'Completed work retains its observed budget without a live countdown');
     assert(done.context_memory.history_records>10);assert(done.context_memory.request_chars<50000);
     assert(done.logs.some(log=>log.text===finalText),'The fake provider verifies exact retained human and assistant originals before its terminal reply');
     const lookup=JSON.parse(done.logs.find(log=>log.kind==='tool'&&log.text.startsWith('read_context_history\n')).text.split('\n').slice(1).join('\n'));
@@ -127,12 +136,31 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
       const text=await page.locator('#contextMemoryStatus').textContent();await poll();
       assert.equal(await page.locator('#contextMemoryStatus').textContent(),text,'Unchanged polling preserves truthful metadata');
       await page.screenshot({path:path.join(artifacts,`workbench-compaction-${label}.png`),fullPage:false,animations:'disabled'});
+      const modelMetric=page.locator('#runMetrics .metric').filter({hasText:'モデル呼び出し（チーム共有）'});
+      assert.equal(await modelMetric.locator('b').textContent(),`${doneRun.model_calls} / ${edits.max_model_calls}（残り ${edits.max_model_calls-doneRun.model_calls}）`);
+      assert.match(await page.locator('#runMetrics').textContent(),/実行時間（チーム共有）/);
+      // Narrow screens show the inspector and network as alternate views.
+      // Use the visible navigation control before inspecting network metrics.
+      if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+      await modelMetric.scrollIntoViewIfNeeded();assert(await modelMetric.isVisible());
+      const budgetLayout=await modelMetric.evaluate(metric=>{
+        const box=metric.getBoundingClientRect(),panel=document.querySelector('#runOverview').getBoundingClientRect();
+        return {width:innerWidth,scrollWidth:document.documentElement.scrollWidth,
+          left:box.left,right:box.right,top:box.top,bottom:box.bottom,
+          panelLeft:panel.left,panelRight:panel.right,panelTop:panel.top,panelBottom:panel.bottom};
+      });
+      assert(budgetLayout.scrollWidth<=budgetLayout.width,'Budget view has no document horizontal overflow');
+      assert(budgetLayout.left>=budgetLayout.panelLeft-1&&budgetLayout.right<=budgetLayout.panelRight+1&&
+        budgetLayout.top>=budgetLayout.panelTop-1&&budgetLayout.bottom<=budgetLayout.panelBottom+1,'Budget metric fits its visible overview');
+      await page.screenshot({path:path.join(artifacts,`workbench-budget-${label}.png`),fullPage:false,animations:'disabled'});
       snapshots.push({viewport:size,status:text});
     }
     report.contextCompaction={runId,agentId,modelCalls:doneRun.model_calls,toolCalls:doneRun.tool_calls,
       memory:done.context_memory,lookupRecordIds:lookup.records.map(record=>record._record_id),
       unavailableIds:lookup.unavailable_ids,summaryCalls:1,settings:edits,profileTokenEstimateBudget:200000,snapshots};
     report.checks.push('context-compaction: real engine crosses threshold, exposes held summary state, charges the no-tool synthetic summary, continues using exact retained human/assistant records via read_context_history, reports missing IDs and completes; real unchanged polls and desktop/narrow status screenshots; no raw archive in API state');
+    report.runtimeBudget={runId,budget:doneRun.budget,stopReasons:doneRun.stop_reasons,syntheticOnly:true};
+    report.checks.push('runtime-budget: real synthetic engine state includes the shared model/tool/time limits and remaining values, including the summary call; done snapshot freezes and desktop/narrow UI matches actual server counters without extra provider requests');
     assert.deepEqual(providerRequests,beforeProviders);assert.deepEqual(report.externalRequests,beforeExternal);
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
   }catch(error){

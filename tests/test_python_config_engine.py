@@ -12,7 +12,7 @@ import pytest
 
 from workbench import engine as engine_module
 from workbench.config import DEFAULT, Settings, validate_settings
-from workbench.engine import PYTHON_TOOL
+from workbench.engine import PYTHON_TOOL, RuntimeBudgetError
 from test_engine import ScriptClient, configured, reply, settled, start
 from test_multi_pm import multi_start
 
@@ -270,10 +270,12 @@ async def test_python_deadline_cancels_and_drains_before_file_lock_is_released(t
         await asyncio.sleep(0)
         assert engine.lock.locked() and not pending.done() and not follower.done()
         release.set()
-        with pytest.raises(ValueError, match='制限時間'):
+        with pytest.raises(RuntimeBudgetError) as deadline:
             await pending
-        with pytest.raises(ValueError, match='上限'):
+        assert deadline.value.reason == 'time_limit'
+        with pytest.raises(RuntimeBudgetError) as expired:
             await follower
+        assert expired.value.reason == 'time_limit'
         assert cleaned.is_set() and not (work / 'late.txt').exists() and not engine.lock.locked()
     finally:
         release.set()

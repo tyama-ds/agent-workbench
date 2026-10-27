@@ -1,5 +1,6 @@
 """Contextual lifetime help matches server state, admission and explicit exports."""
 from pathlib import Path
+import time
 
 import pytest
 from aiohttp import ClientSession, CookieJar
@@ -51,7 +52,7 @@ def test_export_help_keeps_selected_record_and_receipt_boundaries():
     assert 'ダウンロードを開始しました' in APP
 
 
-async def test_twenty_runs_reject_new_work_without_eviction_and_warn_before_restart(tmp_path):
+async def test_twenty_runs_reject_new_work_without_eviction_and_warn_before_restart(tmp_path, monkeypatch):
     engine, _ = configured(tmp_path, ScriptClient([]))
     engine.kick = lambda _: None
     try:
@@ -62,18 +63,22 @@ async def test_twenty_runs_reject_new_work_without_eviction_and_warn_before_rest
                 await engine.stop_run(run['id'])
             else:
                 run['status'] = agent.status = 'done'
-        before = engine.snapshot()
-        payload = {'task': 'Twenty-first work', 'pm_profile': 'local', 'worker_profiles': [], 'max_workers': 0}
-        preview = engine.preflight(payload)
-        blocker = preview['blockers'][0]
-        assert not preview['can_start'] and blocker['code'] == 'engine_unavailable'
-        for text in ('1起動20作業', '.txt 保存', 'すべての作業完了後', 'サーバーを再起動', '保存済み履歴は閲覧専用で残ります', '今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます'):
-            assert text in blocker['message']
-        with pytest.raises(AdmissionError) as error:
-            await engine.start_run(payload)
-        assert str(error.value) == blocker['message']
-        after = engine.snapshot()
-        assert after['runs'] == before['runs'] and after['agents'] == before['agents'] and after['events'] == before['events']
+        observed = time.time()
+        with monkeypatch.context() as clock:
+            # Compare one server observation, including the live budget timestamp.
+            clock.setattr('workbench.engine.time.time', lambda: observed)
+            before = engine.snapshot()
+            payload = {'task': 'Twenty-first work', 'pm_profile': 'local', 'worker_profiles': [], 'max_workers': 0}
+            preview = engine.preflight(payload)
+            blocker = preview['blockers'][0]
+            assert not preview['can_start'] and blocker['code'] == 'engine_unavailable'
+            for text in ('1起動20作業', '.txt 保存', 'すべての作業完了後', 'サーバーを再起動', '保存済み履歴は閲覧専用で残ります', '今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます'):
+                assert text in blocker['message']
+            with pytest.raises(AdmissionError) as error:
+                await engine.start_run(payload)
+            assert str(error.value) == blocker['message']
+            after = engine.snapshot()
+            assert after['runs'] == before['runs'] and after['agents'] == before['agents'] and after['events'] == before['events']
         assert len(engine.runs) == 20 and len(engine.agents) == 20
     finally:
         await engine.close()
@@ -105,13 +110,16 @@ async def test_page_reconnect_stop_and_fresh_server_have_distinct_lifetimes(tmp_
         run, agent = await start(engine, max_workers=0)
         engine.record_result(agent, 'assistant_response', 'Synthetic retained report')
         await engine.execute_tool(run, agent, 'write_text', {'path': str(work / 'saved.txt'), 'text': 'Synthetic retained bytes', 'expected_sha256': 'missing'})
-        before = engine.snapshot()
-        response = await client.get(auth.origin + '/')
-        assert response.status == 200
-        # This is a same-cookie transport reconnect, not a browser-restart guarantee.
-        async with ClientSession(cookie_jar=client.cookie_jar) as reconnect:
-            restored = await (await reconnect.get(auth.origin + '/api/state')).json()
-        assert restored['runs'] == before['runs'] and restored['agents'] == before['agents']
+        observed = time.time()
+        with monkeypatch.context() as clock:
+            clock.setattr('workbench.engine.time.time', lambda: observed)
+            before = engine.snapshot()
+            response = await client.get(auth.origin + '/')
+            assert response.status == 200
+            # This is a same-cookie transport reconnect, not a browser-restart guarantee.
+            async with ClientSession(cookie_jar=client.cookie_jar) as reconnect:
+                restored = await (await reconnect.get(auth.origin + '/api/state')).json()
+            assert restored['runs'] == before['runs'] and restored['agents'] == before['agents']
         assert engine.settings.key(config['providers'][0]) == 'synthetic-memory-key'
         async with ClientSession(cookie_jar=CookieJar(unsafe=True)) as unauthenticated:
             assert (await unauthenticated.get(auth.origin + '/api/state')).status == 401

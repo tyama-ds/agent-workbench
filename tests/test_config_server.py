@@ -148,9 +148,13 @@ async def test_key_not_persisted_invalid_key_and_active_config_lock(tmp_path):
         assert response.status == 400
         engine = app[APP_KEY]
         engine.runs['test'] = {'id': 'test', 'status': 'waiting', 'agent_ids': []}
-        response = await client.put(auth.origin + '/api/config', json={'config_revision': app[APP_KEY].settings.revision, 'config': DEFAULT}, headers=headers)
-        assert response.status == 409
-        assert not (tmp_path / 'state' / 'settings.json').exists()
+        try:
+            response = await client.put(auth.origin + '/api/config', json={'config_revision': app[APP_KEY].settings.revision, 'config': DEFAULT}, headers=headers)
+            assert response.status == 409
+            assert not (tmp_path / 'state' / 'settings.json').exists()
+        finally:
+            # Lock-only sentinel; real Engine cleanup requires admitted run data.
+            engine.runs.pop('test', None)
 
 
 @pytest.mark.asyncio

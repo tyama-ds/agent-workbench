@@ -1,10 +1,13 @@
 """Preparing a displayed request never resumes an Engine or copies its authority."""
 import copy
+from types import SimpleNamespace
+
+import workbench.engine as engine_module
 
 from test_engine import configured, ScriptClient, start
 
 
-async def test_public_task_preflight_has_no_run_queue_budget_settings_or_model_effect(tmp_path):
+async def test_public_task_preflight_has_no_run_queue_budget_settings_or_model_effect(tmp_path, monkeypatch):
     client = ScriptClient([])
     engine, work = configured(tmp_path, client)
     engine.kick = lambda _: None
@@ -14,6 +17,9 @@ async def test_public_task_preflight_has_no_run_queue_budget_settings_or_model_e
         run['status'] = agent.status = 'stopped'
         run['model_calls'], run['tool_calls'], run['auto_collaborations'] = 5, 7, 3
         agent.conversation = [{'role': 'user', 'content': 'Do not copy private conversation'}]
+        # This fixture assigns stopped directly; compare an identical server clock.
+        observed = engine_module.time.time()
+        monkeypatch.setattr(engine_module, 'time', SimpleNamespace(time=lambda: observed))
         before = engine.snapshot()
         queue = copy.deepcopy(list(agent.pending))
         config = copy.deepcopy(engine.settings.value)
