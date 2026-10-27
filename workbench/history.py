@@ -364,14 +364,15 @@ class HistoryStore:
 
     @staticmethod
     def _safe(path, *, file=False):
-        if path.is_symlink():
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        if (stat.S_ISLNK(info.st_mode) or
+                getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400)):
             raise HistoryError('履歴保存先のリンクは使用できません。')
-        if path.exists():
-            info = path.stat()
-            if getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400):
-                raise HistoryError('履歴保存先のリンクは使用できません。')
-            if file and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_TOTAL_BYTES * 2):
-                raise HistoryError('履歴ファイルの種類が不正です。')
+        if file and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_TOTAL_BYTES * 2):
+            raise HistoryError('履歴ファイルの種類が不正です。')
 
     def _paths_safe(self):
         for parent in (self.directory, *self.directory.parents):

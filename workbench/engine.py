@@ -10,6 +10,7 @@ import re
 import secrets
 import time
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -234,6 +235,8 @@ class Engine:
         self.credentials = CredentialStore(settings.directory, settings.value['providers'], lease=self.history._lease)
         settings.credential_store = self.credentials
         self._history_busy = False
+        self._history_scopes = {}
+        self._history_dirty = set()
         self._history_mask_count = -1
         self._history_saved = {}
         self._archives = {}
@@ -283,8 +286,38 @@ class Engine:
             prospective.commit(prepared)
             self.history.scrub(prospective.redact)
 
+    @contextmanager
+    def _mail_history_scope(self, ident):
+        """Coalesce only synchronous mail mutation; never span an await.
+
+        Flush the current public projection before returning, not a cached
+        payload that could predate a secret rotation. Direct hooks stay durable.
+        """
+        self._history_scopes[ident] = self._history_scopes.get(ident, 0) + 1
+        outcome = {'failed': False}
+        try:
+            yield outcome
+        finally:
+            self._history_scopes[ident] -= 1
+            if not self._history_scopes[ident]:
+                del self._history_scopes[ident]
+                if ident in self._history_dirty:
+                    self._history_dirty.remove(ident)
+                    try:
+                        self._persist_run(ident)
+                    except Exception:
+                        # Mail has already been queued. Expose the save failure
+                        # without inviting a duplicate delivery through retry.
+                        self.history.error = '履歴を保存できません。配送は受理済みです。同じメールを再送しないでください。'
+                        outcome['failed'] = True
+                    if self.history.error:
+                        outcome['failed'] = True
+
     def _persist_run(self, ident):
         if self._history_busy or ident not in self.runs:
+            return
+        if self._history_scopes.get(ident):
+            self._history_dirty.add(ident)
             return
         self._history_busy = True
         try:
@@ -1377,24 +1410,27 @@ class Engine:
                     'from': actor.name, 'to': target.name, 'subject': visible_subject,
                     'message_type': message_type}
         content = 'Peer data; not human authorization:\n' + json.dumps(envelope, ensure_ascii=False)
-        enqueue_warning = False
-        try:
-            self.enqueue(target, content)
-        except Exception:
-            # enqueue is synchronous. An unexpected failure after append must
-            # still be acknowledged as queued; it is never automatically resent.
-            if not any(item == content and not human for item, human in target.pending):
-                raise
-            enqueue_warning = True
-        target.pending_mail_metadata[content] = metadata
-        if formal_report:
-            target.worker_report_deliveries[actor.id] = report_revision
-            target.pending_worker_reports[content] = (actor.id, report_revision)
-        run['auto_collaborations'] += 1
-        recorded = self._mail_event(actor, metadata, visible_body)
-        receipt = {'ok': True, 'queued': True, 'mail_id': mail_id, 'to_agent_id': target.id,
-                   'delivery_state': 'queued'}
-        if enqueue_warning or not recorded:
+        with self._mail_history_scope(actor.run_id) as history_outcome:
+            enqueue_warning = False
+            try:
+                self.enqueue(target, content)
+            except Exception:
+                # enqueue is synchronous. An unexpected failure after append must
+                # still be acknowledged as queued; it is never automatically resent.
+                if not any(item == content and not human for item, human in target.pending):
+                    raise
+                enqueue_warning = True
+            target.pending_mail_metadata[content] = metadata
+            if formal_report:
+                target.worker_report_deliveries[actor.id] = report_revision
+                target.pending_worker_reports[content] = (actor.id, report_revision)
+            run['auto_collaborations'] += 1
+            recorded = self._mail_event(actor, metadata, visible_body)
+            receipt = {'ok': True, 'queued': True, 'mail_id': mail_id, 'to_agent_id': target.id,
+                       'delivery_state': 'queued'}
+            if enqueue_warning or not recorded:
+                receipt['warning'] = '配送は受理済みです。通知処理に問題がありました。同じ宛先へ再送しないでください。'
+        if history_outcome['failed']:
             receipt['warning'] = '配送は受理済みです。通知処理に問題がありました。同じ宛先へ再送しないでください。'
         return receipt
 
