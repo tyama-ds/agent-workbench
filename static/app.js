@@ -92,14 +92,14 @@ const PROFILE_FIELDS = [
   ['request_timeout_seconds','リクエスト上限（秒）','number',1,'1','Local は共通設定の上限も適用されます'],
   ['context_window_tokens','モデル文脈予算（推定 token、0 は無効）','number',0,'1','モデルに合わせて指定。UTF-8 byte 数を保守的な推定に使用し、出力上限と追加余白も確保します。正確な token 数・収容の保証ではありません。'],
 ];
-const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機'};
+const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機',interrupted:'中断'};
 const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],context_trigger_percent:[50,90],context_recent_groups:[2,32],context_summary_chars:[512,16000],context_reserve_tokens:[256,65536],max_history_chars:[4000,4000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
 const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,selectionGeneration:0,compactState:false,loadedDetail:null,loadedEventsRun:null,detailError:false,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,pollAgain:false,drafts:new Map(),conversationViews:new Map(),logContext:'',logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
 Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map()});
-Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,credentialGeneration:0,credentialOperations:new Map()});
+Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,credentialGeneration:0,credentialOperations:new Map(),secretSources:{},credentialStorage:null,credentialRecoveryControls:[]});
 Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
-Object.assign(ui,{settingsStorage:null,settingsTransferOperation:null});
+Object.assign(ui,{settingsStorage:null,settingsTransferOperation:null,historyStorage:null,instanceId:null,retiredInstances:new Set(),messageOperation:null});
 Object.assign(ui,{workBoards:new Map(),boardOwner:null,boardComposingRun:null,boardRedactionRevision:null});
 const WORK_BOARD_DEFAULTS={enabled:false};
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
@@ -126,7 +126,7 @@ function availableProfiles() {
   return (Array.isArray(ui.effectiveProviders)?ui.effectiveProviders:(ui.config?.providers||[])).filter(profile=>profile.enabled!==false&&profile.model&&profile.base_url);
 }
 function acceptConnectionSettings(response) {
-  acceptSettingsStorage(response);
+  acceptServerInstance(response,true);acceptSettingsStorage(response);acceptHistoryStorage(response);acceptCredentialMetadata(response);
   ui.effectiveProviders=Array.isArray(response.effective_providers)?response.effective_providers:null;
   if(ui.config?.copilot_agent?.enabled===true&&availableProfiles().some(profile=>profile.id==='copilot-agent'))ui.copilotDefaultsPending=true;
   else ui.copilotDefaultsPending=false;
@@ -167,6 +167,54 @@ async function reconnectCopilotAgent() {
     renderCopilotStatus();setSettingsLock(true);ui.preflightKey='';schedulePreflight();
   }
 }
+function acceptServerInstance(response,configuration=false) {
+  if(!Object.hasOwn(response,'instance_id')) {
+    if(ui.instanceId!==null)throw new Error('サーバー起動の識別情報を確認できませんでした。画面を開き直してください。');
+    return false;
+  }
+  const id=response.instance_id;
+  if(typeof id!=='string'||!id||id.length>200||ui.retiredInstances.has(id))throw new Error('以前のサーバーの応答、または識別情報が不正な応答です。');
+  if(ui.instanceId===id)return false;
+  const changed=ui.instanceId!==null;if(changed)ui.retiredInstances.add(ui.instanceId);ui.instanceId=id;
+  if(!changed)return false;
+  ui.selectionGeneration++;ui.navigationGeneration++;ui.workspaceGeneration++;ui.credentialGeneration++;
+  ui.selectedRun=null;ui.selectedAgent=null;ui.loadedDetail=null;ui.loadedEventsRun=null;ui.detailError=false;
+  ui.drafts.clear();ui.draftRevisions.clear();ui.conversationViews.clear();ui.outputSelections.clear();
+  invalidateWorkBoardContent();ui.workBoards.clear();ui.boardOwner=null;ui.boardComposingRun=null;ui.boardRedactionRevision=null;
+  ui.networkNodes.clear();ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
+  ui.logSignature='';ui.outputSignature='';ui.taskReuseCandidate=null;ui.startOperation=null;ui.startingRun=false;ui.stoppingRuns.clear();ui.busyMessage=false;ui.messageOperation=null;
+  ui.credentialOperations.clear();ui.secretSources={};ui.credentialStorage=null;ui.credentialRecoveryControls=[];renderCredentialStorage();ui.copilotAgentStatus=null;ui.copilotReconnectOperation=null;ui.historyStorage=null;
+  ui.configStale=!configuration;clearCredentialInputs();
+  $('messageInput').value='';$('workBoardInput').value='';$('conversationLog').replaceChildren();$('resultText').textContent='';$('resultText').hidden=true;
+  $('activityFeed').replaceChildren();$('taskReuseConfirm').hidden=true;$('taskReusePreview').textContent='';
+  ui.state={runs:[],agents:[],events:[],resources:{}};renderState();renderHistoryStorage();
+  notice('サーバーの再起動を確認しました。前の表示と送信状態を破棄し、保存履歴を読み直します。'+(configuration?'':' 新しい作業の前に設定を読み直してください。'));
+  return true;
+}
+function archivedRun(run) { return run?.archived===true||run?.read_only===true; }
+function archivedAgent(agent) { return archivedRun(agent)||Boolean(agent&&archivedRun(ui.state.runs.find(run=>run.id===agent.run_id))); }
+function displayStatus(item) { return (archivedRun(item)||archivedAgent(item))&&ACTIVE_STATUSES.has(item?.status)?'interrupted':item?.status; }
+function acceptHistoryStorage(response) {
+  if(Object.hasOwn(response,'history_storage'))ui.historyStorage=response.history_storage;
+  renderHistoryStorage();
+}
+function renderHistoryStorage() {
+  const storage=ui.historyStorage,known=storage?.enabled===true&&['ready','error'].includes(storage.status);
+  const failed=known&&storage.status==='error';
+  $('historyRetention').textContent=failed?'履歴を保存・読み込みできません。必要な報告は .txt 保存してください。':known?'表示用の会話・作業履歴を自動保存します。再起動後は閲覧専用です。':'履歴の保存状態を確認中です。必要な報告は .txt 保存できます。';
+  $('historyStoragePath').textContent=known&&typeof storage.path==='string'?storage.path:'保存先は未確認です';
+  const limits=[['max_runs','作業'],['max_run_bytes','バイト／作業'],['max_total_bytes','バイト合計']].filter(([key])=>Number.isSafeInteger(storage?.[key])&&storage[key]>0).map(([key,label])=>`${storage[key].toLocaleString('ja-JP')} ${label}`);
+  $('historyStorageLimits').textContent=limits.length?'保存上限: '+limits.join(' · '):'';
+  const message=failed?'履歴の保存・読み込みで問題があります。'+(typeof storage.error==='string'&&storage.error?` ${storage.error}`:' 保存先を確認してください。')+' 保存済みであると判断せず、必要な報告を .txt 保存してください。':'';
+  $('historyStorageError').hidden=!failed;
+  if($('historyStorageError').textContent!==message)$('historyStorageError').textContent=message;
+}
+function renderArchiveNotice(run) {
+  const archived=archivedRun(run);$('archiveNotice').hidden=!archived;
+  const saved=Number.isFinite(run?.history_saved_at)?localTime(run.history_saved_at):'';
+  $('archiveNotice').textContent=archived?`保存した履歴を表示しています（閲覧専用）${saved?` · 保存時刻 ${saved}`:''}。${displayStatus(run)==='interrupted'?`終了時に未完了だった作業です${run.original_status?`（終了前: ${statusLabel(run.original_status)}）`:''}。`:''}自動再開はしません。続ける場合は「この依頼を新しい下書きに使う」から、新しい作業として開始してください。`:'';
+  $('workspaceMode').textContent=archived?'SAVED HISTORY':'LIVE WORKSPACE';
+}
 function statusLabel(value) { return STATUS_LABELS[value]||String(value||'待機'); }
 function profileLabel(profile) { return profile ? `${profile.label||profile.id}${profile.model?' · '+profile.model:''}` : '未設定'; }
 const PROFILE_KINDS={local:'Local / Chat Completions',openai:'OpenAI / Responses',anthropic:'Anthropic / Messages'};
@@ -196,7 +244,10 @@ function inlineStatus(node,text,error=false) { node.textContent=text;node.classL
 function setConnection(online,text) { $('connectionDot').classList.toggle('online',online);$('connectionDot').classList.toggle('error',!online);$('connectionStatus').textContent=text; }
 
 async function api(path,options={}) {
+  const requestInstance=ui.instanceId,method=String(options.method||'GET').toUpperCase();
+  const mutation=!['GET','HEAD','OPTIONS'].includes(method),bootstrap=path==='/api/bootstrap';
   const headers={'Accept':'application/json',...(options.headers||{})};
+  if(mutation&&!bootstrap&&requestInstance!==null)headers['X-Workbench-Instance']=requestInstance;
   if(options.body!==undefined)headers['Content-Type']='application/json';
   let response;
   try { response=await fetch(path,{cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(30000),...options,headers,body:options.body===undefined?undefined:JSON.stringify(options.body)}); }
@@ -206,7 +257,14 @@ async function api(path,options={}) {
     if(response.ok){const failure=new Error('応答の形式を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
     data={};
   }
+  if((requestInstance!==null&&requestInstance!==ui.instanceId)||ui.retiredInstances.has(data.instance_id)){const failure=new Error('以前のサーバーの応答は適用しません。最新の状態を確認してください。');failure.outcomeUnknown=Boolean(options.method&&options.method!=='GET');throw failure;}
   if(!response.ok||data.ok===false) {
+    if(response.status===409&&data.code==='instance_changed') {
+      acceptServerInstance(data);ui.configStale=true;clearCredentialInputs();setSettingsLock(true);
+      await pollState(true);
+      const failure=new Error('サーバーが再起動したため、この処理は実行されませんでした。最新の作業と保存済み設定を確認してから、必要な操作を行ってください。自動再送信はしません。');
+      failure.code='instance_changed';failure.outcomeUnknown=false;notice(failure.message,true);throw failure;
+    }
     if(response.status===401) { ui.authenticated=false;setConnection(false,'認証が必要です');throw new Error('起動時に表示された専用リンクから開き直してください。'); }
     const failure=new Error(String(data.error||`リクエストに失敗しました（${response.status}）`));failure.outcomeUnknown=response.status>=500;failure.code=data.code;throw failure;
   }
@@ -243,10 +301,35 @@ function inputValue(input) {
 }
 function invalidateDiagnostics() { ui.settingsRevision++;document.querySelectorAll('[data-probe-result]').forEach(node=>{node.textContent='設定または画面が変わりました。必要ならモデル一覧を再確認してください。';node.classList.remove('error');}); }
 function markSettingsDirty() { ui.settingsDraftGeneration++;invalidateDiagnostics();ui.credentialGeneration++;ui.settingsDirty=true;clearCredentialInputs();setSettingsLock(true);inlineStatus($('settingsStatus'),'未保存の変更があります。キーの入力前に設定を保存するか、変更を破棄してください。'); }
-function secretStatusText(configured) { return configured?'キー設定あり。値は画面に取得しません。':'キー未設定。必要ならキーを入力するか、環境変数の参照先を確認してください。'; }
+function secretStatusText(configured,info) {
+  const labels={session:'今回の起動中のキー',saved:'このPCのWindowsユーザーに暗号化保存したキー',environment:'環境変数のキー',none:'キー未設定'};
+  if(info&&Object.hasOwn(labels,info.source)&&typeof info.saved==='boolean')return `${labels[info.source]}${info.saved?' · 暗号化保存あり':''}。値は取得・再表示しません。`;
+  return configured?'キー設定あり（保存方法は未確認）。値は画面に取得しません。':'キー未設定。必要ならキーを入力するか、環境変数の参照先を確認してください。';
+}
+function canSaveCredential() { return ui.credentialStorage?.supported===true&&ui.credentialStorage?.available===true; }
+function affectedCredentialIds() { return ui.credentialStorage?.status==='identity_mismatch'&&Array.isArray(ui.credentialStorage?.affected_ids)?[...new Set(ui.credentialStorage.affected_ids.filter(id=>typeof id==='string'&&/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(id)))]:[]; }
+function acceptCredentialMetadata(response) {
+  ui.secretSources=response.secret_sources&&typeof response.secret_sources==='object'&&!Array.isArray(response.secret_sources)?response.secret_sources:{};
+  ui.credentialStorage=response.credential_storage&&typeof response.credential_storage==='object'&&!Array.isArray(response.credential_storage)?response.credential_storage:null;
+  renderCredentialStorage();
+}
+function renderCredentialStorage() {
+  const storage=ui.credentialStorage,known=storage&&typeof storage.supported==='boolean'&&typeof storage.available==='boolean';
+  const text=!known?'暗号化保存の利用状態は未確認です。':canSaveCredential()?'このPC・このWindowsユーザーで暗号化保存できます。同じ保存先からの再起動・更新後に使えます。':storage.supported?'暗号化保存を利用できません。'+(typeof storage.error==='string'&&storage.error?` ${storage.error}`:' 保存先を確認してください。'):'この環境では暗号化保存に対応していません。この起動中のみの入力、または環境変数を使ってください。';
+  inlineStatus($('credentialStorageStatus'),text,Boolean(known&&storage.supported&&!storage.available));
+  $('credentialStoragePath').textContent=known&&typeof storage.path==='string'&&storage.path?`暗号化キーの保存先: ${storage.path}`:'';
+  const recovery=$('credentialRecovery');recovery.replaceChildren();ui.credentialRecoveryControls=[];
+  for(const id of affectedCredentialIds()){
+    const row=element('div','credential-recovery-row'),label=element('p','',`保存済み接続先と一致しないキー: ${id}`),button=element('button','button secondary','この入力・保存したキーを削除'),result=element('p','inline-status');
+    button.type='button';button.dataset.credential='true';button.dataset.credentialAction='clear';button.dataset.credentialProfile=id;result.setAttribute('role','status');
+    const control={id,orphan:true,input:{value:''},button,clear:button,storage:{value:'session'},status:result,result,target:null};
+    button.addEventListener('click',()=>setCredential(control,true));ui.credentialRecoveryControls.push(control);row.append(label,button,result);recovery.appendChild(row);
+  }
+  recovery.hidden=!ui.credentialRecoveryControls.length;refreshCredentialControls();
+}
 function refreshSecretStatus(status) {
   ui.secretStatus=status||{};
-  $('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{const id=card.querySelector('[data-key="id"]').value.trim();card.querySelector('.secret-status').textContent=secretStatusText(ui.secretStatus[id]);});
+  $('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{const id=card.querySelector('[data-key="id"]').value.trim();card.querySelector('.secret-status').textContent=secretStatusText(ui.secretStatus[id],ui.secretSources[id]);});
 }
 
 function savedCredentialTarget(id) {
@@ -267,31 +350,51 @@ function canSetCredential(id) {
   return ui.authenticated&&Number.isInteger(ui.configRevision)&&!ui.configStale&&!ui.settingsDirty&&!ui.settingsSaving&&!ui.settingsReloading&&
     !ui.credentialOperations.has(id)&&Boolean(savedCredentialTarget(id));
 }
+function canClearCredential(id) {
+  return ui.authenticated&&Number.isInteger(ui.configRevision)&&!ui.configStale&&!ui.settingsDirty&&!ui.settingsSaving&&!ui.settingsReloading&&
+    !ui.credentialOperations.has(id)&&(Boolean(savedCredentialTarget(id))||affectedCredentialIds().includes(id));
+}
 function refreshCredentialControls() {
   for(const control of credentialControls()){
-    control.input.disabled=control.button.disabled=!canSetCredential(control.id);
+    const allowed=canSetCredential(control.id),mode=control.storage?.value||'session';
+    control.input.disabled=!allowed;control.button.disabled=!allowed||(mode==='saved'&&!canSaveCredential());
+    if(control.storage){control.storage.disabled=!allowed;control.savedOption.disabled=!canSaveCredential();}
+    if(control.clear)control.clear.disabled=!canClearCredential(control.id);
+    if(control.modeHelp)control.modeHelp.textContent=mode==='saved'?'このPC・このWindowsユーザーに暗号化保存します。別PCや別ユーザーへのコピーでは使えません。':'新しいキーをセットすると、以前に暗号化保存したキーは削除され、この起動中だけ使います。';
+    control.button.textContent=mode==='saved'?'キーを暗号化保存':'キーをセット';
     if(control.target)control.target.textContent=credentialTargetText(control.id);
   }
+  for(const control of ui.credentialRecoveryControls)control.button.disabled=!canClearCredential(control.id);
 }
-async function setCredential(control) {
-  const id=control.id;
-  if(!canSetCredential(id))return;
-  if(!control.input.value){inlineStatus(control.result,'セットする API キーを入力してください。',true);return;}
-  const key=control.input.value;control.input.value='';
-  const action={revision:ui.configRevision,generation:ui.credentialGeneration,workspace:ui.workspaceGeneration};
+function validCredentialReceipt(response,id,action,clearing) {
+  if(!response||response.ok!==true||response.id!==id||response.config_revision!==action.revision||response.storage!==action.storage||typeof response.configured!=='boolean'||typeof response.saved!=='boolean')return false;
+  const source=response.source,storage=response.credential_storage;
+  if(!['session','saved','environment','none'].includes(source)||response.configured!==(source!=='none')||response.saved!==(source==='saved'))return false;
+  if(!storage||typeof storage.supported!=='boolean'||typeof storage.available!=='boolean')return false;
+  return clearing?['environment','none'].includes(source):source===action.storage&&(action.storage!=='saved'||storage.supported===true&&storage.available===true);
+}
+async function setCredential(control,clearing=false) {
+  const id=control.id,storage=control.storage?.value||'session';
+  if(clearing?!canClearCredential(id):!canSetCredential(id))return;
+  if(!['session','saved'].includes(storage))return;
+  if(!clearing&&storage==='saved'&&!canSaveCredential()){inlineStatus(control.result,'暗号化保存を利用できません。保存状態を確認してください。',true);return;}
+  if(!clearing&&!control.input.value){inlineStatus(control.result,'セットする API キーを入力してください。',true);return;}
+  const key=clearing?'':control.input.value;control.input.value='';
+  const action={revision:ui.configRevision,generation:ui.credentialGeneration,workspace:ui.workspaceGeneration,instance:ui.instanceId,storage};
   const current=()=>ui.credentialOperations.get(id)===action&&action.revision===ui.configRevision&&action.generation===ui.credentialGeneration&&
-    action.workspace===ui.workspaceGeneration&&$('settingsDialog').open&&control.id===id&&!ui.settingsDirty;
+    action.workspace===ui.workspaceGeneration&&action.instance===ui.instanceId&&$('settingsDialog').open&&control.id===id&&!ui.settingsDirty;
   ui.credentialOperations.set(id,action);invalidateWorkBoardContent();invalidateDiagnostics();setSettingsLock(true);
-  inlineStatus(control.result,'保存済み接続先のキーをセットしています…');
+  inlineStatus(control.result,clearing?'入力・暗号化保存したキーを削除しています…':storage==='saved'?'保存済み接続先のキーを暗号化保存しています…':'保存済み接続先のキーをセットしています…');
   try {
-    const response=await api('/api/secrets',{method:'POST',body:{id,key,config_revision:action.revision}});
-    if(response.ok!==true||response.id!==id||response.config_revision!==action.revision||response.configured!==true){
+    const response=await api('/api/secrets',{method:'POST',body:{id,key,storage,config_revision:action.revision}});
+    if(!validCredentialReceipt(response,id,action,clearing)){
       const failure=new Error('キーの更新応答を確認できませんでした。');failure.outcomeUnknown=true;throw failure;
     }
     if(!current())return;
-    ui.secretStatus[id]=true;
-    control.status.textContent='今回の起動中に使うキーをセットしました。値は保存・再表示しません。';
-    inlineStatus(control.result,'キーをセットしました。有効性は未確認です。エラーで待機中の作業は、対象エージェントに指示を送って再試行してください。');
+    ui.secretStatus[id]=response.configured;ui.secretSources[id]={source:response.source,saved:response.saved};ui.credentialStorage=response.credential_storage;
+    refreshSecretStatus(ui.secretStatus);renderCredentialStorage();
+    const message=clearing?'入力・保存したキーを削除しました。'+(response.source==='environment'?'環境変数のキーは引き続き使用します。':'キーは未設定です。'):storage==='saved'?'キーを暗号化保存しました。同じPC・Windowsユーザーの次回起動でも使えます。有効性は未確認です。':'キーをセットしました。以前の暗号化保存は削除し、この起動中だけ使います。有効性は未確認です。';
+    inlineStatus(control.orphan?$('credentialStorageActionStatus'):control.result,message+(clearing?'':' 接続確認・自動再試行は行いません。待機中の作業には、必要なら明示的な指示を送って再試行してください。'));
   } catch(error) {
     if(!current())return;
     if(error.code==='settings_changed'){ui.configStale=true;clearCredentialInputs();}
@@ -399,7 +502,7 @@ async function saveSettings(event) {
   } catch(error) {
     if(ui.settingsSaveOperation!==action)return;
     if(error.outcomeUnknown||error.code==='settings_changed'){ui.configStale=true;if(owns()){clearCredentialInputs();invalidateDiagnostics();}else ui.settingsRevision++;}
-    if(owns())inlineStatus($('settingsStatus'),errorText(error)+(error.outcomeUnknown?' 保存されたかどうかは未確認です。自動再送信はしません。変更内容を控えてから、保存済み設定を読み直してください。':error.code==='settings_changed'?' この下書きは保存していません。変更内容を控えてから、保存済み設定を読み直してください。':''),true);
+    if(owns())inlineStatus($('settingsStatus'),errorText(error)+(error.outcomeUnknown?' 保存されたかどうかは未確認です。自動再送信はしません。変更内容を控えてから、保存済み設定を読み直してください。':error.code==='settings_changed'?' この下書きは保存していません。変更内容を控えてから、保存済み設定を読み直してください。':error.code==='saved_credential_identity_change'?' この下書きは保存していません。変更内容を控え、保存済み設定を読み直して該当のキーを削除してから、接続先の変更をやり直してください。':''),true);
   } finally {
     if(ui.settingsSaveOperation===action){ui.settingsSaveOperation=null;ui.settingsSaving=false;}
     setSettingsLock(true);schedulePreflight();
@@ -421,14 +524,19 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   card.querySelector('[data-key="id"]').title='英字で始まる64文字以内の半角英数字・ハイフン・アンダースコア';
   card.querySelector('[data-key="base_url"]').required=true;
   card.querySelector('[data-key="label"]').addEventListener('input',event=>{title.textContent=event.target.value||'新しいプロファイル';});
-  const secretRow=element('div','profile-secret'),secretField=element('div','field'),secretLabel=element('label','', '今回の起動中だけ使う API キー（任意）');
+  const secretRow=element('div','profile-secret'),secretField=element('div','field'),secretLabel=element('label','', 'API キー（任意）');
+  const storageField=element('div','field credential-storage-field'),storageLabel=element('label','','キーの保存方法'),storage=element('select'),modeHelp=element('small');
+  storage.id=`profile-${index}-secret-storage`;storageLabel.htmlFor=storage.id;storage.dataset.credential='true';
+  const sessionOption=element('option','','この起動中のみ'),savedOption=element('option','','このWindowsユーザーに暗号化保存');sessionOption.value='session';savedOption.value='saved';
+  storage.append(sessionOption,savedOption);storage.value='session';storageField.append(storageLabel,storage,modeHelp);secretRow.appendChild(storageField);
   const secret=element('input');secret.type='password';secret.autocomplete='new-password';secret.id=`profile-${index}-secret`;secretLabel.htmlFor=secret.id;
   secret.dataset.credential='true';
   secret.placeholder='空欄では現在のキー設定を変更しません';secretField.append(secretLabel,secret);
   const saveSecret=element('button','button secondary','キーをセット');saveSecret.type='button';
-  saveSecret.dataset.credential='true';
-  const secretState=element('p','secret-status',secretStatusText(ui.secretStatus[profile.id]));
-  secretRow.append(secretField,saveSecret,secretState);content.appendChild(secretRow);
+  saveSecret.dataset.credential='true';saveSecret.dataset.credentialAction='set';saveSecret.dataset.credentialProfile=profile.id;
+  const secretState=element('p','secret-status',secretStatusText(ui.secretStatus[profile.id],ui.secretSources[profile.id]));
+  const clearSecret=element('button','button minor credential-clear','入力・保存したキーを削除');clearSecret.type='button';clearSecret.dataset.credential='true';clearSecret.dataset.credentialAction='clear';clearSecret.dataset.credentialProfile=profile.id;
+  secretRow.append(secretField,saveSecret,clearSecret,secretState);content.appendChild(secretRow);
   const target=element('p','credential-target muted small');content.appendChild(target);
   const result=element('p','inline-status');result.dataset.probeResult='true';result.setAttribute('role','status');card.appendChild(result);
   const secretResult=element('p','inline-status credential-result');secretResult.setAttribute('role','status');content.appendChild(secretResult);
@@ -450,7 +558,8 @@ function appendProfile(profile,index,expanded=true,saved=true) {
     } catch(error){if(current())inlineStatus(result,errorText(error)+' 推論・ツール動作は未確認です。',true);}
     finally{probe.disabled=Boolean(ui.settingsLocked||ui.settingsSaving||ui.settingsReloading||ui.configStale||ui.credentialOperations.size);}
   });
-  card._credential={id:saved?profile.id:null,input:secret,button:saveSecret,status:secretState,result:secretResult,target};
+  card._credential={id:saved?profile.id:null,input:secret,button:saveSecret,clear:clearSecret,storage,savedOption,modeHelp,status:secretState,result:secretResult,target};
+  storage.addEventListener('change',()=>refreshCredentialControls());clearSecret.addEventListener('click',()=>setCredential(card._credential,true));
   saveSecret.addEventListener('click',()=>setCredential(card._credential));
   secret.addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229)return;if(event.key==='Enter'){event.preventDefault();setCredential(card._credential);}});
   $('profilesEditor').appendChild(card);
@@ -506,7 +615,7 @@ function collectConfig() {
   return config;
 }
 function setSettingsLock(force=false) {
-  const locked=ui.state.runs.some(run=>ACTIVE_STATUSES.has(run.status));ui.settingsLocked=locked;
+  const locked=ui.state.runs.some(run=>!archivedRun(run)&&ACTIVE_STATUSES.has(run.status));ui.settingsLocked=locked;
   const disabled=locked||ui.settingsSaving===true||ui.settingsReloading||ui.credentialOperations.size>0;
   $('settingsForm').querySelectorAll('input,textarea,select,button').forEach(node=>{if(node.dataset.credential!=='true')node.disabled=disabled&&node.dataset.readonly!=='true'||ui.configStale&&(node.type==='submit'||node.dataset.probe==='true');});$('saveSettings').disabled=disabled||ui.configStale;
   if(!disabled)$('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card.querySelector('[data-key="proxy_url"]').disabled=card.querySelector('[data-key="kind"]').value==='local';});
@@ -704,7 +813,7 @@ function reconcileStartedRun() {
   else if($('taskDialog').open)inlineStatus($('runFormStatus'),`作業 ${action.runId} を開始しました。実行一覧から確認できます。現在の下書きは送信していません。`);
   actionNotice(action,`作業 ${action.runId} を開始しました。実行一覧から確認できます。`);
 }
-function canStopRun(run) { return Boolean(run)&&ACTIVE_STATUSES.has(run.status)&&run.status!=='stopping'&&!ui.stoppingRuns.has(run.id); }
+function canStopRun(run) { return Boolean(run)&&!archivedRun(run)&&ACTIVE_STATUSES.has(run.status)&&run.status!=='stopping'&&!ui.stoppingRuns.has(run.id); }
 function schedulePreflight() {
   if(!$('taskDialog').open||ui.taskReuseCandidate)return;
   const key=JSON.stringify([runPayload(),ui.settingsRevision,ui.settingsDirty]);
@@ -757,14 +866,14 @@ function setBriefOpen(open,preview=true) {
   if(open) { if(!$('taskDialog').open){ui.taskDialogGeneration++;if(ui.copilotDefaultsPending)renderProfileChoices(true,true);$('taskDialog').showModal();}showPendingStart();syncStartControl();if(preview)schedulePreflight(); }
   else if($('taskDialog').open)$('taskDialog').close();
 }
-function needsHuman(agent) { return agent.status_reason==='human_input'||(Boolean(agent.question)&&['waiting','waiting_human','needs_input'].includes(agent.status)); }
+function needsHuman(agent) { return !archivedAgent(agent)&&(agent.status_reason==='human_input'||(Boolean(agent.question)&&['waiting','waiting_human','needs_input'].includes(agent.status))); }
 function filteredAgents(agents) {
   const query=$('agentSearch').value.trim().toLocaleLowerCase();
   return agents.filter(agent=>(!ui.needsOnly||needsHuman(agent))&&(!query||[agent.name,agent.id,agent.assignment,agent.profile_id].join(' ').toLocaleLowerCase().includes(query)));
 }
 function hasMessageInput(agent) {
   const run=agent&&ui.state.runs.find(run=>run.id===agent.run_id);
-  if(!run||(Array.isArray(run.agent_ids)&&!run.agent_ids.includes(agent.id)))return false;
+  if(!run||archivedRun(run)||archivedAgent(agent)||(Array.isArray(run.agent_ids)&&!run.agent_ids.includes(agent.id)))return false;
   const value=ui.selectedRun===agent.run_id&&ui.selectedAgent===agent.id?$('messageInput').value:ui.drafts.get(agent.id);
   return typeof value==='string'&&value.length>0;
 }
@@ -827,7 +936,7 @@ function questionEntries() {
   // Current runtime pauses, not unread messages or an inferred priority queue.
   const agents=new Map(ui.state.agents.map(agent=>[agent.id,agent]));
   return [...ui.state.runs].sort((a,b)=>(Number(a.created_at)||0)-(Number(b.created_at)||0)).flatMap(run=>{
-    if(['stopping','stopped'].includes(run.status))return [];
+    if(archivedRun(run)||['stopping','stopped'].includes(run.status))return [];
     const members=Array.isArray(run.agent_ids)?run.agent_ids.map(id=>agents.get(id)):ui.state.agents.filter(agent=>agent.run_id===run.id);
     return members.filter(agent=>agent&&agent.run_id===run.id&&agent.status==='waiting'&&
       typeof agent.question==='string'&&agent.question.trim()&&agent.status_reason==='human_input')
@@ -912,7 +1021,7 @@ function workBoardState(runId) {
   return ui.workBoards.get(runId);
 }
 function workBoardEnabled(run) { return run?.work_board?.enabled===true; }
-function workBoardActive(run) { return Boolean(run&&ACTIVE_STATUSES.has(run.status)&&run.status!=='stopping'); }
+function workBoardActive(run) { return Boolean(run&&!archivedRun(run)&&ACTIVE_STATUSES.has(run.status)&&run.status!=='stopping'); }
 function saveWorkBoardDraft(event) {
   if(!ui.boardOwner)return;
   const draft=workBoardState(ui.boardOwner).draft,value=$('workBoardInput').value;
@@ -990,10 +1099,10 @@ function renderWorkBoardControls(run) {
   $('workBoardReply').hidden=draft.reply_to===null||!enabled;
   $('workBoardReplyTitle').textContent=draft.reply_to===null?'':`投稿 #${draft.reply_to} への返信`;
   $('workBoardReplyBody').textContent=draft.reply_to===null?'':workBoardQuote(board,draft.reply_to);
-  $('workBoardUncertain').hidden=!enabled||!operation||operation.status!=='unknown';
+  $('workBoardUncertain').hidden=archivedRun(run)||!enabled||!operation||operation.status!=='unknown';
   $('workBoardUncertainBody').textContent=operation?.status==='unknown'?(operation.hidePreview?'秘密情報の更新後のため、以前の送信本文は表示しません。確認時は元の投稿IDと本文をそのまま使用します。':operation.body):'';
-  $('workBoardRetry').disabled=!enabled||operation?.status!=='unknown';
-  $('workBoardMode').textContent=!enabled?'この作業では掲示板がオフです。設定で有効にして、新しい作業を開始してください。':!active?'この作業は終了しています。投稿は閲覧のみです。':board.loaded&&!board.canPost?'投稿上限に達しました。過去の投稿は閲覧できます。':'この作業の全員へ共有 · 投稿受付は、閲覧・理解・正式報告の証明ではありません。';
+  $('workBoardRetry').disabled=archivedRun(run)||!enabled||operation?.status!=='unknown';
+  $('workBoardMode').textContent=archivedRun(run)?(enabled?'保存した掲示板を表示しています。閲覧専用のため投稿・返信・再送はできません。':'この保存履歴では掲示板がオフです。'):!enabled?'この作業では掲示板がオフです。設定で有効にして、新しい作業を開始してください。':!active?'この作業は終了しています。投稿は閲覧のみです。':board.loaded&&!board.canPost?'投稿上限に達しました。過去の投稿は閲覧できます。':'この作業の全員へ共有 · 投稿受付は、閲覧・理解・正式報告の証明ではありません。';
   $('workBoardReload').hidden=!enabled;$('workBoardReload').disabled=Boolean(board.loading);
   $('workBoardCount').textContent=enabled?`${board.posts.size} / ${Math.max(run.work_board.post_count||0,board.lastSeq)} 件取得 · 最大200件`:'';
   inlineStatus($('workBoardStatus'),board.error||board.status,Boolean(board.error));
@@ -1037,6 +1146,7 @@ async function loadWorkBoard(run,force=false) {
       for(let page=0;page<201;page++){
         const cursor=board.cursor,response=await api(`/api/runs/${encodeURIComponent(run.id)}/work-board?after_seq=${cursor}&limit=50`);
         if(!current())return;
+        if(acceptServerInstance(response))throw new Error('サーバーが再起動したため、保存履歴を読み直します。');
         if(!Number.isSafeInteger(response?.redaction_revision)||response.redaction_revision<0||ui.boardRedactionRevision!==null&&response.redaction_revision<ui.boardRedactionRevision)throw new Error('掲示板の秘密情報更新を確認できませんでした。');
         if(response.redaction_revision!==ui.boardRedactionRevision){
           invalidateWorkBoardContent();ui.boardRedactionRevision=response.redaction_revision;action.epoch=board.epoch;board.loading=action;
@@ -1061,7 +1171,7 @@ async function loadWorkBoard(run,force=false) {
 }
 function currentRunBoard(runId) { return ui.selectedRun===runId&&ui.boardOwner===runId&&ui.cockpitView==='board'; }
 async function submitWorkBoardPost(retry=false) {
-  const run=getRun();if(!run||ui.boardOwner!==run.id||!workBoardEnabled(run))return;
+  const run=getRun();if(!run||archivedRun(run)||ui.boardOwner!==run.id||!workBoardEnabled(run))return;
   const board=workBoardState(run.id);saveWorkBoardDraft();
   let action=board.operation;
   if(retry){if(action?.status!=='unknown')return;}
@@ -1070,13 +1180,13 @@ async function submitWorkBoardPost(retry=false) {
     action={id:crypto.randomUUID(),body:board.draft.body,reply_to:board.draft.reply_to,revision:board.draft.revision,status:'pending',hidePreview:false};board.operation=action;
   }
   action.status='pending';board.error='';board.status=retry?'前回の投稿の受付結果を確認しています…':'投稿を送信しています…';renderWorkBoardControls(run);
-  const epoch=board.epoch,body={body:action.body,client_post_id:action.id};if(action.reply_to!==null)body.reply_to=action.reply_to;
+  const epoch=board.epoch,instance=ui.instanceId,body={body:action.body,client_post_id:action.id};if(action.reply_to!==null)body.reply_to=action.reply_to;
   try{
     const response=await api(`/api/runs/${encodeURIComponent(run.id)}/work-board`,{method:'POST',body});
     if(response?.ok!==true||typeof response.duplicate!=='boolean'||!workBoardPostValid(response.post,run.id)||response.post.author_kind!=='human'){
       const error=new Error('投稿の受付応答を確認できませんでした。');error.outcomeUnknown=true;throw error;
     }
-    if(board.operation!==action)return;
+    if(instance!==ui.instanceId||ui.workBoards.get(run.id)!==board||board.operation!==action)return;
     board.lastSeq=Math.max(board.lastSeq,response.post.seq);
     // A concurrent redaction change invalidates this body; the next GET supplies freshly masked text.
     board.status=`投稿 #${response.post.seq} ${response.duplicate?'の受付を確認しました':'を受け付けました'}。閲覧・理解は未確認です。`;
@@ -1086,12 +1196,12 @@ async function submitWorkBoardPost(retry=false) {
     }
     board.operation=null;
   }catch(error){
-    if(board.operation!==action)return;
+    if(instance!==ui.instanceId||ui.workBoards.get(run.id)!==board||board.operation!==action)return;
     if(error.outcomeUnknown||error.code==='redaction_capacity'){action.status='unknown';board.status='送信結果は未確認です。自動再送信はしません。';}
     else{board.operation=null;board.status='投稿は確認できませんでした。下書きは保持しています。';}
     board.error=board.epoch===epoch?errorText(error):'公開内容の更新中に投稿結果を取得できませんでした。';
     if(error.code==='redaction_capacity')hideWorkBoardAfterRedactionFailure();
-  }finally{if(currentRunBoard(run.id)){renderWorkBoard(getRun());if(!board.operation)void loadWorkBoard(getRun(),true);}}
+  }finally{if(instance===ui.instanceId&&ui.workBoards.get(run.id)===board&&currentRunBoard(run.id)){renderWorkBoard(getRun());if(!board.operation)void loadWorkBoard(getRun(),true);}}
 }
 function setCockpitView(view) {
   if(!['network','board','inspector'].includes(view))return;
@@ -1154,8 +1264,8 @@ function networkMailPath(from,to,index) {
 function renderTeamMap(agents) {
   const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,agents.map(agent=>[agent.id,agent.parent_id])]);
   $('teamMapMeta').textContent=`${agents.length} AGENTS`;
-  const counts=[['作業中',agents.filter(a=>['working','running'].includes(a.status)).length],['待機',agents.filter(a=>['queued','waiting','idle'].includes(a.status)&&!needsHuman(a)).length],['要回答',agents.filter(needsHuman).length]];
-  $('networkCounts').textContent=counts.map(([label,count])=>`${label} ${count}`).join('  /  ');
+  const counts=[['作業中',agents.filter(a=>!archivedAgent(a)&&['working','running'].includes(a.status)).length],['待機',agents.filter(a=>!archivedAgent(a)&&['queued','waiting','idle'].includes(a.status)&&!needsHuman(a)).length],['要回答',agents.filter(needsHuman).length]];
+  $('networkCounts').textContent=archivedRun(getRun())?'保存時点の担当と通信 · 現在は実行していません':counts.map(([label,count])=>`${label} ${count}`).join('  /  ');
   if(layoutKey!==ui.networkLayoutKey) {
     ui.networkLayoutKey=layoutKey;ui.networkMailKey='';ui.networkNodes=new Map();map.replaceChildren();
     if(!agents.length){map.appendChild(element('p','network-empty','チームを開始すると、担当と連絡がここに並びます。'));ui.networkSvg=null;return;}
@@ -1180,7 +1290,7 @@ function renderTeamMap(agents) {
   }
   for(const agent of agents) {
     const node=ui.networkNodes.get(agent.id);if(!node)continue;
-    const status=Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'unknown';
+    const displayed=displayStatus(agent),status=Object.hasOwn(STATUS_LABELS,displayed)?displayed:'unknown';
     node.button.className=`network-node ${status}${needsHuman(agent)?' human-input':''}${agent.id===ui.selectedAgent?' selected':''}`;
     node.button.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
     node.button.setAttribute('aria-label',`${agent.name||agent.id} · ${stateLabel(agent)} · 担当詳細を開く`);
@@ -1234,21 +1344,22 @@ function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;ui.navi
 function renderRunList() {
   const counts=new Map();for(const {run} of questionEntries())counts.set(run.id,(counts.get(run.id)||0)+1);
   const inputs=new Map();for(const {run} of messageInputEntries())inputs.set(run.id,(inputs.get(run.id)||0)+1);
-  const signature=JSON.stringify([ui.selectedRun,ui.state.runs.map(run=>[run.id,run.task,run.status,run.status_reason,run.created_at,counts.get(run.id)||0,inputs.get(run.id)||0])]);if(signature===ui.runsSignature)return;ui.runsSignature=signature;
-  $('runCount').textContent=`${ui.state.runs.length} / 20`;$('runList').replaceChildren();
+  const signature=JSON.stringify([ui.selectedRun,ui.state.runs.map(run=>[run.id,run.task,run.status,run.status_reason,run.archived,run.read_only,run.created_at,counts.get(run.id)||0,inputs.get(run.id)||0])]);if(signature===ui.runsSignature)return;ui.runsSignature=signature;
+  const live=ui.state.runs.filter(run=>!archivedRun(run)).length,archived=ui.state.runs.length-live;
+  $('runCount').textContent=`${live} / 20${archived?` · 保存 ${archived}`:''}`;$('runCount').setAttribute('aria-label',`この起動中の作業 ${live}件・上限20件、保存履歴 ${archived}件`);$('runList').replaceChildren();
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
-  [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
+  [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
 const REASON_LABELS = {human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
-function stateLabel(item) { return REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
+function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
 function badge(status,reason) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),REASON_LABELS[reason]||statusLabel(status)); }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.assignment,agent.question,agent.last_error,hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   filteredAgents(agents).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
     const top=element('div','agent-card-top'),stateLine=element('span','agent-state-line'),inputBadge=messageInputBadge(agent);
-    stateLine.append(badge(agent.status,agent.status_reason));if(inputBadge)stateLine.append(inputBadge);
+    stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason));if(inputBadge)stateLine.append(inputBadge);
     top.append(element('span','agent-avatar',!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`),stateLine);
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
@@ -1389,21 +1500,21 @@ function renderConversation(agent) {
   $('conversationMeta').textContent=agent?`${!agent.parent_id?'PM':'作業者'} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
   const memory=agent?.context_memory;
   $('contextMemoryStatus').hidden=!memory;
-  $('contextMemoryStatus').textContent=memory?`${memory.compacting?'会話を要約中 · ':''}文脈圧縮 ${memory.compactions} 回 · 元の履歴 ${memory.history_records} 件（上限で除外 ${memory.history_omitted} 件）· 今回の起動中のみ。要約には情報が抜けることがあります。`:'';
+  $('contextMemoryStatus').textContent=memory?`${memory.compacting&&!archivedAgent(agent)?'会話を要約中 · ':''}文脈圧縮 ${memory.compactions} 回 · 元の履歴 ${memory.history_records} 件（上限で除外 ${memory.history_omitted} 件）· モデル用の会話文脈は今回の起動中のみ。要約には情報が抜けることがあります。`:'';
   $('conversationProfile').textContent=agent?configuredProfileLabel(agent)+'（応答モデル未確認）':'';
   $('conversationStatus').hidden=!agent;
-  if(agent){$('conversationStatus').className='status-badge '+(Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'');$('conversationStatus').textContent=stateLabel(agent);}
-  const question=agent&&needsHuman(agent)?agent.question||'':'';
+  if(agent){$('conversationStatus').className='status-badge '+(archivedAgent(agent)?'archived':Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'');$('conversationStatus').textContent=stateLabel(agent);}
+  const archived=archivedRun(run)||archivedAgent(agent),question=agent&&(archived||needsHuman(agent))?agent.question||'':'';
   const questionLostFocus=!question&&document.activeElement===$('humanQuestion');
   const questionContext=JSON.stringify([ui.selectedRun,agent?.id,question]);
   $('humanQuestion').hidden=!question;
-  if(ui.questionContext!==questionContext){ui.questionContext=questionContext;$('humanQuestion').textContent=question?`判断が必要です\n${question}`:'';$('humanQuestion').scrollTop=0;}
+  if(ui.questionContext!==questionContext){ui.questionContext=questionContext;$('humanQuestion').textContent=question?`${archived?'保存時点の質問（回答不可）':'判断が必要です'}\n${question}`:'';$('humanQuestion').scrollTop=0;}
   if(questionLostFocus)$('conversationHeading').focus({preventScroll:true});
   $('messageLabel').textContent=question?'質問への回答':'追加の指示';$('messageInput').placeholder=question?'選択肢や条件を確認し、回答を入力してください':'このエージェントへ追加の指示を送る';
   const stopping=['stopping','stopped'].includes(run?.status),eligibility=agent?.message_eligibility;
-  const blocked=stopping||eligibility?.allowed!==true;
+  const blocked=archived||stopping||eligibility?.allowed!==true;
   $('sendMessage').disabled=!agent||ui.busyMessage||blocked;$('messageInput').disabled=!agent||blocked;
-  $('messageEligibility').textContent=eligibility?.message||(stopping?'停止したチームは再開できません。新しい仕事を開始してください':agent&&eligibility?.allowed!==true?'送信できる状態か確認できません。最新の状態を取得してから確認してください。':'');
+  $('messageEligibility').textContent=archived?'保存履歴は閲覧専用です。追加指示・回答・メール送信はできません。新しい作業の下書きに依頼文を使えます。':eligibility?.message||(stopping?'停止したチームは再開できません。新しい仕事を開始してください':agent&&eligibility?.allowed!==true?'送信できる状態か確認できません。最新の状態を取得してから確認してください。':'');
   $('messageEligibility').hidden=!$('messageEligibility').textContent;
   const logs=loaded&&Array.isArray(agent?.logs)?agent.logs:[],signature=JSON.stringify([ui.selectedRun,agent?.id,loading,logs]);
   if(signature===ui.logSignature)return;ui.logSignature=signature;
@@ -1459,13 +1570,13 @@ function evictedLogFocusFallback(container,context,logs,loaded) {
   };
 }
 function focusHumanRecipient(id) {
-  if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;
+  if(archivedRun(getRun())||!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun&&!archivedAgent(agent)))return;
   selectAgent(id);setCockpitView('inspector');($('messageInput').disabled?$('conversationHeading'):$('messageInput')).focus({preventScroll:true});
 }
 function renderActivity(run) {
   const feed=$('activityFeed'),loading=Boolean(run)&&ui.compactState&&ui.loadedEventsRun!==run.id,retained=retainedTeamEvents(run),mail=event=>['mail','mail_consumed'].includes(event.kind);
   const events=retained.filter(event=>ui.activityFilter==='mail'?mail(event):ui.activityFilter==='selected'?mail(event)&&[event.from_agent_id,event.to_agent_id].includes(ui.selectedAgent):ui.activityFilter==='pair'?mail(event)&&((event.from_agent_id===ui.activityPair?.from&&event.to_agent_id===ui.activityPair?.to)||(event.from_agent_id===ui.activityPair?.to&&event.to_agent_id===ui.activityPair?.from)):true).reverse();
-  const signature=JSON.stringify([run?.id,loading,ui.activityFilter,ui.activityPair,ui.selectedAgent,events]);if(signature===ui.activitySignature)return;ui.activitySignature=signature;
+  const signature=JSON.stringify([run?.id,run?.archived,run?.read_only,loading,ui.activityFilter,ui.activityPair,ui.selectedAgent,events]);if(signature===ui.activitySignature)return;ui.activitySignature=signature;
   for(const [id,filter] of [['activityAll','all'],['activityMail','mail'],['activitySelected','selected']])$(id).setAttribute('aria-pressed',String(ui.activityFilter===filter));
   setVisibleText($('activityScope'),`${ui.activityFilter==='pair'?'選択した二者の通信 · ':ui.activityFilter==='selected'?'選択担当の通信 · ':''}最新100イベント内 ${events.length} 件。保持範囲外の履歴は含みません。`);
   const scroll=ui.activityRun===run?.id?feed.scrollTop:0;ui.activityRun=run?.id;feed.replaceChildren();feed.setAttribute('aria-busy',String(loading));
@@ -1486,7 +1597,7 @@ function renderActivity(run) {
         const button=element('button','button minor',`${label}: ${agent.name||agent.id}`);button.type='button';button.dataset.focusKey=`mail:${event.id}:${label}`;button.addEventListener('click',()=>selectAgent(id));participants.appendChild(button);
       }
       const sender=ui.state.agents.find(item=>item.id===event.from_agent_id&&item.run_id===run?.id);
-      if(sender){const reply=element('button','button minor','差出人へ人の指示を入力');reply.type='button';reply.dataset.focusKey=`mail-reply:${event.id}`;reply.addEventListener('click',()=>focusHumanRecipient(sender.id));participants.appendChild(reply);}
+      if(sender){const reply=element('button','button minor','差出人へ人の指示を入力');reply.type='button';reply.disabled=archivedRun(run)||archivedAgent(sender);reply.dataset.focusKey=`mail-reply:${event.id}`;reply.addEventListener('click',()=>focusHumanRecipient(sender.id));participants.appendChild(reply);}
       content.appendChild(participants);
     }
     content.appendChild(element('div','activity-body',event.text||''));row.append(element('time','activity-time',localTime(event.at)),content);feed.appendChild(row);
@@ -1504,7 +1615,7 @@ function preserveControlFocus(render,fallback=null) {
 function renderRun() { preserveControlFocus(renderRunContent); }
 function renderRunContent() {
   reconcileTaskReuse();syncTaskReuseControl();
-  const run=getRun();$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;$('networkWorkspace').hidden=!run;renderWorkBoard(run);
+  const run=getRun();renderArchiveNotice(run);$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;$('networkWorkspace').hidden=!run;renderWorkBoard(run);
   const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderMessageInputSummary();
   $('rosterHeading').textContent=ui.needsOnly?'質問':'CREW';
   $('rosterScope').textContent=ui.needsOnly?'全チーム · チームの開始順。開くだけでは回答・再開しません。':run?`表示中のチーム · ${shortRunId(run)}`:'選択したチームの担当者';
@@ -1513,8 +1624,8 @@ function renderRunContent() {
   $('agentCards').classList.toggle('question-list',Boolean(ui.needsOnly));
   if(ui.needsOnly)renderQuestions(questions);else renderAgents(agents);
   if(!run){renderTeamMap(agents);renderAgentTabs(agents);renderConversation(null);renderActivity(null);return;}
-  $('activeRunTitle').textContent=`表示中のチーム · ${shortRunId(run)}`;$('activeRunStatus').className='status-badge '+(Object.hasOwn(STATUS_LABELS,run.status)?run.status:'');$('activeRunStatus').textContent=stateLabel(run);$('activeRunTask').textContent=run.task||'';
-  const collaborationBlocked=run.collaboration_limit_reached===true;
+  $('activeRunTitle').textContent=`表示中のチーム · ${shortRunId(run)}`;$('activeRunStatus').className='status-badge '+(archivedRun(run)?'archived':Object.hasOwn(STATUS_LABELS,run.status)?run.status:'');$('activeRunStatus').textContent=stateLabel(run);$('activeRunTask').textContent=run.task||'';
+  const collaborationBlocked=!archivedRun(run)&&run.collaboration_limit_reached===true;
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
@@ -1546,6 +1657,7 @@ function selectedStatePath(selection) {
   return '/api/state?'+query.toString();
 }
 function applyState(state,request) {
+  acceptServerInstance(state);
   const compact=Object.hasOwn(state,'selection'),selection=state.selection;
   // Legacy full-state fixtures remain supported; compact detail must name its exact request owner.
   if(compact&&(!selection||selection.run_id!==request.run||selection.agent_id!==request.agent||selection.detail_loaded!==Boolean(request.agent)))throw new Error('選択した詳細の応答を確認できませんでした。');
@@ -1556,7 +1668,7 @@ function applyState(state,request) {
     if(ui.boardRedactionRevision!==state.redaction_revision)invalidateWorkBoardContent();
     ui.boardRedactionRevision=state.redaction_revision;
   }
-  ui.state=next;ui.compactState=compact;ui.detailError=false;
+  ui.state=next;ui.compactState=compact;ui.detailError=false;acceptHistoryStorage(state);
   if(Object.hasOwn(state,'copilot_agent_status')){
     const changed=JSON.stringify(ui.copilotAgentStatus)!==JSON.stringify(state.copilot_agent_status);
     ui.copilotAgentStatus=state.copilot_agent_status;renderCopilotStatus();
@@ -1636,8 +1748,8 @@ async function initialize() {
   $('exportSettings').addEventListener('click',exportSettings);
   $('importSettings').addEventListener('click',()=>{if(!settingsTransferBlocked())$('settingsImportFile').click();});
   $('settingsImportFile').addEventListener('change',event=>{const file=event.target.files?.[0];event.target.value='';return importSettingsFile(file);});
-  $('settingsForm').addEventListener('input',event=>{if(event.target.type!=='password'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
-  $('settingsForm').addEventListener('change',event=>{if(event.target.type!=='password'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
+  $('settingsForm').addEventListener('input',event=>{if(event.target.type!=='password'&&event.target.dataset.credential!=='true'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
+  $('settingsForm').addEventListener('change',event=>{if(event.target.type!=='password'&&event.target.dataset.credential!=='true'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
   $('settingsForm').addEventListener('invalid',event=>{const card=event.target.closest('.profile-editor');if(card&&card.querySelector('.profile-content').hidden)card.querySelector('[data-readonly]').click();},true);
   $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180,context_window_tokens:0},index,true,false);markSettingsDirty();});
   $('settingsForm').addEventListener('submit',saveSettings);
@@ -1675,13 +1787,14 @@ async function initialize() {
   $('messageInput').addEventListener('input',saveAgentDraft);
   $('messageForm').addEventListener('submit',async event=>{
     event.preventDefault();const agent=getAgent(),text=$('messageInput').value;
-    if(!agent||!text.trim()||ui.busyMessage||agent.message_eligibility?.allowed!==true||['stopping','stopped'].includes(getRun()?.status))return;
-    saveAgentDraft();const action={agent:agent.id,run:agent.run_id,selection:ui.selectionGeneration,draft:ui.draftRevisions.get(agent.id)};
-    const owns=()=>ui.selectedAgent===action.agent&&ui.selectedRun===action.run&&ui.selectionGeneration===action.selection&&ui.draftRevisions.get(action.agent)===action.draft;
-    const unchanged=()=>ui.draftRevisions.get(action.agent)===action.draft&&ui.drafts.get(agent.id)===text;
-    ui.busyMessage=true;$('sendMessage').disabled=true;
+    if(!agent||archivedRun(getRun())||archivedAgent(agent)||!text.trim()||ui.busyMessage||agent.message_eligibility?.allowed!==true||['stopping','stopped'].includes(getRun()?.status))return;
+    saveAgentDraft();const action={agent:agent.id,run:agent.run_id,selection:ui.selectionGeneration,draft:ui.draftRevisions.get(agent.id),instance:ui.instanceId};
+    const owns=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.selectedAgent===action.agent&&ui.selectedRun===action.run&&ui.selectionGeneration===action.selection&&ui.draftRevisions.get(action.agent)===action.draft;
+    const unchanged=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.draftRevisions.get(action.agent)===action.draft&&ui.drafts.get(agent.id)===text;
+    ui.messageOperation=action;ui.busyMessage=true;$('sendMessage').disabled=true;
     try {
       const receipt=await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,{method:'POST',body:{text}});
+      if(ui.messageOperation!==action||ui.instanceId!==action.instance)return;
       if(receipt?.ok!==true){const failure=new Error('応答の形式を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
       if(unchanged()&&(owns()||ui.selectedAgent!==agent.id)){
         ui.drafts.delete(agent.id);
@@ -1691,11 +1804,11 @@ async function initialize() {
       if(owns())inlineStatus($('messageStatus'),'送信しました。');await pollState(true);
     }
     catch(error){if(owns())inlineStatus($('messageStatus'),errorText(error)+(error.outcomeUnknown?' 送信結果は未確認です。作業ログを確認してから再送信が必要か判断してください。':''),true);}
-    finally{ui.busyMessage=false;renderConversation(getAgent());renderMessageInputPresence();}
+    finally{if(ui.messageOperation===action&&ui.instanceId===action.instance){ui.messageOperation=null;ui.busyMessage=false;renderConversation(getAgent());renderMessageInputPresence();}}
   });
   try {
     const fragment=new URLSearchParams(location.hash.slice(1)),token=fragment.get('token');
-    if(token){history.replaceState(null,'',location.pathname+location.search);await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}});}
+    if(token){history.replaceState(null,'',location.pathname+location.search);acceptServerInstance(await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}}));}
     const response=await api('/api/config');ui.config=response.config;ui.configRevision=response.config_revision;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);ui.authenticated=true;renderSettings();renderProfileChoices();await pollState();
   }catch(error){notice(errorText(error),true);setConnection(false,'Workbench 接続待ち');$('startRun').disabled=true;}
   window.setInterval(()=>pollState(),1000);

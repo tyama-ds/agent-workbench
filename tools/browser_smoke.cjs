@@ -351,8 +351,21 @@ async function main() {
     await page.locator('#settingsDialog').evaluate(dialog=>{dialog.scrollTop=0;});
     await page.screenshot({path:path.join(artifacts,'workbench-settings.png'),fullPage:true,animations:'disabled'});
 
+    // Preserve the actual server lifetime/redaction metadata while only team
+    // payloads are simulated. These fields do not assert synthetic persistence.
+    const observedConfigResponse=await context.request.get(origin+'/api/config',{maxRetries:0,timeout:10000});
+    assert.equal(observedConfigResponse.status(),200);const observedConfig=await observedConfigResponse.json();
+    const observedStateResponse=await context.request.get(origin+'/api/state',{maxRetries:0,timeout:10000});
+    assert.equal(observedStateResponse.status(),200);const observedState=await observedStateResponse.json();
+    assert.equal(typeof observedState.instance_id,'string');assert(observedState.instance_id);
+    assert.equal(observedState.instance_id,observedConfig.instance_id);
+    assert(Number.isSafeInteger(observedState.redaction_revision)&&observedState.redaction_revision>=0);
+    assert.equal(observedState.history_storage.enabled,true);assert.equal(observedState.history_storage.status,'ready');
+    assert.equal(observedState.history_storage.path,observedConfig.history_storage.path);
+    const fixtureContext={instance_id:observedState.instance_id,redaction_revision:observedState.redaction_revision,
+      history_storage:structuredClone(observedState.history_storage)};
     const sentRuns=[],sentMessages=[],stopped=[];let messageDelay=300,messageFailure=false;
-    const fixture={runs:[],agents:[],events:[],resources:{active:1,queued:1,gpu_readings:[{index:0,used_mb:7168,total_mb:24576,utilization_percent:35}]}};
+    const fixture={...structuredClone(fixtureContext),runs:[],agents:[],events:[],resources:{active:1,queued:1,gpu_readings:[{index:0,used_mb:7168,total_mb:24576,utilization_percent:35}]}};
     const compactFixture=request=>{
       const query=new URL(request.url()).searchParams;
       if(query.get('view')!=='selected')return structuredClone(fixture);
@@ -514,7 +527,7 @@ async function main() {
     await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow stopped notice');
     await page.screenshot({path:path.join(artifacts,'workbench-mobile.png'),fullPage:true,animations:'disabled'});
     report.checks.push('desktop 1366x768, tablet 820x768, narrow 390x844: no document horizontal overflow, no sidebar/workspace overlap, input and send inside unclipped panels, long Japanese questions and stop notice');
-    await lifecycleAcceptance({page,agentContract,artifacts,report,assertLayout,assertDialogLayout});
+    await lifecycleAcceptance({page,agentContract,fixtureContext,artifacts,report,assertLayout,assertDialogLayout});
     // Remove only the UI-state fixtures: the following flow uses real app endpoints
     // and Engine with an injected test client, including real serialization.
     await page.unroute('**/api/state*');await page.unroute('**/api/runs');

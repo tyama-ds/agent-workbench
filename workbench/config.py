@@ -340,18 +340,40 @@ class Settings:
         if old_env:
             self._search_redaction_env_names.add(old_env)
         self.secrets: dict[str, str] = {}
+        # Attached only after Engine acquires the shared state-directory lease.
+        self.credential_store = None
         # Process-local ownership for browser config/credential writes. It is not part
         # of persisted settings or a retained run's configuration/eligibility.
         self.revision = 0
 
     def key(self, profile):
-        return self.secrets.get(profile['id']) or os.environ.get(profile.get('api_key_env', ''), '')
+        saved = ''
+        if self.credential_store is not None:
+            self.credential_store.check_bindings(self.value['providers'])
+            saved = self.credential_store.key(profile)
+        return self.secrets.get(profile['id']) or saved or os.environ.get(profile.get('api_key_env', ''), '')
+
+    def secret_sources(self):
+        store = self.credential_store
+        if store is not None:
+            store.check_bindings(self.value['providers'])
+        blocked = store is not None and (store.error or store.affected_ids or not store._loaded or store._closed)
+        result = {}
+        for profile in self.value['providers']:
+            ident = profile['id']
+            saved = bool(store and store.contains(ident))
+            source = 'none' if blocked else ('session' if self.secrets.get(ident) else
+                     'saved' if saved else 'environment' if os.environ.get(profile.get('api_key_env', ''), '') else 'none')
+            result[ident] = {'source': source, 'saved': saved}
+        result['search'] = {'source': 'none', 'saved': False}
+        return result
 
     def public(self):
         return {'config': copy.deepcopy(self.value), 'config_revision': self.revision,
                 'settings_storage': {'path': str(self.path.absolute()), 'warnings': list(self.restore_warnings)},
-                'secret_status': {p['id']: bool(self.key(p)) for p in self.value['providers']} |
-                    {'search': False},
+                'secret_status': {ident: value['source'] != 'none' for ident, value in self.secret_sources().items()},
+                'secret_sources': self.secret_sources(),
+                **({'credential_storage': self.credential_store.public()} if self.credential_store is not None else {}),
                 'capabilities': {'office': ['docx', 'xlsx', 'pptx'], 'shell': False,
                     'python_isolation': 'windows_lpac' if os.name == 'nt' else None,
                     'python_enabled': self.value['python']['enabled'],
@@ -364,6 +386,8 @@ class Settings:
 
     def save(self, raw):
         value = validate_settings(raw)
+        if self.credential_store is not None:
+            self.credential_store.require_identity(value['providers'])
         handle, name = tempfile.mkstemp(prefix='settings-', suffix='.tmp', dir=self.directory)
         try:
             with os.fdopen(handle, 'w', encoding='utf-8') as stream:

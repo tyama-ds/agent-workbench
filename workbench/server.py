@@ -23,6 +23,8 @@ from aiohttp import ClientSession, ClientTimeout, web
 from .config import Settings, ROOT, COPILOT_PROFILE_ID, SEARCH_KEY_UNSUPPORTED, preview_settings_import, text
 from .engine import Engine, WorkBoardError
 from .redaction import RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
+from .history import HistoryError, ArchivedReadOnly
+from .securestore import CredentialStorageError, SavedCredentialIdentityChange
 from .runtime_paths import FROZEN
 
 APP_KEY = web.AppKey('engine', Engine)
@@ -51,6 +53,10 @@ def private_directory(path):
     else:
         path.chmod(0o700)
     return path
+
+
+class InstanceChanged(ValueError):
+    pass
 
 
 class BrowserAuth:
@@ -82,12 +88,27 @@ class BrowserAuth:
             public = request.path in {'/', '/index.html', '/app.js', '/styles.css', '/agent-workbench.ico', '/api/bootstrap'}
             if not public and not hmac.compare_digest(request.cookies.get(self.cookie_name, '').encode(), self.session.encode()):
                 raise web.HTTPUnauthorized(text='起動ショートカットから認証してください')
+            if request.path.startswith('/api/') and request.path != '/api/bootstrap' and request.method not in {'GET', 'HEAD'}:
+                expected = request.app[APP_KEY].instance_id
+                if not hmac.compare_digest(request.headers.get('X-Workbench-Instance', '').encode(), expected.encode()):
+                    raise InstanceChanged()
             response = await handler(request)
         except web.HTTPException as exc:
             response = web.json_response({'ok': False, 'error': exc.text}, status=exc.status)
+        except InstanceChanged:
+            response = web.json_response({'ok': False, 'code': 'instance_changed',
+                'instance_id': request.app[APP_KEY].instance_id,
+                'error': 'サーバーが再起動したか、起動識別子が不足しています。最新の設定・状態を読み込み、内容を確認してから操作してください。'}, status=409)
         except RedactionCapacityError:
             response = web.json_response({'ok': False, 'error': REDACTION_CAPACITY_MESSAGE,
                                           'code': 'redaction_capacity'}, status=409)
+        except SavedCredentialIdentityChange as exc:
+            response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc),
+                'affected_ids': exc.affected_ids}, status=409)
+        except CredentialStorageError as exc:
+            response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
+        except (HistoryError, ArchivedReadOnly) as exc:
+            response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
         except WorkBoardError as exc:
             response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
         except (ValueError, KeyError, TypeError) as exc:
@@ -110,7 +131,7 @@ class BrowserAuth:
         if self.bootstrap_used or time.monotonic() >= self.expires or not hmac.compare_digest(token.encode(), self.launch_token.encode()):
             raise web.HTTPUnauthorized(text='起動リンクが無効または期限切れです')
         self.bootstrap_used = True
-        response = web.json_response({'ok': True})
+        response = web.json_response({'ok': True, 'instance_id': request.app[APP_KEY].instance_id})
         response.set_cookie(self.cookie_name, self.session, httponly=True, samesite='Strict', path='/')
         return response
 
@@ -204,6 +225,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
             raise web.HTTPConflict(text='再接続は実行中のチームを停止してから行ってください')
         if settings.restore_warnings:
             return recovery_required()
+        engine.credentials.check_bindings(settings.value['providers'])
+        engine.credentials.require_usable()
         if settings.value['copilot_agent']['enabled'] is not True:
             return web.json_response({'ok': False, 'code': 'copilot_agent_disabled',
                 'error': 'Copilot agent モードを有効にして保存してください。'}, status=409)
@@ -221,18 +244,22 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
             return web.json_response({'ok': False, 'code': 'settings_changed',
                 'error': '保存済み設定が変わったか、設定の確認情報がありません。保存済み設定を読み直してからキーを入力してください。'}, status=409)
         ident = value.get('id')
-        if not isinstance(ident, str) or ident not in {p['id'] for p in settings.value['providers']} | {'search'}:
-            raise ValueError('未知のプロファイル ID です')
         key = text(value.get('key'), 'key', 4096)
+        if not isinstance(ident, str) or (ident not in {p['id'] for p in settings.value['providers']} | {'search'}
+                and not (not key and engine.credentials.contains(ident))):
+            raise ValueError('未知のプロファイル ID です')
+        storage = value.get('storage', 'session')
         if any(ord(c) < 32 or ord(c) == 127 for c in key):
             raise ValueError('API キーに制御文字は使用できません')
         if key and ident == 'search':
             raise ValueError(SEARCH_KEY_UNSUPPORTED)
         # No await between saved-target validation and the atomic mutation.
         # Clearing an old value also requires the same revision precondition.
-        engine.set_secret(ident, key)
+        engine.set_secret(ident, key, storage)
+        source = settings.secret_sources().get(ident, {'source': 'none', 'saved': False})
         return web.json_response({'ok': True, 'id': ident, 'config_revision': settings.revision,
-                                  'configured': settings.public()['secret_status'][ident]})
+                                  'configured': source['source'] != 'none', 'storage': storage, **source,
+                                  'credential_storage': engine._redact_tree(engine.credentials.public())})
 
     async def state(request):
         view = request.query.get('view')
@@ -276,6 +303,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
             reply_to=value.get('reply_to'), client_post_id=value['client_post_id']))
 
     async def provider_test(request):
+        engine.credentials.check_bindings(settings.value['providers'])
+        engine.credentials.require_usable()
         value = await body(request)
         if settings.restore_warnings:
             return recovery_required()

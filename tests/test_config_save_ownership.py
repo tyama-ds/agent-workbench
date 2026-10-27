@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import os
 
 import pytest
 from aiohttp import ClientSession
@@ -63,13 +64,30 @@ async def configured(client, auth, app):
 
 def saved_state(engine):
     """Compare all save-owned state, including masks and failed-write leftovers."""
+    def saved_bytes(path):
+        if path == engine.history.directory / '.writer.lock':
+            # Windows enforces the byte-range lock even for another handle in
+            # this process. Read that one coordination file through its owner,
+            # preserving position and the active lease; no data file is skipped.
+            handle = engine.history._lease
+            assert handle is not None and not handle.closed
+            disk, owned = path.stat(), os.fstat(handle.fileno())
+            assert (disk.st_dev, disk.st_ino) == (owned.st_dev, owned.st_ino)
+            position = handle.tell()
+            try:
+                handle.seek(0)
+                return handle.read()
+            finally:
+                handle.seek(position)
+        return path.read_bytes()
     return {
         'config': copy.deepcopy(engine.settings.value),
         'revision': engine.settings.revision,
         'secrets': dict(engine.settings.secrets),
         'retired_search_env_names': set(engine.settings._search_redaction_env_names),
         'redaction': copy.deepcopy(vars(engine._redaction)),
-        'files': {path.name: path.read_bytes() for path in engine.settings.directory.iterdir()},
+        'files': {str(path.relative_to(engine.settings.directory)): saved_bytes(path)
+                  for path in engine.settings.directory.rglob('*') if path.is_file()},
     }
 
 
@@ -108,7 +126,8 @@ async def test_revision_in_get_and_success_response_advances_even_on_identical_s
 async def test_two_clients_stale_save_cannot_overwrite_newer_config_or_credentials(tmp_path, monkeypatch):
     async with serving(tmp_path) as (auth, app, first):
         engine, original = await configured(first, auth, app)
-        async with ClientSession(cookie_jar=first.cookie_jar) as second:
+        async with ClientSession(cookie_jar=first.cookie_jar,
+                headers={'X-Workbench-Instance': first.headers['X-Workbench-Instance']}) as second:
             stale = await read_config(second, auth)
             assert stale == original
             changed = copy.deepcopy(original['config'])
@@ -201,7 +220,8 @@ async def test_simultaneous_saves_of_one_revision_have_exactly_one_winner(tmp_pa
         configs = [copy.deepcopy(original['config']) for _ in range(2)]
         for index, config in enumerate(configs):
             config['providers'][0]['label'] = f'Client {index}'
-        async with ClientSession(cookie_jar=first.cookie_jar) as second:
+        async with ClientSession(cookie_jar=first.cookie_jar,
+                headers={'X-Workbench-Instance': first.headers['X-Workbench-Instance']}) as second:
             responses = await asyncio.gather(*(put_config(client, auth, original['config_revision'], config)
                                               for client, config in zip([first, second], configs)))
             assert sorted(response.status for response in responses) == [200, 409]
@@ -237,7 +257,8 @@ async def test_revision_and_active_lock_are_checked_after_streamed_body(tmp_path
             await release.wait()
             yield payload[1:]
 
-        async with ClientSession(cookie_jar=first.cookie_jar) as second:
+        async with ClientSession(cookie_jar=first.cookie_jar,
+                headers={'X-Workbench-Instance': first.headers['X-Workbench-Instance']}) as second:
             pending = asyncio.create_task(second.put(auth.origin + '/api/config', data=chunks(),
                 headers={'Origin': auth.origin, 'Content-Type': 'application/json', 'X-Synthetic-Paused': 'yes'}))
             try:
@@ -338,4 +359,4 @@ async def test_save_failure_is_atomic_and_same_revision_remains_retryable(tmp_pa
         assert engine.settings.secrets == {'auxiliary': AUX_KEY}
         assert engine._redaction.redact(NEXT_KEY) == '[redacted]'
         assert 'config_revision' not in json.loads(engine.settings.path.read_bytes())
-        assert list(engine.settings.directory.iterdir()) == [engine.settings.path]
+        assert set(engine.settings.directory.iterdir()) == {engine.settings.path, engine.history.directory}

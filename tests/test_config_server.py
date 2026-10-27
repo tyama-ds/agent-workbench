@@ -104,6 +104,9 @@ async def bootstrap(auth, client):
         'Origin': auth.origin, 'X-Workbench-Bootstrap': auth.launch_token})
     assert response.status == 200
     assert 'HttpOnly' in response.headers['Set-Cookie'] and 'SameSite=Strict' in response.headers['Set-Cookie']
+    value = await response.json()
+    assert isinstance(value['instance_id'], str) and value['instance_id']
+    client.headers['X-Workbench-Instance'] = value['instance_id']
 
 
 @pytest.mark.asyncio

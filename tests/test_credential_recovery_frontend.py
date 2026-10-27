@@ -37,7 +37,7 @@ async function wire(withCloud=false){
 }
 function control(id='local'){return credentialControls().find(item=>item.id===id);}
 function press(id='local'){return control(id).button.listeners.click();}
-function accepted(index,id='local'){requests[index].resolve({ok:true,id,config_revision:4,configured:true});}
+function accepted(index,id='local'){requests[index].resolve({ok:true,id,config_revision:4,configured:true,storage:'session',source:'session',saved:false,credential_storage:{supported:false,available:false,status:'unsupported',error:'',path:'',protection:'windows-dpapi-current-user',affected_ids:[]}});}
 '''
 
 
@@ -68,7 +68,7 @@ def test_actual_callbacks_send_captured_revision_and_never_retry_or_probe():
     check(r'''
 await wire();const c=control();c.input.value='SYNTHETIC-new';
 const revision=ui.settingsRevision,pending=press();assert.equal(c.input.value,'');
-assert.equal(requests.length,1);assert.deepEqual(requests[0].options.body,{id:'local',key:'SYNTHETIC-new',config_revision:4});
+assert.equal(requests.length,1);assert.deepEqual(requests[0].options.body,{id:'local',key:'SYNTHETIC-new',storage:'session',config_revision:4});
 assert(c.input.disabled&&c.button.disabled&&$('saveSettings').disabled&&$('discardSettings').disabled);
 await press();setSettingsLock();await press();assert.equal(requests.length,1);
 accepted(0);await pending;
@@ -81,7 +81,7 @@ assert.equal(requests.length,1);assert(!c.input.disabled);assert(!c.result.textC
 def test_dirty_new_target_and_model_guards_clear_abandoned_keys():
     check(r'''
 await wire(true);control().input.value='SYNTHETIC-abandoned';control('cloud').input.value='SYNTHETIC-cloud';
-$('settingsForm').listeners.input({target:{type:'text'}});
+$('settingsForm').listeners.input({target:{type:'text',dataset:{}}});
 assert(ui.settingsDirty);assert(credentialControls().every(c=>c.input.disabled&&c.button.disabled&&c.input.value===''));
 await press();await press('cloud');assert.equal(requests.length,0);
 $('addProfile').listeners.click();const added=[...$('profilesEditor').children].at(-1)._credential;

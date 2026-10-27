@@ -145,7 +145,10 @@ def test_nonempty_search_secret_rejected_without_mutation_but_clear_remembers_ol
     with pytest.raises(ValueError, match=SEARCH_KEY_UNSUPPORTED):
         engine.set_secret('search', NEW)
     assert settings.secrets == {'search': OLD} and settings.public() == before
-    assert engine._redaction.value_count == 0
+    # Startup masks existing credentials before loading durable public history.
+    assert engine._redaction.value_count == 1
+    assert engine._redaction.redact(OLD) == '[redacted]'
+    assert engine._redaction.redact(NEW) == NEW
     engine.set_secret('search', '')
     assert not settings.secrets and settings.public()['secret_status']['search'] is False
     assert engine.redact(OLD) == '[redacted]'

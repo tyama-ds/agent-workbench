@@ -39,7 +39,7 @@ assert.equal(requests.length,0);assert.equal(c.input.value,text);
 ACTIVATE
 assert.equal(prevented,PREVENTED);assert.equal(requests.length,1);
 assert.equal(requests[0].path,'/api/secrets');assert.equal(requests[0].options.method,'POST');
-assert.deepEqual(requests[0].options.body,{id:TARGET,key:text,config_revision:4});
+assert.deepEqual(requests[0].options.body,{id:TARGET,key:text,storage:'session',config_revision:4});
 assert.equal(c.input.value,'');assert(c.input.disabled&&c.button.disabled);
 c.input.listeners.keydown({key:'Enter',isComposing:false,keyCode:13,preventDefault(){}});
 await c.button.listeners.click();assert.equal(requests.length,1);

@@ -116,9 +116,10 @@ def test_cockpit_has_unique_targets_and_original_local_assets():
 
 def test_cockpit_filter_is_searchable_and_only_flags_real_questions():
     source = re.search(r"function needsHuman\(.*?\n\}", APP, re.S).group()
+    archive = '\n'.join(line for line in APP.splitlines() if line.startswith(('function archivedRun(', 'function archivedAgent(')))
     result = run_javascript("""
-const ui={needsOnly:false};let search='';const $=()=>({value:search});
-""" + source + """
+const ui={needsOnly:false,state:{runs:[]}};let search='';const $=()=>({value:search});
+""" + archive + source + """
 const agents=[{id:'pm',name:'PM',status:'waiting',question:'Which team?'},{id:'w',name:'レビュー担当',assignment:'仕様の確認',status:'working'},{id:'q',name:'Queue',status:'queued'}];
 search='レビュー';const searched=filteredAgents(agents).map(a=>a.id);
 search='仕様の確認';const assignment=filteredAgents(agents).map(a=>a.id);
@@ -168,8 +169,9 @@ def test_truthful_status_labels_never_infer_a_human_question_from_generic_waitin
     labels = re.search(r"const STATUS_LABELS = .*?;", APP).group()
     reason_labels = re.search(r"const REASON_LABELS = .*?;", APP).group()
     status = re.search(r"function statusLabel\(.*?\}", APP).group()
-    state = re.search(r"function stateLabel\(.*?\}", APP).group()
-    result = run_javascript(labels + reason_labels + status + state + """
+    state = next(line for line in APP.splitlines() if line.startswith('function stateLabel('))
+    archive = '\n'.join(line for line in APP.splitlines() if line.startswith(('function archivedRun(', 'function archivedAgent(', 'function displayStatus(', 'const ACTIVE_STATUSES')))
+    result = run_javascript("const ui={state:{runs:[]}};" + labels + reason_labels + status + archive + '\n' + state + """
 console.log(JSON.stringify(['waiting','human_input','error','collaboration_limit','needs_attention','teammates','teammate_error'].map(reason=>stateLabel({status:'waiting',status_reason:reason}))));
 """)
     assert result == ['待機', '回答待ち', 'エラー', '連携上限', '要確認', '作業者待ち', '作業者エラー']

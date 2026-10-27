@@ -42,7 +42,7 @@ async def populated(tmp_path):
 def test_full_and_selected_field_parity_and_no_mutation(populated):
     engine, run, pm, worker, other_run, other_pm = populated
     before = engine.snapshot()
-    assert set(before) == {'runs', 'agents', 'events', 'resources', 'copilot_resources', 'copilot_agent_status', 'redaction_revision'}
+    assert set(before) == {'runs', 'agents', 'events', 'resources', 'copilot_resources', 'copilot_agent_status', 'redaction_revision', 'instance_id', 'history_storage', 'credential_storage'}
     selected = engine.selected_snapshot(run_id=run['id'], agent_id=worker.id)
     assert set(selected) == set(before) | {'selection'}
     assert selected['selection'] == {'run_id': run['id'], 'agent_id': worker.id, 'detail_loaded': True}
@@ -50,6 +50,11 @@ def test_full_and_selected_field_parity_and_no_mutation(populated):
     assert selected['resources'] == before['resources']
     assert selected['copilot_resources'] == before['copilot_resources']
     assert selected['copilot_agent_status'] == before['copilot_agent_status']
+    assert selected['instance_id'] == before['instance_id'] == engine.instance_id
+    assert selected['history_storage'] == before['history_storage']
+    assert selected['credential_storage'] == before['credential_storage']
+    assert selected['credential_storage']['protection'] == 'windows-dpapi-current-user'
+    assert selected['credential_storage']['affected_ids'] == []
     assert type(selected['redaction_revision']) is int and selected['redaction_revision'] == before['redaction_revision']
     assert selected['events'] == [event for event in before['events'] if event['run_id'] == run['id']]
     assert len(selected['agents']) == len(before['agents'])
@@ -200,9 +205,11 @@ async def test_endpoint_contract_auth_headers_freshness_and_config(tmp_path, mon
         await bootstrap(auth, client)
         config_before = copy.deepcopy(engine.settings.public())
         public_before = copy.deepcopy(engine.public_config())
-        assert set(public_before) == set(config_before) | {'effective_providers', 'copilot_agent_status'}
+        assert set(public_before) == set(config_before) | {'effective_providers', 'copilot_agent_status', 'instance_id', 'history_storage'}
         assert public_before['effective_providers'] == config_before['config']['providers']
         assert public_before['copilot_agent_status']['enabled'] is False
+        assert public_before['instance_id'] == engine.instance_id
+        assert public_before['history_storage'] == engine.snapshot()['history_storage']
         for params in ({}, {'run_id': 'ignored-without-view'}):
             response = await client.get(url, params=params)
             assert response.status == 200 and await response.json() == engine.snapshot()

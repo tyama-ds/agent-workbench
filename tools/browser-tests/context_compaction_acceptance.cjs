@@ -13,10 +13,13 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
     context_recent_groups:2,context_summary_chars:1500,context_reserve_tokens:1024,max_history_chars:400000,
     max_output_tokens:2048,max_run_seconds:120};
   let page,originalConfig,restore=false,runId,agentId,failed=false;
+  let observedInstance=null;
   const api=async(route,method='GET',body)=>{
-    const response=await context.request.fetch(origin+route,{method,headers:{Origin:origin},maxRetries:0,timeout:10000,
+    const headers={Origin:origin};
+    if(!['GET','HEAD','OPTIONS'].includes(method)){assert(observedInstance,'Fixture writes require an observed server instance');headers['X-Workbench-Instance']=observedInstance;}
+    const response=await context.request.fetch(origin+route,{method,headers,maxRetries:0,timeout:10000,
       ...(body===undefined?{}:{data:body})});
-    assert.equal(response.status(),200,method+' '+route);return response.json();
+    assert.equal(response.status(),200,method+' '+route);const data=await response.json();if(['GET','HEAD'].includes(method)&&data.instance_id){assert.equal(typeof data.instance_id,'string');observedInstance=data.instance_id;}return data;
   };
   const configure=async config=>{
     const {config_revision}=await api('/api/config');return api('/api/config','PUT',{config_revision,config});

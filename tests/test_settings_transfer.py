@@ -248,7 +248,8 @@ async def test_preview_rechecks_ownership_after_awaiting_body(tmp_path, monkeypa
             yield payload[:1]
             await release.wait()
             yield payload[1:]
-        async with ClientSession(cookie_jar=client.cookie_jar) as second:
+        async with ClientSession(cookie_jar=client.cookie_jar,
+                headers={'X-Workbench-Instance': client.headers['X-Workbench-Instance']}) as second:
             pending = asyncio.create_task(second.post(auth.origin + '/api/config/import-preview', data=chunks(),
                 headers={'Origin': auth.origin, 'Content-Type': 'application/json'}))
             try:

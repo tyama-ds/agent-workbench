@@ -344,12 +344,24 @@ async def _benchmark_fixture(directory, fixture, *, registry_mode=None):
             comparison_state = dict(state)
             redaction_revision = comparison_state.pop('redaction_revision')
             comparison_body = json.dumps(comparison_state).encode('utf-8')
+            # Fresh application IDs and temporary database paths vary by fixture.
+            # Preserve raw/revision-only measurements; compare all other fields exactly.
+            stable_state = dict(comparison_state)
+            stable_state.pop('instance_id')
+            stable_state['history_storage'] = dict(stable_state['history_storage'])
+            stable_state['history_storage'].pop('path')
+            stable_state['credential_storage'] = dict(stable_state['credential_storage'])
+            stable_state['credential_storage'].pop('path')
+            stable_body = json.dumps(stable_state).encode('utf-8')
             result['views'][name] = {
                 'endpoint': path,
                 'body_bytes': len(body),
                 'redaction_revision': redaction_revision,
                 'body_without_redaction_revision_bytes': len(comparison_body),
                 'body_without_redaction_revision_sha256': hashlib.sha256(comparison_body).hexdigest(),
+                'body_comparable_bytes': len(stable_body),
+                'body_comparable_sha256': hashlib.sha256(stable_body).hexdigest(),
+                'body_comparable_excluded_fields': ['redaction_revision', 'instance_id', 'history_storage.path', 'credential_storage.path'],
                 'snapshot_median_ms': round(median_ms(project), 6),
                 'json_median_ms': round(median_ms(lambda: json.dumps(snapshot)), 6),
                 'endpoint_median_ms': round(endpoint_ms, 6),
@@ -414,6 +426,7 @@ async def run_benchmark(fixtures=FIXTURES, registry_modes=REDACTION_MODES):
             'endpoint_timing': 'Authenticated loopback GET through full body read; no JSON parse or browser rendering.',
             'body_bytes': 'Actual uncompressed response body; excludes HTTP headers and TCP overhead.',
             'body_without_redaction_revision': 'Additional comparison only: remove exactly the top-level redaction_revision, serialize with the same JSON defaults, and report bytes plus SHA256. Raw wire bytes and endpoint serialization equality remain unchanged.',
+            'body_comparable': 'Additional comparison only: remove exactly redaction_revision, instance_id, history_storage.path and credential_storage.path. Preserve all other content and health fields. Raw wire and revision-only measurements remain unchanged.',
             'fixture_storage': 'In-memory synthetic records; temporary real Settings, no saved user settings. Provider environment references are empty; the legacy BRAVE_SEARCH_API_KEY environment input is empty only inside each benchmark and restored on success or failure.',
             'network': '127.0.0.1 only; proxy environment ignored; no live model client or model calls.',
             'scope': 'Three bounded fixtures, not global worst-case capacity, production latency, or memory usage.',

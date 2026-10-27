@@ -35,20 +35,24 @@ async function waitForRunState(readState,runId,status,{timeoutMs=10000,pollMs=25
 
 async function retainedRedactionAcceptance({page,context,origin,workspace,stateDir,artifacts,cases,report}) {
   const keys=Object.values(cases).flatMap(item=>[item.old,item.new]);
+  let observedInstance=null;
   const api=async(url,method='GET',body)=>{
     // API-only fixture setup has no settings dialog snapshot. Bind every write
     // to the revision read immediately before it; actual UI writes are tested
     // separately by the saved-destination credential acceptance.
     if(url==='/api/secrets'&&method==='POST')body={...body,config_revision:(await api('/api/config')).config_revision};
     if(url==='/api/config'&&method==='PUT')body={config_revision:(await api('/api/config')).config_revision,config:body};
-    const response=await page.evaluate(async({url,method,body})=>{
-      const response=await fetch(url,{method,credentials:'same-origin',cache:'no-store',
-        ...(body===undefined?{}:{headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})});
+    const headers={};
+    if(body!==undefined)headers['Content-Type']='application/json';
+    if(!['GET','HEAD','OPTIONS'].includes(method)){assert(observedInstance,'Fixture writes require an observed server instance');headers['X-Workbench-Instance']=observedInstance;}
+    const response=await page.evaluate(async({url,method,body,headers})=>{
+      const response=await fetch(url,{method,headers,credentials:'same-origin',cache:'no-store',
+        ...(body===undefined?{}:{body:JSON.stringify(body)})});
       return {status:response.status,text:await response.text()};
-    },{url,method,body});
+    },{url,method,body,headers});
     assert.equal(response.status,200,method+' '+url+' must succeed');
     assertMasked(response.text,keys,method+' '+url);
-    return JSON.parse(response.text);
+    const data=JSON.parse(response.text);if(['GET','HEAD'].includes(method)&&data.instance_id){assert.equal(typeof data.instance_id,'string');observedInstance=data.instance_id;}return data;
   };
   const waitForRun=(runId,status)=>waitForRunState(()=>api('/api/state'),runId,status);
   const select=async(runId,agentId,requireOutput=true)=>{

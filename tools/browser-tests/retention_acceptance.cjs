@@ -119,7 +119,9 @@ async function retentionAcceptance({page,context,origin,workspace,stateDir,provi
     const essential=sibling.locator('#historyRetention'),resultHelp=sibling.locator('#resultRetentionHelp');
     assert.equal(await essential.isVisible(),true);
     assert.equal(await essential.evaluate(element=>element.closest('details')===null),true,'Essential lifetime note is always outside optional help');
-    assert.match(await essential.textContent(),/サーバー終了で消えます/);assert.match(await essential.textContent(),/報告・保存記録.*\.txt 保存/);
+    assert.match(await essential.textContent(),/表示用の会話・作業履歴を自動保存/);assert.match(await essential.textContent(),/再起動後は閲覧専用/);
+    assert.match(await sibling.locator('#historyStoragePath').textContent(),/history[\\/]work-history\.sqlite3/);
+    assert.equal(await sibling.locator('#historyStorageError').isHidden(),true);
     assert.equal(await resultHelp.isVisible(),true);
     assert.equal(await resultHelp.evaluate(element=>element.closest('details').id),'resultsPanel','Export scope is not hidden inside history details');
     assert.match(await resultHelp.textContent(),/選択中の1件だけ/);assert.match(await resultHelp.textContent(),/ファイル本体は含みません/);
@@ -141,10 +143,12 @@ async function retentionAcceptance({page,context,origin,workspace,stateDir,provi
     assert.equal(await summary.textContent(),'履歴の保持・終了について');
     const help=await sibling.locator('#historyLifetimeHelp').textContent();
     for(const phrase of ['担当者ごとに最新20件','各24,000文字まで','64件の保存記録','200件のログ',
-      '上限を超えた記録や本文は、表示用の履歴から省略します','ダウンロード完了を確認','タブを閉じたり再読み込みしても',
+      '上限を超えた記録や本文は、表示用の履歴から省略します','表示から外れた後も保存履歴へ蓄積','各一覧50,000件',
+      '通信タイムラインは最新100件','掲示板は最大200件','ダウンロード完了を確認','タブを閉じたり再読み込みしても',
       'サーバーと実行中の作業は停止しません','選択したチームだけを止め、履歴は保持',
-      'コンソールを閉じるか Ctrl+C','すべてのチームの履歴と入力した API キーは失われます',
-      '設定ファイルは残り','環境変数のキーは次の起動時の環境','未送信の下書き','再接続は保証しません',
+      '設定と同じ保存先へ自動保存','サーバーの再起動後は閲覧専用','未完了だった作業は「中断」','自動再開はせず',
+      '表示用の思考テキストは含みます','入力した API キー','モデル用の私的な会話文脈','未送信の下書きは保存しません',
+      '環境変数のキーは次の起動時の環境','再接続は保証しません','旧版ですでに消えた履歴は復元できません',
       'サーバーの終了では削除しません','現在のファイルの存在・内容は未確認'])assert(help.includes(phrase),'Missing retention boundary: '+phrase);
     assert.equal(await sibling.locator('#historyLifetimeHelp').locator('a,button,input,textarea,select,summary,[tabindex],[contenteditable],[role="button"]').count(),0,
       'History guidance contains no actions or extra tab stops');

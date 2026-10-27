@@ -218,8 +218,9 @@ def test_cli_json_survives_legacy_windows_stdout_encoding():
         left, right = normal['views'][view], near['views'][view]
         assert left['redaction_revision'] == len(registry_keys('normal'))
         assert right['redaction_revision'] == len(registry_keys('near_capacity'))
-        assert left['body_without_redaction_revision_bytes'] == right['body_without_redaction_revision_bytes']
-        assert left['body_without_redaction_revision_sha256'] == right['body_without_redaction_revision_sha256']
+        assert left['body_comparable_bytes'] == right['body_comparable_bytes']
+        assert left['body_comparable_sha256'] == right['body_comparable_sha256']
         for measurement in (left, right):
+            assert measurement['body_comparable_excluded_fields'] == ['redaction_revision', 'instance_id', 'history_storage.path', 'credential_storage.path']
             revision_field_bytes = len(json.dumps({'redaction_revision': measurement['redaction_revision']}).encode())
             assert measurement['body_bytes'] == measurement['body_without_redaction_revision_bytes'] + revision_field_bytes

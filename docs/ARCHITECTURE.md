@@ -3,7 +3,7 @@
 ```mermaid
 flowchart LR
   UI[Local browser UI] -->|session cookie / same origin| Server[Loopback aiohttp server]
-  Server --> Settings[Validated settings / memory secrets]
+  Server --> Settings[Validated settings / session or explicit encrypted secrets]
   Server --> Engine[PM and worker conversations / mailbox / budgets]
   Engine --> Adapter[Provider adapters]
   Adapter --> Gate[Shared Local request gate]
@@ -28,7 +28,7 @@ flowchart LR
   Web --> Proxy[Optional explicit search proxy]
 ```
 
-- `workbench/config.py`: input validation, defaults, atomic public settings persistence, memory/environment key references.
+- `workbench/config.py`: input validation, defaults, atomic public settings persistence, session/environment key references and optional Windows encrypted-key binding.
 - `workbench/server.py`: private state directory, one-use browser bootstrap, origin/host checks, HTTP API, bounded model-list connectivity test.
 - `workbench/engine.py`: independently maintained conversations, role assignment, per-run budgets, worker mail, paused questions, reservations, shutdown/draining.
 - `workbench/providers.py`: stateless wire conversions. OpenAI native response output is replayed with encrypted reasoning; Anthropic thinking signatures/redacted blocks remain intact; Local native content/reasoning is retained. Display reasoning is separate from protocol data.
@@ -349,7 +349,7 @@ editable-config, private-conversation, file and previously-delivered-data exclus
 it after atomic file replacement; failed validation, disk writes and mask-capacity
 checks do not. It stays outside `Settings.value`, persisted JSON and frozen run
 configuration. `POST /api/secrets` requires an exact current revision and validates
-the saved provider/search destination before calling `Engine.set_secret`, without
+the saved provider destination before calling `Engine.set_secret`, without
 an intervening await. The response is a value-free acceptance receipt, not a live
 provider test. There is no legacy unguarded request path.
 
@@ -429,7 +429,8 @@ Message completion captures selection and per-agent draft epochs, including inpu
 events that change text away and back. A delayed response cannot clear or label a
 newer same-ID/same-text interaction. No automatic resend is added. Existing
 selected-detail generations, one-flight polling, exact user text, same-origin
-requests, secret redaction and memory-only lifetime are unchanged.
+requests and secret redaction remain in force. Unsent input drafts remain memory-only;
+accepted public display records use the separate durable history archive.
 
 ## Neutral message-input presence (0.1.1.dev28)
 
@@ -546,5 +547,32 @@ The archive is not exposed through browser snapshots or automatically written to
 Human-message admission uses the same serialized native-request pressure and
 compaction feasibility as dispatch, including the optional token planning budget.
 Existing display-log/result retention remains separate. Browser reload does not end the
-server process, but server restart loses context, originals, summaries and memory keys.
-Persistence, cross-run memory and restart/resume are deliberately outside this feature.
+server process, but server restart loses private context, originals, summaries and
+session-only keys. Separate redacted public display archives and explicitly saved
+encrypted keys can survive restart; neither resumes private model context or work.
+Cross-run memory and restart/resume are outside context compaction.
+
+## Durable public histories and explicit saved credentials
+
+Public display histories are separate from the private context-compaction archive.
+Redacted public logs (including displayed thinking), results, save receipts, team
+mail/events and work-board posts are persisted to `history/work-history.sqlite3`.
+Previously saved rows can outlast live rolling windows within the archive caps:
+500 runs, 16 MiB per run, 256 MiB total, 50,000 entries per list; event display is
+100 and board display 200. No silent archive eviction creates free space. Failure
+is surfaced. Restored runs are read-only; previously nonterminal states become
+interrupted. Session cookies and instance IDs are fresh, and no provider context,
+queued action or approval resumes. An exclusive state-directory writer lease and
+instance-fenced browser mutations prevent stale process writes.
+
+Credentials use `storage=session` by default or explicit `storage=saved` with Windows
+DPAPI CurrentUser. Direct values never enter public settings/history exports or
+readback. Config responses retain `secret_status` and add value-free
+`secret_sources` and `credential_storage` metadata. The UI defaults to session mode,
+disables unsupported/unavailable saved mode, and offers one explicit clear action.
+Session set removes the saved entry before activation; saved set clears the session
+override; empty key clears both, with environment fallback unchanged. Failed writes
+preserve prior active keys. Saved provider-identity/delete changes require explicit
+clear. Readable mismatch IDs can be cleared individually, including exact stored
+orphans. Corrupt/undecryptable ciphertext is not automatically reset. The vault is
+bound to the same PC/user/state directory and is not a portable key export.

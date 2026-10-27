@@ -8,10 +8,13 @@ async function messageReceiptAcceptance({context,origin,providerRequests,report}
   const pending=new Set(),handlers=new Set(),posts=[],texts=[];
   const runTask='[SYNTHETIC] Strict message receipts '+randomUUID()+'.';
   let page,originalConfig,restoreNeeded=false,runId,source,other,upstreamPosts=0,failed=false;
+  let observedInstance=null;
   const api=async(route,method='GET',body)=>{
-    const response=await context.request.fetch(origin+route,{method,headers:{Origin:origin},maxRetries:0,timeout:10000,
+    const headers={Origin:origin};
+    if(!['GET','HEAD','OPTIONS'].includes(method)){assert(observedInstance,'Fixture writes require an observed server instance');headers['X-Workbench-Instance']=observedInstance;}
+    const response=await context.request.fetch(origin+route,{method,headers,maxRetries:0,timeout:10000,
       ...(body===undefined?{}:{data:body})});
-    assert.equal(response.status(),200,method+' '+route+' status');return response.json();
+    assert.equal(response.status(),200,method+' '+route+' status');const data=await response.json();if(['GET','HEAD'].includes(method)&&data.instance_id){assert.equal(typeof data.instance_id,'string');observedInstance=data.instance_id;}return data;
   };
   const configure=async config=>{
     const {config_revision}=await api('/api/config');
