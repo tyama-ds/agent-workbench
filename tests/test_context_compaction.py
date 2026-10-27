@@ -99,10 +99,10 @@ async def test_bad_summary_is_atomic_and_charged(tmp_path, bad):
     engine, run, agent = await seeded(tmp_path, ScriptClient([bad]))
     try:
         before = copy.deepcopy((agent.conversation, agent.original_history))
-        with pytest.raises(ValueError):
-            await engine._ensure_context(run, agent, *call_args(engine, run, agent))
-        assert (agent.conversation, agent.original_history) == before
-        assert run['model_calls'] == 1 and agent.compactions == 0 and not agent.compacting
+        await engine._ensure_context(run, agent, *call_args(engine, run, agent))
+        assert agent.original_history == before[1] and agent.conversation[0] == before[0][0]
+        assert agent.conversation[-4:] == before[0][-4:]
+        assert run['model_calls'] == 1 and agent.compactions == agent.fallback_compactions == 1 and not agent.compacting
     finally:
         await engine.close()
 
@@ -159,10 +159,10 @@ async def test_budget_exhaustion_and_oversize_pins_fail_without_call(tmp_path):
     engine, run, agent = await seeded(tmp_path, client, context=28000)
     try:
         run['model_calls'] = run['_config']['limits']['max_model_calls'] - 1
-        before = copy.deepcopy(agent.conversation)
-        with pytest.raises(ValueError, match='呼び出し回数'):
-            await engine._ensure_context(run, agent, *call_args(engine, run, agent))
-        assert agent.conversation == before and not client.calls
+        before = copy.deepcopy(agent.original_history)
+        await engine._ensure_context(run, agent, *call_args(engine, run, agent))
+        assert agent.original_history == before and agent.fallback_compactions == 1 and not client.calls
+        assert run['model_calls'] == run['_config']['limits']['max_model_calls'] - 1
         run['model_calls'] = 0
         agent.conversation = [{'role': 'user', 'content': 'x' * 60000, '_human': True}]
         with pytest.raises(ValueError, match='文脈予算'):
@@ -269,10 +269,9 @@ async def test_no_progress_summary_and_incomplete_batch_never_replace_history(tm
     try:
         limits = run['_config']['limits']
         limits['context_summary_chars'] = 32000  # Internal fault injection, not valid public settings.
-        before = copy.deepcopy(agent.conversation)
-        with pytest.raises(ValueError, match='短く'):
-            await engine._ensure_context(run, agent, *call_args(engine, run, agent))
-        assert agent.conversation == before and run['model_calls'] == 1
+        before = copy.deepcopy(agent.original_history)
+        await engine._ensure_context(run, agent, *call_args(engine, run, agent))
+        assert agent.original_history == before and run['model_calls'] == 1 and agent.fallback_compactions == 1
         engine._append_context(agent, {'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'unresolved', 'name': 'list_team', 'arguments': {}}]})
         with pytest.raises(ValueError, match='未完了'):
             await engine._ensure_context(run, agent, *call_args(engine, run, agent))
