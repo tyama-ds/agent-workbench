@@ -2,6 +2,7 @@
 import asyncio
 import copy
 import json
+import os
 
 import pytest
 
@@ -133,7 +134,12 @@ async def test_keyless_search_rejects_new_keys_and_clears_retired_keys_without_t
         assert (engine.settings.secrets, engine._redaction.value_count, engine.settings.path.read_bytes()) == before
         cleared = await set_key(client, auth, headers, revision, ident='search', key='')
         assert cleared.status == 200
-        assert await cleared.json() == {'ok': True, 'id': 'search', 'config_revision': revision, 'configured': False}
+        assert await cleared.json() == {'ok': True, 'id': 'search', 'config_revision': revision,
+            'configured': False, 'storage': 'session', 'source': 'none', 'saved': False,
+            'credential_storage': {'supported': os.name == 'nt', 'available': os.name == 'nt',
+                'status': 'ready' if os.name == 'nt' else 'unsupported', 'error': '',
+                'path': str((tmp_path / 'state' / 'credentials.dpapi').absolute()),
+                'protection': 'windows-dpapi-current-user', 'affected_ids': []}}
         assert engine.settings.secrets == {'model': OLD}
         assert engine.redact(OLD + NEW) == '[redacted][redacted]'
         assert OLD not in engine.settings.path.read_text(encoding='utf-8')

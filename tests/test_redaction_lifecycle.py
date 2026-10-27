@@ -9,7 +9,7 @@ import pytest
 from test_engine import ScriptClient, configured, reply, settled, start
 from test_config_server import serving, bootstrap
 from workbench.config import DEFAULT, Settings, validate_settings
-from workbench.engine import Engine
+from workbench.engine import Engine, AdmissionError
 from workbench.redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from workbench.server import APP_KEY
 from test_frontend import APP, run_javascript
@@ -387,8 +387,10 @@ async def test_unexpected_saturation_blocks_snapshot_dispatch_and_error_fallback
         assert pm.status == 'error' and pm.last_error == REDACTION_CAPACITY_MESSAGE
         assert pm.task.exception() is None
         assert all(NEW not in log['text'] for log in pm.logs)
-        with pytest.raises(RedactionCapacityError):
+        with pytest.raises(AdmissionError) as blocked:
             await start(engine)
+        assert blocked.value.code == 'history_storage_error'
+        assert str(blocked.value) == REDACTION_CAPACITY_MESSAGE
         assert len(engine.client.calls) == 1
     finally:
         release.set(); await engine.close()

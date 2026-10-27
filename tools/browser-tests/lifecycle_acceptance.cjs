@@ -3,8 +3,10 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-async function lifecycleAcceptance({page,agentContract,artifacts,report,assertLayout,assertDialogLayout}) {
-  const fixture={runs:[],agents:[],events:[],resources:{active:0,queued:0}};
+async function lifecycleAcceptance({page,agentContract,fixtureContext,artifacts,report,assertLayout,assertDialogLayout}) {
+  // The caller observed this lifecycle context from real authenticated GETs.
+  assert.equal(typeof fixtureContext.instance_id,'string');assert(fixtureContext.instance_id);
+  const fixture={...structuredClone(fixtureContext),runs:[],agents:[],events:[],resources:{active:0,queued:0}};
   const requests={start:[],stop:[]},waiters={},pending=new Set();
   let stateFailure=false,stateResponses=0;
   const paint=()=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));

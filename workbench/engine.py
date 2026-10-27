@@ -25,6 +25,8 @@ from .selenium_runner import execute_selenium
 from .resources import ResourceGate
 from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .webtools import WebTools
+from .history import HistoryStore, HistoryError, ArchivedReadOnly, public_document, archived_view, redact_tree as redact_history_tree
+from .securestore import CredentialStore, CredentialStorageError
 
 
 class AdmissionError(ValueError):
@@ -227,11 +229,134 @@ class Engine:
         self._copilot_desired = None
         self._copilot_generation = 0
         self._copilot_error = ''
+        self.instance_id = secrets.token_hex(16)
+        self.history = HistoryStore(settings.directory)
+        self.credentials = CredentialStore(settings.directory, settings.value['providers'], lease=self.history._lease)
+        settings.credential_store = self.credentials
+        self._history_busy = False
+        self._history_mask_count = -1
+        self._history_saved = {}
+        self._archives = {}
+        self._history_initialize()
+
+    def _history_initialize(self):
+        self._redaction.remember(self._secret_values())
+        try:
+            self.credentials.require_usable()
+        except CredentialStorageError:
+            self._archives = {}
+            return
+        try:
+            if self.history._available:
+                self.history.scrub(self._redaction.redact)
+            self._archives = self.history.summaries(self._redaction.redact)
+            self._history_mask_count = self._redaction.value_count
+        except HistoryError:
+            self._archives = {}
+
+    def _history_new_masks(self):
+        self.credentials.check_bindings(self.settings.value['providers'])
+        try:
+            self.credentials.require_usable()
+        except CredentialStorageError:
+            self._archives = {}
+            return
+        if self._history_busy or self._history_mask_count == self._redaction.value_count:
+            return
+        self._history_busy = True
+        try:
+            if self.history._available:
+                self.history.scrub(self._redaction.redact)
+            self._archives = {key: value for key, value in self.history.summaries(self._redaction.redact).items()
+                              if key not in self.runs}
+            self._history_mask_count = self._redaction.value_count
+        except HistoryError:
+            # Never expose cached unmasked archive content when a scrub fails.
+            self._archives = {}
+        finally:
+            self._history_busy = False
+
+    def _history_prepare_masks(self, prepared):
+        self.history.require_writable()
+        if prepared is not None:
+            prospective = SecretRedactor()
+            prospective.commit(prepared)
+            self.history.scrub(prospective.redact)
+
+    def _persist_run(self, ident):
+        if self._history_busy or ident not in self.runs:
+            return
+        self._history_busy = True
+        try:
+            self.credentials.check_bindings(self.settings.value['providers'])
+            self.credentials.require_usable()
+            self._redaction.remember(self._secret_values())
+            if self._history_mask_count != self._redaction.value_count:
+                self.history.scrub(self._redaction.redact)
+                self._archives = {key: value for key, value in self.history.summaries(self._redaction.redact).items()
+                                  if key not in self.runs}
+                self._history_mask_count = self._redaction.value_count
+            run = self.runs[ident]
+            agents = [self.agents[key].public(configured_profile=self.configured_profile(self.agents[key]))
+                      for key in run['agent_ids']]
+            document = public_document(run, agents, [row for row in self.events if row['run_id'] == ident],
+                                       run.get('_work_board_posts', []))
+            self._history_saved[ident] = self.history.save(document, self._redaction.redact)
+        except (HistoryError, CredentialStorageError):
+            # The accepted live event stays visible. The UI explicitly reports unsaved history.
+            pass
+        except RedactionCapacityError:
+            self.history.error = REDACTION_CAPACITY_MESSAGE
+            self._archives = {}
+        finally:
+            self._history_busy = False
+
+    def _archive_for_agent(self, ident):
+        return next((key for key, (doc, _) in self._archives.items()
+                     if any(row['id'] == ident for row in doc['agents'])), None)
+
+    def _archive_projection(self, run_id=None, agent_id=None):
+        result = {'runs': [], 'agents': [], 'events': []}
+        for ident, (stored, at) in self._archives.items():
+            if ident in self.runs:
+                continue
+            if ident == run_id:
+                try:
+                    stored, at = self.history.read(ident, self._redaction.redact)
+                except HistoryError:
+                    continue
+            value = archived_view(stored, at)
+            result['runs'].append(value['run'])
+            for agent in value['agents']:
+                if agent['id'] != agent_id:
+                    for key in ('logs', 'results', 'output_receipts'):
+                        agent.pop(key, None)
+                result['agents'].append(agent)
+            if ident == run_id:
+                result['events'] = value['events'][-100:]
+        return result
+
+    def _with_history(self, result, run_id=None, agent_id=None):
+        self._history_new_masks()
+        archive = redact_history_tree(self._archive_projection(run_id, agent_id), self._redaction.redact)
+        for run in result['runs']:
+            run.update(archived=False, read_only=False, history_saved_at=self._history_saved.get(run['id']))
+        for agent in result['agents']:
+            agent.update(archived=False, read_only=False)
+        for key in ('runs', 'agents', 'events'):
+            result[key].extend(archive[key])
+        result['instance_id'] = self.instance_id
+        result['history_storage'] = self._redact_tree(self.history.status(len(self._archives)))
+        result['credential_storage'] = self._redact_tree(self.credentials.public())
+        return result
 
     def copilot_status(self):
         config = self.settings.value['copilot_agent']
         status = self.copilot_bridge.status(config)
-        if self.settings.restore_warnings:
+        if self.credentials.error or self.credentials.affected_ids:
+            status = {**status, 'ready': False, 'state': 'credentials_required',
+                      'message': '保存済み API キーの状態を確認してください。'}
+        elif self.settings.restore_warnings:
             status = {**status, 'enabled': config['enabled'], 'ready': False, 'state': 'configuration_required',
                       'message': '保存済み設定のパスを確認し、現在のPCに合わせて保存してください。'}
         elif self._copilot_sync_task is not None and not self._copilot_sync_task.done():
@@ -243,12 +368,20 @@ class Engine:
         return self._redact_tree(status)
 
     def public_config(self):
-        return {**self.settings.public(), 'effective_providers': effective_profiles(self.settings.value),
-                'copilot_agent_status': self.copilot_status()}
+        public = self.settings.public()
+        public['credential_storage'] = self._redact_tree(public['credential_storage'])
+        return {**public, 'effective_providers': effective_profiles(self.settings.value),
+                'copilot_agent_status': self.copilot_status(),
+                'instance_id': self.instance_id, 'history_storage': self._redact_tree(self.history.status(len(self._archives)))}
 
     def schedule_copilot_sync(self, *, force=False):
         """Reconcile saved opt-in settings in the background, one operation at a time."""
         if self.closed or self.settings.restore_warnings:
+            return
+        try:
+            self.credentials.check_bindings(self.settings.value['providers'])
+            self.credentials.require_usable()
+        except CredentialStorageError:
             return
         config = copy.deepcopy(self.settings.value['copilot_agent'])
         if not force and config == self._copilot_desired:
@@ -280,19 +413,22 @@ class Engine:
         record = {'id': self.sequence, 'run_id': run, 'agent_id': agent, 'kind': kind,
                   'text': self.redact(str(message))[:16000], 'at': time.time(), **extra}
         self.events.append(record)
+        self._persist_run(run)
         return record
 
     def _secret_values(self, *, config=None, secrets=None):
         config = self.settings.value if config is None else config
         secrets = self.settings.secrets if secrets is None else secrets
         return [*(secrets.get(profile['id']) or os.environ.get(profile.get('api_key_env', ''), '')
-                  for profile in config['providers']), *secrets.values(),
+                  for profile in config['providers']), *secrets.values(), *self.credentials.values(),
                 os.environ.get(config['search']['api_key_env'], ''),
                 *(os.environ.get(name, '') for name in getattr(self.settings, '_search_redaction_env_names', ()))]
 
     def _redactor(self):
         # Also fail closed on unexpected in-process configuration mutation.
         self._redaction.remember(self._secret_values())
+        if hasattr(self, 'history'):
+            self._history_new_masks()
         return self._redaction.redact
 
     def redact(self, value):
@@ -300,6 +436,7 @@ class Engine:
 
     def save_settings(self, raw):
         config = validate_settings(raw)
+        self.credentials.require_identity(config['providers'])
         old_profiles = {profile['id']: profile for profile in self.settings.value['providers']}
         identity = ('kind', 'base_url', 'api_key_env')
         allowed = {profile['id'] for profile in config['providers']
@@ -311,22 +448,46 @@ class Engine:
                                            os.environ.get(retired_env, '')])
         # No await between preparation, persistence and commit. A validation,
         # capacity or disk failure leaves both active settings and masks intact.
+        self._history_prepare_masks(prepared)
         self.settings.save(raw)
         self.settings.secrets = secrets
         self._redaction.commit(prepared)
+        self._history_new_masks()
         return self.settings.public()
 
-    def set_secret(self, ident, key):
+    def set_secret(self, ident, key, storage='session'):
+        # Preserve state-directory ownership precedence before any vault operation.
+        self.history.require_writable()
+        if not isinstance(storage, str) or storage not in {'session', 'saved'}:
+            raise ValueError('API キーの保存方法が不正です')
         if ident == 'search' and key:
             raise ValueError(SEARCH_KEY_UNSUPPORTED)
+        profiles = {p['id']: p for p in self.settings.value['providers']}
+        if ident not in profiles and ident != 'search' and not (not key and self.credentials.contains(ident)):
+            raise ValueError('未知のプロファイル ID です')
+        self.credentials.check_bindings(self.settings.value['providers'])
+        if key or not self.credentials.contains(ident):
+            self.credentials.require_usable()
         prospective = dict(self.settings.secrets)
-        if key:
+        if key and storage == 'session':
             prospective[ident] = key
         else:
             prospective.pop(ident, None)
-        prepared = self._redaction.prepare([*self._secret_values(), *self._secret_values(secrets=prospective)])
+        prepared = self._redaction.prepare([*self._secret_values(), *self._secret_values(secrets=prospective), key])
+        self._history_prepare_masks(prepared)
+        # No awaits: durable ciphertext/remove first, then active source and masks.
+        try:
+            self.credentials.replace(ident, key if storage == 'saved' else '', profiles.get(ident))
+        except CredentialStorageError:
+            # Submitted secrets remain output masks even when encryption fails.
+            self._redaction.commit(prepared)
+            self._history_mask_count = -1
+            self._history_new_masks()
+            raise
         self.settings.secrets = prospective
         self._redaction.commit(prepared)
+        self._history_mask_count = -1
+        self._history_new_masks()
 
     def _redact_tree(self, value):
         redact = self._redactor()
@@ -348,6 +509,7 @@ class Engine:
         # Cache only one public log's fields, never reasoning or whole histories.
         # Redact the complete cached text again before the 240-character summary.
         agent.latest_activity_log = {key: record[key] for key in ('kind', 'text', 'at')}
+        self._persist_run(agent.run_id)
 
     def record_result(self, agent, source, value, *, revision=None):
         value = self.redact(value)
@@ -360,6 +522,7 @@ class Engine:
                               'at': time.time(), 'turn': agent.turns,
                               'revision': agent.result_revision if revision is None else revision})
         agent.result_count += 1
+        self._persist_run(agent.run_id)
 
     def record_receipt(self, agent, tool, result):
         # Only the trusted executor's successful mutation return reaches here.
@@ -369,6 +532,7 @@ class Engine:
                                      'turn': agent.turns, **self._redact_tree({key: result[key] for key in
                                      ('path', 'bytes', 'sha256', 'operation')})})
         agent.output_receipt_count += 1
+        self._persist_run(agent.run_id)
 
     def active(self):
         return any(a.task and not a.task.done() for a in self.agents.values()) or any(r['status'] in {'running', 'waiting', 'stopping'} for r in self.runs.values())
@@ -384,7 +548,7 @@ class Engine:
                                     configured_profile=self.configured_profile(a), redact_activity=self.redact) for a in self.agents.values()], 'events': list(self.events),
                 'resources': self.gate.snapshot(), 'copilot_resources': self._copilot_resources(), 'copilot_agent_status': self.copilot_status()})
         result['redaction_revision'] = self._redaction.value_count
-        return result
+        return self._with_history(result)
 
     def _copilot_resources(self):
         snapshot = getattr(self.client, 'copilot_resource_snapshot', None)
@@ -397,12 +561,12 @@ class Engine:
         is cached: reply eligibility may change when a deadline passes without
         any new event or result revision.
         """
-        if run_id is not None and (not isinstance(run_id, str) or run_id not in self.runs):
+        if run_id is not None and (not isinstance(run_id, str) or run_id not in self.runs and run_id not in self._archives):
             raise ValueError('選択した実行が見つかりません')
         if agent_id is not None:
-            if not isinstance(agent_id, str) or agent_id not in self.agents:
+            if not isinstance(agent_id, str) or (agent_id not in self.agents and self._archive_for_agent(agent_id) is None):
                 raise ValueError('選択したエージェントが見つかりません')
-            if run_id is None or self.agents[agent_id].run_id != run_id:
+            if run_id is None or (self.agents[agent_id].run_id if agent_id in self.agents else self._archive_for_agent(agent_id)) != run_id:
                 raise ValueError('選択した実行とエージェントが一致しません')
 
         events = []
@@ -425,7 +589,7 @@ class Engine:
             'selection': {'run_id': run_id, 'agent_id': agent_id, 'detail_loaded': agent_id is not None},
         })
         result['redaction_revision'] = self._redaction.value_count
-        return result
+        return self._with_history(result, run_id, agent_id)
 
     def _new_agent(self, run, profile, role, parent=None, *, assignment=''):
         ident = 'a-' + secrets.token_hex(8)
@@ -443,12 +607,19 @@ class Engine:
 
     def _prepare_run(self, payload):
         if self.closed:
-            raise AdmissionError('engine_unavailable', 'サーバーは終了処理中です。終了後に起動し直してください。履歴と入力した API キーは引き継ぎません')
+            raise AdmissionError('engine_unavailable', 'サーバーは終了処理中です。終了後に起動し直してください。保存済み履歴は閲覧専用で引き継ぎます。今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます')
+        self.credentials.check_bindings(self.settings.value['providers'])
+        try:
+            self.credentials.require_usable()
+        except CredentialStorageError as exc:
+            raise AdmissionError(exc.code, str(exc)) from None
+        if self.history.error or not self.history._available:
+            raise AdmissionError('history_storage_error', self.history.error or '履歴保存先を使用できません。')
         if self.settings.restore_warnings:
             raise AdmissionError('settings_recovery_required',
                 '保存済み設定のパスを確認し、現在のPCに合わせて保存してから作業を開始してください。', field='settings')
         if len(self.runs) >= 20:
-            raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動すると履歴と入力した API キーは失われます')
+            raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動後も保存済み履歴は閲覧専用で残ります。今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます')
         if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
         task = text(payload.get('task'), 'task', 16000, False)
@@ -539,6 +710,8 @@ class Engine:
         return {'ok': True, 'run': self._redact_tree({k: v for k, v in run.items() if not k.startswith('_')})}
 
     def _work_board_run(self, run_id):
+        if isinstance(run_id, str) and run_id in self._archives:
+            raise ArchivedReadOnly()
         run = self.runs.get(run_id) if isinstance(run_id, str) else None
         if run is None:
             raise ValueError('掲示板の作業が見つかりません')
@@ -552,6 +725,30 @@ class Engine:
 
 
     def read_work_board(self, run_id, *, after_seq=0, limit=20):
+        if isinstance(run_id, str) and run_id in self._archives:
+            self.credentials.check_bindings(self.settings.value['providers'])
+            self.credentials.require_usable()
+            self._redactor()
+            document, _ = self.history.read(run_id, self._redaction.redact)
+            run = document['run']
+            if run.get('work_board', {}).get('enabled') is not True:
+                raise WorkBoardError('work_board_disabled', 'この作業では掲示板が無効です')
+            last = len(document['board'])
+            if type(after_seq) is not int or not 0 <= after_seq <= last or type(limit) is not int or not 1 <= limit <= 50:
+                raise ValueError('掲示板の after_seq・limit が不正です')
+            result = redact_history_tree({'enabled': True, 'run_id': run_id, 'posts': [], 'last_seq': last,
+                      'next_after_seq': after_seq, 'has_more': after_seq < last, 'remaining_posts': 0,
+                      'can_post': False, 'read_only': True, 'archived': True, 'instance_id': self.instance_id,
+                      'redaction_revision': self._redaction.value_count}, self._redaction.redact)
+            for post in document['board'][after_seq:after_seq + limit]:
+                post = redact_history_tree(post, self._redaction.redact)
+                candidate = {**result, 'posts': [*result['posts'], post], 'next_after_seq': post['seq'], 'has_more': post['seq'] < last}
+                if len(json.dumps(candidate, ensure_ascii=False, allow_nan=False)) > 24000:
+                    if not result['posts']:
+                        raise ValueError('この投稿は現在の秘密情報マスク後の表示上限を超えています')
+                    break
+                result = candidate
+            return result
         run = self._work_board_run(run_id)
         last = run['work_board']['last_seq']
         if type(after_seq) is not int or not 0 <= after_seq <= last or type(limit) is not int or not 1 <= limit <= 50:
@@ -559,7 +756,7 @@ class Engine:
         result = self._redact_tree({'enabled': True, 'run_id': run_id, 'posts': [], 'last_seq': last,
                   'next_after_seq': after_seq, 'has_more': after_seq < last,
                   'can_post': self._work_board_can_post(run) and last < 200,
-                  'remaining_posts': 200 - last})
+                  'remaining_posts': 200 - last, 'instance_id': self.instance_id, 'archived': False, 'read_only': False})
         result['redaction_revision'] = self._redaction.value_count
         # Latest masks apply before measuring the complete serialized response.
         # A short page does not skip the remaining posts: its cursor is the last
@@ -620,6 +817,7 @@ class Engine:
             submissions[client_post_id] = {'signature': signature, 'seq': post['seq']}
         else:
             run['auto_collaborations'] += 1
+        self._persist_run(run_id)
         return {'ok': True, 'post': visible, 'duplicate': False}
 
 
@@ -646,6 +844,10 @@ class Engine:
             agent.pending.append((content, False))
             if not agent.question and agent.status not in {'working', 'error'}:
                 agent.status = 'queued'
+        if human:
+            self.log(agent, 'user', content)
+        else:
+            self._persist_run(agent.run_id)
         self.kick(agent)
 
     def kick(self, agent):
@@ -656,6 +858,8 @@ class Engine:
             agent.task.add_done_callback(lambda _: self.kick(agent))
 
     async def human_message(self, ident, content):
+        if self._archive_for_agent(ident) is not None:
+            raise ArchivedReadOnly()
         agent = self.agents.get(ident)
         if agent is None:
             raise ValueError('エージェントが見つかりません')
@@ -669,6 +873,7 @@ class Engine:
         # A human may continue an individual agent, but cannot silently refill
         # the team's automatic handoff budget.
         run['_collaboration_blocked'] = False
+        self._persist_run(run['id'])
         return {'ok': True}
 
     def message_eligibility(self, agent):
@@ -937,7 +1142,8 @@ class Engine:
                 agent.status = 'working'
                 agent.waiting_for_workers = False
                 agent.delegation_blocked = ''
-                self.log(agent, 'user' if human else 'mail', content)
+                if not human:
+                    self.log(agent, 'mail', content)
                 self._append_context(agent, {'role': 'user', 'content': content}, human=human)
                 self._consume_worker_report(agent, content, human)
                 self._consume_mail(agent, content, human)
@@ -1120,6 +1326,7 @@ class Engine:
             run['status'] = 'waiting'
         else:
             run['status'] = 'done'
+        self._persist_run(run['id'])
 
     def _mail_event(self, actor, metadata, body, *, consumed=False):
         """Keep a truthful delivery record even if ordinary event logging fails."""
@@ -1135,6 +1342,7 @@ class Engine:
                 self.sequence += 1
                 self.events.append({'id': self.sequence, 'run_id': actor.run_id, 'agent_id': actor.id,
                     'kind': kind, 'text': body[:16000], 'at': time.time(), **data})
+            self._persist_run(actor.run_id)
             return False
 
     def _consume_mail(self, target, content, human):
@@ -1461,6 +1669,8 @@ class Engine:
                 raise ValueError('別の作業者がこの範囲を予約中です')
 
     async def stop_run(self, ident):
+        if isinstance(ident, str) and ident in self._archives:
+            raise ArchivedReadOnly()
         run = self.runs.get(ident)
         if run is None:
             raise ValueError('実行が見つかりません')
@@ -1493,10 +1703,25 @@ class Engine:
 
     async def close(self):
         self.closed = True
-        await asyncio.gather(*(self.stop_run(run) for run in self.runs), return_exceptions=True)
-        if self._copilot_operation is not None and not self._copilot_operation.done():
-            if not self._copilot_operation.cancelling():
-                self._copilot_operation.cancel()
-        if self._copilot_sync_task is not None:
-            await asyncio.gather(self._copilot_sync_task, return_exceptions=True)
-        await self.copilot_bridge.close()
+        try:
+            await asyncio.gather(*(self.stop_run(ident) for ident, run in self.runs.items()
+                                   if run['status'] not in {'done', 'stopped', 'error'}), return_exceptions=True)
+        finally:
+            try:
+                for ident in self.runs:
+                    self._persist_run(ident)
+            finally:
+                try:
+                    if self._copilot_operation is not None and not self._copilot_operation.done():
+                        if not self._copilot_operation.cancelling():
+                            self._copilot_operation.cancel()
+                    if self._copilot_sync_task is not None:
+                        await asyncio.gather(self._copilot_sync_task, return_exceptions=True)
+                finally:
+                    try:
+                        await self.copilot_bridge.close()
+                    finally:
+                        try:
+                            self.credentials.close()
+                        finally:
+                            self.history.close()

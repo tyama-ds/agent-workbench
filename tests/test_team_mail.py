@@ -357,8 +357,11 @@ async def test_fallback_delivery_masks_retired_keys_and_saturated_public_state_f
 
 def test_activity_counters_are_cumulative_and_unselected_histories_are_not_read(team, monkeypatch):
     engine, run, (actor, *_rest) = team
-    empty = actor.public(include_detail=False)['activity']
-    assert empty == {'latest_log': None, 'pending_count': 0, 'result_count': 0, 'output_receipt_count': 0}
+    initial = actor.public(include_detail=False)['activity']
+    # Accepted human input is now recorded before scheduling/consumption.
+    assert actor.logs[0]['kind'] == 'user' and actor.logs[0]['text'] == run['task']
+    assert initial == {'latest_log': {'kind': 'user', 'text': run['task'], 'at': actor.logs[0]['at']},
+                       'pending_count': 0, 'result_count': 0, 'output_receipt_count': 0}
     for index in range(70):
         engine.log(actor, 'tool', 'x' * 500 + str(index), 'Thinking must not enter activity')
         engine.record_result(actor, 'finish_work', f'Result {index}')
@@ -370,17 +373,23 @@ def test_activity_counters_are_cumulative_and_unselected_histories_are_not_read(
             raise AssertionError('History copied')
         def __len__(self):
             raise AssertionError('History inspected')
-    for field in ('logs', 'results', 'output_receipts'):
-        monkeypatch.setattr(actor, field, Unreadable())
-    public = next(row for row in engine.selected_snapshot()['agents'] if row['id'] == actor.id)
-    activity = public['activity']
-    assert activity['result_count'] == activity['output_receipt_count'] == 70
-    assert activity['pending_count'] == 1 and len(activity['latest_log']['text']) == 240
-    assert activity['latest_log']['kind'] == 'tool' and set(activity['latest_log']) == {'kind', 'text', 'at'}
-    assert not {'logs', 'results', 'output_receipts'}.intersection(public)
-    activity['latest_log']['text'] = 'Client change'
-    again = next(row for row in engine.selected_snapshot()['agents'] if row['id'] == actor.id)
-    assert again['activity']['latest_log']['text'] == 'x' * 240
+    original_histories = {field: getattr(actor, field) for field in ('logs', 'results', 'output_receipts')}
+    try:
+        for field in ('logs', 'results', 'output_receipts'):
+            monkeypatch.setattr(actor, field, Unreadable())
+        public = next(row for row in engine.selected_snapshot()['agents'] if row['id'] == actor.id)
+        activity = public['activity']
+        assert activity['result_count'] == activity['output_receipt_count'] == 70
+        assert activity['pending_count'] == 1 and len(activity['latest_log']['text']) == 240
+        assert activity['latest_log']['kind'] == 'tool' and set(activity['latest_log']) == {'kind', 'text', 'at'}
+        assert not {'logs', 'results', 'output_receipts'}.intersection(public)
+        activity['latest_log']['text'] = 'Client change'
+        again = next(row for row in engine.selected_snapshot()['agents'] if row['id'] == actor.id)
+        assert again['activity']['latest_log']['text'] == 'x' * 240
+    finally:
+        # The read sentinel is scoped to compact projection, not shutdown persistence.
+        for field, original in original_histories.items():
+            setattr(actor, field, original)
 
 
 @pytest.mark.asyncio

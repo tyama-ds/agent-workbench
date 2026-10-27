@@ -21,11 +21,14 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
   const writes=()=>mutations.filter(item=>item.path==='/api/config'&&item.method==='PUT');
   // Setup uses an explicitly fresh revision, independently of either UI client.
   // Acceptance Save requests must retain their own original loaded revision.
+  let observedInstance=null;
   const api=async(route,method='GET',body,expected=200)=>{
-    const response=await context.request.fetch(origin+route,{method,headers:{Origin:origin},
+    const headers={Origin:origin};
+    if(!['GET','HEAD','OPTIONS'].includes(method)){assert(observedInstance,'Fixture writes require an observed server instance');headers['X-Workbench-Instance']=observedInstance;}
+    const response=await context.request.fetch(origin+route,{method,headers,
       ...(body===undefined?{}:{data:body})});
     assert.equal(response.status(),expected,method+' '+route+' status');
-    return response.json();
+    const data=await response.json();if(['GET','HEAD'].includes(method)&&data.instance_id){assert.equal(typeof data.instance_id,'string');observedInstance=data.instance_id;}return data;
   };
   const setup=async config=>{
     const {config_revision}=await api('/api/config');

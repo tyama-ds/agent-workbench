@@ -36,17 +36,21 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     }
     if(pathname==='/api/config'&&request.method()==='PUT')configPuts.push(request);
   };
+  let observedInstance=null;
   const api=async(url,method='GET',body,expected=200)=>{
     // Fixture-only writes read their revision immediately before writing. UI
     // acceptance always submits the revision captured by the real form instead.
     if(url==='/api/config'&&method==='PUT')body={config_revision:(await api('/api/config')).config_revision,config:body};
-    const response=await page.evaluate(async({url,method,body})=>{
-      const response=await fetch(url,{method,credentials:'same-origin',cache:'no-store',
-        ...(body===undefined?{}:{headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})});
+    const headers={};
+    if(body!==undefined)headers['Content-Type']='application/json';
+    if(!['GET','HEAD','OPTIONS'].includes(method)){assert(observedInstance,'Fixture writes require an observed server instance');headers['X-Workbench-Instance']=observedInstance;}
+    const response=await page.evaluate(async({url,method,body,headers})=>{
+      const response=await fetch(url,{method,headers,credentials:'same-origin',cache:'no-store',
+        ...(body===undefined?{}:{body:JSON.stringify(body)})});
       return {status:response.status,text:await response.text()};
-    },{url,method,body});
+    },{url,method,body,headers});
     masked(response.text,method+' '+url);assert.equal(response.status,expected,method+' '+url+' status');
-    return JSON.parse(response.text);
+    const data=JSON.parse(response.text);if(['GET','HEAD'].includes(method)&&data.instance_id){assert.equal(typeof data.instance_id,'string');observedInstance=data.instance_id;}return data;
   };
   const waitForState=async(runId,status,agentStatus)=>{
     const deadline=Date.now()+10000;
@@ -91,7 +95,9 @@ async function credentialRecoveryAcceptance({page,origin,providerUrl,providerReq
     const payload=received.request().postDataJSON();assert.equal(typeof payload.config_revision,'number');
     assert(Number.isInteger(payload.config_revision));assert.equal(payload.id,id);assert.equal(payload.key,key);
     const body=await received.json();masked(body,'Credential response');
-    assert.equal(received.status(),200);assert.deepEqual(body,{ok:true,id,config_revision:payload.config_revision,configured:true});
+    assert.equal(received.status(),200);assert.equal(payload.storage,'session');
+    assert.deepEqual({ok:body.ok,id:body.id,config_revision:body.config_revision,configured:body.configured,storage:body.storage,source:body.source,saved:body.saved},{ok:true,id,config_revision:payload.config_revision,configured:true,storage:'session',source:'session',saved:false});
+    assert.equal(typeof body.credential_storage.supported,'boolean');assert.equal(typeof body.credential_storage.available,'boolean');
     await card(index).locator('.credential-result')
       .filter({hasText:'キーをセットしました'}).waitFor();
     assert.equal(await input.inputValue(),'','Submitted passwords clear without being echoed');return body;

@@ -136,7 +136,7 @@ Content read by a file tool enters the selected model conversation. Team mail ma
 
 ## Credentials and state
 
-API keys come from explicitly named environment variables or memory-only input. The dedicated credential fields are not returned by the settings API or written into settings/log files. Public settings remain editable metadata: labels, models, endpoints, paths and policy are returned and persisted as entered, so never paste credentials into those fields. Provider error bodies are not displayed.
+API keys come from explicitly named environment variables, session-only input (the default), or explicitly saved Windows DPAPI CurrentUser ciphertext in the protected state directory. Saved keys are loaded only for the bound provider identity on the same PC/user/state directory. The dedicated credential values are never returned by the settings API or written into public settings, history or logs. Public settings remain editable metadata: labels, models, endpoints, paths and policy are returned and persisted as entered, so never paste credentials into those fields. Provider error bodies are not displayed.
 
 State snapshots (full and selected), logs, results, save receipts, diagnostics and application errors mask exact configured credential values recognized by the running engine. A private output-only registry keeps recognized current and retired values while run histories remain in that process, so deleting a reference, replacing a key, a late response or continuing an old conversation cannot reveal an already recognized value. Registry values are never an authentication source, public response field, export or persistent store. Copy/export uses the public records it received; export attribution receives the same masking.
 
@@ -144,11 +144,11 @@ The registry accepts at most 512 distinct nonempty values and 2 MiB of their com
 
 Retired values increase sensitive process-memory retention until the engine and its histories are discarded, normally when the app exits. Python cannot promise immediate secure zeroization; same-user process inspection remains outside this boundary. This is exact-value masking, not a detector for arbitrary sensitive data, substrings/fragments, encodings or transformed secrets. Private model conversations, protocol payloads and workspace file contents are not rewritten. Previously delivered browser data, clipboard contents or downloaded files cannot be recalled when a value later becomes a credential. Editable settings metadata is likewise outside this projection guarantee.
 
-New provider/search requests resolve current credentials. An already dispatched request retains its original headers; replacement cannot retract it. Removing a provider or changing its kind, endpoint or environment-key reference clears that profile's memory credential. Changing the search provider, endpoint or environment-key reference clears the search memory credential. Re-enter a key for the new identity, or use its explicitly configured environment source; label/model-only changes preserve credentials. Profile ID `search` is reserved for search credentials. Older manually authored configurations using that ID must rename it before starting this version.
+New provider/search requests resolve current credentials. An already dispatched request retains its original headers; replacement cannot retract it. A provider identity/delete change with a saved key is rejected until an explicit clear. Removing a provider or changing its kind, endpoint or environment-key reference clears that profile's session credential. Search is keyless; retired search values remain redacted. Re-enter a key for the new identity, or use its explicitly configured environment source; label/model-only changes preserve credentials. Profile ID `search` remains reserved for legacy compatibility. Older manually authored configurations using that ID must rename it before starting this version.
 
 Settings contain paths, endpoint/model names and the shared policy; they are private metadata even without keys. State directory permissions remove inherited access on Windows and grant the current user/SYSTEM. Existing explicit grants on a manually selected state directory are not automatically revoked; use the new default application state folder. A process running as the same Windows user can still inspect memory or modify files. Do not run this application as Administrator or expose the UI via a reverse proxy.
 
-Conversation and run state are in memory only. A browser session cookie is a bearer credential for the local app. Initial launch URLs should not be shared. `--no-browser` prints a short-lived launch URL to the console intentionally. API cancellation closes the client request; it cannot promise that the upstream server stopped generation or billing.
+Redacted public conversation/run display records are saved in a bounded SQLite archive under the protected state directory; restored runs are read-only and unfinished runs are interrupted. Private provider context, pending operations and approvals remain process-only and never resume automatically. Previously unpersisted or pre-feature closed-session histories cannot be reconstructed. A browser session cookie is a bearer credential for the local app. Initial launch URLs should not be shared. `--no-browser` prints a short-lived launch URL to the console intentionally. API cancellation closes the client request; it cannot promise that the upstream server stopped generation or billing.
 
 ## Resource limits
 
@@ -162,7 +162,7 @@ Do not put real API keys, private documents, prompts or launch URLs in a public 
 
 ## Saved-target credential recovery
 
-Every browser `POST /api/secrets`, including clearing a memory override, requires
+Every browser `POST /api/secrets`, including clearing either direct key store, requires
 an exact integer `config_revision` obtained with the saved configuration. Missing,
 malformed or stale revisions fail before changing credentials or the redaction
 registry. The process-local revision advances only after successful configuration
@@ -172,14 +172,16 @@ read, with no await before the existing atomic secret setter. Existing session,
 Host/Origin, JSON and capacity checks remain mandatory; the revision is a concurrency
 precondition, not an authentication credential or a replacement for authorization.
 
-Saved provider IDs bind memory keys. Search uses its separate reserved identity;
-nonempty search submissions require saved Brave settings with an explicit endpoint.
+Saved provider identities bind direct keys. Search has no credential input;
+nonempty search-key submissions are rejected. A readable saved-key identity mismatch
+can expose affected IDs only, allowing an explicit empty-key clear of an actual
+stored orphan. Corrupt or undecryptable ciphertext is preserved; no automatic reset.
 The UI discloses saved identity, endpoint and proxy. Dirty/new settings cannot receive
 keys, and active runs never unlock configuration. The read-only discard/reload action
 preserves unrelated task and conversation drafts. Concurrent key operations have
 per-target ownership and prevent configuration writes until they settle.
 
-Replacement affects subsequent ordinary requests for that profile/search identity
+Replacement affects subsequent ordinary requests for that profile identity
 across all teams in this process. It does not alter dispatched headers, verify an API
 key, enqueue a retry, refill quotas or restart stopped work. Explicit human messages
 still pass the original eligibility checks. Late responses cannot repaint reopened
@@ -187,3 +189,22 @@ or rebound credential fields. Unknown outcomes are not automatically replayed;
 credential-presence booleans cannot establish which key is currently installed.
 Input values are cleared on submit, dismissal and configuration editing; JavaScript
 and Python do not promise secure zeroization of previously allocated strings.
+
+## Explicit encrypted key storage
+
+`POST /api/secrets` defaults to `storage=session`; `storage=saved` is an explicit
+Windows CurrentUser DPAPI choice. A successful session replacement removes an old
+saved entry before committing the new session key; saved replacement clears the
+session override. Empty-key clearing removes both direct stores regardless of the
+selector, leaving any configured environment fallback. A failed durable operation
+preserves the previous active key. Responses expose source and saved booleans,
+capability/error/path metadata and never plaintext or a key fragment.
+
+Encryption protects the at-rest key file; it does not protect against a process
+running as the same Windows user, and Python cannot guarantee memory zeroization.
+Ciphertext is not a portable key backup for another machine/account. Public settings
+export and the work-history archive exclude keys. Missing platform support leaves
+session/environment usage available when no saved vault requires recovery; unreadable,
+identity-mismatched or exclusively owned storage errors are surfaced rather than
+silently discarding stored credentials. Browser mutations retain authentication,
+exact config revision, fresh process-instance and same-origin checks.
