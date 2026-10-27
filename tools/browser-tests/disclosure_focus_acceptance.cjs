@@ -242,7 +242,10 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
     await selectRun(otherRun.id,'Other');
     assert.equal(await details(firstId).evaluate(element=>element.open),false,'Repeated log IDs in another team do not inherit expanded state');
     const otherKey=await summary(firstId).getAttribute('data-focus-key');assert(otherKey&&otherKey!==pmKey&&otherKey!==workerKey,'Team/agent ownership separates focus identities');
-    await selectRun(run.id,'PM');
+    await selectRun(run.id,'Worker');
+    assert.equal(await page.locator(`#agentTabs [data-focus-key="tab:${worker.id}"]`).getAttribute('aria-pressed'),'true','Returning to a team restores its previously selected worker');
+    assert.equal(await details(firstId).evaluate(element=>element.open),true,'The remembered worker retains its own expanded state');
+    await selectAgent(pm.id,'PM');
     assert.equal(await details(firstId).evaluate(element=>element.open),true,'Returning to the original owner restores its expanded state');
 
     await summary(firstId).focus();

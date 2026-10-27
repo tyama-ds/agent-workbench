@@ -494,7 +494,8 @@ gate; writing the test is not evidence that it passed.
 `workbench/context.py` plans compaction at a model-request boundary, after all
 results of a tool batch have settled. A retained assistant message, its provider-native
 reasoning/signatures, and all parallel tool results are indivisible. The exact original
-assignment, last two human messages, and the configured recent groups remain. Earlier
+assignment and last two human messages remain; normal model summaries also retain the
+configured recent groups. Earlier
 human/peer/model/tool records become structured, explicitly untrusted summary data
 (goals, constraints, decisions, evidence, open tasks and uncertainty). Summary input
 includes source record IDs and human-origin metadata but excludes native reasoning.
@@ -524,12 +525,24 @@ assignment or recent results can still exceed the budget and stop execution.
 Planning selects complete older groups that fit the summarizer's own request budget.
 A successful summary must validate against the fixed JSON shape, shrink the request
 by at least 5%, and reduce serialized characters. At most three passes occur at one
-boundary; if the request still exceeds its hard budget, it stops visibly. If only one model
+boundary; deterministic excerpts are considered before an unresolved hard overflow
+stops visibly. If only one model
 call remains and the request already fits, optional soft-trigger summarization is
 skipped to leave that call usable. If it fits
 but cannot beneficially compact at the soft trigger, it can proceed until a hard limit.
-Malformed, empty, oversized, non-shrinking, timed-out or failed summaries do not replace
-that pass's active history. Successful earlier passes stay committed. There are no
+Malformed, empty, oversized or non-shrinking summaries are never installed as valid
+summaries. A bounded deterministic excerpt can instead replace complete protocol groups,
+with record IDs and explicit omission notices; it is reference data, not a semantic
+summary. Older groups are preferred. Only when the hard request limit is exceeded may
+recent non-human groups also be replaced. The original assignment and last two human
+messages remain exact. An indivisible research result too large for the summarizer can
+use this route without another provider call. Both the resulting serialized request and
+its reduction are checked before replacement; an impossible fixed/pinned context still
+stops. An explicit output-token-limit response is typed separately by each provider
+adapter. Only the separate no-tool summarizer may use it to choose excerpts; ordinary
+agent replies still reject incomplete output and execute no partial tools. Unknown
+incompletion stays an error. Successful earlier passes stay committed. Authentication, transport, deadline,
+cancellation and unexpected errors are not silently converted to success. There are no
 automatic failure retries. Stop cancels inference, and queued human/peer messages remain
 in their existing queue while summarization awaits. Each dispatch rechecks time/call
 budgets and current credentials. Compaction never replenishes any run/turn/tool budget.
@@ -543,6 +556,15 @@ record; there is no complete-audit or infinite-memory promise. The model can use
 secrets are masked. Tool arguments are returned as serialized `arguments_json` text
 so nested property names are masked without silently merging key collisions. Missing and oversized records are explicitly reported; a returned
 record's `_human` field identifies its source, not the truth of text within it.
+For one retained record, optional `offset` (default 0) and `limit` (default 8000,
+maximum 12000) support bounded pages of its masked
+JSON representation. Paging labels partial data and its continuation offset; it does
+not return private native replay, fabricate a missing original or expand access to
+another agent. Masking occurs before slicing so a page boundary cannot reveal part of
+a configured secret. The whole response remains within the existing 24000-character
+ceiling. Pages expose `record_json_text`, `next_offset`, `total_chars`, `partial` and a
+SHA-256 of the complete masked JSON; a changed hash requires restarting at offset 0.
+Full-record reads without range arguments retain their original contract.
 The archive is not exposed through browser snapshots or automatically written to disk.
 Human-message admission uses the same serialized native-request pressure and
 compaction feasibility as dispatch, including the optional token planning budget.

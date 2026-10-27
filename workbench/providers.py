@@ -27,6 +27,10 @@ class ProviderError(RuntimeError):
         self.retryable = retryable
 
 
+class ProviderOutputLimitError(ProviderError):
+    """Explicit provider output-token exhaustion, never a usable partial reply."""
+
+
 @dataclass
 class ModelReply:
     text: str = ""
@@ -400,6 +404,10 @@ class ProviderClient:
             if kind == "openai":
                 # The Responses status is optional. Its absence must not hide
                 # explicit failure/incompletion evidence elsewhere in the reply.
+                if (data.get("status") in {None, "incomplete"} and data.get("error") is None
+                        and isinstance(data.get("incomplete_details"), dict)
+                        and data["incomplete_details"].get("reason") == "max_output_tokens"):
+                    raise ProviderOutputLimitError("OpenAI output token limit reached; no tools were executed")
                 if (data.get("status") not in {None, "completed"}
                         or data.get("error") is not None or data.get("incomplete_details") is not None):
                     raise ProviderError("OpenAI response was incomplete or failed; no tools were executed")
@@ -419,6 +427,8 @@ class ProviderClient:
                     elif item["type"] == "reasoning":
                         reply.thinking += "\n".join(block["text"] for block in item.get("summary", []) if block.get("type") == "summary_text")
             elif kind == "anthropic":
+                if data.get("stop_reason") == "max_tokens" and data.get("error") is None:
+                    raise ProviderOutputLimitError("Anthropic output token limit reached; no tools were executed")
                 if data.get("stop_reason") not in {"end_turn", "tool_use", "stop_sequence"}:
                     raise ProviderError("Anthropic response was incomplete or unconfirmed; no tools were executed")
                 content = data["content"]
@@ -434,6 +444,8 @@ class ProviderClient:
                         reply.tool_calls.append(_call(block["id"], block["name"], block["input"], seen))
             else:
                 choice = data["choices"][0]
+                if choice.get("finish_reason") == "length" and data.get("error") is None:
+                    raise ProviderOutputLimitError("Local model output token limit reached; no tools were executed")
                 if choice.get("finish_reason") not in {"stop", "tool_calls"}:
                     raise ProviderError("Local model response was incomplete or unconfirmed; no tools were executed")
                 message = choice["message"]

@@ -20,6 +20,7 @@ const {taskReuseAcceptance} = require('./browser-tests/task_reuse_acceptance.cjs
 const {inputPresenceAcceptance} = require('./browser-tests/input_presence_acceptance.cjs');
 const {messageReceiptAcceptance} = require('./browser-tests/message_receipt_acceptance.cjs');
 const {contextCompactionAcceptance} = require('./browser-tests/context_compaction_acceptance.cjs');
+const {networkInteractionAcceptance} = require('./browser-tests/network_interaction_acceptance.cjs');
 
 async function assertLayout(page,label) {
   // Narrow layouts present network and inspector as explicit alternate views.
@@ -412,6 +413,7 @@ async function main() {
     await page.locator('#agentSearch').fill('Unique assignment search phrase');assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#agentSearch').clear();
     await page.locator('#agentCards [data-agent-id="fixture-pm"]').focus();await page.waitForTimeout(1300);assert.equal(await page.evaluate(()=>document.activeElement.dataset.agentId),'fixture-pm');
     report.checks.push('cockpit roster search, answer-wait filter, true team map, agent tabs, poll-stable keyboard focus, modal Escape/close/reopen and task draft retention');
+    await networkInteractionAcceptance({page,fixture,artifacts,report});
     // Polling must preserve unchanged DOM and ignore an obsolete A response even
     // when the user has returned A → B → A before it arrives.
     await page.locator('#conversationLog .log-entry').waitFor();

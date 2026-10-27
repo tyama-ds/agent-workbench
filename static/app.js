@@ -106,6 +106,7 @@ Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
 Object.assign(ui,{cockpitView:'network',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
+Object.assign(ui,{networkViews:new Map(),networkGesture:null,networkSuppressClick:null,networkParentLines:[],networkMailLines:[]});
 Object.assign(ui,{effectiveProviders:null,copilotAgentStatus:null,copilotDefaultsPending:false,modelChoicesTouched:false,copilotReconnectOperation:null});
 const COPILOT_AGENT_DEFAULTS={enabled:false,bridge_directory:'',python_executable:'',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600,max_concurrent_requests:1};
 const ORCHESTRATION_DEFAULTS={delegation_level:1,workers_per_pm:2};
@@ -181,7 +182,8 @@ function acceptServerInstance(response,configuration=false) {
   ui.selectedRun=null;ui.selectedAgent=null;ui.loadedDetail=null;ui.loadedEventsRun=null;ui.detailError=false;
   ui.drafts.clear();ui.draftRevisions.clear();ui.conversationViews.clear();ui.outputSelections.clear();
   invalidateWorkBoardContent();ui.workBoards.clear();ui.boardOwner=null;ui.boardComposingRun=null;ui.boardRedactionRevision=null;
-  ui.networkNodes.clear();ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
+  ui.networkNodes.clear();ui.networkViews.clear();ui.networkGesture=null;ui.networkSuppressClick=null;ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
+  $('teamMap').classList.remove('is-dragging');
   ui.logSignature='';ui.outputSignature='';ui.taskReuseCandidate=null;ui.startOperation=null;ui.startingRun=false;ui.stoppingRuns.clear();ui.busyMessage=false;ui.messageOperation=null;
   ui.credentialOperations.clear();ui.secretSources={};ui.credentialStorage=null;ui.credentialRecoveryControls=[];renderCredentialStorage();ui.copilotAgentStatus=null;ui.copilotReconnectOperation=null;ui.historyStorage=null;
   ui.configStale=!configuration;clearCredentialInputs();
@@ -1261,32 +1263,156 @@ function networkMailPath(from,to,index) {
   const edge=Math.max(from.x,to.x)+254+(index%3)*12;
   return `M ${from.x+220} ${from.y+64} C ${edge} ${from.y+64}, ${edge} ${to.y+64}, ${to.x+220} ${to.y+64}`;
 }
+function networkViewState(runId=ui.selectedRun) {
+  const view=ui.networkViews.get(runId)||{positions:new Map(),camera:null,selectedAgent:null};
+  ui.networkViews.delete(runId);ui.networkViews.set(runId,view);
+  // Geometry only, with a bounded recent-run cache; no public text or task data.
+  while(ui.networkViews.size>64)ui.networkViews.delete(ui.networkViews.keys().next().value);
+  return view;
+}
+function networkViewport() {
+  const map=$('teamMap');return {width:map.clientWidth||840,height:map.clientHeight||390};
+}
+function pruneNetworkViews() {
+  for(const [id,view] of ui.networkViews){
+    if(!ui.state.runs.some(run=>run.id===id)){ui.networkViews.delete(id);continue;}
+    const ids=new Set(ui.state.agents.filter(agent=>agent.run_id===id).map(agent=>agent.id));
+    for(const agentId of view.positions.keys())if(!ids.has(agentId))view.positions.delete(agentId);
+    if(view.selectedAgent&&!ids.has(view.selectedAgent))view.selectedAgent=null;
+  }
+}
+function networkBounds() {
+  const points=[...(ui.networkLayout?.positions.values()||[])];
+  if(!points.length)return {x:0,y:0,width:840,height:390};
+  const x=Math.min(...points.map(p=>p.x))-24,y=Math.min(...points.map(p=>p.y))-32;
+  return {x,y,width:Math.max(...points.map(p=>p.x+280))-x,height:Math.max(...points.map(p=>p.y+148))-y};
+}
+function paintNetworkCamera() {
+  if(!ui.networkCanvas||!ui.selectedRun)return;
+  const camera=networkViewState().camera;if(!camera)return;
+  ui.networkCanvas.style.transform=`translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`;
+  $('networkZoomValue').textContent=`${Math.round(camera.scale*100)}%`;
+  $('networkZoomOut').disabled=camera.scale<=.01;$('networkZoomIn').disabled=camera.scale>=2;
+}
+function fitNetwork() {
+  if(!ui.networkLayout||!ui.selectedRun)return;
+  const bounds=networkBounds(),viewport=networkViewport(),scale=Math.min(1,Math.max(.01,Math.min(viewport.width/bounds.width,viewport.height/bounds.height)));
+  networkViewState().camera={scale,x:(viewport.width-bounds.width*scale)/2-bounds.x*scale,y:(viewport.height-bounds.height*scale)/2-bounds.y*scale};
+  paintNetworkCamera();
+}
+function zoomNetwork(factor,anchor) {
+  if(!Number.isFinite(factor)||factor<=0||!ui.networkCanvas)return;
+  const view=networkViewState();if(!view.camera)fitNetwork();
+  const camera=view.camera,viewport=networkViewport(),point=anchor||{x:viewport.width/2,y:viewport.height/2};
+  const scale=Math.min(2,Math.max(.01,camera.scale*factor)),ratio=scale/camera.scale;
+  view.camera={scale,x:point.x-(point.x-camera.x)*ratio,y:point.y-(point.y-camera.y)*ratio};paintNetworkCamera();
+}
+function panNetwork(dx,dy) {
+  if(!ui.networkCanvas||!Number.isFinite(dx)||!Number.isFinite(dy))return;
+  const view=networkViewState();if(!view.camera)fitNetwork();
+  view.camera.x+=dx;view.camera.y+=dy;paintNetworkCamera();
+}
+function repaintNetworkGeometry() {
+  const positions=ui.networkLayout?.positions;if(!positions)return;
+  for(const [id,node] of ui.networkNodes){const point=positions.get(id);node.button.style.left=`${point.x}px`;node.button.style.top=`${point.y}px`;}
+  for(const {line,id,parentId} of ui.networkParentLines){const a=positions.get(parentId),b=positions.get(id);line.setAttribute('d',`M ${a.x+110} ${a.y+124} C ${a.x+110} ${a.y+150}, ${b.x+110} ${b.y-24}, ${b.x+110} ${b.y}`);}
+  for(const {line,from,to,index} of ui.networkMailLines)line.setAttribute('d',networkMailPath(positions.get(from),positions.get(to),index));
+}
+function moveNetworkNode(id,x,y) {
+  const point=ui.networkLayout?.positions.get(id);if(!point||!Number.isFinite(x)||!Number.isFinite(y))return;
+  // Local view coordinates only; no task, assignment, status or server mutation.
+  point.x=Math.max(0,Math.min(10000,x));point.y=Math.max(32,Math.min(10000,y));
+  networkViewState().positions.set(id,{...point});repaintNetworkGeometry();
+}
+function resetNetworkLayout() {
+  if(!ui.networkCanvas)return;
+  const agents=ui.state.agents.filter(agent=>agent.run_id===ui.selectedRun),layout=networkLayout(agents),view=networkViewState();
+  view.positions=new Map([...layout.positions].map(([id,point])=>[id,{...point}]));ui.networkLayout.positions=view.positions;
+  repaintNetworkGeometry();fitNetwork();
+}
+function startNetworkGesture(event,nodeId=null) {
+  if(!ui.networkCanvas||event.isPrimary===false||(event.button!=null&&event.button!==0)||ui.networkGesture)return;
+  if(!nodeId&&event.target?.closest?.('.network-node,.network-mail-line'))return;
+  const camera=networkViewState().camera,point=nodeId?ui.networkLayout.positions.get(nodeId):camera;if(!point)return;
+  ui.networkSuppressClick=null;
+  const capture=nodeId?ui.networkNodes.get(nodeId).button:$('teamMap');
+  ui.networkGesture={runId:ui.selectedRun,pointerId:event.pointerId,nodeId,startX:event.clientX,startY:event.clientY,origin:{x:point.x,y:point.y},scale:camera.scale,moved:false,capture};
+  capture.setPointerCapture?.(event.pointerId);event.stopPropagation?.();
+}
+function updateNetworkGesture(event) {
+  const gesture=ui.networkGesture;if(!gesture||gesture.runId!==ui.selectedRun||gesture.pointerId!==event.pointerId)return;
+  const dx=event.clientX-gesture.startX,dy=event.clientY-gesture.startY;
+  if(!gesture.moved&&Math.hypot(dx,dy)<5)return;
+  gesture.moved=true;event.preventDefault?.();
+  if(gesture.nodeId)moveNetworkNode(gesture.nodeId,gesture.origin.x+dx/gesture.scale,gesture.origin.y+dy/gesture.scale);
+  else {const camera=networkViewState().camera;camera.x=gesture.origin.x+dx;camera.y=gesture.origin.y+dy;paintNetworkCamera();}
+  $('teamMap').classList.add('is-dragging');
+}
+function endNetworkGesture(event,cancel=false) {
+  const gesture=ui.networkGesture;if(!gesture||gesture.pointerId!==event.pointerId)return;
+  ui.networkGesture=null;$('teamMap').classList.remove('is-dragging');
+  if(gesture.runId===ui.selectedRun&&gesture.moved){
+    if(cancel){if(gesture.nodeId)moveNetworkNode(gesture.nodeId,gesture.origin.x,gesture.origin.y);else Object.assign(networkViewState().camera,gesture.origin);paintNetworkCamera();}
+    ui.networkSuppressClick=gesture.nodeId;
+  }
+  if(gesture.capture.hasPointerCapture?.(event.pointerId))gesture.capture.releasePointerCapture(event.pointerId);
+}
+function networkNodeClick(event={},id) {
+  if(event.detail!==0&&ui.networkSuppressClick===id){ui.networkSuppressClick=null;event.preventDefault?.();return;}
+  ui.networkSuppressClick=null;selectAgent(id);
+}
+function networkNodeKey(event,id) {
+  if(!event.altKey||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
+  event.preventDefault();event.stopPropagation?.();const point=ui.networkLayout.positions.get(id),step=event.shiftKey?40:10;
+  moveNetworkNode(id,point.x+(event.key==='ArrowRight'?step:event.key==='ArrowLeft'?-step:0),point.y+(event.key==='ArrowDown'?step:event.key==='ArrowUp'?-step:0));
+}
+function networkKey(event) {
+  if(event.target!==$('teamMap'))return;
+  if(['+','=','-','Home','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))event.preventDefault();
+  if(['+','='].includes(event.key))zoomNetwork(1.2);else if(event.key==='-')zoomNetwork(1/1.2);else if(event.key==='Home')fitNetwork();
+  else if(event.key.startsWith('Arrow'))panNetwork(event.key==='ArrowRight'?-40:event.key==='ArrowLeft'?40:0,event.key==='ArrowDown'?-40:event.key==='ArrowUp'?40:0);
+}
+function initializeNetworkControls() {
+  const map=$('teamMap');
+  map.addEventListener('pointerdown',event=>startNetworkGesture(event));map.addEventListener('pointermove',updateNetworkGesture);
+  map.addEventListener('pointerup',event=>endNetworkGesture(event));map.addEventListener('pointercancel',event=>endNetworkGesture(event,true));
+  map.addEventListener('lostpointercapture',event=>endNetworkGesture(event,true));map.addEventListener('keydown',networkKey);
+  map.addEventListener('wheel',event=>{if(!ui.networkCanvas)return;event.preventDefault();if(event.ctrlKey||event.metaKey){const rect=map.getBoundingClientRect();zoomNetwork(Math.exp(-Math.max(-100,Math.min(100,event.deltaY))*.005),{x:event.clientX-rect.left,y:event.clientY-rect.top});}else panNetwork(-event.deltaX,-event.deltaY);},{passive:false});
+  $('networkZoomIn').addEventListener('click',()=>zoomNetwork(1.2));$('networkZoomOut').addEventListener('click',()=>zoomNetwork(1/1.2));
+  $('networkFit').addEventListener('click',fitNetwork);$('networkReset').addEventListener('click',resetNetworkLayout);
+}
 function renderTeamMap(agents) {
+  pruneNetworkViews();
   const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,agents.map(agent=>[agent.id,agent.parent_id])]);
   $('teamMapMeta').textContent=`${agents.length} AGENTS`;
   const counts=[['作業中',agents.filter(a=>!archivedAgent(a)&&['working','running'].includes(a.status)).length],['待機',agents.filter(a=>!archivedAgent(a)&&['queued','waiting','idle'].includes(a.status)&&!needsHuman(a)).length],['要回答',agents.filter(needsHuman).length]];
   $('networkCounts').textContent=archivedRun(getRun())?'保存時点の担当と通信 · 現在は実行していません':counts.map(([label,count])=>`${label} ${count}`).join('  /  ');
   if(layoutKey!==ui.networkLayoutKey) {
-    ui.networkLayoutKey=layoutKey;ui.networkMailKey='';ui.networkNodes=new Map();map.replaceChildren();
-    if(!agents.length){map.appendChild(element('p','network-empty','チームを開始すると、担当と連絡がここに並びます。'));ui.networkSvg=null;return;}
+    ui.networkLayoutKey=layoutKey;ui.networkMailKey='';ui.networkNodes=new Map();ui.networkGesture=null;ui.networkParentLines=[];ui.networkMailLines=[];map.classList.remove('is-dragging');map.replaceChildren();
+    if(!agents.length){map.appendChild(element('p','network-empty','チームを開始すると、担当と連絡がここに並びます。'));ui.networkSvg=null;ui.networkCanvas=null;return;}
     const layout=networkLayout(agents),canvas=element('div','network-canvas');ui.networkLayout=layout;
+    const view=networkViewState();for(const id of view.positions.keys())if(!layout.positions.has(id))view.positions.delete(id);
+    for(const [id,point] of layout.positions)if(view.positions.has(id))layout.positions.set(id,{...view.positions.get(id)});else view.positions.set(id,{...point});
+    if(view.selectedAgent&&!layout.positions.has(view.selectedAgent))view.selectedAgent=null;
+    ui.networkCanvas=canvas;
     canvas.style.width=`${layout.width}px`;canvas.style.height=`${layout.height}px`;
     const svg=svgElement('svg',{viewBox:`0 0 ${layout.width} ${layout.height}`,width:layout.width,height:layout.height,role:'group','aria-label':'親子関係とメールの方向',class:'network-lines'});
     const defs=svgElement('defs'),marker=svgElement('marker',{id:'mailArrow',viewBox:'0 0 10 10',refX:9,refY:5,markerWidth:6,markerHeight:6,orient:'auto-start-reverse'});
     marker.appendChild(svgElement('path',{d:'M 0 0 L 10 5 L 0 10 z',fill:'currentColor'}));defs.appendChild(marker);svg.appendChild(defs);
     for(const agent of agents) {
       const here=layout.positions.get(agent.id),parent=layout.positions.get(agent.parent_id);
-      if(parent)svg.appendChild(svgElement('path',{d:`M ${parent.x+110} ${parent.y+124} C ${parent.x+110} ${parent.y+150}, ${here.x+110} ${here.y-24}, ${here.x+110} ${here.y}`,class:'network-parent-line','aria-hidden':'true'}));
+      if(parent){const line=svgElement('path',{d:`M ${parent.x+110} ${parent.y+124} C ${parent.x+110} ${parent.y+150}, ${here.x+110} ${here.y-24}, ${here.x+110} ${here.y}`,class:'network-parent-line','aria-hidden':'true'});svg.appendChild(line);ui.networkParentLines.push({line,id:agent.id,parentId:agent.parent_id});}
     }
     ui.networkSvg=svgElement('g',{class:'network-mail-lines'});svg.appendChild(ui.networkSvg);canvas.appendChild(svg);
     for(const agent of agents) {
       const place=layout.positions.get(agent.id),button=element('button','network-node');button.type='button';button.dataset.agentId=agent.id;button.dataset.focusKey=`map:${agent.id}`;
       button.style.left=`${place.x}px`;button.style.top=`${place.y}px`;
       const role=element('span','network-role',agent.parent_id?'WORKER':'PM'),name=element('strong','network-name'),state=element('span','network-state'),task=element('span','network-task'),activity=element('span','network-activity');
-      button.append(role,state,name,task,activity);button.addEventListener('click',()=>selectAgent(agent.id));canvas.appendChild(button);
+      button.append(role,state,name,task,activity);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));button.setAttribute('aria-describedby','networkInteractionHelp');canvas.appendChild(button);
       ui.networkNodes.set(agent.id,{button,name,state,task,activity});
     }
     map.appendChild(canvas);
+    if(!view.camera)fitNetwork();else paintNetworkCamera();
   }
   for(const agent of agents) {
     const node=ui.networkNodes.get(agent.id);if(!node)continue;
@@ -1301,11 +1427,11 @@ function renderTeamMap(agents) {
   }
   const links=currentMailLinks(agents,retainedTeamEvents(getRun())),mailKey=JSON.stringify(links);
   if(ui.networkSvg&&mailKey!==ui.networkMailKey) {
-    ui.networkMailKey=mailKey;ui.networkSvg.replaceChildren();
+    ui.networkMailKey=mailKey;ui.networkMailLines=[];ui.networkSvg.replaceChildren();
     links.forEach((link,index)=>{const from=ui.networkLayout.positions.get(link.from),to=ui.networkLayout.positions.get(link.to);
       const line=svgElement('path',{d:networkMailPath(from,to,index),class:'network-mail-line','marker-end':'url(#mailArrow)',role:'button',tabindex:0,'aria-label':`${agents.find(a=>a.id===link.from)?.name||link.from} → ${agents.find(a=>a.id===link.to)?.name||link.to} の通信を見る`});
       line.dataset.focusKey=`mail-line:${JSON.stringify([link.from,link.to])}`;line.addEventListener('click',()=>selectMailPair(link.from,link.to));
-      line.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();selectMailPair(link.from,link.to);}});ui.networkSvg.appendChild(line);
+      line.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();selectMailPair(link.from,link.to);}});ui.networkSvg.appendChild(line);ui.networkMailLines.push({line,from:link.from,to:link.to,index});
     });
   }
   $('networkMailMeta').textContent=`表示中の最新100イベント内 · メール ${links.length} 方向（最大12）`;
@@ -1329,9 +1455,11 @@ function rememberConversationView() {
 }
 function changeSelection(runId,id) {
   if(ui.selectedRun===runId&&ui.selectedAgent===id)return false;
+  if(ui.selectedRun)networkViewState().selectedAgent=ui.selectedAgent;
   if(ui.selectedRun!==runId&&ui.activityFilter==='pair'){ui.activityFilter='all';ui.activityPair=null;}
   if(ui.selectedRun!==runId){saveWorkBoardDraft();rememberWorkBoardView();}
   saveAgentDraft();rememberConversationView();ui.selectedRun=runId;ui.selectedAgent=id;
+  if(runId)networkViewState(runId).selectedAgent=id;
   // An epoch, rather than an ID comparison, also rejects an old A response after A → B → A.
   ui.selectionGeneration++;ui.loadedDetail=null;ui.detailError=false;ui.logContext='';ui.logSignature='';ui.outputRequest++;
   if(ui.polling)ui.pollAgain=true;
@@ -1339,7 +1467,7 @@ function changeSelection(runId,id) {
   return true;
 }
 function selectAgent(id) { if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;ui.navigationGeneration++;const changed=changeSelection(ui.selectedRun,id);revealInspector();renderRun();if(changed)void pollState(); }
-function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;ui.navigationGeneration++;const agents=ui.state.agents.filter(agent=>agent.run_id===id),changed=changeSelection(id,agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null);inlineStatus($('messageStatus'),'');showView('work');setBriefOpen(false);renderState();if(changed)void pollState(); }
+function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;ui.navigationGeneration++;const agents=ui.state.agents.filter(agent=>agent.run_id===id),saved=networkViewState(id).selectedAgent,changed=changeSelection(id,agents.find(agent=>agent.id===saved)?.id||agents.find(agent=>!agent.parent_id)?.id||agents[0]?.id||null);inlineStatus($('messageStatus'),'');showView('work');setBriefOpen(false);renderState();if(changed)void pollState(); }
 
 function renderRunList() {
   const counts=new Map();for(const {run} of questionEntries())counts.set(run.id,(counts.get(run.id)||0)+1);
@@ -1500,7 +1628,7 @@ function renderConversation(agent) {
   $('conversationMeta').textContent=agent?`${!agent.parent_id?'PM':'作業者'} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
   const memory=agent?.context_memory;
   $('contextMemoryStatus').hidden=!memory;
-  $('contextMemoryStatus').textContent=memory?`${memory.compacting&&!archivedAgent(agent)?'会話を要約中 · ':''}文脈圧縮 ${memory.compactions} 回 · 元の履歴 ${memory.history_records} 件（上限で除外 ${memory.history_omitted} 件）· モデル用の会話文脈は今回の起動中のみ。要約には情報が抜けることがあります。`:'';
+  $('contextMemoryStatus').textContent=memory?`${memory.compacting&&!archivedAgent(agent)?'会話を要約中 · ':''}文脈圧縮 ${memory.compactions} 回${memory.fallback_compactions>0?`（うち自動抜粋 ${memory.fallback_compactions} 回・AIによる要約ではありません。内容の一部を省略）`:''} · 元の履歴 ${memory.history_records} 件（上限で除外 ${memory.history_omitted} 件）· モデル用の会話文脈は今回の起動中のみ。要約には情報が抜けることがあります。`:'';
   $('conversationProfile').textContent=agent?configuredProfileLabel(agent)+'（応答モデル未確認）':'';
   $('conversationStatus').hidden=!agent;
   if(agent){$('conversationStatus').className='status-badge '+(archivedAgent(agent)?'archived':Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'');$('conversationStatus').textContent=stateLabel(agent);}
@@ -1701,6 +1829,7 @@ async function pollState(fresh=false) {
 }
 async function initialize() {
   applyTaskOrchestrationDefaults();
+  initializeNetworkControls();
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
   $('boardView').addEventListener('click',()=>setCockpitView('board'));
   $('workBoardForm').addEventListener('submit',event=>{event.preventDefault();void submitWorkBoardPost();});

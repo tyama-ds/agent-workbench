@@ -197,7 +197,14 @@ async def test_key_replacement_never_bypasses_reply_eligibility(tmp_path, limit)
         if limit == 'model_limit': run['model_calls'] = run['_config']['limits']['max_model_calls']
         elif limit == 'turn_limit': agent.turns = run['_config']['limits']['max_turns_per_agent']
         elif limit == 'time_limit': run['created_at'] -= run['_config']['limits']['max_run_seconds'] + 1
-        elif limit == 'context_limit': agent.conversation.append({'role': 'user', 'content': 'x' * run['_config']['limits']['max_context_chars']})
+        elif limit == 'context_limit':
+            # A role=user record alone can be peer/reference data. Use the real
+            # human recording path so this constraint is pinned, not excerptable.
+            engine._append_context(agent, {'role': 'user', 'content': 'x' * run['_config']['limits']['max_context_chars']}, human=True)
+            assert agent.conversation[-1]['_human'] is True
+            assert agent.original_history[-1][0] == agent.conversation[-1]
+            assert engine.message_eligibility(agent)['reason'] == 'context_limit'
+            hard_context = copy.deepcopy((agent.conversation, agent.original_history))
         elif limit == 'stopped': await engine.stop_run(run['id'])
         else:
             config['providers'][0]['model'] = 'changed-model'
@@ -209,6 +216,9 @@ async def test_key_replacement_never_bypasses_reply_eligibility(tmp_path, limit)
         response = await client.post(auth.origin + f'/api/agents/{agent.id}/message', json={'text': 'Do not bypass limits'}, headers=headers)
         assert response.status == 400
         assert (run['model_calls'], run['tool_calls'], run['auto_collaborations'], agent.turns) == before
+        if limit == 'context_limit':
+            assert (agent.conversation, agent.original_history) == hard_context
+            assert agent.compactions == agent.fallback_compactions == 0
 
 
 async def test_failed_save_and_capacity_do_not_advance_revision(tmp_path, monkeypatch):
