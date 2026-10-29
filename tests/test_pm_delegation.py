@@ -204,6 +204,9 @@ async def test_required_mode_gates_work_until_current_reports_are_consumed(manua
                      'sha256': hashlib.sha256(content).hexdigest(), 'operation': 'created'}
     assert content.decode('utf-8') == write['text']
     assert pm.output_receipts[-1]['sha256'] == saved['sha256']
+    assert (await engine.execute_tool(run, pm, 'review_worker_report',
+        {'worker_id': worker.id, 'result_revision': worker.result_revision,
+         'decision': 'accept', 'feedback': 'Checked the current finding and saved integration.'}))['accepted']
     assert (await engine.execute_tool(run, pm, 'finish_work', {'summary': 'Combined verified results'}))['ok']
 
 
@@ -360,7 +363,13 @@ async def test_actual_loops_require_formal_current_worker_report_before_pm_compl
             if not any(message['role'] == 'assistant' for message in messages):
                 return reply(calls=[('spawn_worker', {'profile_id': 'local', 'role': 'reader', 'task': 'Read source'}),
                                     ('wait_for_workers', {})])
-            return reply(calls=[('finish_work', {'summary': 'Integrated worker evidence'})])
+            reviews = []
+            if worker_result == 'formal':
+                worker = next(child for child in engine.agents.values() if child.parent_id == agent.id)
+                reviews = [('review_worker_report', {'worker_id': worker.id,
+                    'result_revision': worker.result_revision, 'decision': 'accept',
+                    'feedback': 'Checked this current formal report against the assigned source.'})]
+            return reply(calls=[*reviews, ('finish_work', {'summary': 'Integrated worker evidence'})])
     client = Client()
     engine, _ = configured(tmp_path, client)
     try:
@@ -420,7 +429,11 @@ async def test_wait_yields_without_polling_and_skips_later_batch_tools(tmp_path)
             if not any(message['role'] == 'assistant' for message in messages):
                 return reply(calls=[('spawn_worker', {'profile_id': 'local', 'role': 'reader', 'task': 'Read source'}),
                     ('wait_for_workers', {}), ('write_text', {'path': 'skipped.txt', 'text': 'must not run', 'expected_sha256': 'missing'})])
-            return reply('Integrated current report')
+            worker = next(child for child in engine.agents.values() if child.parent_id == agent.id)
+            return reply(calls=[('review_worker_report', {'worker_id': worker.id,
+                'result_revision': worker.result_revision, 'decision': 'accept',
+                'feedback': 'Checked the current report after waiting without polling.'}),
+                ('finish_work', {'summary': 'Integrated current report'})])
     client = Client()
     engine, work = configured(tmp_path, client)
     try:

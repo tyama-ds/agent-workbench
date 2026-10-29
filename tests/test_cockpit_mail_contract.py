@@ -89,11 +89,23 @@ function useSnapshot(snapshot){
 useSnapshot(payload.queued);
 const agents=ui.state.agents.filter(agent=>agent.run_id===ids.run);
 const links=currentMailLinks(agents,retainedTeamEvents(getRun()));
-assert.deepEqual(links,[{from:ids.first,to:ids.worker},{from:ids.first,to:ids.second},
-                        {from:ids.worker,to:ids.first}]);
+assert.deepEqual(links,[{from:ids.first,to:ids.worker,stage:'queued',queued:1,consumed:0},
+                        {from:ids.first,to:ids.second,stage:'queued',queued:1,consumed:0},
+                        {from:ids.worker,to:ids.first,stage:'queued',queued:1,consumed:0}]);
 renderTeamMap(agents);
-assert.equal(ui.networkSvg.children.length,3);
-assert(ui.networkSvg.children.every(line=>line.getAttribute('marker-end')==='url(#mailArrow)'));
+assert.equal(ui.networkMailLines.length,3);assert.equal(ui.networkSvg.children.length,6);
+assert.equal(ui.networkSvg.children.filter(line=>line.getAttribute('role')==='button').length,3);
+assert.equal(ui.networkSvg.children.filter(line=>line.getAttribute('tabindex')==='0').length,3);
+ui.networkMailLines.forEach(({line,track,from,to},index)=>{
+  assert.equal(ui.networkSvg.children[index*2],line);assert.equal(ui.networkSvg.children[index*2+1],track);
+  assert.equal(line.getAttribute('d'),track.getAttribute('d'));
+  assert.equal(line.getAttribute('d'),networkMailPath(ui.networkLayout.positions.get(from),ui.networkLayout.positions.get(to),index));
+  assert(line.getAttribute('marker-end')==null);assert.equal(track.getAttribute('marker-end'),'url(#mailArrow)');
+  assert.equal(line.getAttribute('role'),'button');assert.equal(line.getAttribute('tabindex'),'0');
+  assert.equal(typeof line.listeners.click,'function');assert.equal(typeof line.listeners.keydown,'function');
+  assert.equal(track.getAttribute('aria-hidden'),'true');assert(track.getAttribute('tabindex')==null);assert(track.getAttribute('role')==null);
+  assert.equal(track.listeners?.click,undefined);assert.equal(track.listeners?.keydown,undefined);assert.equal(track.dataset.focusKey,undefined);
+});
 assert(ui.networkSvg.children.some(line=>line.dataset.focusKey===`mail-line:${JSON.stringify([ids.first,ids.worker])}`));
 renderActivity(getRun());
 const before=textTree($('activityFeed'));

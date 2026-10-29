@@ -277,6 +277,9 @@ async def test_posts_do_not_answer_questions_or_replace_formal_report_or_file_ob
         assert not pm.results and not [item for item in pm.conversation if item.get('name') == 'read_text']
         observed = await engine.execute_tool(run, pm, 'read_text', {'path': 'report.txt'})
         assert observed['sha256'] == saved['sha256'] and (work / 'report.txt').read_text() == 'Real bytes'
+        assert (await engine.execute_tool(run, pm, 'review_worker_report',
+            {'worker_id': worker.id, 'result_revision': worker.result_revision,
+             'decision': 'accept', 'feedback': 'Checked the formal report and actual saved bytes independently of board notes.'}))['accepted']
         assert (await engine.execute_tool(run, pm, 'finish_work', {'summary': 'Real independent gates met'}))['ok']
     finally:
         await engine.close()

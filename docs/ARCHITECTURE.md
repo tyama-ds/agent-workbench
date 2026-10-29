@@ -32,6 +32,7 @@ flowchart LR
 - `workbench/server.py`: private state directory, one-use browser bootstrap, origin/host checks, HTTP API, bounded model-list connectivity test.
 - `workbench/engine.py`: independently maintained conversations, role assignment, per-run budgets, worker mail, paused questions, reservations, shutdown/draining.
 - `workbench/providers.py`: stateless wire conversions. OpenAI native response output is replayed with encrypted reasoning; Anthropic thinking signatures/redacted blocks remain intact; Local native content/reasoning is retained. Display reasoning is separate from protocol data.
+- `workbench/copilot_protocol.py`: managed Copilot JSON request envelopes, strict whole-response validation and text-only replay with call/result IDs. The same deterministic request representation supplies context measurement and HTTP dispatch. Ordinary provider parsing and no-tools summaries retain their existing contracts. See [Copilot protocol](COPILOT_PROTOCOL.md).
 - `workbench/resources.py`: shared Local admission control, queue limits, start interval, bounded retry settings, fixed NVIDIA query. A failed or cancelled request releases its slot.
 - `workbench/copilot_bridge.py`: background opt-in startup, bounded identity probes and owned-process cleanup. Existing bridges are borrowed. Managed starts use a dedicated Edge profile and no transcript log. The virtual Copilot profile shares the Local queue/time limits, omits local GPU admission and disables automatic HTTP retry. API readiness is not inference or login verification.
 - `workbench/harness.py`: host data transfers, bounded name/content searches and Office parsing/writing.
@@ -135,6 +136,10 @@ including Stop during a save. This is a dispatch check, not rollback or forced f
 termination. Provider retry policy and logical model-call accounting are unchanged.
 
 ### Provider completion evidence (0.1.1.dev16)
+
+Managed Copilot action requests use the stricter dev38 text envelope: one choice,
+`stop`, no provider error, refusal or native tool calls, and the complete versioned
+JSON response. This exception does not loosen the native provider rules below.
 
 Provider normalization completes before the engine logs an assistant response,
 records a final report or dispatches any call from that response. Non-streaming
@@ -610,3 +615,72 @@ preserve prior active keys. Saved provider-identity/delete changes require expli
 clear. Readable mismatch IDs can be cleared individually, including exact stored
 orphans. Corrupt/undecryptable ciphertext is not automatically reset. The vault is
 bound to the same PC/user/state directory and is not a portable key export.
+
+
+## Dynamic network presentation
+
+The dev39 circular network is a browser-only view of compact public state and
+retained run events. Hover/focus preview and per-run pins are independent of the
+selected inspector and human draft. Explicit log navigation uses existing selection.
+Shared circle geometry clips parent/mail paths at the visible boundary. New
+queued and context-consumed event stages have separate finite visual treatments;
+initial state, reconnect and history do not replay old events. Motion stops with
+disconnection, hidden/modal views, reduced-motion preference or terminal/archive
+state. See [DYNAMIC_NETWORK.md](DYNAMIC_NETWORK.md) for semantics and limits.
+
+
+## Shared task, peer waiting and report review
+
+Workers receive the original run task in application-owned runtime policy, separately
+from PM assignments and untrusted peer messages. The full task participates in the
+existing exact dispatch/context accounting; it does not grant permissions.
+The policy explicitly distinguishes the worker's own ID, role and parent PM from
+instructions addressed to other participants in that shared task. Queued input yields
+to the next admitted turn after a complete response/tool batch, never splitting a
+tool group or interrupting a provider call. A stale plain response cannot complete
+work while new input is pending. Human questions and errors keep their existing gates.
+`wait_for_message` yields an unfinished turn, consumes no background inference and
+resumes only through the existing pending-input queue. Human-only questions stay
+human-only. PM report decisions bind to an owned child and its current formally
+completed, context-consumed revision. A revision request uses normal mail and its
+shared handoff budget. New input invalidates stale acceptance. Required delegation
+checks accepted current reports at final completion, without substituting acceptance
+for semantic correctness or raising any resource limit. See
+[TEAM_COLLABORATION.md](TEAM_COLLABORATION.md).
+
+ResourceGate reserves FIFO tickets under its condition lock before waiting for
+capacity. New requests cannot barge ahead of older waiters. Cancelled/timed-out
+tickets are removed and notify the next waiter; admitted slots retain the existing
+finally-based release, start interval and GPU checks. This is admission fairness,
+not a semantic turn-order scheduler, and it changes no configured budget or timeout.
+
+Ordered text work is an explicit single-PM mode, declared after workers are created
+with unique participant keys and initial waiting. The pure `ordered_work` state
+validates bounded text-chain predicates and retains candidate/review/rollback
+receipts. `ordered_engine` binds those transitions to actual actor identities,
+consumed mail and dispatch snapshots. Every candidate needs PM meaning review;
+only then does the application route the author's output onward. No replacement
+word is generated. Correction invalidates dependent receipts and formal report
+approvals while retaining prior evidence. Final native submission can carry the
+worker's formal report, but all current reports still require PM acceptance and
+the PM's explicit completion. Runtime grants are never restored from archives.
+Bare text is never executed: this mode permits at most two explicit protocol
+repair requests within the existing model/time limits, then stops. Provider errors,
+human questions and all resource/permission gates retain their normal behavior.
+
+Optional reference text chains bind a strictly validated, immutable catalogue at
+run admission, before any bridge await. The request is copied first. References
+are data rather than instructions or grants; only ID/value/meaning consistency
+with that source is verified, not dictionary truth. Native review, real consumed
+mail, dispatch generation and final report gates remain necessary. Public history
+contains a masked source descriptor, not a resumable catalogue authority.
+
+Ordered provider requests use a deterministic copy projection. Original records
+and receipt journals are untouched. Complete native groups, the initial group,
+all human inputs and questions, actual received current grants/candidates/formal
+reports and recent groups are retained. Repeated successful ordered-state displays
+can be omitted from copied tool results, with record provenance; other receipt
+fields and warnings remain. The final system/messages/tools sent are measured
+together before charging inference. No summary call or retry is added, and protected
+content that still exceeds the normal limit fails closed. General context recovery
+outside ordered mode is unchanged.

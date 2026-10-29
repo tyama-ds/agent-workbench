@@ -36,7 +36,7 @@ CREDENTIAL_RECOVERY_CASE = {
 
 COMPACTION_CASE = {
     'task': '[SYNTHETIC] Compact a long conversation; preserve this exact original task.',
-    'observation': '[SYNTHETIC] Original observation 0: ' + 'a' * 4000,
+    'observation': '[SYNTHETIC] Original observation 0: ' + 'a' * 3000,
     'result': '[SYNTHETIC] Compaction continued; exact human and assistant originals verified; missing record reported.',
 }
 
@@ -115,7 +115,7 @@ class SyntheticClient:
                     'id': 'compaction-lookup', 'name': 'read_context_history',
                     'arguments': {'record_ids': [1, 2, 999999]}}])
             assert count < 12, 'Fixture must trigger compaction before its fallback turn ceiling'
-            return ModelReply(text=f'[SYNTHETIC] Original observation {count}: ' + 'a' * 4000,
+            return ModelReply(text=f'[SYNTHETIC] Original observation {count}: ' + 'a' * 3000,
                               tool_calls=[{'id': f'compaction-{count}', 'name': 'list_team', 'arguments': {}}])
         if initial == CREDENTIAL_RECOVERY_CASE['task']:
             if identity['parent_id']:

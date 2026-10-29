@@ -293,7 +293,13 @@ async def test_key_rotation_distinguishes_dispatched_gate_waiter_from_mailbox_wo
         assert instruction.messages[-1]['content'] == 'Explicit recovery direction'
         await case.finish(second_pm, instruction, response(text=recovered))
         assert (second['model_calls'], second_pm.turns, second_pm.result_revision) == (4, 4, 4)
-        assert len(second_pm.results) == 3 and first['status'] == second['status'] == 'done'
+        # Replies produced before newer queued input remain observations. Only
+        # the response after the final input is a completion result.
+        assert [row['text'] for row in second_pm.logs if row['kind'] == 'assistant'] == [
+            '[redacted]', 'Recovered queued work', '[redacted]']
+        assert len(second_pm.results) == 1 and first['status'] == second['status'] == 'done'
+        assert second_pm.results[0]['revision'] == second_pm.result_revision == 4
+        assert second_pm.results[0]['text'] == '[redacted]'
         public = json.dumps(await case.api('get', '/api/state'))
         assert old not in public and new not in public and recovered not in public
         await case.stop(first)
