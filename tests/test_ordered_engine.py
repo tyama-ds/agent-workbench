@@ -7,6 +7,7 @@ import asyncio
 import copy
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -91,7 +92,13 @@ async def drive(agent):
     loop = asyncio.get_running_loop()
     started = loop.time()
     try:
-        await asyncio.wait_for(asyncio.shield(task), 10)
+        # Completion watchdog, not an elapsed<=10 performance assertion: once
+        # the loop regains control, a completed task supplies its actual result.
+        # A still-pending task fails without cancellation, retry or another wait.
+        _, pending = await asyncio.wait({task}, timeout=10)
+        if pending:
+            raise TimeoutError
+        task.result()
     except TimeoutError as exc:
         try:
             observed = getattr(agent, '_provider_observation', {}) or {}
@@ -116,6 +123,85 @@ async def drive(agent):
             exc.add_note('drive timeout observation failed: ' + type(observation_error).__name__[:80])
         raise
     await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize('mode', [
+    'early_delayed', 'late_complete', 'pending', 'value_error',
+    'inner_timeout', 'external_cancel', 'child_cancel',
+])
+async def test_drive_completion_watchdog_preserves_results_failures_and_cancellation(mode):
+    def run_case():
+        class ClockLoop(asyncio.SelectorEventLoop):
+            now = 0.0
+
+            def time(self):
+                return self.now
+
+        loop = ClockLoop()
+
+        async def observe():
+            completed = []
+            original = ValueError('original') if mode == 'value_error' else TimeoutError('inner')
+
+            async def work():
+                if mode in {'pending', 'external_cancel'}:
+                    await loop.create_future()
+                loop.now = 24.0 if mode == 'late_complete' else 9.0
+                completed.append(loop.time())
+                if mode in {'value_error', 'inner_timeout'}:
+                    raise original
+                if mode == 'child_cancel':
+                    raise asyncio.CancelledError('child')
+
+            task = asyncio.create_task(work())
+            # The task already exists; no queued input makes real Engine.kick
+            # a no-op. Only the actual drive helper is under test here.
+            agent = SimpleNamespace(_test_engine=SimpleNamespace(closed=False), task=task,
+                pending=[], closing=False, question='', status='idle', stop_reason='', last_error='')
+            if mode in {'early_delayed', 'pending'}:
+                loop.call_soon(setattr, loop, 'now', 24.0)
+            if mode == 'external_cancel':
+                loop.call_soon(asyncio.current_task().cancel, 'external')
+            error = None
+            try:
+                await drive(agent)
+            except BaseException as exc:
+                error = exc
+            finally:
+                observed = {'error': error, 'same_original': error is original,
+                    'completed': completed[:], 'at': loop.time(),
+                    'done': task.done(), 'cancelled': task.cancelled()}
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            return observed
+
+        try:
+            observed = loop.run_until_complete(observe())
+            assert not asyncio.all_tasks(loop)
+            return observed
+        finally:
+            loop.close()
+
+    # Keep the virtual clock in a separate loop, away from pytest's own timers.
+    observed = await asyncio.to_thread(run_case)
+    if mode in {'early_delayed', 'late_complete'}:
+        assert observed['error'] is None and observed['done'] and not observed['cancelled']
+        assert observed['at'] == 24.0
+        assert observed['completed'] == [9.0 if mode == 'early_delayed' else 24.0]
+    elif mode in {'value_error', 'inner_timeout'}:
+        assert observed['same_original'] and observed['done'] and not observed['cancelled']
+    elif mode == 'pending':
+        assert type(observed['error']) is TimeoutError
+        assert not observed['done'] and not observed['cancelled'] and observed['completed'] == []
+    else:
+        assert isinstance(observed['error'], asyncio.CancelledError)
+        assert str(observed['error']) == ('child' if mode == 'child_cancel' else 'external')
+        assert observed['done'] is (mode == 'child_cancel')
+        assert observed['cancelled'] is (mode == 'child_cancel')
+    if mode in {'pending', 'inner_timeout'}:
+        assert any('drive timeout observation (no locals/content): ' in note
+                   for note in observed['error'].__notes__)
 
 
 def bind_driver(engine):
