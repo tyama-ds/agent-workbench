@@ -9,6 +9,7 @@ import asyncio
 import math
 import os
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -116,6 +117,7 @@ class ResourceGate:
 
     def __init__(self, gpu_reader: Callable[[], Awaitable[list[dict]]] | None = None):
         self._condition = asyncio.Condition()
+        self._tickets: deque[object] = deque()
         self._start_lock = asyncio.Lock()
         self._active = 0
         self._waiting = 0
@@ -176,9 +178,24 @@ class ResourceGate:
             try:
                 async with asyncio.timeout(timeout):
                     async with self._condition:
-                        await self._condition.wait_for(lambda: self._active < maximum)
+                        # Reserve queue order before waiting. A releasing task
+                        # can otherwise reacquire before notified peers resume.
+                        ticket = object()
+                        self._tickets.append(ticket)
+                        try:
+                            await self._condition.wait_for(
+                                lambda: self._tickets[0] is ticket and self._active < maximum)
+                        except BaseException:
+                            # Condition.wait reacquires the lock even on cancel.
+                            # Removing a cancelled/timed-out head must wake the
+                            # next ticket even if no active request has ended.
+                            self._tickets.remove(ticket)
+                            self._condition.notify_all()
+                            raise
+                        self._tickets.popleft()
                         self._active += 1
                         acquired = True
+                        self._condition.notify_all()
                     # Serialize admission timestamps, including the first request
                     # after a GPU wait, so a queue cannot burst through together.
                     async with self._start_lock:

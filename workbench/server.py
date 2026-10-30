@@ -22,6 +22,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from .config import Settings, ROOT, COPILOT_PROFILE_ID, SEARCH_KEY_UNSUPPORTED, preview_settings_import, text
 from .engine import Engine, WorkBoardError
+from .questions import QuestionConflict
 from .redaction import RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .history import HistoryError, ArchivedReadOnly
 from .securestore import CredentialStorageError, SavedCredentialIdentityChange
@@ -109,7 +110,7 @@ class BrowserAuth:
             response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
         except (HistoryError, ArchivedReadOnly) as exc:
             response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
-        except WorkBoardError as exc:
+        except (WorkBoardError, QuestionConflict) as exc:
             response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
         except (ValueError, KeyError, TypeError) as exc:
             try:
@@ -183,6 +184,17 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
 
     async def config_export(request):
         return web.json_response(settings.export())
+
+    async def skills(request):
+        if request.query:
+            raise ValueError('スキル一覧は保存済みの読み取り許可フォルダーから取得します')
+        revision = settings.revision
+        catalog = await asyncio.to_thread(engine.skill_catalog, redact=False)
+        if revision != settings.revision:
+            return web.json_response({'ok': False, 'code': 'settings_changed',
+                'error': '読み込み中に設定が変わりました。保存済み設定を読み直してから再確認してください。'}, status=409)
+        return web.json_response(engine._redact_tree({**catalog,
+            'config_revision': revision, 'instance_id': engine.instance_id}))
 
     async def config_import_preview(request):
         try:
@@ -280,7 +292,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
 
     async def message(request):
         value = await body(request)
-        return web.json_response(await engine.human_message(request.match_info['id'], value.get('text')))
+        return web.json_response(await engine.human_message(request.match_info['id'], value.get('text'),
+            question_id=value.get('question_id')))
 
     async def work_board(request):
         run_id = request.match_info['id']
@@ -330,6 +343,7 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_get('/api/config', config)
     app.router.add_put('/api/config', config)
     app.router.add_get('/api/config/export', config_export)
+    app.router.add_get('/api/skills', skills)
     app.router.add_post('/api/config/import-preview', config_import_preview)
     app.router.add_get('/api/copilot-agent-status', copilot_status)
     app.router.add_post('/api/copilot-agent-start', copilot_start)

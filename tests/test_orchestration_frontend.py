@@ -127,7 +127,7 @@ const local=settingControl('localFields','max_concurrent_requests',4),copilot=se
 assert.equal(local.type,'range');assert.equal(local.min,'1');assert.equal(local.max,'16');assert.equal(copilot.type,'range');
 assert.equal(local.getAttribute('aria-valuetext'),'4 リクエスト');assert.equal(copilot.getAttribute('aria-valuetext'),'2 リクエスト');
 const pending=submit(),body=requests[0].options.body;
-assert.equal(body.config_revision,4);assert.deepEqual(body.config.orchestration,{delegation_level:2,workers_per_pm:3});
+assert.equal(body.config_revision,4);assert.deepEqual(body.config.orchestration,{delegation_level:2,workers_per_pm:3,max_delegation_depth:3});
 assert.equal(body.config.local.max_concurrent_requests,4);assert.equal(body.config.copilot_agent.max_concurrent_requests,2);
 assert.deepEqual(body.config.providers,before.providers);assert.deepEqual(body.config.search,before.search);
 assert.deepEqual(body.config.limits,before.limits);assert(local.disabled&&copilot.disabled);

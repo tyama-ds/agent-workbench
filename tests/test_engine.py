@@ -147,7 +147,7 @@ async def test_roles_worker_budget_mail_isolation_and_reservations(tmp_path):
     engine, work = configured(tmp_path, ScriptClient([]))
     engine.kick = lambda a: None
     try:
-        run, pm = await start(engine, max_workers=1)
+        run, pm = await start(engine, max_workers=1, max_delegation_depth=1)
         result = await engine.execute_tool(run, pm, 'spawn_worker', {'role': 'writer', 'task': 'Write', 'profile_id': 'local'})
         worker = engine.agents[result['agent_id']]
         with pytest.raises(ValueError, match='最大 worker'):

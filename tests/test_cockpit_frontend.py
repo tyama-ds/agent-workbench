@@ -21,6 +21,9 @@ Node.prototype.replaceChildren=function(...items){
  this.children=[];this.append(...items);
 };
 window.matchMedia=()=>({matches:false});
+// Send the shared synthetic full state through the production acceptance path.
+const originalNetworkSeed=seedSelection;
+seedSelection=()=>{originalNetworkSeed();applyState({...ui.state,...(ui.instanceId?{instance_id:ui.instanceId}:{})},{run:ui.selectedRun,agent:ui.selectedAgent});renderNetworkPreview();};
 function namedAgent(id){return ui.state.agents.find(agent=>agent.id===id);}
 function mail(id,from='agent-a',to='agent-b',extra={}){
  return {id,run_id:'run-a',kind:'mail',mail_id:`m${id}`,from_agent_id:from,to_agent_id:to,
@@ -64,7 +67,8 @@ const agents=[{id:'p',parent_id:null},{id:'w',parent_id:'p',role:'pm'},
 const a=networkLayout(agents),b=networkLayout(agents);
 assert.deepEqual([...a.positions],[...b.positions]);assert.equal(a.positions.size,agents.length);
 assert(a.positions.get('w').y>a.positions.get('p').y);assert(a.positions.get('v').y>a.positions.get('q').y);
-assert(a.width>802);for(const position of a.positions.values())assert(position.x+220<a.width);
+assert.equal(NETWORK_NODE_SIZE,112);assert.equal(NETWORK_NODE_RADIUS,56);
+for(const position of a.positions.values())assert(position.x+NETWORK_NODE_SIZE<a.width);
 ''')
 
 
@@ -97,11 +101,11 @@ for(const pm of ['p','q']){
  for(let i=0;i<count;i++){const p=layout.positions.get(`${pm}-${i}`);if(!rows.has(p.y))rows.set(p.y,[]);rows.get(p.y).push(p);}
  assert.equal(rows.size,Math.ceil(count/3));
  for(const [y,points] of rows){
-  assert(y>parent.y+124);assert.equal((points[0].x+points.at(-1).x+220)/2,parent.x+110);
-  for(let i=0;i<points.length;i++){assert(points[i].x>=0&&points[i].x+220<layout.width);if(i)assert.equal(points[i].x-points[i-1].x,244);}
+  assert(y>parent.y+NETWORK_NODE_SIZE);assert.equal((points[0].x+points.at(-1).x+NETWORK_NODE_SIZE)/2,parent.x+NETWORK_NODE_RADIUS);
+  for(let i=0;i<points.length;i++){assert(points[i].x>=0&&points[i].x+NETWORK_NODE_SIZE<layout.width);if(i)assert(points[i].x-points[i-1].x>=NETWORK_NODE_SIZE+24);}
  }
 }
-assert(layout.positions.get('q').y>layout.positions.get(`p-${count-1}`).y+124);
+assert(layout.positions.get('q').y>layout.positions.get(`p-${count-1}`).y+NETWORK_NODE_SIZE);
 ''')
 
 
@@ -115,12 +119,16 @@ const edges=svg.children.filter(node=>node.getAttribute('class')==='network-pare
 assert.equal(edges.length,5);
 agents.slice(1).forEach((agent,index)=>{
  const parent=layout.positions.get('pm'),point=layout.positions.get(agent.id),v=edges[index].getAttribute('d').match(/-?\d+(?:\.\d+)?/g).map(Number);
- assert.deepEqual([v[0],v[1],v[6],v[7]],[parent.x+110,parent.y+124,point.x+110,point.y]);
+ const a=networkNodeCenter(parent),b=networkNodeCenter(point);
+ assert(Math.abs(Math.hypot(v[0]-a.x,v[1]-a.y)-NETWORK_NODE_RADIUS)<.01);
+ assert(Math.abs(Math.hypot(v[6]-b.x,v[7]-b.y)-NETWORK_NODE_RADIUS)<.01);
+ assert.equal(edges[index].getAttribute('d'),networkLinkGeometry(parent,point,0,true).path);
  assert.equal(ui.networkNodes.get(agent.id).button.style.left,`${point.x}px`);
 });
 const a=layout.positions.get('w3'),b=layout.positions.get('w4'),mail=networkMailPath(a,b,0).match(/-?\d+(?:\.\d+)?/g).map(Number);
-assert.deepEqual([mail[0],mail[1],mail[6],mail[7]],[a.x+110,a.y,b.x+110,b.y]);
-assert(mail[3]<a.y&&mail[5]<b.y);
+const ac=networkNodeCenter(a),bc=networkNodeCenter(b);
+assert(Math.abs(Math.hypot(mail[0]-ac.x,mail[1]-ac.y)-NETWORK_NODE_RADIUS)<.01);
+assert(Math.abs(Math.hypot(mail[6]-bc.x,mail[7]-bc.y)-NETWORK_NODE_RADIUS)<.01);
 ''')
 
 
@@ -129,8 +137,8 @@ def test_mail_directions_require_real_scoped_ids_and_never_guess_names():
 seedSelection();const agents=ui.state.agents.filter(a=>a.run_id==='run-a');
 const legacy={kind:'mail',from:'PM A',to:'Worker B',text:'legacy'};
 const rows=[legacy,mail(1),mail(2),mail(3,'agent-b','agent-a'),mail(4,'agent-c','agent-a'),
- mail(5,'agent-a','agent-a'),mail(6,'agent-b','agent-a',{kind:'mail_consumed'})];
-assert.deepEqual(currentMailLinks(agents,rows),[{from:'agent-a',to:'agent-b'},{from:'agent-b',to:'agent-a'}]);
+ mail(5,'agent-a','agent-a'),mail(6,'agent-b','agent-a',{kind:'mail_consumed',delivery_state:'context_consumed'})];
+assert.deepEqual(currentMailLinks(agents,rows),[{from:'agent-a',to:'agent-b',stage:'queued',queued:2,consumed:0},{from:'agent-b',to:'agent-a',stage:'consumed',queued:1,consumed:1}]);
 ui.state.events=[mail(1),{...mail(2),run_id:'run-b'}];assert.equal(retainedTeamEvents(getRun()).length,1);
 ui.compactState=true;ui.loadedEventsRun='run-b';assert.deepEqual(retainedTeamEvents(getRun()),[]);
 ''')
@@ -156,11 +164,11 @@ def test_mail_curve_is_outside_sibling_cards_and_inside_viewbox(route):
 const values=networkMailPath(from,to,2).match(/-?\d+(?:\.\d+)?/g).map(Number);
 assert.equal(values.length,8);for(let i=0;i<8;i+=2)assert(values[i]>=0&&values[i]<840);
 for(let i=1;i<8;i+=2)assert(values[i]>=0);
-if(from.y===to.y){
- assert.deepEqual([values[0],values[1],values[6],values[7]],[from.x+110,from.y,to.x+110,to.y]);
- assert(values[3]<from.y&&values[5]<from.y);assert(values[3]>from.y-28&&values[5]>from.y-28);
-}else{
- assert.deepEqual(values,[744,268,802,268,802,96,500,96]);
+const a=networkNodeCenter(from),b=networkNodeCenter(to);
+assert(Math.abs(Math.hypot(values[0]-a.x,values[1]-a.y)-NETWORK_NODE_RADIUS)<.01);
+assert(Math.abs(Math.hypot(values[6]-b.x,values[7]-b.y)-NETWORK_NODE_RADIUS)<.01);
+for(let i=1;i<20;i++){const t=i/20,s=1-t,x=s*s*s*values[0]+3*s*s*t*values[2]+3*s*t*t*values[4]+t*t*t*values[6],y=s*s*s*values[1]+3*s*s*t*values[3]+3*s*t*t*values[5]+t*t*t*values[7];
+ assert(Math.hypot(x-a.x,y-a.y)>=NETWORK_NODE_RADIUS-.01);assert(Math.hypot(x-b.x,y-b.y)>=NETWORK_NODE_RADIUS-.01);
 }
 ''')
 
@@ -172,7 +180,8 @@ $('teamMap').scrollTop=145;before.focus();
 namedAgent('agent-b').status='working';namedAgent('agent-b').activity={latest_log:{kind:'tool',text:'Reading actual.txt',at:9}};
 renderRun();assert.equal(ui.networkNodes.get('agent-b').button,before);assert.equal(before.listeners.click,listener);
 assert.equal(document.activeElement,before);assert.equal($('teamMap').scrollTop,145);
-assert.match(renderedText(before),/Reading actual.txt/);assert.match(before.getAttribute('aria-label'),/作業中/);
+ui.networkHoverAgent='agent-b';renderNetworkPreview();
+assert.match($('networkPreviewLatest').textContent,/Reading actual.txt/);assert.match(before.getAttribute('aria-label'),/作業中/);
 ''')
 
 
@@ -190,8 +199,10 @@ assert.equal(ui.drafts.get('agent-a'),'unsent human draft');
 
 def test_native_node_click_selects_agent_and_requests_only_its_owned_detail():
     check(r'''
-seedSelection();$('messageInput').value='PM draft';saveAgentDraft({type:'input'});
-ui.networkNodes.get('agent-b').button.listeners.click();assert.equal(ui.selectedAgent,'agent-b');
+initializeNetworkControls();seedSelection();$('messageInput').value='PM draft';saveAgentDraft({type:'input'});
+ui.networkNodes.get('agent-b').button.listeners.click();assert.equal(ui.selectedAgent,'agent-a');
+assert.equal(networkViewState().pinnedAgent,'agent-b');assert.equal(requests.length,0);
+$('networkPreviewOpen').listeners.click();assert.equal(ui.selectedAgent,'agent-b');
 assert.equal(requests.length,1);assert.deepEqual(selectionOf(requests[0]),{view:'selected',run_id:'run-a',agent_id:'agent-b'});
 requests[0].resolve(compactState('run-a','agent-b'));await flush();
 assert.equal(ui.drafts.get('agent-a'),'PM draft');assert.equal(selectedOutput().record.text,'current result agent-b');

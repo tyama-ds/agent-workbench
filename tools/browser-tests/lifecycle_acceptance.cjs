@@ -108,7 +108,7 @@ async function lifecycleAcceptance({page,agentContract,fixtureContext,artifacts,
     const original='[SYNTHETIC] Accepted start survives state failure.';
     await openTask(original);
     const first=await takePost('start',()=>page.locator('#startRun').click());
-    assert.deepEqual(first.payload,{task:original,pm_profile:'local',worker_profiles:[],max_workers:0,delegation_level:1,workers_per_pm:2});
+    assert.deepEqual(first.payload,{task:original,pm_profile:'local',worker_profiles:[],max_workers:0,delegation_level:1,workers_per_pm:2,max_delegation_depth:3});
     await page.keyboard.press('Enter');await page.keyboard.press('Space');await pointerAttempt('#startRun');await poll(2);
     await assertPendingStart('Deferred POST with keyboard and multiple pointer activation',1);
     assert.equal(await selectedRun(),'run:lifecycle-a');

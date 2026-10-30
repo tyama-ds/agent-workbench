@@ -1,4 +1,7 @@
-"""Small explicit HTTP adapters; text is never interpreted as a tool command."""
+"""Explicit HTTP adapters; only managed Copilot's validated JSON can request tools.
+
+Ordinary prose is never interpreted as an executable tool command.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +15,12 @@ from urllib.parse import urlsplit, urlunsplit
 import aiohttp
 
 from .resources import ResourceGate, integer, number, retry_settings
+from .provider_observation import configure_observation, observation_phase, observed_provider_call
+from .copilot_protocol import (
+    enabled as copilot_json_enabled,
+    normalize_reply as copilot_json_reply,
+    request_parts as copilot_request_parts,
+)
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_TOOL_ARGUMENT_BYTES = 256 * 1024
@@ -229,6 +238,8 @@ def _local_messages(messages: list[dict], system: str) -> list[dict]:
             raise ProviderError("Unsupported local conversation role")
         raw = _native(message, "local") if role == "assistant" else None
         if raw is not None:
+            if 'copilot_protocol' in raw:
+                raise ProviderError("Copilot text history cannot be replayed as native Local history; start a new conversation")
             native = raw.get("message")
             if not isinstance(native, dict):
                 raise ProviderError("Invalid saved local conversation")
@@ -292,8 +303,10 @@ def _request_payload(kind: str, model: str, profile: dict, messages: list[dict],
                 raise ProviderError("Invalid Anthropic thinking configuration")
             payload["thinking"] = copy.deepcopy(thinking)
     else:
-        payload = {"model": model, "messages": _local_messages(messages, system), "max_tokens": maximum,
-                   "stream": False, "tools": [{"type": "function", "function": tool} for tool in definitions]}
+        parts = (copilot_request_parts(messages, definitions, system) if copilot_json_enabled(profile, definitions)
+                 else {"messages": _local_messages(messages, system),
+                       "tools": [{"type": "function", "function": tool} for tool in definitions]})
+        payload = {"model": model, **parts, "max_tokens": maximum, "stream": False}
         if profile.get("enable_thinking") is not None:
             if not isinstance(profile["enable_thinking"], bool):
                 raise ProviderError("enable_thinking must be true or false")
@@ -312,6 +325,7 @@ class ProviderClient:
     def copilot_resource_snapshot(self) -> dict:
         return self.copilot_resource_gate.snapshot()
 
+    @observed_provider_call
     async def complete(self, profile: dict, messages: list[dict], tools: list[dict],
                        system: str, limits: dict | None = None, *,
                        conversation_id: str | None = None) -> ModelReply:
@@ -361,18 +375,50 @@ class ProviderClient:
             proxy = _proxy_url(profile["proxy_url"])
         retry_config = local if kind == "local" else {key: profile[key] for key in ("max_retries", "retry_backoff_seconds") if key in profile}
         retries, backoff = retry_settings(retry_config)
+        configure_observation(provider_kind=kind,
+            admission_kind=('copilot' if request_gate is self.copilot_resource_gate else 'local') if kind == 'local' else 'none',
+            request_timeout_seconds=timeout,
+            queue_timeout_seconds=retry_config.get('queue_timeout_seconds', 120) if kind == 'local' else None,
+            attempt_limit=retries + 1)
         for attempt in range(retries + 1):
             try:
                 if kind == "local":
+                    observation_phase('queue_wait', attempt=attempt + 1)
                     async with request_gate.slot(retry_config):
+                        observation_phase('admitted')
+                        # This is the _post boundary, not an exact socket-start
+                        # or a measurement of GPU-only admission wait.
+                        observation_phase('response_wait')
                         response = await self._post(endpoint, payload, headers, timeout, None)
                 else:
+                    observation_phase('response_wait', attempt=attempt + 1)
                     response = await self._post(endpoint, payload, headers, timeout, proxy)
-                return self._parse(kind, model, response, {tool["name"] for tool in definitions})
+                observation_phase('received')
+                observation_phase('parse')
+                text_mode = copilot_json_enabled(profile, definitions)
+                if text_mode:
+                    choices = response.get('choices') if isinstance(response, dict) else None
+                    if (not isinstance(response, dict) or response.get('error') is not None
+                            or not isinstance(choices, list) or len(choices) != 1
+                            or not isinstance(choices[0], dict)):
+                        raise ProviderError('Copilot bridge must return one successful choice; no tools were executed')
+                reply = self._parse(kind, model, response, set() if text_mode else {tool["name"] for tool in definitions})
+                if text_mode:
+                    source_message = choices[0].get('message')
+                    if isinstance(source_message, dict):
+                        native_calls = source_message.get('tool_calls')
+                        if (native_calls is not None and (not isinstance(native_calls, list) or native_calls)
+                                or source_message.get('function_call') is not None):
+                            raise ProviderError('Copilot JSON mode cannot accept native tool calls; no tools were executed')
+                    return copilot_json_reply(reply, definitions, finish_reason=response['choices'][0].get('finish_reason'))
+                return reply
             except ProviderError as exc:
                 if not exc.retryable or attempt == retries:
                     raise
-                await asyncio.sleep(min(60, backoff * 2 ** attempt))
+                observation_phase('error', error=exc)
+                delay = min(60, backoff * 2 ** attempt)
+                observation_phase('retry_wait', retry_after_seconds=delay)
+                await asyncio.sleep(delay)
         raise ProviderError("Provider request did not finish")
 
     async def _post(self, endpoint: str, payload: dict, headers: dict, timeout: float, proxy: str | None) -> dict:

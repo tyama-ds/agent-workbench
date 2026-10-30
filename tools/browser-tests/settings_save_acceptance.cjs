@@ -40,19 +40,25 @@ function assertUnchangedWaitingRun(before,after) {
   assert.deepEqual(comparable[1],comparable[0],message);
 }
 
+function createSettingsMutationObserver(origin,mutations) {
+  const observe=request=>{
+    const url=new URL(request.url()),method=request.method();
+    if(url.origin!==origin||!url.pathname.startsWith('/api/')||['GET','HEAD','OPTIONS'].includes(method))return;
+    if(method==='POST'&&url.pathname==='/api/run-preflight')return;
+    const body=request.postDataJSON();
+    mutations.push({method,path:url.pathname,
+      body:url.pathname==='/api/secrets'?{id:body.id,config_revision:body.config_revision}:body});
+  };
+  return observe;
+}
+
 async function settingsSaveAcceptance({page,context,origin,providerUrl,providerRequests,stateDir,artifacts,
   report,assertLayout,assertDialogLayout}) {
   const pending=new Set(),handlers=new Set(),mutations=[],providerBefore=structuredClone(providerRequests);
   const externalBefore=[...report.externalRequests],settingsFile=path.join(stateDir,'settings.json');
   let sibling,activeRunId;
   const paint=target=>target.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  const observe=request=>{
-    const url=new URL(request.url()),method=request.method();
-    if(url.origin!==origin||!url.pathname.startsWith('/api/')||['GET','HEAD','OPTIONS'].includes(method))return;
-    const body=request.postDataJSON();
-    mutations.push({method,path:url.pathname,
-      body:url.pathname==='/api/secrets'?{id:body.id,config_revision:body.config_revision}:body});
-  };
+  const observe=createSettingsMutationObserver(origin,mutations);
   const writes=()=>mutations.filter(item=>item.path==='/api/config'&&item.method==='PUT');
   // Setup uses an explicitly fresh revision, independently of either UI client.
   // Acceptance Save requests must retain their own original loaded revision.
@@ -192,6 +198,73 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await sibling.goto(origin);await sibling.getByText('Workbench 接続中',{exact:true}).waitFor({state:'attached'});
     const emptyDraft={task:'[SYNTHETIC] Keep empty workers through Settings Save.',pm_profile:'local',max_workers:'0',worker_profiles:[]};
     await newTask(emptyDraft);await page.keyboard.press('Escape');await openSettings();await openSettings(sibling);
+    const idInput=page.locator('#profile-0-id'),idMutationsBefore=mutations.length;
+    const idConfigBefore=await api('/api/config'),idFileBefore=fs.readFileSync(settingsFile);
+    const idCases=[
+      {name:'one ASCII letter',value:'A',valid:true,patternMismatch:false,valueMissing:false},
+      {name:'64 ASCII letters, digits, underscore and hyphen',value:'A'+'9_-'.repeat(21),valid:true,patternMismatch:false,valueMissing:false},
+      {name:'leading digit',value:'7invalid',valid:false,patternMismatch:true,valueMissing:false},
+      {name:'embedded space',value:'A B',valid:false,patternMismatch:true,valueMissing:false},
+      {name:'non-ASCII letter',value:'A日',valid:false,patternMismatch:true,valueMissing:false},
+      {name:'65 characters',value:'A'+'x'.repeat(64),valid:false,patternMismatch:true,valueMissing:false},
+      {name:'required empty value',value:'',valid:false,patternMismatch:false,valueMissing:true}
+    ];
+    const idValidity=await idInput.evaluate((input,cases)=>{
+      const snapshot=()=>({value:input.value,customError:input.validity.customError,validationMessage:input.validationMessage,
+        selectionStart:input.selectionStart,selectionEnd:input.selectionEnd,selectionDirection:input.selectionDirection});
+      const before=snapshot(),pattern=input.pattern,required=input.required,rows=[];
+      try {
+        input.setCustomValidity('');
+        for(const item of cases){
+          input.value=item.value;
+          rows.push({name:item.name,value:input.value,valid:input.checkValidity(),patternMismatch:input.validity.patternMismatch,
+            valueMissing:input.validity.valueMissing,customError:input.validity.customError});
+        }
+      } finally {
+        input.value=before.value;input.setCustomValidity(before.customError?before.validationMessage:'');
+        if(before.selectionStart!==null)input.setSelectionRange(before.selectionStart,before.selectionEnd,before.selectionDirection);
+      }
+      return {before,after:snapshot(),pattern,required,rows};
+    },idCases);
+    const idValidationReport=report.settingsSaveProfileValidation={idValidityRows:idValidity.rows,
+      baselineMutationCount:idMutationsBefore,endMutationCount:mutations.length,
+      mutationDelta:mutations.slice(idMutationsBefore).map(({method,path})=>({method,path}))};
+    assert.equal(idValidity.pattern,'[A-Za-z][A-Za-z0-9_\\-]{0,63}');assert.equal(idValidity.required,true);
+    assert.deepEqual(idValidity.rows,idCases.map(item=>({...item,customError:false})),
+      'The real profile ID input enforces native HTML pattern and required boundaries');
+    assert.deepEqual(idValidity.after,idValidity.before,'Validity checks restore the original value, selection and custom validity');
+    assert.equal(await page.locator('#saveSettings').isEnabled(),true);
+    const invalidIdSubmit=await idInput.evaluate(input=>{
+      const form=input.form,button=document.querySelector('#saveSettings');
+      const before={value:input.value,customError:input.validity.customError,validationMessage:input.validationMessage,
+        start:input.selectionStart,end:input.selectionEnd,direction:input.selectionDirection};
+      let submits=0,invalid=0;
+      const onSubmit=()=>{submits++;},onInvalid=()=>{invalid++;};
+      form.addEventListener('submit',onSubmit);input.addEventListener('invalid',onInvalid);
+      try {
+        input.setCustomValidity('');input.value='7invalid';
+        form.requestSubmit(button);
+        return {submits,invalid,patternMismatch:input.validity.patternMismatch,valueMissing:input.validity.valueMissing};
+      } finally {
+        form.removeEventListener('submit',onSubmit);input.removeEventListener('invalid',onInvalid);
+        input.value=before.value;input.setCustomValidity(before.customError?before.validationMessage:'');
+        if(before.start!==null)input.setSelectionRange(before.start,before.end,before.direction);
+      }
+    });
+    idValidationReport.invalidIdSubmit=invalidIdSubmit;
+    assert.deepEqual(invalidIdSubmit,{submits:0,invalid:1,patternMismatch:true,valueMissing:false},
+      'Native invalid-ID submission is rejected before the application submit handler');
+    await poll();
+    idValidationReport.endMutationCount=mutations.length;
+    idValidationReport.mutationDelta=mutations.slice(idMutationsBefore).map(({method,path})=>({method,path}));
+    assert.equal(mutations.length,idMutationsBefore,'Invalid profile ID sends no mutating API request');
+    const idConfigAfter=await api('/api/config');
+    assert.equal(idConfigAfter.config_revision,idConfigBefore.config_revision);assert.deepEqual(idConfigAfter.config,idConfigBefore.config);
+    assert.deepEqual(fs.readFileSync(settingsFile),idFileBefore);assert.deepEqual(await taskSnapshot(),emptyDraft);
+    assert.equal(await idInput.inputValue(),idValidity.before.value);
+    assert.deepEqual(await idInput.evaluate(input=>({customError:input.validity.customError,validationMessage:input.validationMessage})),
+      {customError:idValidity.before.customError,validationMessage:idValidity.before.validationMessage});
+    report.checks.push('settings-save: real profile ID HTML validation accepts ASCII 1/64-character boundaries with digits/underscore/hyphen; rejects leading digit, space, non-ASCII, 65 characters and required empty value; invalid native submission sends no mutation and preserves saved config/revision/file and task draft');
     const staleLabel='[SYNTHETIC] Tab B unrelated label draft';
     await page.locator('#profile-0-label').fill(staleLabel);
     await sibling.locator('#limits-max_model_calls').fill('5');
@@ -276,7 +349,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab reaches optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false,'The default single-PM scenario keeps additional PM controls collapsed');
-    for(const id of ['delegationLevel','workersPerPM','useOrchestrationDefaults']){
+    for(const id of ['delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults']){
       await page.keyboard.press('Tab');
       assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
     }
@@ -313,7 +386,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab preserves the optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false);
-    for(const id of ['delegationLevel','workersPerPM','useOrchestrationDefaults']){
+    for(const id of ['delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults']){
       await page.keyboard.press('Tab');
       assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
     }
@@ -414,4 +487,4 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
   }
 }
 
-module.exports={settingsSaveAcceptance};
+module.exports={settingsSaveAcceptance,createSettingsMutationObserver};

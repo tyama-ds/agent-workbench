@@ -122,3 +122,76 @@ main{height:auto;min-height:0;overflow:hidden}.view{height:100%;min-height:0}.wo
 /* Interactive view geometry is local to each run; operational state remains server-owned. */
 .network-tools{display:flex;align-items:center;flex-wrap:wrap;gap:5px;padding:0 14px 8px;flex:none}.network-tools .button{min-height:32px}.network-zoom{min-width:42px;text-align:center;color:#b9dceb;font:11px var(--mono)}.team-map{overflow:hidden;touch-action:none;cursor:grab;scrollbar-gutter:auto;min-height:140px}.network-canvas{margin:0;transform-origin:0 0}.network-node{cursor:grab;touch-action:none;user-select:none}.team-map.is-dragging,.team-map.is-dragging .network-node{cursor:grabbing}.network-help{flex:none;padding:5px 14px;color:#9bb8ca;font-size:10px;line-height:1.6}.network-help summary{cursor:pointer;width:fit-content}.network-help p{max-height:100px;overflow:auto;margin:5px 0}.network-legend{padding-top:4px}
 @media(max-width:640px){.network-workspace{grid-template-rows:minmax(270px,1fr) minmax(110px,.5fr);overflow:auto}.network-tools{padding:0 10px 5px;gap:4px}.network-tools .button{min-height:34px;padding:6px 8px}.network-help{padding:3px 10px}.network-legend{display:none}.network-retention{padding-bottom:5px}}
+
+/* Circular live topology: motion decorates observed state, never changes geometry. */
+.network-panel{position:relative}.team-map{background-color:#080f1b;background-image:radial-gradient(ellipse at 50% 38%,#17394b55,transparent 65%),radial-gradient(circle,#577c913b 1px,transparent 1px);background-size:100% 100%,24px 24px}.network-node{--orb:#77dce9;position:absolute;width:112px;height:112px;border:1px solid #487586;border-left-width:1px;border-radius:50%;padding:12px 8px 10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;text-align:center;isolation:isolate;background:radial-gradient(circle at 35% 24%,#20495a,#0e2131 65%);box-shadow:inset 0 0 18px #5bd3e70a,0 8px 24px #01061070;overflow:visible;transition:border-color .15s,box-shadow .15s}.network-node[data-network-role=pm]{--orb:#f2c477;border-color:#8b7951;background:radial-gradient(circle at 35% 24%,#49402a,#20212a 65%)}.network-node:hover{border-color:var(--orb);background:radial-gradient(circle at 35% 24%,#254e5e,#102739 65%)}.network-node[data-network-role=pm]:hover{background:radial-gradient(circle at 35% 24%,#51462e,#272630 65%)}.network-node::before,.network-node::after{content:"";position:absolute;pointer-events:none;border-radius:50%;inset:4px;border:1px solid #87c1ce1f;z-index:-1}.network-node::after{inset:-5px;border:1px solid transparent;border-top-color:var(--orb);opacity:0}.network-node.is-live::after{opacity:.7;animation:network-orbit 5s linear infinite}.network-node.is-live::before{animation:network-breathe 3s ease-in-out infinite}.network-node.selected{box-shadow:inset 0 0 16px #82daea13,0 0 0 1px #76e4f735,0 8px 24px #01061070}.network-node.pinned{border-color:var(--orb);box-shadow:0 0 0 3px #77dce921,0 0 27px #67d3e329,0 8px 24px #01061070}.network-node.pinned::before{border-color:var(--orb);opacity:.5}.network-node.waiting_human,.network-node.needs_input,.network-node.human-input{--orb:#f0be6a;border-color:#b59455;background:radial-gradient(circle at 35% 24%,#4a3825,#252126 65%)}.network-node.error,.network-node.failed{--orb:#f29b9b;border-color:#ac6d71;background:radial-gradient(circle at 35% 24%,#4a2935,#271e2c 65%)}.network-node:focus-visible{outline:2px solid var(--orb);outline-offset:7px}.network-orb-inner{display:flex;align-items:center;flex-direction:column;gap:1px;max-width:100%;pointer-events:none}.network-monogram{font:500 18px/1 var(--mono);color:#ecf7fa;letter-spacing:-.05em}.network-role{font:8px/1.3 var(--mono);letter-spacing:.15em;color:var(--orb)}.network-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal;overflow:hidden;overflow-wrap:anywhere;font:600 11px/1.25 var(--serif);max-width:92px;max-height:28px;flex:none}.network-state{font:9px/1.25 var(--serif);color:#adcbd8;max-width:86px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.network-parent-line{stroke:#5e8492;stroke-opacity:.45;stroke-width:1}.network-mail-line{stroke:#76e4f7;stroke-opacity:.55;stroke-width:1.6;stroke-dasharray:6 5}.network-mail-pulse{fill:#90effa;stroke:#c8faff;stroke-width:1;pointer-events:none;filter:drop-shadow(0 0 4px #6de9f3)}.network-mail-pulse.consumed{fill:none;stroke:#f4cd8e;stroke-width:2;opacity:.85;filter:drop-shadow(0 0 4px #f4cd8e)}#networkMotion[aria-pressed=true]{border-color:#527a83;color:#b9edf4}.network-preview{position:absolute;right:16px;bottom:38px;width:min(320px,calc(100% - 32px));max-height:min(260px,70%);overflow:auto;overscroll-behavior:contain;padding:12px 14px;background:linear-gradient(145deg,#183648f5,#0d1d2ff8);backdrop-filter:blur(18px);border:1px solid #557e90;border-radius:16px;box-shadow:0 16px 45px #0009;z-index:8;color:#d8e9f2}.network-preview[hidden]{display:none}.network-preview-top{display:flex;align-items:center;justify-content:space-between;gap:10px}.network-preview-top .eyebrow{font-size:8px;color:#83cbdb;letter-spacing:.14em}.network-preview-top .button{min-width:32px;min-height:32px;padding:2px 8px;border:0;background:#ffffff08;border-radius:50%;font-size:18px}.network-preview-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:4px 0 9px}.network-preview-heading>div{min-width:0}.network-preview-role{font:8px var(--mono);color:#9ac8da;letter-spacing:.13em}.network-preview h3{font-size:15px;line-height:1.35;overflow-wrap:anywhere;margin:3px 0 0}.network-preview-assignment{font-size:11px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}.network-preview-latest{padding:8px 10px;background:#020e1c66;border-left:2px solid #6ab6c7;border-radius:0 6px 6px 0;font-size:10px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0;color:#adc8d7}.network-preview-counts{font:9px/1.6 var(--mono);color:#90b5c9;margin:7px 0}.network-preview-error{font-size:10px;line-height:1.5;color:#ffbcae;white-space:pre-wrap;overflow-wrap:anywhere}.network-preview>.button{min-height:32px;font-size:10px;border-color:#4a7387;background:#183c4e;color:#bdeaf3;border-radius:7px}.network-node .network-task,.network-node .network-activity{display:none}
+@keyframes network-orbit{to{transform:rotate(360deg)}}@keyframes network-breathe{50%{opacity:.35}}
+@media(max-width:640px){.network-preview{right:10px;bottom:28px;width:calc(100% - 20px);max-height:180px;padding:8px 12px;border-radius:12px}.network-preview-heading{margin:0 0 5px}.network-preview h3{font-size:13px}.network-preview-assignment,.network-preview-latest{font-size:10px}.network-tools{gap:3px}.network-tools .button{font-size:9px;padding:5px 7px}.network-zoom{min-width:33px;font-size:10px}}
+@media(prefers-reduced-motion:reduce){.network-node{transition:none}.network-node::before,.network-node::after{animation:none!important}.network-node.is-live::after{opacity:0}.network-mail-pulse{display:none}}
+
+/* Reserve reading space below the communications heading. On short viewports,
+   the existing workspace scroll reaches each panel without shrinking the feed. */
+.network-workspace{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(420px,1fr) minmax(300px,.36fr);min-width:0;overflow:auto}.network-panel,.activity-panel{min-width:0}.mail-participants .button{max-width:100%;min-width:0;white-space:normal;overflow-wrap:anywhere}.team-map{min-height:224px}
+.network-workspace .activity-feed{flex:1;min-height:180px}
+@media(max-width:640px){.network-workspace{grid-template-rows:minmax(370px,1fr) minmax(300px,.36fr)}.team-map{min-height:200px}}
+
+/* Keep a full communications panel in view; shorter network screens scroll the run. */
+.app-shell[data-cockpit-view=network] .active-run{overflow-y:auto}
+.app-shell[data-cockpit-view=network] .network-workspace{min-height:300px}
+.app-shell[data-cockpit-view=network] .coordination-monitor{flex-shrink:0}
+
+/* A continuous screen-space hit area keeps the thin communication track easy to select. */
+.network-mail-line,.network-mail-line:hover,.network-mail-line:focus-visible{fill:none;stroke:transparent;stroke-opacity:1;stroke-width:14;stroke-dasharray:none;pointer-events:stroke;vector-effect:non-scaling-stroke;outline:none}.network-mail-track{fill:none;stroke:#76e4f7;stroke-opacity:.55;stroke-width:1.6;stroke-dasharray:6 5;pointer-events:none}.network-mail-line:hover+.network-mail-track,.network-mail-line:focus-visible+.network-mail-track{stroke:#f0be6a;stroke-opacity:1;stroke-width:3}
+:root{--monitor-accent:#8adbd3}
+.coordination-monitor{flex:0 1 auto;min-height:0;max-height:26%;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;margin:0 0 10px;padding:12px 16px;border:1px solid #30434d;border-radius:18px;background:linear-gradient(125deg,#10232d,#121b26);color:#deebef}
+.monitor-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.monitor-heading h2{margin:0;font-size:17px}.monitor-heading .eyebrow{margin:0 0 5px;color:var(--monitor-accent)}
+.coordination-phase{font-weight:650;color:#b1f0e5;margin:10px 0}.coordination-candidate{white-space:pre-wrap;overflow-wrap:anywhere;border-left:2px solid #76cfc1;padding:10px 14px;background:#0c1820;border-radius:0 10px 10px 0}
+.report-monitor{font-size:12px;color:#b5c9d3;margin:7px 0;overflow-wrap:anywhere}.monitor-crew{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:12px}
+.monitor-agent,.mail-lifecycle{display:flex;flex-direction:column;align-items:flex-start;text-align:left;gap:6px;border:1px solid #344650;border-radius:11px;padding:11px 13px;background:#13232e;color:#dceaf1;cursor:pointer;font:inherit;min-width:0;overflow-wrap:anywhere}
+.monitor-agent span,.mail-lifecycle span{font-size:12px;line-height:1.65;white-space:pre-wrap;color:#b5c9d3}.monitor-agent:hover,.mail-lifecycle:hover{border-color:#71cabe;background:#18303b}.monitor-agent:focus-visible,.mail-lifecycle:focus-visible{outline:2px solid #9aeadc;outline-offset:2px}
+.agent-monitor{white-space:pre-wrap;font-size:12px;color:#a4e3d8;line-height:1.65;overflow-wrap:anywhere}.agent-monitor:empty{display:none}.mail-lifecycle-details{margin-top:14px;border-top:1px solid #30434d;padding-top:10px}.mail-lifecycle-details summary{cursor:pointer;font-size:13px}.mail-lifecycle{width:100%;margin-top:7px}
+@media(max-width:600px){.coordination-monitor{padding:14px;border-radius:13px}.monitor-heading{align-items:flex-start;flex-direction:column}.monitor-crew{grid-template-columns:minmax(0,1fr)}}
+/* Keep the board composer reachable when the compact viewport also shows monitoring. */
+@media(max-width:640px){.work-board{overflow-y:auto}}
+/* Audit facts stay bounded and readable in the existing event feed. */
+.reference-audit,.reference-audit-comment{min-width:0;margin-top:9px;overflow-wrap:anywhere;white-space:pre-wrap;font-size:11px;line-height:1.7}
+.reference-audit-label{color:#b1e4d9;font-weight:650}.reference-audit-scope,.reference-audit-meta{color:#b3bdc9;margin-top:5px}.reference-audit-facts{list-style:none;margin:8px 0 0;padding:0;max-height:160px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;min-width:0}
+.reference-audit-facts:focus-visible{outline:2px solid #e3bc79;outline-offset:2px}.reference-audit-fact{min-width:0;padding:9px;border:1px solid #344650;border-radius:5px;margin-bottom:6px;background:#142129;overflow-wrap:anywhere}.reference-audit-step{font-weight:650;color:#c1dedb}.reference-audit-source{font:10px/1.7 var(--mono);color:#a8b7c4;margin-top:5px}
+/* Revealing the inner list must leave room for its surrounding feed on narrow screens. */
+@media(max-width:640px){.app-shell[data-cockpit-view=network] .reference-audit-facts{scroll-margin-block:24px}}
+.reference-audit-comment{border-top:1px solid #4c4437;padding-top:8px}.audit-unverified{font-size:11px;line-height:1.7;color:#d9bd92;overflow-wrap:anywhere}
+#skillsList,#skillsErrors{overflow-wrap:anywhere;padding-left:22px;margin:12px 0}
+#skillsList>li,#skillsErrors>li{margin:10px 0}
+.agent-dependencies{grid-column:2;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;line-height:1.6;color:#a4e3d8}
+
+/* Questions remain visible across teams; only the server resolves deadlines. */
+.question-notifications{flex:0 1 auto;min-height:0;max-height:32%;overflow:auto;border-bottom:1px solid var(--line);padding:8px 10px}
+.question-notice{border:1px solid #a98243;border-radius:5px;background:#302719;padding:10px;display:grid;gap:8px;overflow-wrap:anywhere}
+#questionNoticeTitle{font-weight:700;color:#f1d297;line-height:1.5}
+#questionNoticeBody,.question-timing,.question-timing-status{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.6}
+#questionNoticeBody{max-height:100px;overflow:auto}
+.question-notice .button{white-space:normal}
+.question-notification-settings{margin-top:5px;font-size:10px;line-height:1.5;color:var(--muted)}
+.question-notification-settings summary{cursor:pointer}
+.question-notification-settings button{margin:6px 0;white-space:normal}
+.question-timing{grid-column:1/-1;color:#dbbe88}
+.question-card .question-timing{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.question-timing-status{flex:0 1 auto;min-height:0;max-height:95px;overflow:auto;color:#dbbe88;padding:6px 12px}
+
+/* Application-provided hierarchy is descriptive, never an authority control. */
+.agent-hierarchy{grid-column:1/-1;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;line-height:1.6;color:#b4c6d8;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.hierarchy-relations{margin-top:8px;max-height:150px;overflow:auto;display:grid;gap:6px;min-width:0}
+.hierarchy-relation{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.hierarchy-relation .button{white-space:normal;overflow-wrap:anywhere;max-width:100%;text-align:left}
+
+/* Keep notice actions compact; full question details remain explicitly available. */
+.question-notice{grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:5px;padding:6px}
+.question-notice #questionNoticeTitle{font-size:10px;line-height:1.5}
+.question-notice .button{padding:5px 7px;font-size:10px}
+#questionNoticeDetails{font-size:10px}
+#questionNoticeDetails[open]{grid-column:1/-1}
+#questionNoticeSummary{cursor:pointer}
+/* One vertical sidebar scroll preserves natural card, notice and session sizes. */
+@media(min-width:641px){.sidebar{overflow-y:auto}.sidebar>.question-notifications{flex:none;max-height:none}.sidebar>.agent-cards{flex:none;height:auto;min-height:0;max-height:none}.sidebar>.sidebar-section{flex:none;max-height:none}}
+/* The narrow sidebar already scrolls vertically; retain its horizontal lists. */
+@media(max-width:640px){.sidebar>.question-notifications{flex:none;max-height:none}}

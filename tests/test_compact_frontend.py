@@ -15,6 +15,7 @@ class Node {
       remove:(...names)=>names.forEach(name=>this.classes.delete(name)),contains:name=>this.classes.has(name)};
   }
   append(...nodes){this.children.push(...nodes);}
+  contains(target){return this===target||this.children.some(node=>node.contains(target));}
   appendChild(node){this.append(node);return node;}
   replaceChildren(...nodes){this.children=nodes;}
   setAttribute(key,value){this.attributes[key]=String(value);}

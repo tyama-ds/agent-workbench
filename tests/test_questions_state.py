@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import workbench.engine as engine_module
+import workbench.provider_monitor as provider_monitor_module
 from test_session_transitions import session, response
 
 
@@ -31,9 +32,12 @@ async def test_other_running_team_question_is_visible_without_loading_its_histor
         second, other, initial = await case.start()
         await case.finish(other, initial, response(('ask_user', {'question': 'Other team decision?'})))
         assert first['status'] == 'running' and worker.status == 'working'
-        # Read-only projections compare one server observation, including elapsed budget.
+        # Compare one observation, including both budget and live provider clocks.
         observed = engine_module.time.time()
+        observed_monotonic = provider_monitor_module.time.monotonic()
         monkeypatch.setattr(engine_module, 'time', SimpleNamespace(time=lambda: observed))
+        monkeypatch.setattr(provider_monitor_module, 'time', SimpleNamespace(
+            time=lambda: observed, monotonic=lambda: observed_monotonic))
         before = copy.deepcopy(case.engine.snapshot())
         calls = len(case.provider.history)
         for run, agent in [(second, other), (first, worker), (second, other)]:

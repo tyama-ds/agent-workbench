@@ -127,7 +127,7 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
     const lookup=JSON.parse(done.logs.find(log=>log.kind==='tool'&&log.text.startsWith('read_context_history\n')).text.split('\n').slice(1).join('\n'));
     assert.deepEqual(lookup.unavailable_ids,[999999]);assert.deepEqual(lookup.records.map(record=>record._record_id),[1,2]);
     assert.equal(lookup.records[0]._human,true);assert.equal(lookup.records[0].content,task);
-    assert.equal(lookup.records[1]._human,false);assert.equal(lookup.records[1].content,'[SYNTHETIC] Original observation 0: '+'a'.repeat(4000));
+    assert.equal(lookup.records[1]._human,false);assert.equal(lookup.records[1].content,'[SYNTHETIC] Original observation 0: '+'a'.repeat(3000));
     assert.deepEqual(lookup.over_response_limit_ids,[]);
     const snapshots=[];
     for(const [label,size] of [['desktop',{width:1366,height:768}],['narrow',{width:390,height:844}]]){

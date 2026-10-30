@@ -101,7 +101,7 @@ for(const id of ['p1','p2','w1','w2'])assert.equal(ui.networkNodes.get(id).butto
 const positions=ui.networkLayout.positions;
 assert(positions.get('p1').y<positions.get('w1').y&&positions.get('w1').y<positions.get('p2').y);
 assert(positions.get('p2').y<positions.get('w2').y);
-assert.equal(ui.networkNodes.get('w1').button.children[0].textContent,'WORKER');
+assert.equal(ui.networkNodes.get('w1').button.querySelectorAll('*').find(node=>node.className==='network-role').textContent,'WORKER');
 ''')
 
 

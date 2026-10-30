@@ -137,7 +137,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     assert.equal(await page.locator('#activeRunTask').textContent(),sourceText);
     await reuse();await assertNoCandidate(sourceText,'Empty draft adopts immediately');
     await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
-    assert.deepEqual(preflights().at(-1).body,{task:sourceText,pm_profile:'local',worker_profiles:['openai'],max_workers:1,delegation_level:1,workers_per_pm:2},
+    assert.deepEqual(preflights().at(-1).body,{task:sourceText,pm_profile:'local',worker_profiles:['openai'],max_workers:1,delegation_level:1,workers_per_pm:2,max_delegation_depth:3},
       'The only adoption POST is the normal read-only preflight with current choices');
     assert.equal(await page.locator('#taskReuseStatus').getAttribute('aria-live'),'polite');
     assert((await page.locator('#taskReuseProvenance').textContent()).includes(source.id.slice(-8)),'Copied text identifies its source team');
@@ -176,7 +176,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
 
     await candidate(existing);await page.locator('#replaceTaskDraft').focus();await page.keyboard.press('Enter');
     await assertNoCandidate(sourceText,'Replace copies only the task text');await page.locator('#preflightStatus[aria-busy="false"]').waitFor();
-    assert.deepEqual(preflights().at(-1).body,{task:sourceText,pm_profile:'local',worker_profiles:['openai'],max_workers:1,delegation_level:1,workers_per_pm:2});
+    assert.deepEqual(preflights().at(-1).body,{task:sourceText,pm_profile:'local',worker_profiles:['openai'],max_workers:1,delegation_level:1,workers_per_pm:2,max_delegation_depth:3});
     assert.equal(await page.locator('#taskDialog').isVisible(),true,'Replacement never starts or closes the new task');
     assert.deepEqual(await owner(),{run:source.id,agent:sourceAgent.id},'Copying never changes the selected retained team');
     await candidate(' \n\t ');await page.locator('#keepTaskDraft').click();await assertNoCandidate(' \n\t ','Whitespace-only is a real draft');
@@ -332,8 +332,9 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     const reviewedTask=await page.locator('#taskInput').inputValue(),reviewedChoices=await choices();
     assert.equal(reviewedTask,editorText(admissionSource));assert.deepEqual(reviewedChoices,currentChoices);
     const reviewedOrchestration={delegation_level:Number(await page.locator('#delegationLevel').inputValue()),
-      workers_per_pm:Number(await page.locator('#workersPerPM').inputValue())};
-    assert.deepEqual(reviewedOrchestration,{delegation_level:1,workers_per_pm:2},'Text reuse retains the current delegation controls');
+      workers_per_pm:Number(await page.locator('#workersPerPM').inputValue()),
+      max_delegation_depth:Number(await page.locator('#maxDelegationDepth').inputValue())};
+    assert.deepEqual(reviewedOrchestration,{delegation_level:1,workers_per_pm:2,max_delegation_depth:3},'Text reuse retains the current delegation controls');
     const expectedAdmission={task:reviewedTask,pm_profile:reviewedChoices.pm,
       worker_profiles:reviewedChoices.workers,max_workers:Number(reviewedChoices.count),...reviewedOrchestration};
     heldStart=await holdNextRequest(page,'**/api/runs',()=>page.locator('#startRun').click());

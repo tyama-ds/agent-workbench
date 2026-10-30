@@ -15,6 +15,7 @@ const FIELD_GROUPS = {
   orchestration: [
     ['delegation_level','新しい作業の PM 分担方針','range',0,'1','PM中心／委任優先／委任必須。人数・権限・呼び出し予算は別の上限です。',2],
     ['workers_per_pm','PM1人あたりの委任人数（既定値）','range',1,'1','委任優先では目標人数、委任必須では各 PM が満たす人数です。PM中心では使用しません。',16],
+    ['max_delegation_depth','委任の最大深さ（上限・既定値）','range',1,'1','PMを深さ0として、1＝子、2＝孫、3＝ひ孫まで。全階層で作業者数と予算を共有します。',3],
   ],
   paths: [
     ['read_roots','読み取りを許可する場所','paths','例：C:\\Projects\\research'],
@@ -99,20 +100,24 @@ const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resou
 Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map()});
 Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,credentialGeneration:0,credentialOperations:new Map(),secretSources:{},credentialStorage:null,credentialRecoveryControls:[]});
 Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
+Object.assign(ui,{skillsOperation:null,skillsCatalog:null,skillsGeneration:0});
 Object.assign(ui,{settingsStorage:null,settingsTransferOperation:null,historyStorage:null,instanceId:null,retiredInstances:new Set(),messageOperation:null});
 Object.assign(ui,{workBoards:new Map(),boardOwner:null,boardComposingRun:null,boardRedactionRevision:null});
 const WORK_BOARD_DEFAULTS={enabled:false};
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
+Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotified:new Set(),questionNotifications:new Map(),notificationPermissionRequest:null,notificationError:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
 Object.assign(ui,{cockpitView:'network',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
 Object.assign(ui,{networkViews:new Map(),networkGesture:null,networkSuppressClick:null,networkParentLines:[],networkMailLines:[]});
+Object.assign(ui,{networkHoverAgent:null,networkFocusAgent:null,networkPreviewHovered:false,networkPreviewDismissTimer:null,networkPreviewReady:false,networkPulses:new Map(),networkPulseSequence:0,networkMotionEnabled:true,networkConnected:false,networkReducedMotion:false});
+const NETWORK_NODE_SIZE=112,NETWORK_NODE_RADIUS=56,NETWORK_MAIL_SEEN_LIMIT=200,NETWORK_PULSE_LIMIT=16,NETWORK_PULSE_MS=1200,NETWORK_PREVIEW_DISMISS_MS=240;
 Object.assign(ui,{effectiveProviders:null,copilotAgentStatus:null,copilotDefaultsPending:false,modelChoicesTouched:false,copilotReconnectOperation:null});
 const COPILOT_AGENT_DEFAULTS={enabled:false,bridge_directory:'',python_executable:'',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600,max_concurrent_requests:1};
-const ORCHESTRATION_DEFAULTS={delegation_level:1,workers_per_pm:2};
+const ORCHESTRATION_DEFAULTS={delegation_level:1,workers_per_pm:2,max_delegation_depth:3};
 const DELEGATION_LABELS=['PM中心','委任優先','委任必須'];
 NUMBER_BOUNDS.copilot_agent={startup_timeout_seconds:[5,1200],max_concurrent_requests:[1,16]};
-NUMBER_BOUNDS.orchestration={delegation_level:[0,2],workers_per_pm:[1,16]};
+NUMBER_BOUNDS.orchestration={delegation_level:[0,2],workers_per_pm:[1,16],max_delegation_depth:[1,3]};
 NUMBER_BOUNDS.python={timeout_seconds:[1,600],max_memory_mb:[128,8192],max_output_bytes:[1024,1048576]};
 NUMBER_BOUNDS.selenium={timeout_seconds:[10,300],max_memory_mb:[256,8192],max_output_chars:[1000,100000]};
 const $ = id => document.getElementById(id);
@@ -128,6 +133,7 @@ function availableProfiles() {
 }
 function acceptConnectionSettings(response) {
   acceptServerInstance(response,true);acceptSettingsStorage(response);acceptHistoryStorage(response);acceptCredentialMetadata(response);
+  invalidateSkillsCatalog('保存済み設定のスキル一覧は未確認です。ボタンで再読込してください。');
   ui.effectiveProviders=Array.isArray(response.effective_providers)?response.effective_providers:null;
   if(ui.config?.copilot_agent?.enabled===true&&availableProfiles().some(profile=>profile.id==='copilot-agent'))ui.copilotDefaultsPending=true;
   else ui.copilotDefaultsPending=false;
@@ -180,13 +186,14 @@ function acceptServerInstance(response,configuration=false) {
   if(!changed)return false;
   ui.selectionGeneration++;ui.navigationGeneration++;ui.workspaceGeneration++;ui.credentialGeneration++;
   ui.selectedRun=null;ui.selectedAgent=null;ui.loadedDetail=null;ui.loadedEventsRun=null;ui.detailError=false;
-  ui.drafts.clear();ui.draftRevisions.clear();ui.conversationViews.clear();ui.outputSelections.clear();
+  ui.drafts.clear();ui.draftRevisions.clear();ui.draftQuestions.clear();ui.composerQuestion=null;closeQuestionNotifications();ui.conversationViews.clear();ui.outputSelections.clear();
   invalidateWorkBoardContent();ui.workBoards.clear();ui.boardOwner=null;ui.boardComposingRun=null;ui.boardRedactionRevision=null;
-  ui.networkNodes.clear();ui.networkViews.clear();ui.networkGesture=null;ui.networkSuppressClick=null;ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
+  stopNetworkMotion();clearNetworkPreview();ui.networkNodes.clear();ui.networkViews.clear();ui.networkGesture=null;ui.networkSuppressClick=null;ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
   $('teamMap').classList.remove('is-dragging');
   ui.logSignature='';ui.outputSignature='';ui.taskReuseCandidate=null;ui.startOperation=null;ui.startingRun=false;ui.stoppingRuns.clear();ui.busyMessage=false;ui.messageOperation=null;
   ui.credentialOperations.clear();ui.secretSources={};ui.credentialStorage=null;ui.credentialRecoveryControls=[];renderCredentialStorage();ui.copilotAgentStatus=null;ui.copilotReconnectOperation=null;ui.historyStorage=null;
   ui.configStale=!configuration;clearCredentialInputs();
+  invalidateSkillsCatalog('サーバーが変わりました。保存済み設定を確認してから一覧を再読込してください。');
   $('messageInput').value='';$('workBoardInput').value='';$('conversationLog').replaceChildren();$('resultText').textContent='';$('resultText').hidden=true;
   $('activityFeed').replaceChildren();$('taskReuseConfirm').hidden=true;$('taskReusePreview').textContent='';
   ui.state={runs:[],agents:[],events:[],resources:{}};renderState();renderHistoryStorage();
@@ -243,7 +250,7 @@ function actionNotice(action,text,error=false) {
   notice(text,error);action.noticeGeneration=ui.noticeGeneration;
 }
 function inlineStatus(node,text,error=false) { node.textContent=text;node.classList.toggle('error',error); }
-function setConnection(online,text) { $('connectionDot').classList.toggle('online',online);$('connectionDot').classList.toggle('error',!online);$('connectionStatus').textContent=text; }
+function setConnection(online,text) { ui.networkConnected=online===true;if(!online){ui.networkPreviewReady=false;stopNetworkMotion();clearNetworkHover();}paintNetworkMotionState();renderNetworkPreview();$('connectionDot').classList.toggle('online',online);$('connectionDot').classList.toggle('error',!online);$('connectionStatus').textContent=text;preserveControlFocus(()=>renderCoordinationMonitor(getRun(),ui.state.agents.filter(a=>a.run_id===ui.selectedRun)));renderInspector(getAgent());renderQuestionNotice(questionEntries()); }
 
 async function api(path,options={}) {
   const requestInstance=ui.instanceId,method=String(options.method||'GET').toUpperCase();
@@ -274,7 +281,9 @@ async function api(path,options={}) {
 }
 
 function delegationLabel(value) { return Number.isInteger(value)&&value>=0&&value<=2?DELEGATION_LABELS[value]:'未記録'; }
-function rangeLabel(key,value) { return key==='delegation_level'?delegationLabel(Number(value)):key==='workers_per_pm'?`${value} 人`:`${value} リクエスト`; }
+function delegationDepthLabel(value) { return Number.isInteger(value)&&value>=1&&value<=3?`${value}（${['','子','孫','ひ孫'][value]}まで）`:'未記録'; }
+function savedDelegationDepth() { const policy=ui.config?.orchestration,value=policy&&Object.hasOwn(policy,'max_delegation_depth')?policy.max_delegation_depth:3;return Number.isInteger(value)&&value>=1&&value<=3?value:null; }
+function rangeLabel(key,value) { return key==='delegation_level'?delegationLabel(Number(value)):key==='workers_per_pm'?`${value} 人`:key==='max_delegation_depth'?delegationDepthLabel(Number(value)):`${value} リクエスト`; }
 function makeField(spec,value,prefix) {
   const [key,label,type,extra,step,help,max]=spec,id=`${prefix}-${key}`;
   const wrap=element('div','field'+(type==='checkbox'?' checkbox-field':''));
@@ -431,6 +440,7 @@ function validSavedSettings(response,revision) {
     p.id&&Object.hasOwn(PROFILE_KINDS,p.kind)&&typeof p.enabled==='boolean'&&typeof status[p.id]==='boolean'))return false;
   return Object.entries(FIELD_GROUPS).every(([group,specs])=>['copilot_agent','orchestration'].includes(group)&&config[group]===undefined||record(config[group])&&specs.every(([key,,type])=>{
     const value=config[group][key];
+    if(group==='orchestration'&&key==='max_delegation_depth')return !Object.hasOwn(config[group],key)||(Number.isInteger(value)&&value>=1&&value<=3);
     if(type==='paths')return Array.isArray(value)&&value.every(path=>typeof path==='string');
     if(type==='checkbox')return typeof value==='boolean';
     return type==='number'||type==='range'?Number.isFinite(value):typeof value==='string';
@@ -522,7 +532,7 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   const content=element('div','profile-content');content.hidden=!expanded;card.classList.toggle('collapsed',!expanded);content.id=`profile-content-${index}`;toggle.setAttribute('aria-controls',content.id);
   toggle.addEventListener('click',()=>{content.hidden=!content.hidden;card.classList.toggle('collapsed',content.hidden);toggle.textContent=content.hidden?'編集':'閉じる';toggle.setAttribute('aria-expanded',String(!content.hidden));});
   const fields=element('div','profile-fields');PROFILE_FIELDS.forEach(spec=>fields.appendChild(makeField(spec,profile[spec[0]],`profile-${index}`)));content.appendChild(fields);card.appendChild(content);
-  card.querySelector('[data-key="id"]').required=true;card.querySelector('[data-key="id"]').pattern='[A-Za-z][A-Za-z0-9_-]{0,63}';
+  card.querySelector('[data-key="id"]').required=true;card.querySelector('[data-key="id"]').pattern='[A-Za-z][A-Za-z0-9_\\-]{0,63}';
   card.querySelector('[data-key="id"]').title='英字で始まる64文字以内の半角英数字・ハイフン・アンダースコア';
   card.querySelector('[data-key="base_url"]').required=true;
   card.querySelector('[data-key="label"]').addEventListener('input',event=>{title.textContent=event.target.value||'新しいプロファイル';});
@@ -598,6 +608,62 @@ function renderSettings(config=ui.config) {
   $('seleniumFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','seleniumRuntimeHelp seleniumBoundaryHelp');
   $('systemPolicy').value=config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
 }
+function renderSkillControls() {
+  $('reloadSkills').disabled=Boolean(ui.skillsOperation||!ui.authenticated||!ui.config||ui.configStale||ui.settingsSaving||ui.settingsReloading);
+  $('skillsList').setAttribute('aria-busy',String(Boolean(ui.skillsOperation)));
+}
+function invalidateSkillsCatalog(message) {
+  ui.skillsGeneration++;ui.skillsOperation=null;ui.skillsCatalog=null;
+  $('skillsList').replaceChildren();$('skillsErrors').replaceChildren();
+  inlineStatus($('skillsStatus'),message||'一覧は未確認です。ボタンで読み込みます。');
+  renderSkillControls();
+}
+function validSkillsCatalog(value,action) {
+  const record=item=>item!==null&&typeof item==='object'&&!Array.isArray(item);
+  const strings=(item,keys)=>record(item)&&keys.every(key=>typeof item[key]==='string');
+  return record(value)&&value.config_revision===action.revision&&value.instance_id===action.instance&&
+    Array.isArray(value.skills)&&Array.isArray(value.errors)&&
+    value.skills.every(item=>strings(item,['id','name','description','path','base_directory','sha256'])&&item.id&&item.name&&/^[a-f0-9]{64}$/.test(item.sha256))&&
+    new Set(value.skills.map(item=>item.id)).size===value.skills.length&&
+    value.errors.every(item=>strings(item,['path','error']));
+}
+function displaySkillsCatalog(value) {
+  const list=$('skillsList'),errors=$('skillsErrors');list.replaceChildren();errors.replaceChildren();
+  for(const skill of value.skills){
+    const row=element('li');row.append(element('strong','',skill.name),element('p','small',skill.description));
+    const details=element('details');details.append(element('summary','','場所と読み込んだ版を確認'),
+      element('p','field-help',`スキル ID: ${skill.id}`),
+      element('p','field-help',skill.path),element('p','field-help',`参照ファイルの基準: ${skill.base_directory}`),
+      element('p','field-help',`SHA-256: ${skill.sha256}`));row.append(details);list.append(row);
+  }
+  for(const issue of value.errors){
+    const row=element('li','error');row.append(element('strong','',issue.path||'スキルの探索'),element('p','small',issue.error));errors.append(row);
+  }
+  const message=value.skills.length?`${value.skills.length} 件のスキルを確認しました。`:'読み込めるスキルはありません。';
+  inlineStatus($('skillsStatus'),message+(value.errors.length?` 読込エラー ${value.errors.length} 件を確認してください。`:'')+
+    ' 保存済み設定での確認です。実行中の作業には反映しません。',value.errors.length>0);
+}
+async function reloadSkills() {
+  if(ui.skillsOperation||!$('settingsDialog').open||!ui.authenticated||!ui.config||ui.configStale||ui.settingsSaving||ui.settingsReloading)return;
+  if(!Number.isSafeInteger(ui.configRevision)||ui.configRevision<0||typeof ui.instanceId!=='string'||!ui.instanceId){
+    inlineStatus($('skillsStatus'),'保存済み設定とサーバーの識別情報を確認してください。',true);return;
+  }
+  const action={generation:++ui.skillsGeneration,revision:ui.configRevision,instance:ui.instanceId,workspace:ui.workspaceGeneration};
+  const owns=()=>ui.skillsOperation===action&&action.generation===ui.skillsGeneration&&action.revision===ui.configRevision&&
+    action.instance===ui.instanceId&&action.workspace===ui.workspaceGeneration&&$('settingsDialog').open&&!ui.configStale;
+  ui.skillsOperation=action;ui.skillsCatalog=null;$('skillsList').replaceChildren();$('skillsErrors').replaceChildren();renderSkillControls();
+  inlineStatus($('skillsStatus'),'保存済みの読み取り許可フォルダーからスキルを確認しています…');
+  try{
+    const value=await api('/api/skills');if(!owns())return;
+    if(!validSkillsCatalog(value,action))throw new Error('スキル一覧の応答を確認できませんでした。保存済み設定を読み直してください。');
+    ui.skillsCatalog=value;displaySkillsCatalog(value);
+  }catch(error){
+    if(owns()){
+      if(error.code==='settings_changed'){ui.configStale=true;setSettingsLock(true);}
+      inlineStatus($('skillsStatus'),errorText(error)+' 一覧は未確認です。必要ならボタンで再読込してください。',true);
+    }
+  }finally{if(ui.skillsOperation===action)ui.skillsOperation=null;renderSkillControls();}
+}
 function collectConfig() {
   const config=structuredClone(ui.config);
   config.providers=[...$('profilesEditor').querySelectorAll('.profile-editor')].map(card=>{
@@ -626,6 +692,7 @@ function setSettingsLock(force=false) {
   const lockText=(locked?'作業の実行中は接続先・モデル・権限を変更できません。保存済み接続先のキーだけ変更できます。':'')+(ui.configStale?' 保存済み設定が変わったか、保存結果が未確認です。変更内容を控えてから「変更を破棄・保存済み設定を読み直す」で確認してください。保存・キー更新・モデル確認はそれまで行いません。':'');
   if($('settingsLockStatus').textContent!==lockText)$('settingsLockStatus').textContent=lockText;
   renderCopilotStatus();
+  renderSkillControls();
 }
 function renderProfileChoices(preserveDraft=false,preferDefault=false) {
   if(!ui.taskOrchestrationInitialized){applyTaskOrchestrationDefaults();ui.taskOrchestrationInitialized=true;}
@@ -680,16 +747,17 @@ function addPM() {
 function showView(view) {
   if(view==='settings') { if(!$('settingsDialog').open){ui.workspaceGeneration++;$('settingsDialog').showModal();} }
   else { if($('settingsDialog').open){ui.workspaceGeneration++;$('settingsDialog').close();} }
-  reconcileTaskReuse();
+  if(view==='settings'){clearNetworkHover();stopNetworkMotion();}
+  paintNetworkMotionState();reconcileTaskReuse();
 }
 function runPayload() {
-  const payload={task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value),delegation_level:Number($('delegationLevel').value),workers_per_pm:Number($('workersPerPM').value)};
+  const payload={task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value),delegation_level:Number($('delegationLevel').value),workers_per_pm:Number($('workersPerPM').value),max_delegation_depth:Number($('maxDelegationDepth').value)};
   const extra=[...($('additionalPMs')?.querySelectorAll('select')||[])].map(select=>select.value);
   if(extra.length)payload.pm_profiles=[payload.pm_profile,...extra];
   return payload;
 }
 function trackTaskDraft(event) {
-  if(['input','change'].includes(event?.type)&&[ $('delegationLevel'),$('workersPerPM') ].includes(event.target))ui.taskOrchestrationInitialized=true;
+  if(['input','change'].includes(event?.type)&&[ $('delegationLevel'),$('workersPerPM'),$('maxDelegationDepth') ].includes(event.target))ui.taskOrchestrationInitialized=true;
   if(['input','change'].includes(event?.type)&&(event.target===$('pmProfile')||event.target?.dataset?.focusKey?.startsWith('task-worker:')||event.target?.id?.startsWith('additional-pm-')))ui.modelChoicesTouched=true;
   // An actual edit also invalidates a choice when numeric parsing would hide
   // it (0 → blank, 1 → 01), or when the user re-enters the same value.
@@ -703,10 +771,13 @@ function trackTaskDraft(event) {
 function applyTaskOrchestrationDefaults() {
   const defaults=ui.config?.orchestration||ORCHESTRATION_DEFAULTS;
   $('delegationLevel').value=String(defaults.delegation_level);$('workersPerPM').value=String(defaults.workers_per_pm);
+  $('maxDelegationDepth').max=String(savedDelegationDepth()??3);$('maxDelegationDepth').value=String(savedDelegationDepth()??'');
 }
 function taskOrchestrationIssue() {
   const level=Number($('delegationLevel').value),count=Number($('workersPerPM').value),total=Number($('maxWorkers').value);
   if($('delegationLevel').value===''||!Number.isInteger(level)||level<0||level>2||$('workersPerPM').value===''||!Number.isInteger(count)||count<1||count>16)return 'PMの分担方針と委任人数を確認してください。';
+  const depth=Number($('maxDelegationDepth').value),cap=savedDelegationDepth();
+  if(cap===null||$('maxDelegationDepth').value===''||!Number.isInteger(depth)||depth<1||depth>cap)return `この作業の委任深さを1〜${cap??3}の整数で指定してください。保存済み上限を超える入力は開始できません。`;
   const pms=1+($('additionalPMs')?.querySelectorAll('select')||[]).length,required=pms*count;
   return level===2&&(!Number.isInteger(total)||total<required)?`委任必須には PM ${pms} 人 × ${count} 人 = ${required} 人分の作業者上限が必要です。現在の上限は ${total} 人です。人数または方針を変更してください。`:'';
 }
@@ -714,6 +785,10 @@ function renderTaskOrchestration() {
   const level=Number($('delegationLevel').value),label=delegationLabel(level),count=$('workersPerPM').value;
   $('delegationLevelValue').textContent=label;$('delegationLevel').setAttribute('aria-valuetext',label);
   $('workersPerPMValue').textContent=`${count} 人${level===0?'（PM中心では未使用）':''}`;$('workersPerPM').setAttribute('aria-valuetext',$('workersPerPMValue').textContent);
+  const depth=$('maxDelegationDepth');
+  // Updating a range's max can silently clamp a live draft in the browser. This
+  // number input retains an out-of-range draft for explicit correction instead.
+  depth.max=String(savedDelegationDepth()??3);$('maxDelegationDepthValue').textContent=delegationDepthLabel(Number(depth.value));depth.setAttribute('aria-valuetext',$('maxDelegationDepthValue').textContent);
   const issue=taskOrchestrationIssue();inlineStatus($('delegationStatus'),issue|| (level===0?'PM中心では、この委任人数を使用しません。':level===1?'目標人数です。PMが必要に応じて委任し、全体の作業者上限と予算を守ります。':'各PMの委任手順が必須です。成果の品質・成功を保証する設定ではなく、全体の権限・予算も増えません。'),Boolean(issue));
   return issue;
 }
@@ -848,7 +923,7 @@ async function refreshPreflight(request) {
     for(const issue of [...(response.blockers||[]),...(response.warnings||[])])parts.push(issue.message);
     inlineStatus($('preflightStatus'),(response.can_start?'開始に必要な設定を確認しました。推論・ツール動作は未確認です。':'開始前に修正が必要です。')+' '+parts.join(' '),!response.can_start);
     const target=$('preflightDetails'),scopeOpen=Boolean(target.querySelector('.readiness-scope')?.open);target.replaceChildren();
-    if(response.orchestration){const policy=response.orchestration;target.append(element('p','small',`確認した分担方針: ${delegationLabel(policy.delegation_level)} · PM1人あたり ${Number.isInteger(policy.workers_per_pm)?policy.workers_per_pm:'未記録'} 人${policy.delegation_level===0?'（未使用）':''}`));}
+    if(response.orchestration){const policy=response.orchestration;target.append(element('p','small',`確認した分担方針: ${delegationLabel(policy.delegation_level)} · PM1人あたり ${Number.isInteger(policy.workers_per_pm)?policy.workers_per_pm:'未記録'} 人${policy.delegation_level===0?'（未使用）':''} · 委任深さ ${delegationDepthLabel(policy.max_delegation_depth)}`));}
     if(response.destinations){
       target.append(element('p','small','送信される可能性のある接続先（実際の呼び出し記録ではありません）'));
       for(const p of response.destinations)target.append(element('p','readiness-destination',`${p.pm_count?`PM ${p.pm_count} 人${p.worker_available?' / 作業者候補':''}`:p.role} · ${p.label} · ${p.model} — ${p.endpoint}${p.proxy?' · proxy: '+p.proxy:''}`));
@@ -867,11 +942,72 @@ async function refreshPreflight(request) {
 function setBriefOpen(open,preview=true) {
   if(open) { if(!$('taskDialog').open){ui.taskDialogGeneration++;if(ui.copilotDefaultsPending)renderProfileChoices(true,true);$('taskDialog').showModal();}showPendingStart();syncStartControl();if(preview)schedulePreflight(); }
   else if($('taskDialog').open)$('taskDialog').close();
+  if(open){clearNetworkHover();stopNetworkMotion();}paintNetworkMotionState();
 }
 function needsHuman(agent) { return !archivedAgent(agent)&&(agent.status_reason==='human_input'||(Boolean(agent.question)&&['waiting','waiting_human','needs_input'].includes(agent.status))); }
 function filteredAgents(agents) {
   const query=$('agentSearch').value.trim().toLocaleLowerCase();
   return agents.filter(agent=>(!ui.needsOnly||needsHuman(agent))&&(!query||[agent.name,agent.id,agent.assignment,agent.profile_id].join(' ').toLocaleLowerCase().includes(query)));
+}
+function agentHierarchy(agent) {
+  const value=agent?.hierarchy,run=agent&&ui.state.runs.find(item=>item.id===agent.run_id);
+  const ident=id=>typeof id==='string'&&id.length>0;
+  if(!run||!value||typeof value!=='object'||Array.isArray(value)||!Number.isInteger(value.depth)||value.depth<0||value.depth>3||
+    !ident(value.root_pm_id)||!ident(value.unit_id)||typeof value.can_delegate!=='boolean'||!Array.isArray(value.direct_children)||
+    value.direct_children.length>16||!value.direct_children.every(ident)||new Set(value.direct_children).size!==value.direct_children.length)return null;
+  const members=ui.state.agents.filter(item=>item.run_id===agent.run_id),ids=new Map();
+  for(const member of members){if(ids.has(member.id))return null;ids.set(member.id,member);}
+  if(ids.get(agent.id)!==agent||Array.isArray(run.agent_ids)&&!run.agent_ids.includes(agent.id))return null;
+  const seen=new Set();let root=agent,depth=0;
+  while(root.parent_id){
+    if(seen.has(root.id)||depth>=3)return null;seen.add(root.id);root=ids.get(root.parent_id);if(!root)return null;depth++;
+  }
+  if(value.depth!==depth||value.root_pm_id!==root.id||value.unit_id!==(agent.parent_id||agent.id))return null;
+  const children=members.filter(item=>item.parent_id===agent.id).map(item=>item.id);
+  if(children.length!==value.direct_children.length||children.some(id=>!value.direct_children.includes(id)))return null;
+  return value;
+}
+function hierarchyPeerLabel(agent,id) {
+  const peer=ui.state.agents.find(item=>item.id===id&&item.run_id===agent.run_id);
+  return peer?`${peer.name||peer.id} [${id}]`:`担当未取得 [${id}]`;
+}
+function agentRoleLabel(agent) {
+  if(!agent)return '';
+  if(!agent.parent_id)return 'PM';
+  return agentHierarchy(agent)?.direct_children.length?'作業者・単位まとめ役':'作業者';
+}
+function agentHierarchyLabel(agent) {
+  if(!agent||!Object.hasOwn(agent,'hierarchy'))return '';
+  const value=agentHierarchy(agent),prefix=archivedAgent(agent)?'保存時点の階層':!ui.networkConnected?'最後に取得した階層':'階層';
+  if(!value)return `${prefix}: 詳細を確認できません。`;
+  const parts=[`${prefix}: ${agentRoleLabel(agent)} · 深さ ${value.depth}（${['PM','子','孫','ひ孫'][value.depth]}）`,
+    `所属単位: ${hierarchyPeerLabel(agent,value.unit_id)}`];
+  if(agent.parent_id)parts.push(`報告先: ${hierarchyPeerLabel(agent,agent.parent_id)}`);
+  if(value.direct_children.length)parts.push(`管理する子単位: ${hierarchyPeerLabel(agent,agent.id)} · 直属の子 ${value.direct_children.length} 人`);
+  parts.push(`再委任: ${value.can_delegate?'可能との表示':'不可との表示'}（取得時点。実行時にサーバーが再確認）`);
+  return parts.join('\n');
+}
+function openHierarchyRelation(owner,id,mail=false) {
+  const agent=getAgent(),value=agentHierarchy(agent);
+  if(owner.instance!==ui.instanceId||!agent||agent.id!==owner.agent||agent.run_id!==owner.run||!value||![agent.parent_id,...value.direct_children].includes(id))return;
+  if(mail)selectMailPair(agent.id,id);else selectAgent(id);
+}
+function renderHierarchyRelations(agent) {
+  const value=agentHierarchy(agent),panel=$('hierarchyRelations'),items=value?[...(agent.parent_id?[{id:agent.parent_id,label:'報告先'}]:[]),...value.direct_children.map(id=>({id,label:'直属の子'}))]:[];
+  const signature=JSON.stringify([agent?.run_id,agent?.id,items.map(item=>[item.id,item.label,hierarchyPeerLabel(agent,item.id)])]);
+  if(signature===ui.hierarchyRelationsSignature)return;ui.hierarchyRelationsSignature=signature;
+  const scroll=panel.scrollTop;
+  preserveControlFocus(()=>{
+    panel.replaceChildren();panel.hidden=!items.length;
+    for(const item of items){
+      const row=element('div','hierarchy-relation'),label=hierarchyPeerLabel(agent,item.id),owner={run:agent.run_id,agent:agent.id,instance:ui.instanceId};
+      const select=element('button','button minor',`${item.label}: ${label}`),mail=element('button','button minor','この親子の通信を見る');
+      select.type='button';mail.type='button';select.dataset.focusKey=`hierarchy:${agent.id}:${item.id}:select`;mail.dataset.focusKey=`hierarchy:${agent.id}:${item.id}:mail`;
+      select.addEventListener('click',()=>openHierarchyRelation(owner,item.id));mail.addEventListener('click',()=>openHierarchyRelation(owner,item.id,true));
+      row.append(select,mail);panel.appendChild(row);
+    }
+    panel.scrollTop=scroll;
+  },()=>$('conversationHeading'));
 }
 function hasMessageInput(agent) {
   const run=agent&&ui.state.runs.find(run=>run.id===agent.run_id);
@@ -925,13 +1061,13 @@ function openNextMessageInput() {
 }
 function revealAgentCardAfterTab(event) {
   if(event.key!=='Tab'||event.altKey||event.ctrlKey||event.metaKey||event.defaultPrevented||$('taskDialog').open||$('settingsDialog').open)return;
-  // Native Tab can reveal only a card's center in the horizontal narrow roster.
+  // Native Tab can reveal only a card or session link's center in a horizontal list.
   // Reveal the actual current keyboard target; polls and delayed detail never
   // schedule this, and a newer focus/modal choice wins before the frame runs.
   window.requestAnimationFrame(()=>{
     if($('taskDialog').open||$('settingsDialog').open)return;
     const card=document.activeElement;
-    if([...$('agentCards').querySelectorAll('[data-focus-key]')].includes(card))card.scrollIntoView({block:'nearest',inline:'nearest'});
+    if([...$('agentCards').querySelectorAll('[data-focus-key]'),...$('runList').querySelectorAll('.run-link[data-focus-key]')].includes(card))card.scrollIntoView({block:'nearest',inline:'nearest'});
   });
 }
 function questionEntries() {
@@ -944,6 +1080,97 @@ function questionEntries() {
       typeof agent.question==='string'&&agent.question.trim()&&agent.status_reason==='human_input')
       .map(agent=>({run,agent}));
   });
+}
+function questionState(agent) {
+  const value=agent?.question_state;
+  if(!value||typeof value!=='object'||Array.isArray(value)||typeof value.question_id!=='string'||!/^q-[a-f0-9]{32}$/.test(value.question_id)||
+    !['consultation','permission'].includes(value.kind)||typeof value.recommendation!=='string'||
+    !Number.isFinite(value.asked_at)||value.asked_at<=0||
+    !(value.deadline_at===null||(Number.isFinite(value.deadline_at)&&value.deadline_at>=value.asked_at))||
+    !['pending','answered','fallback','blocked','cancelled'].includes(value.resolution)||
+    !(value.resolved_at===null||Number.isFinite(value.resolved_at))||typeof value.reason!=='string')return null;
+  return value;
+}
+function questionReplyTarget(agent) {
+  if(!agent||!needsHuman(agent))return null;
+  // Old archived/fixture schemas retain ordinary message semantics. A present,
+  // invalid identity must never be silently treated as a fresh ordinary message.
+  if(!Object.hasOwn(agent,'question_state'))return null;
+  const state=questionState(agent);
+  return state&&['pending','blocked'].includes(state.resolution)?state.question_id:undefined;
+}
+function questionTimingLabel(agent) {
+  const state=questionState(agent);
+  if(!state)return agent&&Object.hasOwn(agent,'question_state')?'質問の期限・推奨回答を確認できません。':'自動回答の期限は設定されていません。';
+  if(state.resolution==='fallback')return `サーバーが推奨回答を適用しました: ${state.recommendation}`;
+  if(state.resolution==='answered')return '回答を受け付けました。';
+  if(state.resolution==='cancelled')return '質問は取り消されました。';
+  if(state.resolution==='blocked')return '推奨回答の自動適用は停止しました。同じ質問への人の回答を待ちます。送信可否は作業の現在状態を確認してください。';
+  if(state.kind==='permission')return '権限・承認の確認です。自動回答せず、人の回答を待ちます。';
+  if(state.deadline_at===null||!state.recommendation.trim())return '自動回答は設定されていません。人の回答を待ちます。';
+  const deadline=new Date(state.deadline_at*1000).toLocaleTimeString(),elapsed=Date.now()>=state.deadline_at*1000;
+  return `推奨回答: ${state.recommendation}\n回答期限 ${deadline}（質問から約90秒）。未回答ならサーバーが推奨回答を使います。${elapsed?' 期限を過ぎました。サーバーの確定を確認中です。':''}ブラウザーを閉じてもサーバー側の期限は進みます。`;
+}
+function questionNotificationKey(run,agent,state) { return JSON.stringify([ui.instanceId,run.id,agent.id,state.question_id]); }
+function closeQuestionNotifications() {
+  for(const notification of ui.questionNotifications.values()){try{notification.close();}catch(_){}}
+  ui.questionNotifications.clear();
+}
+function notificationCapability() {
+  if(typeof globalThis.Notification!=='function'||window.isSecureContext===false)return 'unavailable';
+  return ['default','granted','denied'].includes(Notification.permission)?Notification.permission:'unavailable';
+}
+async function requestQuestionNotificationPermission() {
+  if(ui.notificationPermissionRequest||notificationCapability()!=='default')return;
+  const action={};ui.notificationPermissionRequest=action;ui.notificationError='';renderQuestionNotice(questionEntries());
+  try{await Notification.requestPermission();}
+  catch(_){ui.notificationError='ブラウザー通知の許可を取得できませんでした。画面内の質問通知を確認してください。';}
+  finally{if(ui.notificationPermissionRequest===action)ui.notificationPermissionRequest=null;renderQuestionNotice(questionEntries());}
+}
+async function openNotifiedQuestion(owner) {
+  if(ui.instanceId!==owner.instance||!ui.authenticated||$('taskDialog').open||$('settingsDialog').open)return;
+  const navigation=ui.navigationGeneration,workspace=ui.workspaceGeneration;
+  await pollState(true);
+  if(ui.instanceId!==owner.instance||ui.navigationGeneration!==navigation||ui.workspaceGeneration!==workspace||
+    !ui.networkConnected||ui.detailError||$('taskDialog').open||$('settingsDialog').open)return;
+  const entry=questionEntries().find(({run,agent})=>run.id===owner.run&&agent.id===owner.agent&&questionState(agent)?.question_id===owner.question&&questionState(agent)?.resolution==='pending');
+  if(entry){window.focus?.();openQuestion(entry.agent.id);}
+}
+function syncQuestionNotifications(entries) {
+  const pending=new Map();
+  for(const {run,agent} of entries){const state=questionState(agent);if(state?.resolution==='pending')pending.set(questionNotificationKey(run,agent,state),{run,agent,state});}
+  for(const [key,notification] of ui.questionNotifications){if(!pending.has(key)||!ui.networkConnected){try{notification.close();}catch(_){}ui.questionNotifications.delete(key);}}
+  if(!ui.authenticated||!ui.networkConnected||ui.detailError||!ui.instanceId||notificationCapability()!=='granted')return;
+  for(const [key,{run,agent,state}] of pending){
+    if(ui.questionNotified.has(key))continue;
+    // One attempt per question in this page session; never replay after failure.
+    ui.questionNotified.add(key);
+    try{
+      const notification=new Notification('Workbench: 回答待ちの質問があります',{body:'アプリを開いて質問と回答期限を確認してください。',tag:key});
+      ui.questionNotifications.set(key,notification);
+      const owner={instance:ui.instanceId,run:run.id,agent:agent.id,question:state.question_id};
+      notification.onclick=()=>{try{notification.close();}catch(_){}void openNotifiedQuestion(owner);};
+      notification.onerror=()=>{ui.notificationError='ブラウザー通知を表示できませんでした。画面内の質問通知を確認してください。';renderQuestionNotice(questionEntries());};
+    }catch(_){ui.notificationError='ブラウザー通知を表示できませんでした。画面内の質問通知を確認してください。';}
+  }
+}
+function renderQuestionNotice(entries) {
+  syncQuestionNotifications(entries);
+  const capability=notificationCapability(),button=$('enableQuestionNotifications');
+  button.disabled=capability!=='default'||Boolean(ui.notificationPermissionRequest);
+  button.textContent=ui.notificationPermissionRequest?'通知の許可を確認中…':'ブラウザー通知を有効にする';
+  const status=ui.notificationError||({unavailable:'この環境ではブラウザー通知を利用できません。画面内で確認してください。',denied:'ブラウザー通知は拒否されています。変更する場合はブラウザーの設定を確認してください。',granted:'ブラウザー通知は許可済みです。この画面を開いている間に通知します。OS側の表示は保証されません。',default:'ブラウザー通知は未許可です。ボタンを押したときだけ許可を確認します。'})[capability];
+  if($('questionNotificationStatus').textContent!==status)$('questionNotificationStatus').textContent=status;
+  const lostNoticeFocus=!entries.length&&$('questionNotice').contains(document.activeElement);
+  $('questionNotice').hidden=!entries.length;
+  if(lostNoticeFocus)$('needsYou').focus({preventScroll:true});
+  const title=ui.networkConnected?`質問 ${entries.length}件`:`最後に取得 ${entries.length}件（接続未確認）`;
+  if($('questionNoticeTitle').textContent!==title)$('questionNoticeTitle').textContent=title;
+  const entry=entries[0],body=entry?`チーム ${shortRunId(entry.run)} · ${entry.agent.name||entry.agent.id}\n${questionTimingLabel(entry.agent)}`:'';
+  if($('questionNoticeBody').textContent!==body)$('questionNoticeBody').textContent=body;
+}
+function staleQuestionDraft(agent) {
+  return Boolean(agent&&hasMessageInput(agent)&&ui.draftQuestions.has(agent.id)&&ui.draftQuestions.get(agent.id)!==questionReplyTarget(agent));
 }
 function questionAvailability(agent) {
   const eligibility=agent.message_eligibility;
@@ -962,6 +1189,7 @@ function renderQuestionSummary(entries) {
   $('questionCount').textContent=String(count);
   const status=`全チームの質問 ${count}件。回答可能 ${allowed}件、回答不可 ${blocked}件${unknown?`、送信可否未確認 ${unknown}件`:''}。`;
   if($('questionQueueStatus').textContent!==status)$('questionQueueStatus').textContent=status;
+  renderQuestionNotice(entries);
 }
 function toggleQuestionView() {
   if(ui.needsOnly)ui.questionSearch=$('agentSearch').value;else ui.crewSearch=$('agentSearch').value;
@@ -992,7 +1220,7 @@ function questionFocusFallback() {
 }
 function renderQuestions(entries) {
   const filtered=entries.filter(questionMatches),signature=JSON.stringify(['questions',ui.selectedRun,ui.selectedAgent,$('agentSearch').value,entries.length,
-    filtered.map(({run,agent})=>[run.id,run.task,run.created_at,agent.id,agent.name,agent.parent_id,agent.profile_id,agent.configured_profile,agent.question,agent.message_eligibility,hasMessageInput(agent)])]);
+    filtered.map(({run,agent})=>[run.id,run.task,run.created_at,agent.id,agent.name,agent.parent_id,agent.hierarchy,agent.profile_id,agent.configured_profile,agent.question,agent.question_state,agent.message_eligibility,hasMessageInput(agent)])]);
   if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   const fallback=questionFocusFallback(),focusedKey=document.activeElement?.dataset.focusKey;
   preserveControlFocus(()=>{
@@ -1007,8 +1235,9 @@ function renderQuestions(entries) {
       sourceLine.append(element('span','question-run-id',`チーム ${shortRunId(run)}`));if(inputBadge)sourceLine.append(inputBadge);
       source.append(sourceLine,element('span','question-run-title',String(run.task||'作業').split('\n')[0]));
       card.append(source,
-        element('span','agent-name',`${!agent.parent_id?'PM':'作業者'} · ${agent.name||agent.id}`),
+        element('span','agent-name',`${agentRoleLabel(agent)} · ${agent.name||agent.id}`),
         element('span','question-preview',agent.question.length>180?agent.question.slice(0,180)+'…':agent.question),
+        element('span','question-timing',questionTimingLabel(agent)),
         element('span','question-availability',availability.label+(availability.message?' · '+availability.message:'')));
       const model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
       model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';card.append(model,element('span','question-open','質問と作業ログを開く'));
@@ -1036,6 +1265,8 @@ function rememberWorkBoardView() {
   if(board.view.atBottom&&board.loaded)board.seenSeq=Math.max(board.seenSeq,board.cursor);
 }
 function invalidateWorkBoardContent() {
+  ui.networkPreviewReady=false;
+  clearNetworkPreview();stopNetworkMotion();
   // Public history is re-read after a redaction change; old quotes must disappear too.
   for(const board of ui.workBoards.values()){
     board.epoch++;board.loading=null;board.posts.clear();board.nodes.clear();board.cursor=0;board.loaded=false;board.error='';board.canPost=false;
@@ -1127,7 +1358,7 @@ function renderWorkBoard(run) {
     node.quote.textContent=post.reply_to===null?'':workBoardQuote(board,post.reply_to);
     node.quote.disabled=!board.posts.has(post.reply_to);
     const agent=ui.state.agents.find(agent=>agent.run_id===run.id&&agent.id===post.author_id);
-    node.role.textContent=post.author_kind==='human'?'あなた':agent?`${agent.parent_id?'作業者':'PM'} · ${stateLabel(agent)}`:'担当者';
+    node.role.textContent=post.author_kind==='human'?'あなた':agent?`${agentRoleLabel(agent)} · ${stateLabel(agent)}`:'担当者';
     node.avatar.textContent=post.author_kind==='human'?'YOU':agent&&!agent.parent_id?'PM':'W';
   }
   if(board.view.atBottom){feed.scrollTop=feed.scrollHeight;if(board.loaded)board.seenSeq=Math.max(board.seenSeq,board.cursor);}
@@ -1210,7 +1441,8 @@ function setCockpitView(view) {
   rememberWorkBoardView();
   ui.cockpitView=view;document.querySelector('.app-shell').dataset.cockpitView=view;
   for(const [id,mode] of [['networkView','network'],['boardView','board'],['inspectorView','inspector']])$(id).setAttribute('aria-pressed',String(view===mode));
-  renderWorkBoard(getRun());
+  if(view!=='network'){clearNetworkHover();stopNetworkMotion();}
+  renderWorkBoard(getRun());renderNetworkPreview();paintNetworkMotionState();
 }
 function revealInspector() { if(window.matchMedia?.('(max-width: 1100px)').matches)setCockpitView('inspector'); }
 function svgElement(tag,attributes={}) {
@@ -1227,27 +1459,33 @@ function networkLayout(agents) {
   const roots=agents.filter(agent=>!agent.parent_id||!ids.has(agent.parent_id));
   for(const root of [...roots,...agents]) {
     if(placed.has(root.id))continue;
-    placed.set(root.id,{x:280,y:top});let row=0;const descendants=[];
+    placed.set(root.id,{x:304,y:top});const levels=[];
     // Parent identity, not a model-written role label, defines the hierarchy.
-    const pending=agents.filter(agent=>agent.parent_id===root.id);
+    const pending=agents.filter(agent=>agent.parent_id===root.id).map(agent=>({agent,depth:1}));
     while(pending.length) {
-      const agent=pending.shift();if(placed.has(agent.id))continue;
-      placed.set(agent.id,{x:36+(row%3)*244,y:top+172+Math.floor(row/3)*152});row++;descendants.push(agent.id);
-      pending.push(...agents.filter(child=>child.parent_id===agent.id&&!placed.has(child.id)));
+      const {agent,depth}=pending.shift();if(placed.has(agent.id))continue;
+      placed.set(agent.id,null);(levels[depth-1]??=[]).push(agent.id);
+      pending.push(...agents.filter(child=>child.parent_id===agent.id&&!placed.has(child.id)).map(agent=>({agent,depth:depth+1})));
     }
-    // Center the incomplete last row under its PM; 220px cards + 24px gaps.
-    const lastRowCount=row%3,offset=(3-lastRowCount)*(220+24)/2;
-    if(lastRowCount)for(const id of descendants.slice(-lastRowCount))placed.get(id).x+=offset;
-    top+=172+Math.ceil(row/3)*152+36;
+    // Keep the original one-level coordinates. Grandchildren occupy later rows;
+    // the existing per-run cache still owns all positions already shown/dragged.
+    let y=top+176;
+    for(const level of levels){
+      for(let i=0;i<level.length;i++){const rowCount=Math.min(3,level.length-Math.floor(i/3)*3);placed.set(level[i],{x:92+(i%3)*212+(3-rowCount)*106,y:y+Math.floor(i/3)*164});}
+      y+=Math.ceil(level.length/3)*164;
+    }
+    top=y+40;
   }
-  return {positions:placed,width:840,height:Math.max(390,top)};
+  return {positions:placed,width:720,height:Math.max(360,top)};
 }
 function currentMailLinks(agents,events) {
   const ids=new Set(agents.map(agent=>agent.id)),pairs=new Map();
   for(const event of events) {
-    if(event.kind!=='mail'||!ids.has(event.from_agent_id)||!ids.has(event.to_agent_id)||event.from_agent_id===event.to_agent_id)continue;
+    if(!['mail','mail_consumed'].includes(event.kind)||!ids.has(event.from_agent_id)||!ids.has(event.to_agent_id)||event.from_agent_id===event.to_agent_id)continue;
     const key=JSON.stringify([event.from_agent_id,event.to_agent_id]);
-    pairs.delete(key);pairs.set(key,{from:event.from_agent_id,to:event.to_agent_id});
+    const stage=networkMailStage(event),previous=pairs.get(key);
+    pairs.delete(key);pairs.set(key,{from:event.from_agent_id,to:event.to_agent_id,stage,
+      queued:(previous?.queued||0)+(stage==='queued'?1:0),consumed:(previous?.consumed||0)+(stage==='consumed'?1:0)});
   }
   return [...pairs.values()].slice(-12);
 }
@@ -1255,20 +1493,146 @@ function selectMailPair(from,to) {
   ui.activityPair={from,to};ui.activityFilter='pair';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});
 }
 function networkMailPath(from,to,index) {
-  if(from.y===to.y) {
-    // The 28px row gap keeps this arch outside both sibling cards and the row above.
-    const arch=Math.max(8,from.y-18-(index%3)*4);
-    return `M ${from.x+110} ${from.y} C ${from.x+110} ${arch}, ${to.x+110} ${arch}, ${to.x+110} ${to.y}`;
-  }
-  const edge=Math.max(from.x,to.x)+254+(index%3)*12;
-  return `M ${from.x+220} ${from.y+64} C ${edge} ${from.y+64}, ${edge} ${to.y+64}, ${to.x+220} ${to.y+64}`;
+  return networkLinkGeometry(from,to,index).path;
+}
+function networkNodeCenter(point) { return {x:point.x+NETWORK_NODE_RADIUS,y:point.y+NETWORK_NODE_RADIUS}; }
+function networkLinkGeometry(from,to,index=0,parent=false) {
+  const a=networkNodeCenter(from),b=networkNodeCenter(to),dx=b.x-a.x,dy=b.y-a.y,length=Math.hypot(dx,dy)||1;
+  // Reciprocal directions bend to opposite sides; endpoints follow circle tangents.
+  const bend=parent?0:Math.min(120,48+length*.14+(index%3)*8),nx=-dy/length,ny=dx/length;
+  const control1={x:a.x+dx/3+nx*bend,y:a.y+dy/3+ny*bend},control2={x:a.x+dx*2/3+nx*bend,y:a.y+dy*2/3+ny*bend};
+  const clip=(center,toward)=>{const vx=toward.x-center.x,vy=toward.y-center.y,scale=NETWORK_NODE_RADIUS/(Math.hypot(vx,vy)||1);return {x:center.x+vx*scale,y:center.y+vy*scale};};
+  const start=clip(a,control1),end=clip(b,control2);
+  return {start,end,control1,control2,path:`M ${start.x} ${start.y} C ${control1.x} ${control1.y}, ${control2.x} ${control2.y}, ${end.x} ${end.y}`};
 }
 function networkViewState(runId=ui.selectedRun) {
-  const view=ui.networkViews.get(runId)||{positions:new Map(),camera:null,selectedAgent:null};
+  const view=ui.networkViews.get(runId)||{positions:new Map(),camera:null,selectedAgent:null,pinnedAgent:null,mailSeen:new Set(),mailCursor:-1,mailReady:false};
   ui.networkViews.delete(runId);ui.networkViews.set(runId,view);
-  // Geometry only, with a bounded recent-run cache; no public text or task data.
+  // Only IDs, geometry and bounded event identities; never cache public text.
   while(ui.networkViews.size>64)ui.networkViews.delete(ui.networkViews.keys().next().value);
   return view;
+}
+function networkPreviewAgent() {
+  if(!ui.networkPreviewReady||!ui.selectedRun||ui.cockpitView!=='network'||document.hidden||$('settingsDialog')?.open||$('taskDialog')?.open)return null;
+  const id=networkViewState().pinnedAgent||ui.networkFocusAgent||ui.networkHoverAgent;
+  return ui.state.agents.find(agent=>agent.id===id&&agent.run_id===ui.selectedRun)||null;
+}
+function cancelNetworkPreviewDismiss() { clearTimeout(ui.networkPreviewDismissTimer);ui.networkPreviewDismissTimer=null; }
+function scheduleNetworkPreviewDismiss(relatedTarget=null) {
+  cancelNetworkPreviewDismiss();
+  if($('networkPreview')?.contains(relatedTarget)||relatedTarget?.closest?.('.network-node'))return;
+  const runId=ui.selectedRun;
+  ui.networkPreviewDismissTimer=setTimeout(()=>{
+    ui.networkPreviewDismissTimer=null;
+    if(runId!==ui.selectedRun||ui.networkPreviewHovered||$('networkPreview')?.contains(document.activeElement)||document.activeElement?.closest?.('.network-node'))return;
+    ui.networkHoverAgent=null;ui.networkFocusAgent=null;renderNetworkPreview();
+  },NETWORK_PREVIEW_DISMISS_MS);
+}
+function clearNetworkHover() { cancelNetworkPreviewDismiss();ui.networkPreviewHovered=false;ui.networkHoverAgent=null;ui.networkFocusAgent=null;renderNetworkPreview(); }
+function clearNetworkPreview() {
+  cancelNetworkPreviewDismiss();ui.networkPreviewHovered=false;ui.networkHoverAgent=null;ui.networkFocusAgent=null;
+  for(const view of ui.networkViews.values())view.pinnedAgent=null;
+  renderNetworkPreview();
+}
+function toggleNetworkPin(id) {
+  cancelNetworkPreviewDismiss();
+  if(!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun))return;
+  const view=networkViewState();view.pinnedAgent=view.pinnedAgent===id?null:id;
+  if(!view.pinnedAgent){ui.networkHoverAgent=null;ui.networkFocusAgent=null;}
+  renderNetworkPreview();
+}
+function closeNetworkPreview() {
+  const id=networkPreviewAgent()?.id||(ui.selectedRun?networkViewState().pinnedAgent:null);
+  if(ui.selectedRun)networkViewState().pinnedAgent=null;
+  clearNetworkHover();
+  if(id)ui.networkNodes.get(id)?.button.focus({preventScroll:true});
+  // Restoring keyboard focus must not reopen the dismissed preview.
+  ui.networkFocusAgent=null;renderNetworkPreview();
+}
+function renderNetworkPreview() {
+  const panel=$('networkPreview');if(!panel)return;
+  const agent=networkPreviewAgent(),pinned=ui.selectedRun?networkViewState().pinnedAgent:null;
+  for(const [id,node] of ui.networkNodes){node.button.classList.toggle('pinned',id===pinned);node.button.setAttribute('aria-pressed',String(id===pinned));node.button.setAttribute('aria-expanded',String(id===agent?.id));}
+  panel.hidden=!agent;
+  if($('networkPreviewMonitor'))$('networkPreviewMonitor').textContent=agentMonitorText(agent);
+  if(!agent){for(const id of ['networkPreviewTitle','networkPreviewState','networkPreviewRole','networkPreviewAssignment','networkPreviewLatest','networkPreviewCounts','networkPreviewError','networkPreviewMode'])$(id).textContent='';$('networkPreviewError').hidden=true;return;}
+  const activity=agent.activity||{},latest=activity.latest_log,count=value=>Number.isSafeInteger(value)&&value>=0?String(value):'未取得';
+  $('networkPreviewTitle').textContent=agent.name||agent.id;
+  $('networkPreviewState').textContent=stateLabel(agent);
+  $('networkPreviewRole').textContent=`${agentHierarchy(agent)?agentRoleLabel(agent):agent.parent_id?'WORKER':'PM'}${agent.role?` · ${agent.role}`:''}${archivedAgent(agent)?' · 保存履歴':''}`;
+  $('networkPreviewAssignment').textContent=agent.assignment||'担当内容は未記録';
+  $('networkPreviewLatest').textContent=latest?`${localTime(latest.at)} · ${String(latest.text||'')}`:'最新ログは未取得';
+  $('networkPreviewCounts').textContent=`待機入力 ${count(activity.pending_count)} · 結果 ${count(activity.result_count)} · 保存記録 ${count(activity.output_receipt_count)}`;
+  $('networkPreviewError').textContent=agent.last_error||'';$('networkPreviewError').hidden=!agent.last_error;
+  $('networkPreviewMode').textContent=pinned===agent.id?'詳細を固定中 · 解除は閉じる / Escape':'一時表示 · ノードをクリック / Enter で固定';
+}
+function networkMailStage(event) {
+  if(event.kind==='mail'&&event.delivery_state==='queued')return 'queued';
+  if(event.kind==='mail_consumed'&&event.delivery_state==='context_consumed')return 'consumed';
+  return 'unknown';
+}
+function networkDeliveryLabel(stage) { return stage==='queued'?'送信キューに受理':stage==='consumed'?'会話へ取り込み済み':'配送状態は未記録'; }
+function networkMotionAllowed(run=getRun()) {
+  return Boolean(run&&run.id===ui.selectedRun&&!archivedRun(run)&&['running','working','queued','waiting'].includes(run.status)
+    &&ui.networkMotionEnabled&&ui.networkConnected&&ui.networkPreviewReady&&!ui.networkReducedMotion&&!document.hidden&&ui.cockpitView==='network'&&ui.networkCanvas
+    &&!$('settingsDialog')?.open&&!$('taskDialog')?.open);
+}
+function finishNetworkPulse(id) {
+  const pulse=ui.networkPulses.get(id);if(!pulse)return;
+  clearTimeout(pulse.timer);pulse.node.remove();ui.networkPulses.delete(id);
+}
+function stopNetworkMotion({rebase=true}={}) {
+  for(const id of [...ui.networkPulses.keys()])finishNetworkPulse(id);
+  for(const node of ui.networkNodes.values())node.button.classList.remove('is-live');
+  if(rebase&&ui.selectedRun&&ui.networkViews.has(ui.selectedRun))ui.networkViews.get(ui.selectedRun).mailReady=false;
+}
+function paintNetworkMotionState() {
+  const allowed=networkMotionAllowed();
+  if(!allowed)stopNetworkMotion();
+  for(const [id,node] of ui.networkNodes){const agent=ui.state.agents.find(item=>item.id===id&&item.run_id===ui.selectedRun);node.button.classList.toggle('is-live',allowed&&!archivedAgent(agent)&&['working','running'].includes(agent?.status));}
+  const button=$('networkMotion');if(button){button.setAttribute('aria-pressed',String(ui.networkMotionEnabled));button.textContent=ui.networkMotionEnabled?'動きを停止':'動きを表示';button.title=ui.networkReducedMotion?'端末の「動きを減らす」設定により静止表示です':'新しく確認できた通信記録だけを短く表示します';}
+}
+function paintNetworkPulse(pulse) {
+  const positions=ui.networkLayout?.positions,from=positions?.get(pulse.from),to=positions?.get(pulse.to);if(!from||!to)return;
+  if(pulse.stage==='queued')pulse.motion.setAttribute('path',networkMailPath(from,to,pulse.index));
+  else {const center=networkNodeCenter(to);pulse.node.setAttribute('cx',center.x);pulse.node.setAttribute('cy',center.y);}
+}
+function startNetworkMailPulse(event) {
+  if(!networkMotionAllowed()||!ui.networkPulseLayer)return;
+  const index=ui.networkMailLines.findIndex(link=>link.from===event.from_agent_id&&link.to===event.to_agent_id);if(index<0)return;
+  while(ui.networkPulses.size>=NETWORK_PULSE_LIMIT)finishNetworkPulse(ui.networkPulses.keys().next().value);
+  const stage=networkMailStage(event),id=++ui.networkPulseSequence;
+  const node=svgElement('circle',{r:stage==='queued'?4:NETWORK_NODE_RADIUS+5,class:`network-mail-pulse ${stage}`,'aria-hidden':'true'});
+  node.dataset.stage=stage;node.dataset.eventId=String(event.id);
+  // New nodes join an already-running SVG timeline: start once explicitly,
+  // never at implicit document time zero (whose end event can remove them).
+  const motion=stage==='queued'?svgElement('animateMotion',{begin:'indefinite',dur:`${NETWORK_PULSE_MS}ms`,repeatCount:1,fill:'remove'}):svgElement('animate',{begin:'indefinite',attributeName:'r',values:`${NETWORK_NODE_RADIUS+3};${NETWORK_NODE_RADIUS+17}`,dur:`${NETWORK_PULSE_MS}ms`,repeatCount:1,fill:'remove'});
+  const pulse={node,motion,stage,from:event.from_agent_id,to:event.to_agent_id,index,runId:ui.selectedRun,timer:null};
+  paintNetworkPulse(pulse);node.appendChild(motion);ui.networkPulseLayer.appendChild(node);ui.networkPulses.set(id,pulse);
+  motion.addEventListener('endEvent',()=>finishNetworkPulse(id),{once:true});
+  pulse.timer=setTimeout(()=>finishNetworkPulse(id),NETWORK_PULSE_MS+100);
+  motion.beginElement?.();
+}
+function observeNetworkMail(agents,events) {
+  const run=getRun();if(!run||!ui.selectedRun)return;
+  const view=networkViewState(),loaded=!ui.compactState||ui.loadedEventsRun===run.id;
+  if(!loaded){view.mailReady=false;stopNetworkMotion();return;}
+  const allowed=networkMotionAllowed(),previous=view.mailCursor,animate=allowed&&view.mailReady,ids=new Set(agents.map(agent=>agent.id)),fresh=[];
+  for(const event of events){
+    if(event.run_id!==run.id||!Number.isSafeInteger(event.id)||event.id<0)continue;
+    view.mailCursor=Math.max(view.mailCursor,event.id);
+    const stage=networkMailStage(event);
+    if(event.run_id!==run.id||stage==='unknown'||typeof event.mail_id!=='string'||!event.mail_id||event.mail_id.length>256
+      ||!ids.has(event.from_agent_id)||!ids.has(event.to_agent_id)||event.from_agent_id===event.to_agent_id)continue;
+    const key=JSON.stringify([event.id,event.mail_id,stage]);
+    if(animate&&event.id>previous&&!view.mailSeen.has(key))fresh.push(event);
+    view.mailSeen.delete(key);view.mailSeen.add(key);
+    while(view.mailSeen.size>NETWORK_MAIL_SEEN_LIMIT)view.mailSeen.delete(view.mailSeen.values().next().value);
+  }
+  view.mailReady=allowed;
+  if(!allowed)stopNetworkMotion();
+  else for(const event of fresh.slice(-NETWORK_PULSE_LIMIT))startNetworkMailPulse(event);
+  paintNetworkMotionState();
 }
 function networkViewport() {
   const map=$('teamMap');return {width:map.clientWidth||840,height:map.clientHeight||390};
@@ -1279,13 +1643,19 @@ function pruneNetworkViews() {
     const ids=new Set(ui.state.agents.filter(agent=>agent.run_id===id).map(agent=>agent.id));
     for(const agentId of view.positions.keys())if(!ids.has(agentId))view.positions.delete(agentId);
     if(view.selectedAgent&&!ids.has(view.selectedAgent))view.selectedAgent=null;
+    if(view.pinnedAgent&&!ids.has(view.pinnedAgent))view.pinnedAgent=null;
   }
+  const ids=new Set(ui.state.agents.filter(agent=>agent.run_id===ui.selectedRun).map(agent=>agent.id));
+  if((ui.networkHoverAgent&&!ids.has(ui.networkHoverAgent))||(ui.networkFocusAgent&&!ids.has(ui.networkFocusAgent)))cancelNetworkPreviewDismiss();
+  if(!ids.has(ui.networkHoverAgent))ui.networkHoverAgent=null;
+  if(!ids.has(ui.networkFocusAgent))ui.networkFocusAgent=null;
+  for(const [id,pulse] of ui.networkPulses)if(!ids.has(pulse.from)||!ids.has(pulse.to))finishNetworkPulse(id);
 }
 function networkBounds() {
   const points=[...(ui.networkLayout?.positions.values()||[])];
   if(!points.length)return {x:0,y:0,width:840,height:390};
   const x=Math.min(...points.map(p=>p.x))-24,y=Math.min(...points.map(p=>p.y))-32;
-  return {x,y,width:Math.max(...points.map(p=>p.x+280))-x,height:Math.max(...points.map(p=>p.y+148))-y};
+  return {x,y,width:Math.max(...points.map(p=>p.x+NETWORK_NODE_SIZE+32))-x,height:Math.max(...points.map(p=>p.y+NETWORK_NODE_SIZE+32))-y};
 }
 function paintNetworkCamera() {
   if(!ui.networkCanvas||!ui.selectedRun)return;
@@ -1315,8 +1685,9 @@ function panNetwork(dx,dy) {
 function repaintNetworkGeometry() {
   const positions=ui.networkLayout?.positions;if(!positions)return;
   for(const [id,node] of ui.networkNodes){const point=positions.get(id);node.button.style.left=`${point.x}px`;node.button.style.top=`${point.y}px`;}
-  for(const {line,id,parentId} of ui.networkParentLines){const a=positions.get(parentId),b=positions.get(id);line.setAttribute('d',`M ${a.x+110} ${a.y+124} C ${a.x+110} ${a.y+150}, ${b.x+110} ${b.y-24}, ${b.x+110} ${b.y}`);}
-  for(const {line,from,to,index} of ui.networkMailLines)line.setAttribute('d',networkMailPath(positions.get(from),positions.get(to),index));
+  for(const {line,id,parentId} of ui.networkParentLines)line.setAttribute('d',networkLinkGeometry(positions.get(parentId),positions.get(id),0,true).path);
+  for(const {line,track,from,to,index} of ui.networkMailLines){const path=networkMailPath(positions.get(from),positions.get(to),index);line.setAttribute('d',path);track.setAttribute('d',path);}
+  for(const pulse of ui.networkPulses.values())paintNetworkPulse(pulse);
 }
 function moveNetworkNode(id,x,y) {
   const point=ui.networkLayout?.positions.get(id);if(!point||!Number.isFinite(x)||!Number.isFinite(y))return;
@@ -1335,6 +1706,7 @@ function startNetworkGesture(event,nodeId=null) {
   if(!nodeId&&event.target?.closest?.('.network-node,.network-mail-line'))return;
   const camera=networkViewState().camera,point=nodeId?ui.networkLayout.positions.get(nodeId):camera;if(!point)return;
   ui.networkSuppressClick=null;
+  clearNetworkHover();
   const capture=nodeId?ui.networkNodes.get(nodeId).button:$('teamMap');
   ui.networkGesture={runId:ui.selectedRun,pointerId:event.pointerId,nodeId,startX:event.clientX,startY:event.clientY,origin:{x:point.x,y:point.y},scale:camera.scale,moved:false,capture};
   capture.setPointerCapture?.(event.pointerId);event.stopPropagation?.();
@@ -1359,14 +1731,17 @@ function endNetworkGesture(event,cancel=false) {
 }
 function networkNodeClick(event={},id) {
   if(event.detail!==0&&ui.networkSuppressClick===id){ui.networkSuppressClick=null;event.preventDefault?.();return;}
-  ui.networkSuppressClick=null;selectAgent(id);
+  ui.networkSuppressClick=null;toggleNetworkPin(id);
 }
 function networkNodeKey(event,id) {
+  if(event.key==='Escape'){event.preventDefault();event.stopPropagation?.();closeNetworkPreview();return;}
+  if(event.key==='F2'&&networkPreviewAgent()?.id===id){event.preventDefault();event.stopPropagation?.();cancelNetworkPreviewDismiss();$('networkPreviewOpen').focus({preventScroll:true});return;}
   if(!event.altKey||!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))return;
   event.preventDefault();event.stopPropagation?.();const point=ui.networkLayout.positions.get(id),step=event.shiftKey?40:10;
   moveNetworkNode(id,point.x+(event.key==='ArrowRight'?step:event.key==='ArrowLeft'?-step:0),point.y+(event.key==='ArrowDown'?step:event.key==='ArrowUp'?-step:0));
 }
 function networkKey(event) {
+  if(event.key==='Escape'){event.preventDefault();closeNetworkPreview();return;}
   if(event.target!==$('teamMap'))return;
   if(['+','=','-','Home','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key))event.preventDefault();
   if(['+','='].includes(event.key))zoomNetwork(1.2);else if(event.key==='-')zoomNetwork(1/1.2);else if(event.key==='Home')fitNetwork();
@@ -1380,6 +1755,18 @@ function initializeNetworkControls() {
   map.addEventListener('wheel',event=>{if(!ui.networkCanvas)return;event.preventDefault();if(event.ctrlKey||event.metaKey){const rect=map.getBoundingClientRect();zoomNetwork(Math.exp(-Math.max(-100,Math.min(100,event.deltaY))*.005),{x:event.clientX-rect.left,y:event.clientY-rect.top});}else panNetwork(-event.deltaX,-event.deltaY);},{passive:false});
   $('networkZoomIn').addEventListener('click',()=>zoomNetwork(1.2));$('networkZoomOut').addEventListener('click',()=>zoomNetwork(1/1.2));
   $('networkFit').addEventListener('click',fitNetwork);$('networkReset').addEventListener('click',resetNetworkLayout);
+  $('networkPreviewClose').addEventListener('click',closeNetworkPreview);
+  $('networkPreviewOpen').addEventListener('click',()=>{const agent=networkPreviewAgent();if(agent)selectAgent(agent.id);});
+  $('networkPreview').addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();closeNetworkPreview();}});
+  $('networkPreview').addEventListener('pointerenter',()=>{ui.networkPreviewHovered=true;cancelNetworkPreviewDismiss();});
+  $('networkPreview').addEventListener('pointerleave',event=>{ui.networkPreviewHovered=false;scheduleNetworkPreviewDismiss(event.relatedTarget);});
+  $('networkPreview').addEventListener('focusin',cancelNetworkPreviewDismiss);
+  $('networkPreview').addEventListener('focusout',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
+  $('networkMotion').addEventListener('click',()=>{ui.networkMotionEnabled=!ui.networkMotionEnabled;stopNetworkMotion();paintNetworkMotionState();});
+  const preference=window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  const updateMotionPreference=()=>{ui.networkReducedMotion=preference?.matches===true;stopNetworkMotion();paintNetworkMotionState();};
+  updateMotionPreference();preference?.addEventListener?.('change',updateMotionPreference);
+  document.addEventListener('visibilitychange',()=>{clearNetworkHover();stopNetworkMotion();paintNetworkMotionState();});
 }
 function renderTeamMap(agents) {
   pruneNetworkViews();
@@ -1388,8 +1775,8 @@ function renderTeamMap(agents) {
   const counts=[['作業中',agents.filter(a=>!archivedAgent(a)&&['working','running'].includes(a.status)).length],['待機',agents.filter(a=>!archivedAgent(a)&&['queued','waiting','idle'].includes(a.status)&&!needsHuman(a)).length],['要回答',agents.filter(needsHuman).length]];
   $('networkCounts').textContent=archivedRun(getRun())?'保存時点の担当と通信 · 現在は実行していません':counts.map(([label,count])=>`${label} ${count}`).join('  /  ');
   if(layoutKey!==ui.networkLayoutKey) {
-    ui.networkLayoutKey=layoutKey;ui.networkMailKey='';ui.networkNodes=new Map();ui.networkGesture=null;ui.networkParentLines=[];ui.networkMailLines=[];map.classList.remove('is-dragging');map.replaceChildren();
-    if(!agents.length){map.appendChild(element('p','network-empty','チームを開始すると、担当と連絡がここに並びます。'));ui.networkSvg=null;ui.networkCanvas=null;return;}
+    stopNetworkMotion();ui.networkLayoutKey=layoutKey;ui.networkMailKey='';ui.networkNodes=new Map();ui.networkGesture=null;ui.networkParentLines=[];ui.networkMailLines=[];map.classList.remove('is-dragging');map.replaceChildren();
+    if(!agents.length){map.appendChild(element('p','network-empty','チームを開始すると、担当と連絡がここに並びます。'));ui.networkSvg=null;ui.networkCanvas=null;ui.networkPulseLayer=null;renderNetworkPreview();return;}
     const layout=networkLayout(agents),canvas=element('div','network-canvas');ui.networkLayout=layout;
     const view=networkViewState();for(const id of view.positions.keys())if(!layout.positions.has(id))view.positions.delete(id);
     for(const [id,point] of layout.positions)if(view.positions.has(id))layout.positions.set(id,{...view.positions.get(id)});else view.positions.set(id,{...point});
@@ -1401,40 +1788,51 @@ function renderTeamMap(agents) {
     marker.appendChild(svgElement('path',{d:'M 0 0 L 10 5 L 0 10 z',fill:'currentColor'}));defs.appendChild(marker);svg.appendChild(defs);
     for(const agent of agents) {
       const here=layout.positions.get(agent.id),parent=layout.positions.get(agent.parent_id);
-      if(parent){const line=svgElement('path',{d:`M ${parent.x+110} ${parent.y+124} C ${parent.x+110} ${parent.y+150}, ${here.x+110} ${here.y-24}, ${here.x+110} ${here.y}`,class:'network-parent-line','aria-hidden':'true'});svg.appendChild(line);ui.networkParentLines.push({line,id:agent.id,parentId:agent.parent_id});}
+      if(parent){const line=svgElement('path',{d:networkLinkGeometry(parent,here,0,true).path,class:'network-parent-line','aria-hidden':'true'});svg.appendChild(line);ui.networkParentLines.push({line,id:agent.id,parentId:agent.parent_id});}
     }
-    ui.networkSvg=svgElement('g',{class:'network-mail-lines'});svg.appendChild(ui.networkSvg);canvas.appendChild(svg);
+    ui.networkSvg=svgElement('g',{class:'network-mail-lines'});svg.appendChild(ui.networkSvg);ui.networkPulseLayer=svgElement('g',{class:'network-mail-pulses','aria-hidden':'true'});svg.appendChild(ui.networkPulseLayer);canvas.appendChild(svg);
     for(const agent of agents) {
-      const place=layout.positions.get(agent.id),button=element('button','network-node');button.type='button';button.dataset.agentId=agent.id;button.dataset.focusKey=`map:${agent.id}`;
+      const place=layout.positions.get(agent.id),button=element('button','network-node');button.type='button';button.dataset.agentId=agent.id;button.dataset.networkRole=agent.parent_id?'worker':'pm';button.dataset.focusKey=`map:${agent.id}`;
       button.style.left=`${place.x}px`;button.style.top=`${place.y}px`;
-      const role=element('span','network-role',agent.parent_id?'WORKER':'PM'),name=element('strong','network-name'),state=element('span','network-state'),task=element('span','network-task'),activity=element('span','network-activity');
-      button.append(role,state,name,task,activity);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));button.setAttribute('aria-describedby','networkInteractionHelp');canvas.appendChild(button);
-      ui.networkNodes.set(agent.id,{button,name,state,task,activity});
+      const inner=element('span','network-orb-inner'),monogram=element('span','network-monogram'),role=element('span','network-role',agent.parent_id?'WORKER':'PM'),name=element('strong','network-name'),state=element('span','network-state');
+      inner.append(monogram,role);button.append(inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
+      button.addEventListener('pointerenter',()=>{cancelNetworkPreviewDismiss();if(!ui.networkGesture){ui.networkHoverAgent=agent.id;renderNetworkPreview();}});
+      button.addEventListener('pointerleave',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
+      button.addEventListener('focus',()=>{cancelNetworkPreviewDismiss();ui.networkFocusAgent=agent.id;renderNetworkPreview();});
+      button.addEventListener('blur',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
+      button.setAttribute('aria-controls','networkPreview');button.setAttribute('aria-describedby','networkInteractionHelp');canvas.appendChild(button);
+      ui.networkNodes.set(agent.id,{button,name,state,monogram,role});
     }
     map.appendChild(canvas);
     if(!view.camera)fitNetwork();else paintNetworkCamera();
   }
+  let workerOrdinal=0;
   for(const agent of agents) {
+    const monogram=agent.parent_id?`W${++workerOrdinal}`:'PM';
     const node=ui.networkNodes.get(agent.id);if(!node)continue;
-    const displayed=displayStatus(agent),status=Object.hasOwn(STATUS_LABELS,displayed)?displayed:'unknown';
+    const displayed=displayStatus(agent),status=Object.hasOwn(STATUS_LABELS,displayed)?displayed:'unknown',hierarchy=agentHierarchy(agent);
     node.button.className=`network-node ${status}${needsHuman(agent)?' human-input':''}${agent.id===ui.selectedAgent?' selected':''}`;
-    node.button.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
-    node.button.setAttribute('aria-label',`${agent.name||agent.id} · ${stateLabel(agent)} · 担当詳細を開く`);
+    node.button.setAttribute('aria-label',`${agent.name||agent.id} · ${stateLabel(agent)}${hierarchy?` · ${agentRoleLabel(agent)} · 深さ ${hierarchy.depth}`:''} · クリックまたは Enter で詳細を固定`);
     node.name.textContent=agent.name||agent.id;node.state.textContent=stateLabel(agent);
-    const task=agent.assignment||'担当内容は未記録';node.task.textContent=task;node.task.title=task;
-    const latest=agent.activity?.latest_log;
-    node.activity.textContent=needsHuman(agent)?'人への質問あり':agent.last_error?'エラー記録あり':latest?`${localTime(latest.at)} · ${String(latest.text||'').slice(0,120)}`:'最新ログは未取得';
+    node.monogram.textContent=monogram;
+    node.role.textContent=hierarchy?`${agent.parent_id?(hierarchy.direct_children.length?'LEAD':'WORKER'):'PM'} · D${hierarchy.depth}`:agent.parent_id?'WORKER':'PM';
+    node.button.title=agentHierarchyLabel(agent);
   }
   const links=currentMailLinks(agents,retainedTeamEvents(getRun())),mailKey=JSON.stringify(links);
   if(ui.networkSvg&&mailKey!==ui.networkMailKey) {
     ui.networkMailKey=mailKey;ui.networkMailLines=[];ui.networkSvg.replaceChildren();
     links.forEach((link,index)=>{const from=ui.networkLayout.positions.get(link.from),to=ui.networkLayout.positions.get(link.to);
-      const line=svgElement('path',{d:networkMailPath(from,to,index),class:'network-mail-line','marker-end':'url(#mailArrow)',role:'button',tabindex:0,'aria-label':`${agents.find(a=>a.id===link.from)?.name||link.from} → ${agents.find(a=>a.id===link.to)?.name||link.to} の通信を見る`});
+      const path=networkMailPath(from,to,index);
+      // One continuous screen-space hit target; visual dashes are decorative.
+      const line=svgElement('path',{d:path,class:`network-mail-line ${link.stage}`,role:'button',tabindex:0,'aria-label':`${agents.find(a=>a.id===link.from)?.name||link.from} → ${agents.find(a=>a.id===link.to)?.name||link.to} · ${networkDeliveryLabel(link.stage)} · 理解や完了の確認ではありません · 通信を見る`});
+      const track=svgElement('path',{d:path,class:`network-mail-track ${link.stage}`,'marker-end':'url(#mailArrow)','aria-hidden':'true'});
+      line.dataset.deliveryStage=link.stage;
       line.dataset.focusKey=`mail-line:${JSON.stringify([link.from,link.to])}`;line.addEventListener('click',()=>selectMailPair(link.from,link.to));
-      line.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();selectMailPair(link.from,link.to);}});ui.networkSvg.appendChild(line);ui.networkMailLines.push({line,from:link.from,to:link.to,index});
+      line.addEventListener('keydown',event=>{if(['Enter',' '].includes(event.key)){event.preventDefault();selectMailPair(link.from,link.to);}});ui.networkSvg.appendChild(line);ui.networkSvg.appendChild(track);ui.networkMailLines.push({line,track,from:link.from,to:link.to,index});
     });
   }
-  $('networkMailMeta').textContent=`表示中の最新100イベント内 · メール ${links.length} 方向（最大12）`;
+  $('networkMailMeta').textContent=`最新100イベント内 · 通信 ${links.length} 方向（最大12） · キュー受理と会話取込を区別（理解・完了ではありません）`;
+  renderNetworkPreview();observeNetworkMail(agents,retainedTeamEvents(getRun()));
 }
 function renderAgentTabs(agents) {
   const signature=JSON.stringify([ui.selectedAgent,agents.map(agent=>[agent.id,agent.name,agent.role,agent.parent_id])]);if(signature===ui.tabsSignature)return;ui.tabsSignature=signature;
@@ -1444,9 +1842,12 @@ function renderAgentTabs(agents) {
 function saveAgentDraft(event) {
   if(!ui.selectedAgent)return;
   const value=$('messageInput').value,previous=ui.drafts.get(ui.selectedAgent),hadInput=typeof previous==='string'&&previous.length>0;
+  if(!value.length)ui.draftQuestions.delete(ui.selectedAgent);
+  else if(!ui.draftQuestions.has(ui.selectedAgent))ui.draftQuestions.set(ui.selectedAgent,ui.composerQuestion);
   if(event?.type==='input'||ui.drafts.get(ui.selectedAgent)!==value)ui.draftRevisions.set(ui.selectedAgent,(ui.draftRevisions.get(ui.selectedAgent)||0)+1);
   ui.drafts.set(ui.selectedAgent,value);
   if(event?.type==='input'&&hadInput!==(value.length>0))renderMessageInputPresence();
+  if(event?.type==='input')renderConversation(getAgent());
 }
 function rememberConversationView() {
   if(!ui.logContext)return;
@@ -1457,8 +1858,9 @@ function changeSelection(runId,id) {
   if(ui.selectedRun===runId&&ui.selectedAgent===id)return false;
   if(ui.selectedRun)networkViewState().selectedAgent=ui.selectedAgent;
   if(ui.selectedRun!==runId&&ui.activityFilter==='pair'){ui.activityFilter='all';ui.activityPair=null;}
-  if(ui.selectedRun!==runId){saveWorkBoardDraft();rememberWorkBoardView();}
+  if(ui.selectedRun!==runId){clearNetworkHover();stopNetworkMotion();saveWorkBoardDraft();rememberWorkBoardView();}
   saveAgentDraft();rememberConversationView();ui.selectedRun=runId;ui.selectedAgent=id;
+  ui.composerQuestion=questionReplyTarget(getAgent());
   if(runId)networkViewState(runId).selectedAgent=id;
   // An epoch, rather than an ID comparison, also rejects an old A response after A → B → A.
   ui.selectionGeneration++;ui.loadedDetail=null;ui.detailError=false;ui.logContext='';ui.logSignature='';ui.outputRequest++;
@@ -1478,20 +1880,22 @@ function renderRunList() {
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
   [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
-const REASON_LABELS = {human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
-function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
-function badge(status,reason) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),REASON_LABELS[reason]||statusLabel(status)); }
+const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
+function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
+function badge(status,reason,agent=null) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),agent?stateLabel(agent):REASON_LABELS[reason]||statusLabel(status)); }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   filteredAgents(agents).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
     const top=element('div','agent-card-top'),stateLine=element('span','agent-state-line'),inputBadge=messageInputBadge(agent);
-    stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason));if(inputBadge)stateLine.append(inputBadge);
+    stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason,agent));if(inputBadge)stateLine.append(inputBadge);
     top.append(element('span','agent-avatar',!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`),stateLine);
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
     card.append(top,element('span','agent-name',agent.name||agent.id),model,element('span','agent-task',agent.assignment||agent.question||agent.last_error||(!agent.parent_id?'チームの作業を管理':'割り当てられた作業を担当')));
+    const dependency=workerDependencyLabel(agent);if(dependency)card.appendChild(element('span','agent-dependencies',dependency));
+    const hierarchy=agentHierarchyLabel(agent);if(hierarchy)card.appendChild(element('span','agent-hierarchy',hierarchy));
     card.addEventListener('click',()=>selectAgent(agent.id));$('agentCards').appendChild(card);
   });
 }
@@ -1607,6 +2011,8 @@ function exportSelectedOutput() {
 }
 function setVisibleText(node,text) { const value=String(text??'');if(node.textContent!==value)node.textContent=value; }
 function renderInspector(agent) {
+  if($('inspectorMonitor'))$('inspectorMonitor').textContent=agentMonitorText(agent);
+  renderHierarchyRelations(agent);
   const activity=agent?.activity,latest=activity?.latest_log;
   setVisibleText($('inspectorAssignment'),agent?.assignment||'担当内容は未記録です。');
   setVisibleText($('inspectorLatest'),latest?`${localTime(latest.at)} · ${latest.kind||'ログ'}\n${latest.text||''}`:'公開された最新ログはまだありません。');
@@ -1625,24 +2031,32 @@ function renderConversation(agent) {
   if(detailStatus.textContent!==detailMessage)detailStatus.textContent=detailMessage;
   $('conversationLog').setAttribute('aria-busy',String(loading));$('resultsPanel').setAttribute('aria-busy',String(loading));
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
-  $('conversationMeta').textContent=agent?`${!agent.parent_id?'PM':'作業者'} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
+  $('conversationMeta').textContent=agent?`${agentRoleLabel(agent)} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
   const memory=agent?.context_memory;
   $('contextMemoryStatus').hidden=!memory;
   $('contextMemoryStatus').textContent=memory?`${memory.compacting&&!archivedAgent(agent)?'会話を要約中 · ':''}文脈圧縮 ${memory.compactions} 回${memory.fallback_compactions>0?`（うち自動抜粋 ${memory.fallback_compactions} 回・AIによる要約ではありません。内容の一部を省略）`:''} · 元の履歴 ${memory.history_records} 件（上限で除外 ${memory.history_omitted} 件）· モデル用の会話文脈は今回の起動中のみ。要約には情報が抜けることがあります。`:'';
+  const projection=memory?.ordered_projection;
+  if(projection?.mode==='ordered_bounded_projection')$('contextMemoryStatus').textContent+=` 手順用表示 ${projection.raw_message_count} → ${projection.projected_message_count} 件（省略 ${projection.omitted_message_count}、結果の短縮 ${projection.trimmed_message_count}）。AI要約ではなく送信時の抜粋です。原履歴にも保持上限があります。`;
   $('conversationProfile').textContent=agent?configuredProfileLabel(agent)+'（応答モデル未確認）':'';
   $('conversationStatus').hidden=!agent;
   if(agent){$('conversationStatus').className='status-badge '+(archivedAgent(agent)?'archived':Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'');$('conversationStatus').textContent=stateLabel(agent);}
   const archived=archivedRun(run)||archivedAgent(agent),question=agent&&(archived||needsHuman(agent))?agent.question||'':'';
   const questionLostFocus=!question&&document.activeElement===$('humanQuestion');
-  const questionContext=JSON.stringify([ui.selectedRun,agent?.id,question]);
+  const questionContext=JSON.stringify([ui.selectedRun,agent?.id,question,questionState(agent)?.question_id]);
   $('humanQuestion').hidden=!question;
   if(ui.questionContext!==questionContext){ui.questionContext=questionContext;$('humanQuestion').textContent=question?`${archived?'保存時点の質問（回答不可）':'判断が必要です'}\n${question}`:'';$('humanQuestion').scrollTop=0;}
   if(questionLostFocus)$('conversationHeading').focus({preventScroll:true});
+  // Preserve the identity of existing nonempty text before showing a new question.
+  if(agent&&$('messageInput').value&&!ui.draftQuestions.has(agent.id))ui.draftQuestions.set(agent.id,ui.composerQuestion);
+  ui.composerQuestion=questionReplyTarget(agent);
+  const timing=question||agent?.question_state?questionTimingLabel(agent):'';
+  $('questionTiming').hidden=!timing;$('questionTiming').textContent=(archived&&timing?'保存時点: ':'')+timing;
   $('messageLabel').textContent=question?'質問への回答':'追加の指示';$('messageInput').placeholder=question?'選択肢や条件を確認し、回答を入力してください':'このエージェントへ追加の指示を送る';
   const stopping=['stopping','stopped'].includes(run?.status),eligibility=agent?.message_eligibility;
   const blocked=archived||stopping||eligibility?.allowed!==true;
-  $('sendMessage').disabled=!agent||ui.busyMessage||blocked;$('messageInput').disabled=!agent||blocked;
-  $('messageEligibility').textContent=archived?'保存履歴は閲覧専用です。追加指示・回答・メール送信はできません。新しい作業の下書きに依頼文を使えます。':eligibility?.message||(stopping?'停止したチームは再開できません。新しい仕事を開始してください':agent&&eligibility?.allowed!==true?'送信できる状態か確認できません。最新の状態を取得してから確認してください。':'');
+  const staleDraft=staleQuestionDraft(agent),unknownQuestion=ui.composerQuestion===undefined;
+  $('sendMessage').disabled=!agent||ui.busyMessage||blocked||staleDraft||unknownQuestion;$('messageInput').disabled=!agent||blocked;
+  $('messageEligibility').textContent=staleDraft?'入力を始めた質問は終了または変更されました。下書きは保持しています。現在の質問や追加指示へ送る場合は、内容を確認して入力欄を空にしてから入力し直してください。':unknownQuestion?'質問の識別情報を確認できないため回答できません。最新の状態を取得してください。':archived?'保存履歴は閲覧専用です。追加指示・回答・メール送信はできません。新しい作業の下書きに依頼文を使えます。':eligibility?.message||(stopping?'停止したチームは再開できません。新しい仕事を開始してください':agent&&eligibility?.allowed!==true?'送信できる状態か確認できません。最新の状態を取得してから確認してください。':'');
   $('messageEligibility').hidden=!$('messageEligibility').textContent;
   const logs=loaded&&Array.isArray(agent?.logs)?agent.logs:[],signature=JSON.stringify([ui.selectedRun,agent?.id,loading,logs]);
   if(signature===ui.logSignature)return;ui.logSignature=signature;
@@ -1701,18 +2115,79 @@ function focusHumanRecipient(id) {
   if(archivedRun(getRun())||!ui.state.agents.some(agent=>agent.id===id&&agent.run_id===ui.selectedRun&&!archivedAgent(agent)))return;
   selectAgent(id);setCockpitView('inspector');($('messageInput').disabled?$('conversationHeading'):$('messageInput')).focus({preventScroll:true});
 }
+// Only the reserved application event is evidence. Model prose, mail and old
+// review events never gain authority by containing a similar JSON object.
+function referenceAuditPayload(event,run) {
+  const identity=value=>typeof value==='string'&&value.trim().length>0&&value.length<=80&&!value.includes('\0')&&!value.includes('[redacted]');
+  if(!run||!identity(run.id)||!identity(event.run_id)||!identity(event.agent_id)||event.kind!=='reference_audit'||event.run_id!==run.id||!Number.isSafeInteger(event.id)||event.id<1||
+    !Array.isArray(run.pm_agent_ids)||run.pm_agent_ids.length!==1||!identity(run.pm_agent_ids[0])||event.agent_id!==run.pm_agent_ids[0]||
+    typeof event.text!=='string'||event.text.length>32000)return null;
+  const exact=(value,keys)=>value!==null&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+  const integer=(value,min,max)=>Number.isSafeInteger(value)&&value>=min&&value<=max;
+  const text=(value,max)=>typeof value==='string'&&value.trim().length>0&&[...value].length<=max&&!value.includes('\0')&&!value.includes('[redacted]');
+  const hash=value=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
+  let audit;try{audit=JSON.parse(event.text);}catch{return null;}
+  const report=audit?.scope==='worker_report',keys=['schema_version','source','scope','workflow_id','generation','decision','facts','comment','semantic_scope'];
+  if(report)keys.push('worker_id','result_revision');
+  if(!exact(audit,keys)||audit.schema_version!==1||audit.source!=='application'||!['step','worker_report'].includes(audit.scope)||
+    audit.decision!=='accept'||audit.semantic_scope!=='reference_match_only'||!text(audit.workflow_id,80)||!integer(audit.generation,1,257)||
+    !exact(audit.comment,['text','verified'])||audit.comment.verified!==false||typeof audit.comment.text!=='string'||
+    [...audit.comment.text].length>(report?4000:512)||!Array.isArray(audit.facts)||audit.facts.length<1||audit.facts.length>(report?64:1))return null;
+  if(report&&(!text(audit.worker_id,80)||audit.worker_id===event.agent_id||!Array.isArray(run.agent_ids)||!run.agent_ids.includes(audit.worker_id)||!integer(audit.result_revision,1,Number.MAX_SAFE_INTEGER)))return null;
+  let previous=0,participant=null;
+  for(const fact of audit.facts) {
+    if(!exact(fact,['step','participant_key','submission_generation','predecessor','expected_head','value','meaning','reference'])||
+      !integer(fact.step,1,64)||fact.step<=previous||!text(fact.participant_key,24)||!integer(fact.submission_generation,1,audit.generation)||
+      !text(fact.expected_head,1)||!text(fact.value,128)||!text(fact.meaning,512)||
+      !exact(fact.predecessor,['kind','step','value'])||!text(fact.predecessor.value,128)||
+      fact.predecessor.kind!==(fact.step===1?'seed':'accepted_step')||fact.predecessor.step!==fact.step-1||
+      !exact(fact.reference,['entry_id','entry_sha256','catalog_sha256','semantic_scope'])||
+      typeof fact.reference.entry_id!=='string'||!/^[A-Za-z0-9_-]{1,40}$/.test(fact.reference.entry_id)||
+      !hash(fact.reference.entry_sha256)||!hash(fact.reference.catalog_sha256)||fact.reference.semantic_scope!=='reference_match_only')return null;
+    if(report&&participant!==null&&fact.participant_key!==participant)return null;
+    previous=fact.step;participant=fact.participant_key;
+  }
+  return audit;
+}
+function appendReferenceAudit(content,event,run) {
+  const legacy=['ordered_reviewed','worker_report_review'].includes(event.kind);
+  if(event.kind!=='reference_audit'&&!legacy)return false;
+  const audit=legacy?null:referenceAuditPayload(event,run);
+  if(!audit) {
+    content.append(element('p','audit-unverified',legacy?'過去のPMコメント／構造化照合記録なし':'構造化照合を確認できない記録（未検証）'),element('div','activity-body',event.text||''));
+    return true;
+  }
+  const section=element('section','reference-audit');
+  section.append(element('p','reference-audit-label','固定参照との構造化照合'),
+    element('p','reference-audit-scope',`${archivedRun(run)?'保存時点':'記録時点'}の参照資料との一致です。一般辞書の正しさ・PMの意味理解・現在の承認や完了は確認しません。`),
+    element('p','reference-audit-meta',`${audit.scope==='step'?'候補の監査':`正式報告の監査 · 担当ID ${audit.worker_id} · 報告版 ${audit.result_revision}`} · 世代 ${audit.generation} · 手順ID ${audit.workflow_id}`));
+  const facts=element('ol','reference-audit-facts');facts.tabIndex=0;facts.dataset.focusKey=`reference-audit:${JSON.stringify([run.id,event.id])}`;
+  facts.dataset.auditScrollKey=facts.dataset.focusKey;facts.setAttribute('aria-label','固定参照との照合記録。手番ごとの事実。');
+  for(const fact of audit.facts) {
+    const row=element('li','reference-audit-fact');
+    row.append(element('p','reference-audit-step',`第${fact.step}手 · 担当 ${fact.participant_key} · 提出世代 ${fact.submission_generation}`),
+      element('p','',`前の語（${fact.predecessor.kind==='seed'?'開始語':`第${fact.predecessor.step}手`}）：${fact.predecessor.value}`),
+      element('p','',`必要な先頭文字：${fact.expected_head} → 実値：${fact.value}`),element('p','',`意味：${fact.meaning}`),
+      element('p','reference-audit-source',`参照ID：${fact.reference.entry_id}\n項目 SHA-256：${fact.reference.entry_sha256}\n資料 SHA-256：${fact.reference.catalog_sha256}`));
+    facts.appendChild(row);
+  }
+  section.appendChild(facts);
+  const comment=element('section','reference-audit-comment');
+  comment.append(element('p','audit-unverified','PMの判断・コメント（文章の正しさは未検証）'),element('div','activity-body',audit.comment.text||'コメントなし'));
+  content.append(section,comment);return true;
+}
 function renderActivity(run) {
   const feed=$('activityFeed'),loading=Boolean(run)&&ui.compactState&&ui.loadedEventsRun!==run.id,retained=retainedTeamEvents(run),mail=event=>['mail','mail_consumed'].includes(event.kind);
   const events=retained.filter(event=>ui.activityFilter==='mail'?mail(event):ui.activityFilter==='selected'?mail(event)&&[event.from_agent_id,event.to_agent_id].includes(ui.selectedAgent):ui.activityFilter==='pair'?mail(event)&&((event.from_agent_id===ui.activityPair?.from&&event.to_agent_id===ui.activityPair?.to)||(event.from_agent_id===ui.activityPair?.to&&event.to_agent_id===ui.activityPair?.from)):true).reverse();
-  const signature=JSON.stringify([run?.id,run?.archived,run?.read_only,loading,ui.activityFilter,ui.activityPair,ui.selectedAgent,events]);if(signature===ui.activitySignature)return;ui.activitySignature=signature;
+  const signature=JSON.stringify([run?.id,run?.archived,run?.read_only,run?.pm_agent_ids,run?.agent_ids,loading,ui.activityFilter,ui.activityPair,ui.selectedAgent,events]);if(signature===ui.activitySignature)return;ui.activitySignature=signature;
   for(const [id,filter] of [['activityAll','all'],['activityMail','mail'],['activitySelected','selected']])$(id).setAttribute('aria-pressed',String(ui.activityFilter===filter));
   setVisibleText($('activityScope'),`${ui.activityFilter==='pair'?'選択した二者の通信 · ':ui.activityFilter==='selected'?'選択担当の通信 · ':''}最新100イベント内 ${events.length} 件。保持範囲外の履歴は含みません。`);
-  const scroll=ui.activityRun===run?.id?feed.scrollTop:0;ui.activityRun=run?.id;feed.replaceChildren();feed.setAttribute('aria-busy',String(loading));
+  const scroll=ui.activityRun===run?.id?feed.scrollTop:0,auditScroll=new Map([...feed.querySelectorAll('[data-focus-key]')].filter(node=>node.dataset.auditScrollKey).map(node=>[node.dataset.auditScrollKey,node.scrollTop]));ui.activityRun=run?.id;feed.replaceChildren();feed.setAttribute('aria-busy',String(loading));
   if(loading){feed.appendChild(element('p','detail-loading','チームのメールと進捗を読み込み中…'));return;}
   if(!events.length){feed.appendChild(element('p','empty-small','この表示範囲に記録はありません。宛先IDのない過去のメールは「すべて」で確認できます。'));return;}
   events.forEach(event=>{const row=element('article','activity-item'),content=element('div');let title;
     if(mail(event))title=`${event.from||'エージェント'} → ${Array.isArray(event.to)?event.to.join(', '):event.to||'チーム'}`;
-    else title=({spawn:'作業者が参加',question:'人への質問',error:'エラー',done:'作業完了',stopped:'作業を停止',tool:'ツール実行',collaboration_limit:'自動連携が上限に到達'})[event.kind]||event.kind||'進捗';
+    else title=({spawn:'作業者が参加',question:'人への質問',error:'エラー',done:'作業完了',stopped:'作業を停止',tool:'ツール実行',collaboration_limit:'自動連携が上限に到達',reference_audit:'参照資料の監査記録',ordered_reviewed:'PMの監査記録',worker_report_review:'PMの監査記録'})[event.kind]||event.kind||'進捗';
     content.appendChild(element('div','activity-title',title));
     if(mail(event)) {
       const kind=({peer_message:'相互メール',worker_report:'作業者の報告',worker_notice:'作業者の通知',worker_error:'作業者のエラー通知'})[event.message_type]||'メール';
@@ -1728,8 +2203,9 @@ function renderActivity(run) {
       if(sender){const reply=element('button','button minor','差出人へ人の指示を入力');reply.type='button';reply.disabled=archivedRun(run)||archivedAgent(sender);reply.dataset.focusKey=`mail-reply:${event.id}`;reply.addEventListener('click',()=>focusHumanRecipient(sender.id));participants.appendChild(reply);}
       content.appendChild(participants);
     }
-    content.appendChild(element('div','activity-body',event.text||''));row.append(element('time','activity-time',localTime(event.at)),content);feed.appendChild(row);
+    if(!appendReferenceAudit(content,event,run))content.appendChild(element('div','activity-body',event.text||''));row.append(element('time','activity-time',localTime(event.at)),content);feed.appendChild(row);
   });
+  for(const node of feed.querySelectorAll('[data-focus-key]'))if(node.dataset.auditScrollKey)node.scrollTop=auditScroll.get(node.dataset.auditScrollKey)||0;
   feed.scrollTop=scroll;
 }
 function preserveControlFocus(render,fallback=null) {
@@ -1766,10 +2242,108 @@ function runtimeStopMetrics(run) {
   const values=[...new Set(reasons.filter(reason=>typeof reason==='string'&&Object.hasOwn(labels,reason)))].map(reason=>labels[reason]);
   return values.length?[['担当の停止理由',values.join(' / ')]]:[];
 }
+// Monitoring reads application observations only. It never dispatches work or
+// treats an animated line, elapsed time, or a model's prose as completion.
+function observedSeconds(value) { return typeof value==='number'&&Number.isFinite(value)&&value>=0?`${Math.floor(value)}秒`:'未記録'; }
+function providerObservationLabel(agent) {
+  const p=agent?.provider_observation;if(!p||p.schema_version!==1)return '';
+  const labels={started:'呼び出し開始（通信段階は未観測）',queue_wait:'Local 受付待ち（キュー・GPU確認を含む）',admitted:'受付完了',response_wait:'API応答待ち',received:'応答受信',parse:'応答を検査中',completed:'応答処理完了',error:'呼び出しエラー',cancelled:'呼び出し取消',retry_wait:'設定済み再試行の待機'};
+  if(!Object.hasOwn(labels,p.phase))return '';
+  const archived=archivedAgent(agent)||p.history_only===true,parts=[archived?'保存時点':ui.networkConnected?'観測時点':'接続未確認・最後の観測',p.purpose==='compaction'?'文脈要約':'作業',labels[p.phase]];
+  if(p.phase==='queue_wait'&&p.admission_kind==='copilot')parts[parts.length-1]='Copilot 受付待ち';
+  parts.push(`この段階 ${observedSeconds(p.phase_elapsed_seconds)}`);
+  const limit=p.phase==='queue_wait'?p.queue_timeout_seconds:p.phase==='response_wait'?p.request_timeout_seconds:null;
+  if(typeof limit==='number'&&Number.isFinite(limit)&&limit>0)parts.push(`上限 ${observedSeconds(limit)}`);
+  if(Number.isSafeInteger(p.attempt)&&p.attempt>1)parts.push(`試行 ${p.attempt}`);
+  if(['error','cancelled'].includes(p.phase)&&['queue_wait','response_wait'].includes(p.previous_phase))parts.push(`${p.previous_phase==='queue_wait'?'直前の受付待ち':'直前の応答待ち'} ${observedSeconds(p.previous_phase_elapsed_seconds)}`);
+  if(typeof p.observed_at==='number'&&Number.isFinite(p.observed_at))parts.push(localTime(p.observed_at));
+  return parts.join(' · ');
+}
+function coordinationAgentLabel(agent) {
+  const c=agent?.coordination;if(!c||c.schema_version!==1)return '';
+  const labels={human_input:'人の回答待ち',error:'エラーを確認',inbox_pending:'新着入力の取込待ち',pm_review:'PMの候補監査待ち',turn:'他の担当の手番',submit:'本人の候補提出待ち',report_review:'PMの正式報告監査待ち',completed:'手順完了'};
+  const reason=c.dependency?.reason,parts=[];
+  if(c.participant_key)parts.push(`担当 ${c.participant_key}`);
+  if(Number.isSafeInteger(c.step))parts.push(`第${c.step}手`);
+  if(reason&&Object.hasOwn(labels,reason))parts.push(labels[reason]);
+  if(c.history_only===true)parts.unshift('保存時点');
+  return parts.join(' · ');
+}
+function workerDependencyLabel(agent) {
+  const value=agent?.worker_dependencies;if(value===undefined)return '';
+  const record=item=>item!==null&&typeof item==='object'&&!Array.isArray(item);
+  const id=item=>typeof item==='string'&&item.trim().length>0&&item.length<=80&&!item.includes('\u0000');
+  const ids=items=>Array.isArray(items)&&items.length<=16&&items.every(id)&&new Set(items).size===items.length;
+  const prefix=archivedAgent(agent)?'保存時点の依存関係':ui.networkConnected?'取得した依存関係':'最後に取得した依存関係';
+  if(!record(value)||!ids(value.depends_on)||!value.depends_on.length||!ids(value.blocked_by)||
+     value.blocked_by.some(ident=>!value.depends_on.includes(ident))||typeof value.stale!=='boolean'||
+     !record(value.accepted_revisions)||Object.entries(value.accepted_revisions).some(([ident,revision])=>
+       !value.depends_on.includes(ident)||!Number.isSafeInteger(revision)||revision<1))return `${prefix}: 詳細を確認できません。`;
+  const name=ident=>{const peer=ui.state.agents.find(item=>item.run_id===agent.run_id&&item.id===ident);return `${peer?.name||'担当未取得'} [${ident}]`;};
+  const parts=[`${prefix}: ${value.depends_on.map(name).join('、')}`];
+  if(value.blocked_by.length)parts.push(`前工程の承認待ち: ${value.blocked_by.map(name).join('、')}`);
+  if(value.stale)parts.push(`前工程が変更されました。以前の成果は失効し、${agentHierarchy(agent)?.depth>=2?'直属親':'PM'}の明示的な再依頼が必要です。`);
+  const accepted=Object.entries(value.accepted_revisions);
+  if(accepted.length)parts.push('使用した承認版: '+accepted.map(([ident,revision])=>`${name(ident)} / ${revision}`).join('、'));
+  return parts.join('\n');
+}
+function agentMonitorText(agent) { return [agentHierarchyLabel(agent),coordinationAgentLabel(agent),workerDependencyLabel(agent),providerObservationLabel(agent)].filter(Boolean).join('\n'); }
+function mailLifecycles(events,runId) {
+  const rows=new Map();
+  for(const event of events) {
+    if(event.run_id!==runId||!['mail','mail_consumed'].includes(event.kind)||typeof event.mail_id!=='string'||!event.mail_id||typeof event.from_agent_id!=='string'||typeof event.to_agent_id!=='string')continue;
+    const key=JSON.stringify([runId,event.mail_id,event.from_agent_id,event.to_agent_id]);
+    const row=rows.get(key)||{key,from:event.from_agent_id,to:event.to_agent_id,queued:null,consumed:null,latest:0};
+    const at=typeof event.at==='number'&&Number.isFinite(event.at)&&event.at>0?event.at:null;
+    if(event.kind==='mail'&&event.delivery_state==='queued')row.queued=at;
+    if(event.kind==='mail_consumed'&&event.delivery_state==='context_consumed')row.consumed=at;
+    row.latest=Math.max(row.latest,at||0);rows.set(key,row);
+  }
+  return [...rows.values()].sort((a,b)=>b.latest-a.latest).slice(0,20);
+}
+function mailLifecycleLabel(row) {
+  const from=row.queued===null?'送信記録は保持範囲外':`送信 ${localTime(row.queued)}`;
+  const to=row.consumed===null?'取込はこの範囲で未確認':`取込 ${localTime(row.consumed)}`;
+  const delay=row.queued!==null&&row.consumed!==null&&row.consumed>=row.queued?`（間隔 ${observedSeconds(row.consumed-row.queued)}）`:'';
+  return `${from} → ${to}${delay}`;
+}
+function renderCoordinationMonitor(run,agents) {
+  const panel=$('coordinationMonitor');if(!panel)return;panel.hidden=!run;if(!run)return;
+  const c=run.coordination,rows=mailLifecycles(retainedTeamEvents(run),run.id);
+  const signature=JSON.stringify([run.id,run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.worker_dependencies,a.provider_observation]),rows]);
+  if(signature===ui.monitorSignature)return;ui.monitorSignature=signature;
+  const content=$('coordinationContent');content.replaceChildren();
+  const name=id=>agents.find(a=>a.id===id)?.name||id||'未記録';
+  const source=archivedRun(run)||c?.history_only?'保存時点の記録':ui.networkConnected?'取得した状態':'接続未確認・最後に取得した状態';
+  $('coordinationFreshness').textContent=source;
+  if(c?.schema_version===1&&c.kind==='ordered_work') {
+    const phase={ready:'候補提出待ち',pending_review:'PM監査待ち',complete:'全手を採用済み'}[c.phase]||'状態を確認';
+    content.appendChild(element('p','coordination-phase',`${phase} · 採用 ${c.accepted_steps} / ${c.total_steps} 手${c.step!==null?` · 第${c.step}手`:''}`));
+    if(c.current_actor_id)content.appendChild(element('p','small',`現在の担当: ${name(c.current_actor_id)}`));
+    if(c.pending)content.appendChild(element('p','coordination-candidate',`監査対象: ${c.pending.value}\n${c.pending.summary}${c.pending.summary_truncated?'…（抜粋）':''}\n${c.pending.semantic_status==='reference_matched'?'固定参照に一致（一般的な意味の正しさを保証しません）':'意味はPMによる確認が必要です'}`));
+    content.appendChild(element('p','small muted',`訂正 ${c.corrections?.revisions??0} · 巻き戻し ${c.corrections?.rollbacks??0} · PM完了 ${c.pm_completion?.completed===true?'受理済み':'未確認'}`));
+    const reports=Array.isArray(c.reports)?c.reports:[];
+    for(const report of reports.slice(0,16))content.appendChild(element('p','report-monitor',`${name(report.agent_id)} · 現在版 ${report.current_revision} · 正式報告 ${report.formal_revision??'なし'} · 配送 ${report.delivered_revision??'未確認'} · 取込 ${report.consumed_revision??'未確認'} · PM承認 ${report.accepted_current?'現在版を承認':'未完了'}`));
+  } else content.appendChild(element('p','small muted','手順の順序は未設定です。担当の状態と通信の観測を表示します。'));
+  const crew=element('div','monitor-crew');
+  for(const agent of agents) {
+    const text=agentMonitorText(agent);if(!text)continue;
+    const card=element('button','monitor-agent');card.type='button';card.dataset.focusKey=`monitor-agent:${run.id}:${agent.id}`;
+    card.append(element('strong','',agent.name||agent.id),element('span','',text));card.addEventListener('click',()=>selectAgent(agent.id));crew.appendChild(card);
+  }
+  content.appendChild(crew);
+  const mail=$('mailLifecycleList');mail.replaceChildren();
+  for(const row of rows) {
+    const button=element('button','mail-lifecycle');button.type='button';button.dataset.focusKey=`lifecycle:${row.key}`;
+    button.append(element('strong','',`${name(row.from)} → ${name(row.to)}`),element('span','',mailLifecycleLabel(row)));
+    button.addEventListener('click',()=>selectMailPair(row.from,row.to));mail.appendChild(button);
+  }
+  if(!rows.length)mail.appendChild(element('p','small muted','この表示範囲に配送記録はありません。'));
+}
 function renderRunContent() {
   reconcileTaskReuse();syncTaskReuseControl();
   const run=getRun();renderArchiveNotice(run);$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;$('networkWorkspace').hidden=!run;renderWorkBoard(run);
-  const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderMessageInputSummary();
+  const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderMessageInputSummary();renderCoordinationMonitor(run,agents);
   $('rosterHeading').textContent=ui.needsOnly?'質問':'CREW';
   $('rosterScope').textContent=ui.needsOnly?'全チーム · チームの開始順。開くだけでは回答・再開しません。':run?`表示中のチーム · ${shortRunId(run)}`:'選択したチームの担当者';
   $('agentSearchLabel').textContent=ui.needsOnly?'全チームの質問・依頼・担当者を検索':'エージェントを検索';
@@ -1782,7 +2356,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',delegationLabel(run.delegation_level)],['PMごとの委任人数',Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録']],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録']],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }
@@ -1821,7 +2395,7 @@ function applyState(state,request) {
     if(ui.boardRedactionRevision!==state.redaction_revision)invalidateWorkBoardContent();
     ui.boardRedactionRevision=state.redaction_revision;
   }
-  ui.state=next;ui.compactState=compact;ui.detailError=false;acceptHistoryStorage(state);
+  ui.state=next;ui.compactState=compact;ui.detailError=false;ui.networkPreviewReady=true;acceptHistoryStorage(state);
   if(Object.hasOwn(state,'copilot_agent_status')){
     const changed=JSON.stringify(ui.copilotAgentStatus)!==JSON.stringify(state.copilot_agent_status);
     ui.copilotAgentStatus=state.copilot_agent_status;renderCopilotStatus();
@@ -1854,6 +2428,9 @@ async function pollState(fresh=false) {
 }
 async function initialize() {
   applyTaskOrchestrationDefaults();
+  $('enableQuestionNotifications').addEventListener('click',requestQuestionNotificationPermission);
+  $('openQuestionNotice').addEventListener('click',()=>{if($('taskDialog').open||$('settingsDialog').open)return;const entry=questionEntries()[0];if(entry)openQuestion(entry.agent.id);});
+  renderQuestionNotice(questionEntries());
   initializeNetworkControls();
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
   $('boardView').addEventListener('click',()=>setCockpitView('board'));
@@ -1881,7 +2458,8 @@ async function initialize() {
   $('addPM').addEventListener('click',addPM);
   $('useOrchestrationDefaults').addEventListener('click',()=>{applyTaskOrchestrationDefaults();ui.taskOrchestrationInitialized=true;trackTaskDraft({type:'change'});syncStartControl();schedulePreflight();});
   $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;clearTaskReuse();releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
-  $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
+  $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();invalidateSkillsCatalog();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
+  $('reloadSkills').addEventListener('click',reloadSkills);
   $('discardSettings').addEventListener('click',discardSettings);
   $('reconnectCopilotAgent').addEventListener('click',reconnectCopilotAgent);
   $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
@@ -1942,16 +2520,22 @@ async function initialize() {
   $('messageForm').addEventListener('submit',async event=>{
     event.preventDefault();const agent=getAgent(),text=$('messageInput').value;
     if(!agent||archivedRun(getRun())||archivedAgent(agent)||!text.trim()||ui.busyMessage||agent.message_eligibility?.allowed!==true||['stopping','stopped'].includes(getRun()?.status))return;
-    saveAgentDraft();const action={agent:agent.id,run:agent.run_id,selection:ui.selectionGeneration,draft:ui.draftRevisions.get(agent.id),instance:ui.instanceId};
-    const owns=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.selectedAgent===action.agent&&ui.selectedRun===action.run&&ui.selectionGeneration===action.selection&&ui.draftRevisions.get(action.agent)===action.draft;
-    const unchanged=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.draftRevisions.get(action.agent)===action.draft&&ui.drafts.get(agent.id)===text;
+    saveAgentDraft();const questionId=ui.draftQuestions.get(agent.id);
+    if(questionId===undefined||staleQuestionDraft(agent)){renderConversation(agent);inlineStatus($('messageStatus'),'質問が終了・変更されたか、識別情報を確認できません。下書きを保持しました。',true);return;}
+    const action={agent:agent.id,run:agent.run_id,selection:ui.selectionGeneration,draft:ui.draftRevisions.get(agent.id),instance:ui.instanceId,question:questionId};
+    const currentTarget=()=>questionReplyTarget(ui.state.agents.find(item=>item.id===action.agent&&item.run_id===action.run))===action.question;
+    const owns=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.selectedAgent===action.agent&&ui.selectedRun===action.run&&ui.selectionGeneration===action.selection&&ui.draftRevisions.get(action.agent)===action.draft&&currentTarget();
+    const unchanged=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.draftRevisions.get(action.agent)===action.draft&&ui.drafts.get(agent.id)===text&&ui.draftQuestions.get(agent.id)===action.question&&currentTarget();
     ui.messageOperation=action;ui.busyMessage=true;$('sendMessage').disabled=true;
     try {
-      const receipt=await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,{method:'POST',body:{text}});
+      const request={method:'POST',body:{text}};
+      if(questionId!==null)request.body.question_id=questionId;
+      const receipt=await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,request);
       if(ui.messageOperation!==action||ui.instanceId!==action.instance)return;
       if(receipt?.ok!==true){const failure=new Error('応答の形式を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
       if(unchanged()&&(owns()||ui.selectedAgent!==agent.id)){
         ui.drafts.delete(agent.id);
+        ui.draftQuestions.delete(agent.id);
         if(owns()&&$('messageInput').value===text)$('messageInput').value='';
         renderMessageInputPresence();
       }

@@ -13,6 +13,8 @@ import sqlite3
 import stat
 import time
 
+from .coordination_view import validate_coordination, restore_coordination_metadata
+
 SCHEMA_VERSION = 1
 APPLICATION_ID = 0x41574248
 MAX_RUNS = 500
@@ -20,12 +22,12 @@ MAX_RUN_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
-    'delegation_level', 'workers_per_pm', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
+    'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
     'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
-    'budget', 'stop_reason', 'stop_reasons'))
+    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))
@@ -87,10 +89,15 @@ def redact_document(document, redact):
     enum(document['run'], result['run'], 'status', statuses)
     # Validated diagnostics are fixed application metadata, never credential text.
     restore(document['run'], result['run'], ('budget', 'stop_reason', 'stop_reasons'))
+    restore_coordination_metadata(document['run'].get('coordination'), result['run'].get('coordination'))
     for before, after in zip(document['agents'], result['agents']):
         restore(before, after, ('id', 'run_id', 'parent_id'))
+        restore(before, after, ('hierarchy',))
         enum(before, after, 'status', statuses)
         restore(before, after, ('stop_reason',))
+        restore_coordination_metadata(before.get('coordination'), after.get('coordination'))
+        if before.get('question_state'):
+            restore(before['question_state'], after['question_state'], ('question_id', 'kind', 'resolution'))
         for old, new in zip(before.get('logs', []), after.get('logs', [])):
             enum(old, new, 'kind', {'system', 'user', 'assistant', 'tool', 'tool_call', 'tool_result', 'mail', 'result', 'error'})
         for old, new in zip(before.get('results', []), after.get('results', [])):
@@ -99,7 +106,7 @@ def redact_document(document, redact):
         restore(before, after, ('run_id', 'agent_id', 'from_agent_id', 'to_agent_id'))
         if isinstance(before.get('mail_id'), str) and re.fullmatch(r'm-[0-9a-f]{32}', before['mail_id']):
             after['mail_id'] = before['mail_id']
-        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'stopped'})
+        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped'})
         enum(before, after, 'message_type', {'worker_report', 'worker_error', 'worker_notice', 'peer_message'})
         enum(before, after, 'delivery_state', {'queued', 'context_consumed'})
     for before, after in zip(document['board'], result['board']):
@@ -192,6 +199,24 @@ def _number(value):
     return type(value) is int and value >= 0
 
 
+def _question_state(value):
+    """Display-only question receipt; never restores a timer or authorization."""
+    fields = {'question_id', 'kind', 'recommendation', 'asked_at', 'deadline_at',
+              'resolution', 'resolved_at', 'reason'}
+    if (not isinstance(value, dict) or set(value) != fields or
+            not isinstance(value['question_id'], str) or
+            re.fullmatch(r'q-[0-9a-f]{32}', value['question_id']) is None or
+            value['kind'] not in ('consultation', 'permission') or
+            value['resolution'] not in ('pending', 'answered', 'fallback', 'blocked', 'cancelled') or
+            not isinstance(value['recommendation'], str) or not isinstance(value['reason'], str) or
+            not _time(value['asked_at']) or
+            any(value[key] is not None and not _time(value[key]) for key in ('deadline_at', 'resolved_at')) or
+            (value['kind'] == 'permission' and value['deadline_at'] is not None) or
+            (value['resolution'] == 'fallback' and
+             (value['kind'] != 'consultation' or not value['recommendation'] or value['deadline_at'] is None))):
+        raise HistoryError('履歴の質問通知・回答状態が不正です。')
+
+
 def _budget(value):
     if (not isinstance(value, dict) or set(value) != {'observed_at', 'started_at', 'shared', 'model_calls', 'tool_calls', 'time'}
             or value['shared'] is not True or not all(_time(value[key]) and value[key] <= 253402300799
@@ -210,6 +235,38 @@ def _budget(value):
             not math.isclose(row['used_seconds'], value['observed_at'] - value['started_at'], abs_tol=1e-6) or
             not math.isclose(row['remaining_seconds'], max(0, row['limit_seconds'] - row['used_seconds']), abs_tol=1e-6)):
         raise HistoryError('履歴の共有予算の時間が不正です。')
+
+
+def _hierarchy(run, agents):
+    """Validate display linkage, not a capability or resumable scheduler state."""
+    cap = run.get('max_delegation_depth', 1)
+    if type(cap) is not int or not 1 <= cap <= 3:
+        raise HistoryError('履歴の委任階層上限が不正です。')
+    by_id = {agent['id']: agent for agent in agents}
+    strict = 'max_delegation_depth' in run or any('hierarchy' in agent for agent in agents)
+    for agent in agents:
+        current, seen, depth = agent, set(), 0
+        while current.get('parent_id') is not None:
+            if current['id'] in seen or current['parent_id'] not in by_id:
+                raise HistoryError('履歴の親子関係が循環または欠落しています。')
+            seen.add(current['id'])
+            depth += 1
+            if depth > cap:
+                raise HistoryError('履歴の委任階層が上限を超えています。')
+            current = by_id[current['parent_id']]
+        if strict and current['id'] not in run['pm_agent_ids']:
+            raise HistoryError('履歴の親子関係に正しい最上位PMがありません。')
+        value = agent.get('hierarchy')
+        if value is None:
+            continue  # Old display archives do not gain executable capabilities.
+        expected = {'depth': depth, 'root_pm_id': current['id'],
+                    'unit_id': agent.get('parent_id') or agent['id'],
+                    'direct_children': [row['id'] for row in agents if row.get('parent_id') == agent['id']]}
+        if (not isinstance(value, dict) or set(value) != set(expected) | {'can_delegate'} or
+                type(value['depth']) is not int or type(value['can_delegate']) is not bool or
+                any(value[key] != item for key, item in expected.items()) or
+                (depth >= cap and value['can_delegate'])):
+            raise HistoryError('履歴のユニット表示が親子関係と一致しません。')
 
 
 def validate(document):
@@ -248,7 +305,25 @@ def validate(document):
             not isinstance(run.get('pm_agent_ids'), list) or len(set(run['pm_agent_ids'])) != len(run['pm_agent_ids']) or
             not set(run['pm_agent_ids']) <= ids):
         raise HistoryError('履歴の担当者一覧が作業と一致しません。')
+    try:
+        coordination = run.get('coordination')
+        validate_coordination(coordination)
+        if coordination is not None:
+            peer_ids = {row['agent_id'] for row in coordination['reports']}
+            if not peer_ids <= ids or coordination['current_actor_id'] not in peer_ids | {None}:
+                raise ValueError('Coordination references another run')
+        for member in document['agents']:
+            item = member.get('coordination')
+            validate_coordination(item, agent=True)
+            if item is not None and (coordination is None or item['workflow_id'] != coordination['workflow_id']
+                    or item['dependency']['actor_id'] not in ids | {None}
+                    or (item['report'] is not None and item['report']['agent_id'] != member['id'])):
+                raise ValueError('Coordination agent identity mismatch')
+    except ValueError as exc:
+        raise HistoryError('履歴の連携観測情報が不正です。') from exc
     for agent in document['agents']:
+        if 'question_state' in agent:
+            _question_state(agent['question_state'])
         if 'stop_reason' in agent and (not isinstance(agent['stop_reason'], str) or agent['stop_reason'] not in STOP_REASONS | {''}):
             raise HistoryError('履歴の担当者の停止理由が不正です。')
         _text_fields(agent, ('id', 'run_id', 'name', 'role', 'profile_id', 'status', 'question', 'last_error', 'assignment'))
@@ -270,6 +345,7 @@ def validate(document):
                 _text_fields(row, ('kind', 'text') if key == 'logs' else ('source', 'text') if key == 'results' else ('tool', 'path', 'sha256', 'operation'))
                 if key == 'logs' and 'thinking' in row and not isinstance(row['thinking'], str):
                     raise HistoryError('履歴の表示内容が不正です。')
+    _hierarchy(run, document['agents'])
     _rows(document['events'], EVENT_FIELDS)
     for row in document['events']:
         _text_fields(row, ('kind', 'text', 'run_id', 'agent_id'))
@@ -605,17 +681,23 @@ def archived_view(document, saved_at):
     """Display dictionaries only; no Engine/Agent reconstruction or callbacks."""
     value = copy.deepcopy(document)
     run = value['run']
+    if run.get('coordination') is not None:
+        run['coordination'].update(history_only=True, read_only=True)
     run.update(archived=True, read_only=True, original_status=run['status'], history_saved_at=saved_at,
                status_reason='保存された履歴（閲覧専用）')
     if run['status'] not in TERMINAL:
         run['status'] = 'interrupted'
     for agent in value['agents']:
+        if agent.get('coordination') is not None:
+            agent['coordination'].update(history_only=True, read_only=True)
         agent.update(archived=True, read_only=True, original_status=agent['status'],
                      status_reason='保存された履歴（閲覧専用）',
                      message_eligibility={'allowed': False, 'reason': 'archived_read_only',
                          'message': '保存された履歴は閲覧専用です。'})
         if agent['status'] not in TERMINAL:
             agent['status'] = 'interrupted'
+        if agent.get('hierarchy'):
+            agent['hierarchy']['can_delegate'] = False
         logs = agent.get('logs', [])
         agent['activity'] = agent.get('activity') or {'latest_log': ({key: logs[-1][key] for key in ('kind', 'text', 'at')} if logs else None),
                              'pending_count': 0, 'result_count': len(agent.get('results', [])),

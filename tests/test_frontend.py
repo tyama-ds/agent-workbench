@@ -135,8 +135,11 @@ def test_dialog_repeated_open_close_preserves_drafts_and_focus():
 const nodes={taskDialog:{open:false,opens:0,closes:0,showModal(){this.open=true;this.opens++},close(){this.open=false;this.closes++}},settingsDialog:{open:false,opens:0,closes:0,showModal(){this.open=true;this.opens++},close(){this.open=false;this.closes++}}};const $=id=>nodes[id];
 """ + source + """
 const ui={preflightRequest:0,taskDialogGeneration:0,workspaceGeneration:0};schedulePreflight=()=>{};syncStartControl=()=>{};
+let clearHoverCalls=0,stopMotionCalls=0,paintMotionCalls=0;
+const clearNetworkHover=()=>{clearHoverCalls++;},stopNetworkMotion=()=>{stopMotionCalls++;},paintNetworkMotionState=()=>{paintMotionCalls++;};
 setBriefOpen(true);setBriefOpen(true);setBriefOpen(false);setBriefOpen(false);
 showView('settings');showView('settings');showView('work');showView('work');
+if(clearHoverCalls!==4||stopMotionCalls!==4||paintMotionCalls!==8)throw new Error('Each opening suppresses preview/motion and each view change repaints motion state');
 console.log(JSON.stringify(Object.fromEntries(Object.entries(nodes).map(([k,v])=>[k,{open:v.open,opens:v.opens,closes:v.closes}]))));
 """)
     assert all(value == {'open': False, 'opens': 1, 'closes': 1} for value in result.values())
@@ -172,9 +175,9 @@ def test_truthful_status_labels_never_infer_a_human_question_from_generic_waitin
     state = next(line for line in APP.splitlines() if line.startswith('function stateLabel('))
     archive = '\n'.join(line for line in APP.splitlines() if line.startswith(('function archivedRun(', 'function archivedAgent(', 'function displayStatus(', 'const ACTIVE_STATUSES')))
     result = run_javascript("const ui={state:{runs:[]}};" + labels + reason_labels + status + archive + '\n' + state + """
-console.log(JSON.stringify(['waiting','human_input','error','collaboration_limit','needs_attention','teammates','teammate_error'].map(reason=>stateLabel({status:'waiting',status_reason:reason}))));
+console.log(JSON.stringify(['waiting','human_input','error','collaboration_limit','needs_attention','teammates','teammate_error','peer_message'].map(reason=>stateLabel({status:'waiting',status_reason:reason}))));
 """)
-    assert result == ['待機', '回答待ち', 'エラー', '連携上限', '要確認', '作業者待ち', '作業者エラー']
+    assert result == ['待機', '回答待ち', 'エラー', '連携上限', '要確認', '作業者待ち', '作業者エラー', 'チーム連絡待ち']
     assert 'agent.task' not in APP
     assert "agent.role==='pm'" not in APP
     assert 'message_eligibility' in APP and 'messageEligibility' in HTML

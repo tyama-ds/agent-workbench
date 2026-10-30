@@ -6,6 +6,13 @@ def test_drag_uses_camera_coordinates_preserves_selection_and_updates_edges():
     check(r'''
 seedSelection();ui.state.events=[mail(1)];renderRun();
 const original=JSON.stringify(ui.state),point={...ui.networkLayout.positions.get('agent-b')},beforeEdge=ui.networkParentLines[0].line.getAttribute('d');
+const mailPair=ui.networkMailLines[0],beforeMail=mailPair.line.getAttribute('d');
+assert.equal(ui.networkSvg.children.length,2);assert.equal(mailPair.track.getAttribute('d'),beforeMail);
+assert.equal(mailPair.line.getAttribute('role'),'button');assert.equal(mailPair.line.getAttribute('tabindex'),'0');
+assert.equal(mailPair.track.getAttribute('aria-hidden'),'true');assert(mailPair.track.getAttribute('tabindex')==null);
+assert.equal(mailPair.track.getAttribute('marker-end'),'url(#mailArrow)');assert(mailPair.line.getAttribute('marker-end')==null);
+assert.equal(typeof mailPair.line.listeners.click,'function');assert.equal(typeof mailPair.line.listeners.keydown,'function');
+assert.equal(mailPair.track.listeners?.click,undefined);assert.equal(mailPair.track.listeners?.keydown,undefined);
 networkViewState().camera={x:10,y:20,scale:.5};paintNetworkCamera();
 const event=(x,y)=>({pointerId:7,clientX:x,clientY:y,isPrimary:true,button:0,preventDefault(){},stopPropagation(){}});
 startNetworkGesture(event(100,100),'agent-b');updateNetworkGesture(event(102,102));
@@ -14,6 +21,9 @@ updateNetworkGesture(event(140,120));endNetworkGesture(event(140,120));
 assert.deepEqual(ui.networkLayout.positions.get('agent-b'),{x:point.x+80,y:point.y+40});
 assert.notEqual(ui.networkParentLines[0].line.getAttribute('d'),beforeEdge);
 assert.equal(ui.networkMailLines[0].line.getAttribute('d'),networkMailPath(ui.networkLayout.positions.get('agent-a'),ui.networkLayout.positions.get('agent-b'),0));
+assert.notEqual(mailPair.line.getAttribute('d'),beforeMail);assert.equal(mailPair.track.getAttribute('d'),mailPair.line.getAttribute('d'));
+renderRun();assert.equal(ui.networkMailLines[0].line,mailPair.line);assert.equal(ui.networkMailLines[0].track,mailPair.track);
+assert.equal(mailPair.track.getAttribute('d'),mailPair.line.getAttribute('d'));
 networkNodeClick({detail:1,preventDefault(){}},'agent-b');assert.equal(ui.selectedAgent,'agent-a');
 assert.equal(JSON.stringify(ui.state),original);assert.equal(ui.networkGesture,null);
 ''')
@@ -73,7 +83,7 @@ assert(ui.networkNodes.has('new-worker'));ui.state.agents=ui.state.agents.filter
 def test_recent_geometry_cache_is_bounded_and_has_no_public_text():
     check(r'''
 seedSelection();for(let i=0;i<100;i++)networkViewState('old-'+i);assert.equal(ui.networkViews.size,64);
-assert(!ui.networkViews.has('old-0'));assert.deepEqual(Object.keys(networkViewState('old-99')).sort(),['camera','positions','selectedAgent']);
+assert(!ui.networkViews.has('old-0'));assert.deepEqual(Object.keys(networkViewState('old-99')).sort(),['camera','mailCursor','mailReady','mailSeen','pinnedAgent','positions','selectedAgent']);
 renderTeamMap(ui.state.agents.filter(a=>a.run_id==='run-a').slice(0,1));
 assert([...ui.networkViews.keys()].every(id=>runs.some(run=>run.id===id)));
 ''')
@@ -94,7 +104,7 @@ resetNetworkLayout();assert.deepEqual(ui.networkLayout.positions.get('agent-b'),
 def test_key_activation_still_selects_after_drag_and_mail_remains_accessible():
     check(r'''
 seedSelection();ui.state.events=[mail(1)];renderRun();ui.networkSuppressClick='agent-b';
-networkNodeClick({detail:0},'agent-b');assert.equal(ui.selectedAgent,'agent-b');
+networkNodeClick({detail:0},'agent-b');assert.equal(ui.selectedAgent,'agent-a');assert.equal(networkViewState().pinnedAgent,'agent-b');
 const line=ui.networkMailLines[0].line;line.listeners.keydown({key:'Enter',preventDefault(){}});
 assert.deepEqual(ui.activityPair,{from:'agent-a',to:'agent-b'});assert.equal(ui.activityFilter,'pair');
 assert.equal(line.getAttribute('role'),'button');assert.equal(line.getAttribute('tabindex'),'0');
