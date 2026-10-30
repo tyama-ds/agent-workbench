@@ -314,7 +314,7 @@ async def test_real_api_two_pm_team_delegates_writes_and_returns_to_each_parent(
         engine = Engine(settings)
         try:
             run, leads = await multi_start(engine, ['local', second_profile], max_delegation_depth=1)
-            await eventually(lambda: run['status'] in {'done', 'waiting'}, engine)
+            await eventually(lambda: run['status'] in {'done', 'waiting'}, engine, progress_run=run)
             assert not errors and run['status'] == 'done', engine.snapshot()
             workers = [engine.agents[i] for i in run['agent_ids'] if i not in run['pm_agent_ids']]
             assert len(workers) == 2 and {a.parent_id for a in workers} == {a.id for a in leads}
