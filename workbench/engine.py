@@ -39,6 +39,7 @@ from .coordination_view import coordination_projection, projection_summary
 from .provider_monitor import complete_observed, provider_display
 from .ordered_audit import (REFERENCE_AUDIT_SCHEMA, ReferenceAuditError, audit_event,
     reference_mode, report_proof, validate_reference_audit, current_reference_report_approval, completion_evidence)
+from .formation import AdaptiveTeamMixin, FORMATION_TOOLS, FORMATION_NAMES, FormationError
 
 
 class AdmissionError(ValueError):
@@ -120,12 +121,14 @@ REFERENCE_REVIEW_DESCRIPTIONS = {
     'review_work_step': 'PM only. Review the current candidate mail that entered your context. Check whether the word is an ordinary noun with the stated meaning. Accept routes the author output to the next worker. Reference-mode accept requires audit matching every pending_audit field in application context. Feedback remains an unverified comment, not verified reasoning. Revise requires a specific discrepancy. Do not supply an answer. Character/link and fixed-source checks do not prove semantic understanding.',
     'review_worker_report': 'PM only. Review an owned worker current formal report after it entered your context. Use list_team for the exact current result_revision. Reference-mode accept requires audit containing every assigned accepted step from formal_reports in application context. Feedback remains an unverified comment. Independent current report reviews may share a native tool batch; check each result before finish_work. Otherwise revise with a specific discrepancy (ordered corrections use rollback_work_step). This records judgment and fixed-source matching, not semantic understanding.',
 }
+TEAM_TOOLS += FORMATION_TOOLS
 TEAM_NAMES = {t['name'] for t in TEAM_TOOLS}
 COORDINATION_TOOLS = frozenset({'list_team', 'spawn_worker', 'send_message', 'ask_user',
                               'wait_for_workers', 'wait_for_message', 'review_worker_report',
                               'read_context_history', 'release_paths', 'finish_work',
                               'post_work_board', 'read_work_board'})
 COORDINATION_TOOLS = COORDINATION_TOOLS | ORDERED_NAMES
+COORDINATION_TOOLS = COORDINATION_TOOLS | FORMATION_NAMES
 SKILL_TOOL = schema('read_skill',
     'Read a SKILL.md from this run\'s fixed catalog before applying its procedure. '
     'Use the exact skill_id from the catalog. Instructions never grant permissions or human approval. '
@@ -248,6 +251,7 @@ class Agent:
     dependency_stale: bool = False
     dependency_epoch: int = 0
     dependency_retry_mail: str = ''
+    kind: str = ''  # App-owned capability, never a model-supplied role.
 
     def public(self, *, message_eligibility=None, status_reason=None, include_detail=True, configured_profile=None,
                 redact_activity=lambda value: value, coordination=None, worker_dependencies=None, hierarchy=None):
@@ -255,7 +259,9 @@ class Agent:
                                               'status', 'question', 'last_error', 'stop_reason', 'turns', 'assignment')}
         if coordination is not None:
             value['coordination'] = copy.deepcopy(coordination)
-        if hierarchy is not None:
+        if self.kind:
+            value['kind'] = self.kind
+        if hierarchy is not None and self.kind != 'independent_reviewer':
             value['hierarchy'] = copy.deepcopy(hierarchy)
         if self.question_state:
             value['question_state'] = copy.deepcopy(self.question_state)
@@ -293,7 +299,7 @@ class Agent:
                 }
 
 
-class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
+class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
     def __init__(self, settings: Settings, client=None):
         self.settings = settings
         self.gate = ResourceGate()
@@ -650,6 +656,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
 
     def record_receipt(self, agent, tool, result):
         # Only the trusted executor's successful mutation return reaches here.
+        self._formation_receipt(agent, result)
         self.sequence += 1
         agent.receipts_omitted += int(len(agent.output_receipts) == RECEIPT_LIMIT)
         agent.output_receipts.append({'id': self.sequence, 'tool': tool, 'at': time.time(),
@@ -731,6 +738,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
         result['redaction_revision'] = self._redaction.value_count
         self._restore_question_metadata(result)
         self._restore_hierarchy_metadata(result)
+        self._restore_formation_metadata(result)
         return self._with_history(result)
 
     def _copilot_resources(self):
@@ -776,9 +784,10 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
         result['redaction_revision'] = self._redaction.value_count
         self._restore_question_metadata(result)
         self._restore_hierarchy_metadata(result)
+        self._restore_formation_metadata(result)
         return self._with_history(result, run_id, agent_id)
 
-    def _new_agent(self, run, profile, role, parent=None, *, assignment=''):
+    def _new_agent(self, run, profile, role, parent=None, *, assignment='', _kind='', _emit_event=True):
         ident = 'a-' + secrets.token_hex(8)
         if parent is None:
             index = sum(self.agents[i].parent_id is None for i in run['agent_ids']) + 1
@@ -787,12 +796,18 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
             index = sum(self.agents[i].parent_id is not None for i in run['agent_ids']) + 1
             name = f'Worker {index} · {role}'
         agent = Agent(ident, run['id'], name, role, profile, parent, assignment=assignment)
+        if run.get('adaptive_team'):
+            agent.kind = _kind or 'author'
+        if _kind == 'independent_reviewer':
+            agent.name = 'Independent reviewer'
+            run['_formation']['reviewer_id'] = ident
         self.agents[ident] = agent
         run['agent_ids'].append(ident)
-        if parent is None:
+        if parent is None and _kind != 'independent_reviewer':
             run['pm_agent_ids'].append(ident)
         agent._unit_dependency_epochs = self._hierarchy_dependency_epochs(agent)
-        self.event(run['id'], ident, 'created', f'{name} / {profile}')
+        if _emit_event:
+            self.event(run['id'], ident, 'created', f'{agent.name} / {profile}')
         return agent
 
     def _prepare_run(self, payload):
@@ -810,8 +825,10 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                 '保存済み設定のパスを確認し、現在のPCに合わせて保存してから作業を開始してください。', field='settings')
         if len(self.runs) >= 20:
             raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動後も保存済み履歴は閲覧専用で残ります。今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます')
-        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference'}:
+        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
+        if type(payload.get('adaptive_team', False)) is not bool:
+            raise AdmissionError('invalid_adaptive_team', 'adaptive_teamは真偽値です。', field='adaptive_team')
         if 'ordered_reference' in payload:
             try:
                 ReferenceCatalog.from_payload(payload['ordered_reference'])
@@ -833,7 +850,12 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
             raise AdmissionError('invalid_selection', 'PM と worker の利用可能な API を選択してください', field='profiles')
         workers = workers if count else []
         orchestration = self._orchestration(config, payload)
-        if orchestration['delegation_level'] == 2 and count < len(pms) * orchestration['workers_per_pm']:
+        if payload.get('adaptive_team'):
+            if len(pms) != 1 or 'ordered_reference' in payload:
+                raise AdmissionError('adaptive_incompatible', '自動編成はPM1人・通常の階層/依存作業だけで使用できます。', field='adaptive_team')
+            if count < 2:
+                raise AdmissionError('adaptive_capacity', '自動編成には作者1人と独立reviewer1人以上の共有枠が必要です。', field='max_workers')
+        if not payload.get('adaptive_team') and orchestration['delegation_level'] == 2 and count < len(pms) * orchestration['workers_per_pm']:
             raise AdmissionError('delegation_capacity', '委任必須では PM人数 × PMごとのworker人数以上の最大worker数が必要です。', field='max_workers')
         if config['copilot_agent']['enabled'] and COPILOT_PROFILE_ID in {*pms, *workers}:
             status = self.copilot_status()
@@ -876,7 +898,8 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
             return self._redact_tree({'ok': True, 'can_start': False, 'blockers': [{'code': getattr(exc, 'code', 'admission_failed'),
                 'field': getattr(exc, 'field', ''), 'profile_id': getattr(exc, 'profile_id', ''),
                 'message': self.redact(str(exc))}], 'warnings': [], 'inference_tested': False, 'tools_tested': False})
-        return self._redact_tree(summarize(prepared, orchestration=self._orchestration(prepared[1], payload)))
+        return self._redact_tree(summarize(prepared, orchestration=self._orchestration(prepared[1], payload),
+            adaptive_team=payload.get('adaptive_team', False)))
 
     async def start_run(self, payload):
         # A caller may retain and mutate its request while bridge admission
@@ -918,6 +941,9 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                'agent_ids': [], '_config': config, '_configured_profiles': configured_profiles, '_harness': harness,
                '_executor': ToolExecutor(harness), '_web': web_tools,
                '_skill_catalog': skill_catalog, 'skills': self._redact_tree(skill_catalog.public())}
+        if payload.get('adaptive_team'):
+            run['adaptive_team'] = True
+            self._formation_init(run)
         if 'ordered_reference' in payload:
             catalog = ReferenceCatalog.from_payload(payload['ordered_reference'])
             run['_ordered_reference'] = catalog
@@ -930,8 +956,11 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
         run['pm_agent_ids'] = [lead.id for lead in leads]
         for lead in leads:
             self.enqueue(lead, task, human=True)
-        return {'ok': True, 'run': self._redact_tree({k: v for k, v in run.items() if not k.startswith('_')} |
-                                                   self._run_diagnostics(run))}
+        public_run = self._redact_tree({k: v for k, v in run.items() if not k.startswith('_')} | self._run_diagnostics(run))
+        if run.get('adaptive_team'):
+            public_run.update(id=run['id'], adaptive_team=True, formation=copy.deepcopy(run['formation']),
+                pm_agent_ids=list(run['pm_agent_ids']), agent_ids=list(run['agent_ids']))
+        return {'ok': True, 'run': public_run}
 
     def _work_board_run(self, run_id):
         if isinstance(run_id, str) and run_id in self._archives:
@@ -1053,6 +1082,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
 
     def enqueue(self, agent, content, *, human=False, _initial=False):
         self._check_queue(agent, human=human)
+        self._formation_invalidate(agent, '作者への新しい入力により候補が失効しました。')
         if human:
             self._question_answered(agent)
         self._dependency_invalidate(agent, _initial=_initial)
@@ -1129,7 +1159,9 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
         run = self.runs[agent.run_id]
         reason, message = '', ''
         limits = run['_config']['limits']
-        if run['status'] == 'stopping':
+        if self._formation_reviewer(run, agent):
+            reason, message = 'independent_reviewer', '独立reviewerには専用の監査依頼だけを配送できます。PMへ連絡してください。'
+        elif run['status'] == 'stopping':
             reason, message = 'stopping', '停止処理中です。実行中の処理の終了を待っています。完了後、新しい仕事を開始してください'
         elif self.closed or agent.closing or run['status'] == 'stopped':
             reason, message = 'stopped', '停止したチームは再開できません。新しい仕事を開始してください'
@@ -1206,6 +1238,8 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
 
     def _delegation_issue(self, run, agent, *, finishing=False):
         """Check application-owned report metadata, never model claims or mail text."""
+        if run.get('adaptive_team'):
+            return self._formation_issue(run, agent, finishing=finishing)
         if finishing:
             dependency_issue = self._dependency_pm_issue(run, agent)
             if dependency_issue:
@@ -1375,6 +1409,10 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
         identity.update(depth=unit['depth'], direct_children=unit['direct_children'])
         if agent.parent_id is not None:
             identity['root_pm_id'] = unit['root_pm_id']
+        if run.get('adaptive_team'):
+            identity['kind'] = agent.kind
+            if self._formation_reviewer(run, agent):
+                identity['write_roots'] = []
         team_policy = ''
         if len(run['pm_agent_ids']) > 1:
             team_policy = ('\nMultiple PMs share this task. PM 1 coordinates the initial division of work; '
@@ -1485,7 +1523,11 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                 '順番のある仕事の作業者は submit_work_step で本人の語と意味を提出し、最終手の提出を正式報告とする')
         catalog = run.get('_skill_catalog')
         skill_policy = self.redact(catalog.prompt()) if catalog is not None else ''
-        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy
+        if run.get('adaptive_team'):
+            delegation_policy = ''
+            if self._formation_reviewer(run, agent):
+                role_binding = mail_policy = board_policy = ''
+        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent)
 
     def _contextual_team_tool(self, run, agent, tool):
         """One provider/validation contract without enlarging unrelated requests."""
@@ -1564,7 +1606,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
             tools = [tool for tool in tools if tool['name'] != 'read_ordered_reference']
         if run.get('skills', {}).get('skills'):
             tools.append(SKILL_TOOL)
-        return [self._contextual_team_tool(run, agent, tool) for tool in tools]
+        return self._formation_tools(run, agent, [self._contextual_team_tool(run, agent, tool) for tool in tools])
 
     def _context_limit_reached(self, run, agent):
         """Same native replay/system/tool/token budget as dispatch, read-only."""
@@ -1706,7 +1748,10 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
         try:
             while agent.pending and not agent.closing and not agent.question:
                 self._dependency_begin(agent)
-                content, human = agent.pending.popleft()
+                queued_item = agent.pending.popleft()
+                content, human = queued_item
+                if not self._formation_control_admissible(run, agent, queued_item):
+                    continue
                 if agent.turns >= limits['max_turns_per_agent']:
                     raise RuntimeBudgetError('turn_limit')
                 agent.turns += 1
@@ -1719,6 +1764,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                 self._append_context(agent, {'role': 'user', 'content': content}, human=human)
                 self._consume_worker_report(agent, content, human)
                 self._consume_mail(agent, content, human)
+                self._formation_consume_control(run, agent, content, human, queued_item)
                 summary = ''
                 terminal_response = None
                 yielded = False
@@ -1759,6 +1805,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                     self.event(run['id'], agent.id, 'inference', f'{agent.name}: 推論を待機・実行中')
                     self._ordered_capture_dispatch(agent)
                     async with self._run_deadline(run):
+                        self._formation_before_dispatch(run, agent, messages, system)
                         reply = await complete_observed(agent, self.client, profile, messages, tools, system, call_limits,
                                                            conversation_id=f'{run["id"]}/{agent.id}')
                     if agent.closing:
@@ -1795,6 +1842,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                     exhausted = None
                     unexpected_error = None
                     for call in reply.tool_calls:
+                        review_evidence = None
                         if agent.closing:
                             break
                         try:
@@ -1842,6 +1890,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                                 result = {'ok': False, 'error': self.redact(str(exc))[:1000]}
                             if not isinstance(result, dict):
                                 raise TypeError('Tool result must be an object')
+                            result, review_evidence = self._formation_native_result(run, agent, name, args, result, call)
                             encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
                             finished = result.get('ok') is not False and name in {'finish_work', 'ask_user'}
                             if name == 'submit_work_step' and result.get('ok') is True:
@@ -1856,6 +1905,10 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                                 yielded = finished = True
                             if name == 'wait_for_message' and result.get('waiting_for_message') is True:
                                 yielded_for_message = finished = True
+                            if name == 'request_independent_review' and result.get('ok') is True:
+                                yielded_for_message = finished = True
+                            if name == 'submit_independent_review' and result.get('ok') is True:
+                                finished = True
                             self.log(agent, 'tool', name + '\n' + encoded[:12000])
                         except RedactionCapacityError:
                             # The outer fixed-text handler must remain fail-closed.
@@ -1875,6 +1928,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                         # settle. Never retry a failed logger to repair private history.
                         self._append_context(agent, {'role': 'tool', 'tool_call_id': call['id'], 'name': name,
                                                    'content': encoded})
+                        self._formation_record_native(run, agent, review_evidence, encoded)
                         if finished:
                             stop = True
                             summary = args.get('summary', summary)
@@ -1976,6 +2030,8 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
             run['status'] = 'waiting'
         else:
             run['status'] = 'done'
+        if run.get('adaptive_team') and run['status'] == 'done' and not self._formation_complete(run):
+            run['status'] = 'waiting'
         if run['status'] == 'done':
             run.setdefault('_budget_finished_at', time.time())
         else:
@@ -2010,6 +2066,8 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
     def _mail(self, actor, target, body, completed=False, *, report_revision=None, subject='', ordered_metadata=None):
         if target.run_id != actor.run_id or target.id == actor.id:
             raise ValueError('別チームまたは自分へのメールは禁止です')
+        if self._formation_reviewer(self.runs[actor.run_id], actor) or self._formation_reviewer(self.runs[actor.run_id], target):
+            raise FormationError('reviewer_control_only', '独立reviewerは通常のチームメールを使用できません。')
         self._check_queue(target)
         run = self.runs[actor.run_id]
         self._check_collaboration(run, actor)
@@ -2085,6 +2143,8 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                 raise ValueError('宛先が見つかりません')
             if target.run_id != actor.run_id or target.id == actor.id:
                 raise ValueError('別チームまたは自分へのメールは禁止です')
+            if self._formation_reviewer(self.runs[actor.run_id], target):
+                raise FormationError('reviewer_control_only', '独立reviewerには専用の監査依頼だけを配送できます。')
             self._check_queue(target)
             targets.append(target)
         run = self.runs[actor.run_id]
@@ -2138,6 +2198,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
     async def execute_tool(self, run, agent, name, args):
         if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
             raise ValueError('停止したチームではツールを実行できません')
+        self._formation_guard(run, agent, name)
         if name not in {'list_team', 'ask_user', 'send_message', 'wait_for_message', 'read_context_history'}:
             self._dependency_require(agent)
         if name in TEAM_NAMES:
@@ -2146,11 +2207,16 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
             if set(args) - set(spec['properties']) or set(spec['required']) - set(args):
                 raise ValueError('ツール引数が不正です')
         if name in ORDERED_NAMES:
+            if run.get('adaptive_team'):
+                raise FormationError('adaptive_incompatible', '自動編成と順番のある仕事は併用できません。')
             if name == 'start_ordered_work' and self._hierarchy_nested(run):
                 raise ValueError('階層委任と順番のある仕事は併用できません')
             if name == 'start_ordered_work' and any(self.agents[x].depends_on for x in run['agent_ids']):
                 raise ValueError('depends_on と順番のある仕事は併用できません')
             return self._ordered_execute(run, agent, name, args)
+        if name in FORMATION_NAMES:
+            async with self._run_deadline(run):
+                return await self._formation_execute(run, agent, name, args)
         if self._ordered_for(run, agent) and agent.parent_id and name == 'finish_work' and not self._ordered_can_finish(run, agent):
             raise ValueError('この手順では本人の最終submit_work_stepが正式報告です。手番を飛ばして完了できません')
         if name not in COORDINATION_TOOLS:
@@ -2247,7 +2313,10 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                 row = {key: getattr(member, key) for key in
                        ('id', 'name', 'role', 'profile_id', 'status', 'parent_id',
                         'result_revision', 'finished_revision', 'waiting_for_message')}
-                row['hierarchy'] = self._hierarchy_view(member)
+                if member.kind:
+                    row['kind'] = member.kind
+                if not self._formation_reviewer(run, member):
+                    row['hierarchy'] = self._hierarchy_view(member)
                 if member.participant_key:
                     row['participant_key'] = member.participant_key
                 if member.depends_on:
@@ -2269,7 +2338,8 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                     **self._orchestration(run['_config'], run),
                     'pm_agent_ids': list(run['pm_agent_ids']),
                     'auto_collaborations': run['auto_collaborations'], 'max_auto_collaborations': run['max_auto_collaborations'],
-                    'agents': roster, **({'ordered_work': self._ordered_view(run, agent)} if self._ordered_for(run, agent) else {})}
+                    'agents': roster, **({'formation': copy.deepcopy(run['formation'])} if run.get('adaptive_team') else {}),
+                    **({'ordered_work': self._ordered_view(run, agent)} if self._ordered_for(run, agent) else {})}
         if name == 'spawn_worker':
             issue = self._hierarchy_spawn_issue(run, agent)
             if issue:
@@ -2352,22 +2422,32 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
             return {'ok': True, 'waiting_for_workers': True, 'reports_ready': False}
         if name == 'finish_work':
             summary = text(args['summary'], 'summary', 16000, False)
-            if self._hierarchy_unit_required(run, agent) and getattr(agent, '_turn_revision', agent.result_revision) != agent.result_revision:
-                return {'ok': False, 'code': 'unit_stale', 'error': '新しい入力を確認してからユニットの現在の結果を報告してください。'}
-            issue = self._delegation_issue(run, agent, finishing=True)
-            if issue and issue[0] in {'worker_review_pending', 'ordered_work_pending', 'worker_dependency_pending'}:
-                # This is recoverable within the current tool conversation: the PM
-                # can inspect/review reports next. Do not schedule inference or yield
-                # into a wait for messages that have already been consumed.
-                return {'ok': False, 'code': issue[0], 'error': issue[1]}
-            self._require_delegation(run, agent, finishing=True)
-            if any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
-                    for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
-                raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
-            self.log(agent, 'result', summary)
-            self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
-            agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)
-            return {'ok': True, 'summary': summary}
+            adaptive_finish = run.get('adaptive_team') and agent.id in run['pm_agent_ids']
+            try:
+                if adaptive_finish:
+                    async with self._run_deadline(run):
+                        await self._formation_finish(run, agent, summary)
+                if self._hierarchy_unit_required(run, agent) and getattr(agent, '_turn_revision', agent.result_revision) != agent.result_revision:
+                    return {'ok': False, 'code': 'unit_stale', 'error': '新しい入力を確認してからユニットの現在の結果を報告してください。'}
+                issue = self._delegation_issue(run, agent, finishing=True)
+                if issue and issue[0] in {'worker_review_pending', 'ordered_work_pending', 'worker_dependency_pending'}:
+                    # This is recoverable within the current tool conversation: the PM
+                    # can inspect/review reports next. Do not schedule inference or yield
+                    # into a wait for messages that have already been consumed.
+                    return {'ok': False, 'code': issue[0], 'error': issue[1]}
+                self._require_delegation(run, agent, finishing=True)
+                if any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
+                        for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
+                    raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
+                self.log(agent, 'result', summary)
+                self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
+                agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)
+                if adaptive_finish:
+                    self._formation_finish_commit(run, agent)
+                return {'ok': True, 'summary': summary}
+            finally:
+                if adaptive_finish:
+                    agent._formation_finishing_candidate = None
         if name in {'reserve_paths', 'release_paths'}:
             paths = args.get('paths', [])
             if not isinstance(paths, list) or len(paths) > 32 or (name == 'reserve_paths' and not paths):
@@ -2402,6 +2482,7 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
             # this operation waits for the shared file lock.
             self._dependency_require(agent)
             self._require_delegation(run, agent)
+            self._formation_guard(run, agent, name)
             if name == 'selenium_browse':
                 if not run['_config']['selenium']['enabled'] or not run['_config']['python']['network_enabled'] or os.name != 'nt':
                     raise ValueError('Seleniumは無効、ネット接続が未許可、またはWindowsではありません')
@@ -2442,7 +2523,14 @@ class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin
                     self._check_reservation(agent, candidate)
             if name in WRITE_TOOLS:
                 return await run['_executor'].execute(name, args, on_complete=lambda result: self.record_receipt(agent, name, result))
-            return await run['_executor'].execute(name, args)
+            result = await run['_executor'].execute(name, args)
+            if self._formation_reviewer(run, agent):
+                self._formation_guard(run, agent, name)
+                candidate = run['_formation']['candidate']
+                if candidate:
+                    async with self._run_deadline(run):
+                        await self._formation_recheck(run, candidate)
+            return result
 
     def _reservation_path(self, run, value, write=True):
         return run['_harness'].resolve(value, write=write, must_exist=False)

@@ -247,6 +247,13 @@
     },
     "redaction_revision": 0
   },
+  "adaptive_team": {
+    "admission": "Optional strict boolean adaptive_team on run-preflight/runs, default false. Run-only opt-in; one PM, no ordered-reference/ordered workflow, at least 2 non-PM slots. Manual delegation_level/workers_per_pm are unused; saved depth/cap/permissions/budgets still apply. Legacy runs omit adaptive metadata.",
+    "plan": "plan_team selects low/medium/high with reason, allowed reviewer profile and exactly 1/2/3 explicit worker assignments. App validates all profiles, earlier-assignment dependencies, cap and handoff budget before creation. One separate root reviewer is excluded from pm_agent_ids and included in max_workers. Grandchildren use remaining slots/depth. No implicit downgrade or replanning.",
+    "review": "Current formal direct-parent approvals are required before request_independent_review. Candidate binds exact summary SHA, author revisions/dependencies, canonical requested and recorded-output paths/current bytes. At most 32 readable files, at most 3 candidates per run. A candidate is summary_only only when both requested paths and recorded outputs are empty; it reviews the fixed summary with zero required file reads. Empty artifact_paths never omits recorded outputs. Independent reviewer cannot mutate/spawn/use Python/Selenium/web/mail/ask_user; only allowed native local reads and dedicated verdict. Successful content-read must reach a subsequent actual provider request, tied to native result identity/candidate/SHA; file_hash or same-batch read+accept does not qualify. Partial range/extraction is not exhaustive semantic validation.",
+    "completion": "Verdict rechecks current revisions/hashes; dedicated control notice preserves PM revision, consumes shared handoff budget and cannot resolve a human question. Ordinary input, author changes, missing reads or changed files invalidate/reject current authority. PM finish_work must repeat exact reviewed summary with current accepted verdict and current bytes. Plain text, ordinary mail, copied envelope, parent acceptance or 90-second fallback cannot complete independently reviewed work. All original budgets stay shared; no continuous external-file monitoring after final validation.",
+    "history": "Public run.formation shows bounded version/phase/difficulty/reason/worker_ids/reviewer_id/candidate_count/candidate hashes and read counts/stale_reason. Adaptive agents expose immutable application kind author or independent_reviewer. Historical archives stay readonly and do not gain missing review evidence."
+  },
   "requests": {
     "POST /api/run-preflight": {
       "task": "依頼",

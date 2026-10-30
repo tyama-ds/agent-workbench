@@ -195,3 +195,9 @@ main{height:auto;min-height:0;overflow:hidden}.view{height:100%;min-height:0}.wo
 @media(min-width:641px){.sidebar{overflow-y:auto}.sidebar>.question-notifications{flex:none;max-height:none}.sidebar>.agent-cards{flex:none;height:auto;min-height:0;max-height:none}.sidebar>.sidebar-section{flex:none;max-height:none}}
 /* The narrow sidebar already scrolls vertically; retain its horizontal lists. */
 @media(max-width:640px){.sidebar>.question-notifications{flex:none;max-height:none}}
+/* Run-only formation evidence fits the existing overview and disclosure flow. */
+.formation-panel { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border, #294657); border-radius: 6px; }
+.formation-panel h2 { margin: 0 0 6px; font-size: 13px; }
+.formation-panel summary { cursor: pointer; font-size: 12px; }
+.formation-panel .formation-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.network-node[data-network-role="reviewer"] .network-orb-inner { border-style: double; }
