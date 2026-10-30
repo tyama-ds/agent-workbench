@@ -104,6 +104,7 @@ Object.assign(ui,{settingsStorage:null,settingsTransferOperation:null,historySto
 Object.assign(ui,{workBoards:new Map(),boardOwner:null,boardComposingRun:null,boardRedactionRevision:null});
 const WORK_BOARD_DEFAULTS={enabled:false};
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
+Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotified:new Set(),questionNotifications:new Map(),notificationPermissionRequest:null,notificationError:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
 Object.assign(ui,{cockpitView:'network',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
@@ -184,7 +185,7 @@ function acceptServerInstance(response,configuration=false) {
   if(!changed)return false;
   ui.selectionGeneration++;ui.navigationGeneration++;ui.workspaceGeneration++;ui.credentialGeneration++;
   ui.selectedRun=null;ui.selectedAgent=null;ui.loadedDetail=null;ui.loadedEventsRun=null;ui.detailError=false;
-  ui.drafts.clear();ui.draftRevisions.clear();ui.conversationViews.clear();ui.outputSelections.clear();
+  ui.drafts.clear();ui.draftRevisions.clear();ui.draftQuestions.clear();ui.composerQuestion=null;closeQuestionNotifications();ui.conversationViews.clear();ui.outputSelections.clear();
   invalidateWorkBoardContent();ui.workBoards.clear();ui.boardOwner=null;ui.boardComposingRun=null;ui.boardRedactionRevision=null;
   stopNetworkMotion();clearNetworkPreview();ui.networkNodes.clear();ui.networkViews.clear();ui.networkGesture=null;ui.networkSuppressClick=null;ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
   $('teamMap').classList.remove('is-dragging');
@@ -248,7 +249,7 @@ function actionNotice(action,text,error=false) {
   notice(text,error);action.noticeGeneration=ui.noticeGeneration;
 }
 function inlineStatus(node,text,error=false) { node.textContent=text;node.classList.toggle('error',error); }
-function setConnection(online,text) { ui.networkConnected=online===true;if(!online){ui.networkPreviewReady=false;stopNetworkMotion();clearNetworkHover();}paintNetworkMotionState();renderNetworkPreview();$('connectionDot').classList.toggle('online',online);$('connectionDot').classList.toggle('error',!online);$('connectionStatus').textContent=text;preserveControlFocus(()=>renderCoordinationMonitor(getRun(),ui.state.agents.filter(a=>a.run_id===ui.selectedRun)));renderInspector(getAgent()); }
+function setConnection(online,text) { ui.networkConnected=online===true;if(!online){ui.networkPreviewReady=false;stopNetworkMotion();clearNetworkHover();}paintNetworkMotionState();renderNetworkPreview();$('connectionDot').classList.toggle('online',online);$('connectionDot').classList.toggle('error',!online);$('connectionStatus').textContent=text;preserveControlFocus(()=>renderCoordinationMonitor(getRun(),ui.state.agents.filter(a=>a.run_id===ui.selectedRun)));renderInspector(getAgent());renderQuestionNotice(questionEntries()); }
 
 async function api(path,options={}) {
   const requestInstance=ui.instanceId,method=String(options.method||'GET').toUpperCase();
@@ -1009,6 +1010,97 @@ function questionEntries() {
       .map(agent=>({run,agent}));
   });
 }
+function questionState(agent) {
+  const value=agent?.question_state;
+  if(!value||typeof value!=='object'||Array.isArray(value)||typeof value.question_id!=='string'||!/^q-[a-f0-9]{32}$/.test(value.question_id)||
+    !['consultation','permission'].includes(value.kind)||typeof value.recommendation!=='string'||
+    !Number.isFinite(value.asked_at)||value.asked_at<=0||
+    !(value.deadline_at===null||(Number.isFinite(value.deadline_at)&&value.deadline_at>=value.asked_at))||
+    !['pending','answered','fallback','blocked','cancelled'].includes(value.resolution)||
+    !(value.resolved_at===null||Number.isFinite(value.resolved_at))||typeof value.reason!=='string')return null;
+  return value;
+}
+function questionReplyTarget(agent) {
+  if(!agent||!needsHuman(agent))return null;
+  // Old archived/fixture schemas retain ordinary message semantics. A present,
+  // invalid identity must never be silently treated as a fresh ordinary message.
+  if(!Object.hasOwn(agent,'question_state'))return null;
+  const state=questionState(agent);
+  return state&&['pending','blocked'].includes(state.resolution)?state.question_id:undefined;
+}
+function questionTimingLabel(agent) {
+  const state=questionState(agent);
+  if(!state)return agent&&Object.hasOwn(agent,'question_state')?'質問の期限・推奨回答を確認できません。':'自動回答の期限は設定されていません。';
+  if(state.resolution==='fallback')return `サーバーが推奨回答を適用しました: ${state.recommendation}`;
+  if(state.resolution==='answered')return '回答を受け付けました。';
+  if(state.resolution==='cancelled')return '質問は取り消されました。';
+  if(state.resolution==='blocked')return '推奨回答の自動適用は停止しました。同じ質問への人の回答を待ちます。送信可否は作業の現在状態を確認してください。';
+  if(state.kind==='permission')return '権限・承認の確認です。自動回答せず、人の回答を待ちます。';
+  if(state.deadline_at===null||!state.recommendation.trim())return '自動回答は設定されていません。人の回答を待ちます。';
+  const deadline=new Date(state.deadline_at*1000).toLocaleTimeString(),elapsed=Date.now()>=state.deadline_at*1000;
+  return `推奨回答: ${state.recommendation}\n回答期限 ${deadline}（質問から約90秒）。未回答ならサーバーが推奨回答を使います。${elapsed?' 期限を過ぎました。サーバーの確定を確認中です。':''}ブラウザーを閉じてもサーバー側の期限は進みます。`;
+}
+function questionNotificationKey(run,agent,state) { return JSON.stringify([ui.instanceId,run.id,agent.id,state.question_id]); }
+function closeQuestionNotifications() {
+  for(const notification of ui.questionNotifications.values()){try{notification.close();}catch(_){}}
+  ui.questionNotifications.clear();
+}
+function notificationCapability() {
+  if(typeof globalThis.Notification!=='function'||window.isSecureContext===false)return 'unavailable';
+  return ['default','granted','denied'].includes(Notification.permission)?Notification.permission:'unavailable';
+}
+async function requestQuestionNotificationPermission() {
+  if(ui.notificationPermissionRequest||notificationCapability()!=='default')return;
+  const action={};ui.notificationPermissionRequest=action;ui.notificationError='';renderQuestionNotice(questionEntries());
+  try{await Notification.requestPermission();}
+  catch(_){ui.notificationError='ブラウザー通知の許可を取得できませんでした。画面内の質問通知を確認してください。';}
+  finally{if(ui.notificationPermissionRequest===action)ui.notificationPermissionRequest=null;renderQuestionNotice(questionEntries());}
+}
+async function openNotifiedQuestion(owner) {
+  if(ui.instanceId!==owner.instance||!ui.authenticated||$('taskDialog').open||$('settingsDialog').open)return;
+  const navigation=ui.navigationGeneration,workspace=ui.workspaceGeneration;
+  await pollState(true);
+  if(ui.instanceId!==owner.instance||ui.navigationGeneration!==navigation||ui.workspaceGeneration!==workspace||
+    !ui.networkConnected||ui.detailError||$('taskDialog').open||$('settingsDialog').open)return;
+  const entry=questionEntries().find(({run,agent})=>run.id===owner.run&&agent.id===owner.agent&&questionState(agent)?.question_id===owner.question&&questionState(agent)?.resolution==='pending');
+  if(entry){window.focus?.();openQuestion(entry.agent.id);}
+}
+function syncQuestionNotifications(entries) {
+  const pending=new Map();
+  for(const {run,agent} of entries){const state=questionState(agent);if(state?.resolution==='pending')pending.set(questionNotificationKey(run,agent,state),{run,agent,state});}
+  for(const [key,notification] of ui.questionNotifications){if(!pending.has(key)||!ui.networkConnected){try{notification.close();}catch(_){}ui.questionNotifications.delete(key);}}
+  if(!ui.authenticated||!ui.networkConnected||ui.detailError||!ui.instanceId||notificationCapability()!=='granted')return;
+  for(const [key,{run,agent,state}] of pending){
+    if(ui.questionNotified.has(key))continue;
+    // One attempt per question in this page session; never replay after failure.
+    ui.questionNotified.add(key);
+    try{
+      const notification=new Notification('Workbench: 回答待ちの質問があります',{body:'アプリを開いて質問と回答期限を確認してください。',tag:key});
+      ui.questionNotifications.set(key,notification);
+      const owner={instance:ui.instanceId,run:run.id,agent:agent.id,question:state.question_id};
+      notification.onclick=()=>{try{notification.close();}catch(_){}void openNotifiedQuestion(owner);};
+      notification.onerror=()=>{ui.notificationError='ブラウザー通知を表示できませんでした。画面内の質問通知を確認してください。';renderQuestionNotice(questionEntries());};
+    }catch(_){ui.notificationError='ブラウザー通知を表示できませんでした。画面内の質問通知を確認してください。';}
+  }
+}
+function renderQuestionNotice(entries) {
+  syncQuestionNotifications(entries);
+  const capability=notificationCapability(),button=$('enableQuestionNotifications');
+  button.disabled=capability!=='default'||Boolean(ui.notificationPermissionRequest);
+  button.textContent=ui.notificationPermissionRequest?'通知の許可を確認中…':'ブラウザー通知を有効にする';
+  const status=ui.notificationError||({unavailable:'この環境ではブラウザー通知を利用できません。画面内で確認してください。',denied:'ブラウザー通知は拒否されています。変更する場合はブラウザーの設定を確認してください。',granted:'ブラウザー通知は許可済みです。この画面を開いている間に通知します。OS側の表示は保証されません。',default:'ブラウザー通知は未許可です。ボタンを押したときだけ許可を確認します。'})[capability];
+  if($('questionNotificationStatus').textContent!==status)$('questionNotificationStatus').textContent=status;
+  const lostNoticeFocus=!entries.length&&document.activeElement===$('openQuestionNotice');
+  $('questionNotice').hidden=!entries.length;
+  if(lostNoticeFocus)$('needsYou').focus({preventScroll:true});
+  const title=ui.networkConnected?`全チームで ${entries.length} 件の質問が回答待ちです`:`最後に取得した回答待ちの質問 ${entries.length} 件（接続未確認）`;
+  if($('questionNoticeTitle').textContent!==title)$('questionNoticeTitle').textContent=title;
+  const entry=entries[0],body=entry?`チーム ${shortRunId(entry.run)} · ${entry.agent.name||entry.agent.id}\n${questionTimingLabel(entry.agent)}`:'';
+  if($('questionNoticeBody').textContent!==body)$('questionNoticeBody').textContent=body;
+}
+function staleQuestionDraft(agent) {
+  return Boolean(agent&&hasMessageInput(agent)&&ui.draftQuestions.has(agent.id)&&ui.draftQuestions.get(agent.id)!==questionReplyTarget(agent));
+}
 function questionAvailability(agent) {
   const eligibility=agent.message_eligibility;
   if(eligibility?.allowed===true)return {label:'回答可能',message:eligibility.message||''};
@@ -1026,6 +1118,7 @@ function renderQuestionSummary(entries) {
   $('questionCount').textContent=String(count);
   const status=`全チームの質問 ${count}件。回答可能 ${allowed}件、回答不可 ${blocked}件${unknown?`、送信可否未確認 ${unknown}件`:''}。`;
   if($('questionQueueStatus').textContent!==status)$('questionQueueStatus').textContent=status;
+  renderQuestionNotice(entries);
 }
 function toggleQuestionView() {
   if(ui.needsOnly)ui.questionSearch=$('agentSearch').value;else ui.crewSearch=$('agentSearch').value;
@@ -1056,7 +1149,7 @@ function questionFocusFallback() {
 }
 function renderQuestions(entries) {
   const filtered=entries.filter(questionMatches),signature=JSON.stringify(['questions',ui.selectedRun,ui.selectedAgent,$('agentSearch').value,entries.length,
-    filtered.map(({run,agent})=>[run.id,run.task,run.created_at,agent.id,agent.name,agent.parent_id,agent.profile_id,agent.configured_profile,agent.question,agent.message_eligibility,hasMessageInput(agent)])]);
+    filtered.map(({run,agent})=>[run.id,run.task,run.created_at,agent.id,agent.name,agent.parent_id,agent.profile_id,agent.configured_profile,agent.question,agent.question_state,agent.message_eligibility,hasMessageInput(agent)])]);
   if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   const fallback=questionFocusFallback(),focusedKey=document.activeElement?.dataset.focusKey;
   preserveControlFocus(()=>{
@@ -1073,6 +1166,7 @@ function renderQuestions(entries) {
       card.append(source,
         element('span','agent-name',`${!agent.parent_id?'PM':'作業者'} · ${agent.name||agent.id}`),
         element('span','question-preview',agent.question.length>180?agent.question.slice(0,180)+'…':agent.question),
+        element('span','question-timing',questionTimingLabel(agent)),
         element('span','question-availability',availability.label+(availability.message?' · '+availability.message:'')));
       const model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
       model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';card.append(model,element('span','question-open','質問と作業ログを開く'));
@@ -1671,9 +1765,12 @@ function renderAgentTabs(agents) {
 function saveAgentDraft(event) {
   if(!ui.selectedAgent)return;
   const value=$('messageInput').value,previous=ui.drafts.get(ui.selectedAgent),hadInput=typeof previous==='string'&&previous.length>0;
+  if(!value.length)ui.draftQuestions.delete(ui.selectedAgent);
+  else if(!ui.draftQuestions.has(ui.selectedAgent))ui.draftQuestions.set(ui.selectedAgent,ui.composerQuestion);
   if(event?.type==='input'||ui.drafts.get(ui.selectedAgent)!==value)ui.draftRevisions.set(ui.selectedAgent,(ui.draftRevisions.get(ui.selectedAgent)||0)+1);
   ui.drafts.set(ui.selectedAgent,value);
   if(event?.type==='input'&&hadInput!==(value.length>0))renderMessageInputPresence();
+  if(event?.type==='input')renderConversation(getAgent());
 }
 function rememberConversationView() {
   if(!ui.logContext)return;
@@ -1686,6 +1783,7 @@ function changeSelection(runId,id) {
   if(ui.selectedRun!==runId&&ui.activityFilter==='pair'){ui.activityFilter='all';ui.activityPair=null;}
   if(ui.selectedRun!==runId){clearNetworkHover();stopNetworkMotion();saveWorkBoardDraft();rememberWorkBoardView();}
   saveAgentDraft();rememberConversationView();ui.selectedRun=runId;ui.selectedAgent=id;
+  ui.composerQuestion=questionReplyTarget(getAgent());
   if(runId)networkViewState(runId).selectedAgent=id;
   // An epoch, rather than an ID comparison, also rejects an old A response after A → B → A.
   ui.selectionGeneration++;ui.loadedDetail=null;ui.detailError=false;ui.logContext='';ui.logSignature='';ui.outputRequest++;
@@ -1865,15 +1963,21 @@ function renderConversation(agent) {
   if(agent){$('conversationStatus').className='status-badge '+(archivedAgent(agent)?'archived':Object.hasOwn(STATUS_LABELS,agent.status)?agent.status:'');$('conversationStatus').textContent=stateLabel(agent);}
   const archived=archivedRun(run)||archivedAgent(agent),question=agent&&(archived||needsHuman(agent))?agent.question||'':'';
   const questionLostFocus=!question&&document.activeElement===$('humanQuestion');
-  const questionContext=JSON.stringify([ui.selectedRun,agent?.id,question]);
+  const questionContext=JSON.stringify([ui.selectedRun,agent?.id,question,questionState(agent)?.question_id]);
   $('humanQuestion').hidden=!question;
   if(ui.questionContext!==questionContext){ui.questionContext=questionContext;$('humanQuestion').textContent=question?`${archived?'保存時点の質問（回答不可）':'判断が必要です'}\n${question}`:'';$('humanQuestion').scrollTop=0;}
   if(questionLostFocus)$('conversationHeading').focus({preventScroll:true});
+  // Preserve the identity of existing nonempty text before showing a new question.
+  if(agent&&$('messageInput').value&&!ui.draftQuestions.has(agent.id))ui.draftQuestions.set(agent.id,ui.composerQuestion);
+  ui.composerQuestion=questionReplyTarget(agent);
+  const timing=question||agent?.question_state?questionTimingLabel(agent):'';
+  $('questionTiming').hidden=!timing;$('questionTiming').textContent=(archived&&timing?'保存時点: ':'')+timing;
   $('messageLabel').textContent=question?'質問への回答':'追加の指示';$('messageInput').placeholder=question?'選択肢や条件を確認し、回答を入力してください':'このエージェントへ追加の指示を送る';
   const stopping=['stopping','stopped'].includes(run?.status),eligibility=agent?.message_eligibility;
   const blocked=archived||stopping||eligibility?.allowed!==true;
-  $('sendMessage').disabled=!agent||ui.busyMessage||blocked;$('messageInput').disabled=!agent||blocked;
-  $('messageEligibility').textContent=archived?'保存履歴は閲覧専用です。追加指示・回答・メール送信はできません。新しい作業の下書きに依頼文を使えます。':eligibility?.message||(stopping?'停止したチームは再開できません。新しい仕事を開始してください':agent&&eligibility?.allowed!==true?'送信できる状態か確認できません。最新の状態を取得してから確認してください。':'');
+  const staleDraft=staleQuestionDraft(agent),unknownQuestion=ui.composerQuestion===undefined;
+  $('sendMessage').disabled=!agent||ui.busyMessage||blocked||staleDraft||unknownQuestion;$('messageInput').disabled=!agent||blocked;
+  $('messageEligibility').textContent=staleDraft?'入力を始めた質問は終了または変更されました。下書きは保持しています。現在の質問や追加指示へ送る場合は、内容を確認して入力欄を空にしてから入力し直してください。':unknownQuestion?'質問の識別情報を確認できないため回答できません。最新の状態を取得してください。':archived?'保存履歴は閲覧専用です。追加指示・回答・メール送信はできません。新しい作業の下書きに依頼文を使えます。':eligibility?.message||(stopping?'停止したチームは再開できません。新しい仕事を開始してください':agent&&eligibility?.allowed!==true?'送信できる状態か確認できません。最新の状態を取得してから確認してください。':'');
   $('messageEligibility').hidden=!$('messageEligibility').textContent;
   const logs=loaded&&Array.isArray(agent?.logs)?agent.logs:[],signature=JSON.stringify([ui.selectedRun,agent?.id,loading,logs]);
   if(signature===ui.logSignature)return;ui.logSignature=signature;
@@ -2245,6 +2349,9 @@ async function pollState(fresh=false) {
 }
 async function initialize() {
   applyTaskOrchestrationDefaults();
+  $('enableQuestionNotifications').addEventListener('click',requestQuestionNotificationPermission);
+  $('openQuestionNotice').addEventListener('click',()=>{if($('taskDialog').open||$('settingsDialog').open)return;const entry=questionEntries()[0];if(entry)openQuestion(entry.agent.id);});
+  renderQuestionNotice(questionEntries());
   initializeNetworkControls();
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
   $('boardView').addEventListener('click',()=>setCockpitView('board'));
@@ -2334,16 +2441,22 @@ async function initialize() {
   $('messageForm').addEventListener('submit',async event=>{
     event.preventDefault();const agent=getAgent(),text=$('messageInput').value;
     if(!agent||archivedRun(getRun())||archivedAgent(agent)||!text.trim()||ui.busyMessage||agent.message_eligibility?.allowed!==true||['stopping','stopped'].includes(getRun()?.status))return;
-    saveAgentDraft();const action={agent:agent.id,run:agent.run_id,selection:ui.selectionGeneration,draft:ui.draftRevisions.get(agent.id),instance:ui.instanceId};
-    const owns=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.selectedAgent===action.agent&&ui.selectedRun===action.run&&ui.selectionGeneration===action.selection&&ui.draftRevisions.get(action.agent)===action.draft;
-    const unchanged=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.draftRevisions.get(action.agent)===action.draft&&ui.drafts.get(agent.id)===text;
+    saveAgentDraft();const questionId=ui.draftQuestions.get(agent.id);
+    if(questionId===undefined||staleQuestionDraft(agent)){renderConversation(agent);inlineStatus($('messageStatus'),'質問が終了・変更されたか、識別情報を確認できません。下書きを保持しました。',true);return;}
+    const action={agent:agent.id,run:agent.run_id,selection:ui.selectionGeneration,draft:ui.draftRevisions.get(agent.id),instance:ui.instanceId,question:questionId};
+    const currentTarget=()=>questionReplyTarget(ui.state.agents.find(item=>item.id===action.agent&&item.run_id===action.run))===action.question;
+    const owns=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.selectedAgent===action.agent&&ui.selectedRun===action.run&&ui.selectionGeneration===action.selection&&ui.draftRevisions.get(action.agent)===action.draft&&currentTarget();
+    const unchanged=()=>ui.messageOperation===action&&ui.instanceId===action.instance&&ui.draftRevisions.get(action.agent)===action.draft&&ui.drafts.get(agent.id)===text&&ui.draftQuestions.get(agent.id)===action.question&&currentTarget();
     ui.messageOperation=action;ui.busyMessage=true;$('sendMessage').disabled=true;
     try {
-      const receipt=await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,{method:'POST',body:{text}});
+      const request={method:'POST',body:{text}};
+      if(questionId!==null)request.body.question_id=questionId;
+      const receipt=await api(`/api/agents/${encodeURIComponent(agent.id)}/message`,request);
       if(ui.messageOperation!==action||ui.instanceId!==action.instance)return;
       if(receipt?.ok!==true){const failure=new Error('応答の形式を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
       if(unchanged()&&(owns()||ui.selectedAgent!==agent.id)){
         ui.drafts.delete(agent.id);
+        ui.draftQuestions.delete(agent.id);
         if(owns()&&$('messageInput').value===text)$('messageInput').value='';
         renderMessageInputPresence();
       }

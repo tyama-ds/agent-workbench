@@ -22,6 +22,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 
 from .config import Settings, ROOT, COPILOT_PROFILE_ID, SEARCH_KEY_UNSUPPORTED, preview_settings_import, text
 from .engine import Engine, WorkBoardError
+from .questions import QuestionConflict
 from .redaction import RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .history import HistoryError, ArchivedReadOnly
 from .securestore import CredentialStorageError, SavedCredentialIdentityChange
@@ -109,7 +110,7 @@ class BrowserAuth:
             response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
         except (HistoryError, ArchivedReadOnly) as exc:
             response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
-        except WorkBoardError as exc:
+        except (WorkBoardError, QuestionConflict) as exc:
             response = web.json_response({'ok': False, 'code': exc.code, 'error': str(exc)}, status=409)
         except (ValueError, KeyError, TypeError) as exc:
             try:
@@ -291,7 +292,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
 
     async def message(request):
         value = await body(request)
-        return web.json_response(await engine.human_message(request.match_info['id'], value.get('text')))
+        return web.json_response(await engine.human_message(request.match_info['id'], value.get('text'),
+            question_id=value.get('question_id')))
 
     async def work_board(request):
         run_id = request.match_info['id']

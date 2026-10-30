@@ -163,3 +163,17 @@ main{height:auto;min-height:0;overflow:hidden}.view{height:100%;min-height:0}.wo
 #skillsList,#skillsErrors{overflow-wrap:anywhere;padding-left:22px;margin:12px 0}
 #skillsList>li,#skillsErrors>li{margin:10px 0}
 .agent-dependencies{grid-column:2;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;line-height:1.6;color:#a4e3d8}
+
+/* Questions remain visible across teams; only the server resolves deadlines. */
+.question-notifications{flex:0 1 auto;min-height:0;max-height:32%;overflow:auto;border-bottom:1px solid var(--line);padding:8px 10px}
+.question-notice{border:1px solid #a98243;border-radius:5px;background:#302719;padding:10px;display:grid;gap:8px;overflow-wrap:anywhere}
+#questionNoticeTitle{font-weight:700;color:#f1d297;line-height:1.5}
+#questionNoticeBody,.question-timing,.question-timing-status{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.6}
+#questionNoticeBody{max-height:100px;overflow:auto}
+.question-notice .button{white-space:normal}
+.question-notification-settings{margin-top:5px;font-size:10px;line-height:1.5;color:var(--muted)}
+.question-notification-settings summary{cursor:pointer}
+.question-notification-settings button{margin:6px 0;white-space:normal}
+.question-timing{grid-column:1/-1;color:#dbbe88}
+.question-card .question-timing{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.question-timing-status{flex:0 1 auto;min-height:0;max-height:95px;overflow:auto;color:#dbbe88;padding:6px 12px}

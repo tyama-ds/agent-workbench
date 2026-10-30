@@ -27,7 +27,7 @@ RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids
     'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))
@@ -95,6 +95,8 @@ def redact_document(document, redact):
         enum(before, after, 'status', statuses)
         restore(before, after, ('stop_reason',))
         restore_coordination_metadata(before.get('coordination'), after.get('coordination'))
+        if before.get('question_state'):
+            restore(before['question_state'], after['question_state'], ('question_id', 'kind', 'resolution'))
         for old, new in zip(before.get('logs', []), after.get('logs', [])):
             enum(old, new, 'kind', {'system', 'user', 'assistant', 'tool', 'tool_call', 'tool_result', 'mail', 'result', 'error'})
         for old, new in zip(before.get('results', []), after.get('results', [])):
@@ -103,7 +105,7 @@ def redact_document(document, redact):
         restore(before, after, ('run_id', 'agent_id', 'from_agent_id', 'to_agent_id'))
         if isinstance(before.get('mail_id'), str) and re.fullmatch(r'm-[0-9a-f]{32}', before['mail_id']):
             after['mail_id'] = before['mail_id']
-        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'stopped'})
+        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped'})
         enum(before, after, 'message_type', {'worker_report', 'worker_error', 'worker_notice', 'peer_message'})
         enum(before, after, 'delivery_state', {'queued', 'context_consumed'})
     for before, after in zip(document['board'], result['board']):
@@ -196,6 +198,24 @@ def _number(value):
     return type(value) is int and value >= 0
 
 
+def _question_state(value):
+    """Display-only question receipt; never restores a timer or authorization."""
+    fields = {'question_id', 'kind', 'recommendation', 'asked_at', 'deadline_at',
+              'resolution', 'resolved_at', 'reason'}
+    if (not isinstance(value, dict) or set(value) != fields or
+            not isinstance(value['question_id'], str) or
+            re.fullmatch(r'q-[0-9a-f]{32}', value['question_id']) is None or
+            value['kind'] not in ('consultation', 'permission') or
+            value['resolution'] not in ('pending', 'answered', 'fallback', 'blocked', 'cancelled') or
+            not isinstance(value['recommendation'], str) or not isinstance(value['reason'], str) or
+            not _time(value['asked_at']) or
+            any(value[key] is not None and not _time(value[key]) for key in ('deadline_at', 'resolved_at')) or
+            (value['kind'] == 'permission' and value['deadline_at'] is not None) or
+            (value['resolution'] == 'fallback' and
+             (value['kind'] != 'consultation' or not value['recommendation'] or value['deadline_at'] is None))):
+        raise HistoryError('履歴の質問通知・回答状態が不正です。')
+
+
 def _budget(value):
     if (not isinstance(value, dict) or set(value) != {'observed_at', 'started_at', 'shared', 'model_calls', 'tool_calls', 'time'}
             or value['shared'] is not True or not all(_time(value[key]) and value[key] <= 253402300799
@@ -269,6 +289,8 @@ def validate(document):
     except ValueError as exc:
         raise HistoryError('履歴の連携観測情報が不正です。') from exc
     for agent in document['agents']:
+        if 'question_state' in agent:
+            _question_state(agent['question_state'])
         if 'stop_reason' in agent and (not isinstance(agent['stop_reason'], str) or agent['stop_reason'] not in STOP_REASONS | {''}):
             raise HistoryError('履歴の担当者の停止理由が不正です。')
         _text_fields(agent, ('id', 'run_id', 'name', 'role', 'profile_id', 'status', 'question', 'last_error', 'assignment'))

@@ -278,6 +278,13 @@
       "config_revision": 1
     }
   },
+  "human_question_fallback": {
+    "ask_user": "Contextual tool adds optional kind=consultation|permission (default consultation) and recommendation. A consultation with a nonempty recommendation has a fixed server-monotonic 90 second deadline. Permission questions and legacy question-only calls have no automatic fallback. Classification and recommendation quality are model responsibilities; tool and path authority never expands.",
+    "question_state": "Agent display metadata: question_id, kind, recommendation, asked_at, deadline_at, resolution, resolved_at, reason. Times are epoch seconds for display; deadline_at/resolved_at may be null. Resolution is pending|answered|fallback|blocked|cancelled. History is read-only and never restores execution or timers.",
+    "answers": "POST /api/agents/{id}/message accepts optional question_id. Consultations with an automatic recommendation require the original question_id; stale IDs return409 question_conflict and are never treated as new input. Drafts retain their original question identity. Legacy question-only and ordinary additional messages retain text-only compatibility.",
+    "timeout": "Human answer and timeout resolve once. Automatic continuation is system-origin, never human consent. Stop, settings, credentials, dependency validity and existing shared budgets remain authoritative. Server shutdown cancels timers. No model polling while waiting.",
+    "notice": "In-app notice covers all live teams. An explicit user gesture can request browser desktop notification permission; already permitted notifications use generic text without task/question content. Browser/OS restrictions may prevent delivery. The server deadline does not depend on the UI being open."
+  },
   "run_selection": {
     "pm_profiles": "Optional array of 1-16 enabled profile IDs on both run-preflight and runs. Repeated IDs create independent PMs. Omission preserves a single pm_profile. When both fields are present pm_profile must equal pm_profiles[0]. All PMs receive the original brief; PM 1 coordinates initial division through peer messages.",
     "shared_limits": "max_workers counts workers across all PMs, excluding PMs. Model/tool/time/automatic-collaboration budgets are run-wide. Each PM waits for its own workers; run completion waits for every PM and worker. Worker parent_id, not role text, determines delegation authority.",

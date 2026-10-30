@@ -23,6 +23,7 @@ from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
 from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
+from .questions import QuestionFallbackMixin
 from .providers import ProviderClient, ProviderError, ProviderOutputLimitError, ProviderTimeoutError
 from .python_runner import execute_python
 from .selenium_runner import execute_selenium
@@ -204,6 +205,7 @@ class Agent:
     parent_id: str | None = None
     status: str = 'queued'
     question: str = ''
+    question_state: dict | None = None
     last_error: str = ''
     stop_reason: str = ''
     turns: int = 0
@@ -252,6 +254,8 @@ class Agent:
                                               'status', 'question', 'last_error', 'stop_reason', 'turns', 'assignment')}
         if coordination is not None:
             value['coordination'] = copy.deepcopy(coordination)
+        if self.question_state:
+            value['question_state'] = copy.deepcopy(self.question_state)
         if self.depends_on:
             value['worker_dependencies'] = copy.deepcopy(worker_dependencies if worker_dependencies is not None else {
                 'depends_on': list(self.depends_on), 'blocked_by': list(self.depends_on) if not self.dependency_revisions else [],
@@ -286,7 +290,7 @@ class Agent:
                 }
 
 
-class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
+class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
     def __init__(self, settings: Settings, client=None):
         self.settings = settings
         self.gate = ResourceGate()
@@ -296,6 +300,8 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
         self.events = deque(maxlen=1000)
         self.reservations: dict[str, str] = {}
         self.sequence = 0
+        self._questions = {}
+        self._question_tasks = {}
         self.closed = False
         self.lock = asyncio.Lock()
         # Output-only masks: never consulted by Settings.key or an API request.
@@ -719,6 +725,7 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
                                     coordination=members.get(a.id), worker_dependencies=self._dependency_view(a)) for a in self.agents.values()], 'events': list(self.events),
                 'resources': self.gate.snapshot(), 'copilot_resources': self._copilot_resources(), 'copilot_agent_status': self.copilot_status()})
         result['redaction_revision'] = self._redaction.value_count
+        self._restore_question_metadata(result)
         return self._with_history(result)
 
     def _copilot_resources(self):
@@ -762,6 +769,7 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
             'selection': {'run_id': run_id, 'agent_id': agent_id, 'detail_loaded': agent_id is not None},
         })
         result['redaction_revision'] = self._redaction.value_count
+        self._restore_question_metadata(result)
         return self._with_history(result, run_id, agent_id)
 
     def _new_agent(self, run, profile, role, parent=None, *, assignment=''):
@@ -1036,7 +1044,10 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
 
     def enqueue(self, agent, content, *, human=False):
         self._check_queue(agent, human=human)
+        if human:
+            self._question_answered(agent)
         self._dependency_invalidate(agent)
+        self._question_cancel_stale_dependencies(self.runs[agent.run_id])
         agent.result_revision += 1
         agent.finished_revision = None
         agent.waiting_for_workers = False
@@ -1080,13 +1091,14 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
             agent.task = asyncio.create_task(self._agent_loop(agent), name=agent.id)
             agent.task.add_done_callback(lambda _: self.kick(agent))
 
-    async def human_message(self, ident, content):
+    async def human_message(self, ident, content, *, question_id=None):
         if self._archive_for_agent(ident) is not None:
             raise ArchivedReadOnly()
         agent = self.agents.get(ident)
         if agent is None:
             raise ValueError('エージェントが見つかりません')
         text(content, '回答', 16000, False)
+        self._question_check_answer(agent, question_id)
         run = self.runs[agent.run_id]
         eligibility = self.message_eligibility(agent)
         if not eligibility['allowed']:
@@ -1443,10 +1455,20 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
                 '順番のある仕事の作業者は submit_work_step で本人の語と意味を提出し、最終手の提出を正式報告とする')
         catalog = run.get('_skill_catalog')
         skill_policy = self.redact(catalog.prompt()) if catalog is not None else ''
-        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False) + skill_policy
+        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy
 
     def _contextual_team_tool(self, run, agent, tool):
         """One provider/validation contract without enlarging unrelated requests."""
+        if (tool['name'] == 'ask_user' and self.runs.get(run['id']) is run
+                and self.agents.get(agent.id) is agent and agent.run_id == run['id']
+                and agent.id in run['agent_ids']):
+            contextual = copy.deepcopy(tool)
+            contextual['parameters']['properties'].update(
+                kind={'type': 'string', 'enum': ['consultation', 'permission']},
+                recommendation={'type': 'string', 'minLength': 1, 'maxLength': 4000})
+            contextual['description'] = ('For routine choices provide recommendation; consultation uses it after 90s silence, '
+                'never as human approval. kind=permission or no recommendation: wait for human.')
+            return contextual
         if (tool['name'] == 'spawn_worker' and agent.parent_id is None and run['max_workers'] > 0
                 and self.runs.get(run['id']) is run and self.agents.get(agent.id) is agent
                 and agent.run_id == run['id'] and agent.id in run['agent_ids']
@@ -2260,9 +2282,7 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
             self.event(run['id'], agent.id, 'message_wait', 'チーム連絡を待っています。完了や人への質問ではありません。')
             return {'ok': True, 'waiting_for_message': True, 'pending_count': len(agent.pending)}
         if name == 'ask_user':
-            agent.question = text(args['question'], 'question', 4000, False)
-            self.event(run['id'], agent.id, 'question', agent.question)
-            return {'ok': True, 'waiting_for_human': True}
+            return self._ask_question(run, agent, args)
         if name == 'wait_for_workers':
             if agent.parent_id is not None:
                 raise ValueError('wait_for_workers は PM 専用です')
@@ -2400,7 +2420,7 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
 
     async def _stop_agents(self, run):
         run['status'] = 'stopping'
-        pending = []
+        pending = self._question_stop(run)
         for i in run['agent_ids']:
             agent = self.agents[i]
             agent.closing = True
@@ -2423,8 +2443,21 @@ class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
     async def close(self):
         self.closed = True
         try:
-            await asyncio.gather(*(self.stop_run(ident) for ident, run in self.runs.items()
-                                   if run['status'] not in {'done', 'stopped', 'error'}), return_exceptions=True)
+            timers = self._question_stop()
+            stopping = asyncio.gather(*(self.stop_run(ident) for ident, run in self.runs.items()
+                                       if run['status'] not in {'done', 'stopped', 'error'}),
+                                      *timers, return_exceptions=True)
+            interrupted = None
+            while not stopping.done():
+                try:
+                    await asyncio.shield(stopping)
+                except asyncio.CancelledError as exc:
+                    # Stop runs and join their timers before closing storage.
+                    # Preserve outer cancellation without cancelling cleanup.
+                    if interrupted is None:
+                        interrupted = exc
+            if interrupted is not None:
+                raise interrupted
         finally:
             try:
                 for ident in self.runs:
