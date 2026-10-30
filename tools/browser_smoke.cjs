@@ -405,7 +405,7 @@ async function main() {
     const task='  [SYNTHETIC] 社内FAQを整理し、検索案と検証結果をまとめてください。\n共有の前に対象チームを確認してください。  ';
     await page.locator('#taskInput').fill(task);await page.locator('#startRun').click();
     await page.locator('#humanQuestion').waitFor({state:'visible'});
-    assert.deepEqual(sentRuns,[{task,pm_profile:'local',worker_profiles:['local','openai'],max_workers:2,delegation_level:1,workers_per_pm:2}]);
+    assert.deepEqual(sentRuns,[{task,pm_profile:'local',worker_profiles:['local','openai'],max_workers:2,delegation_level:1,workers_per_pm:2,max_delegation_depth:3}]);
     assert.equal(await page.locator('.agent-card').count(),3);
     assert.equal(await page.locator('#agentTabs button').count(),3);assert.equal(await page.locator('#teamMap button').count(),3);
     await page.locator('#needsYou').click();assert.equal(await page.locator('.agent-card').count(),1);await page.locator('#needsYou').click();
