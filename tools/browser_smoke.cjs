@@ -21,6 +21,25 @@ const {inputPresenceAcceptance} = require('./browser-tests/input_presence_accept
 const {messageReceiptAcceptance} = require('./browser-tests/message_receipt_acceptance.cjs');
 const {contextCompactionAcceptance} = require('./browser-tests/context_compaction_acceptance.cjs');
 const {networkInteractionAcceptance} = require('./browser-tests/network_interaction_acceptance.cjs');
+const {assertHeadingPollPreservation} = require('./browser-tests/heading_baseline_sync.cjs');
+
+function validateHeadingReceipt(integration){
+  assert.equal(integration.reached,true);assert.equal(integration.sinkCalls,1);assert.equal(integration.timeoutCloseCalls,0);
+  const r=integration.receipt;assert(r&&typeof r==='object');
+  assert.equal(r.kind,'bounded_heading_baseline_candidate');assert.equal(r.endPresses,1);assert.equal(r.hostAborted,false);
+  assert.equal(r.cleanup.state,'verified');assert.equal(r.cleanup_incomplete,false);assert.deepEqual(r.cleanupErrors,[]);
+  assert.equal(r.outerLifecycleVerified,false);assert.equal(Object.hasOwn(r,'primaryFailure'),false);
+  assert.equal(r.preparation.phase,'armed');assert.equal(r.preparation.resetCount,1);assert.equal(r.preparation.focusCount,1);
+  const c=r.candidate;assert.equal(c.phase,'ready');assert.equal(c.keydownCount,1);assert.equal(c.keyupCount,1);
+  assert.equal(c.endMoved,true);assert.equal(c.endScrollSeen,true);assert.equal(c.completion.epoch,'end');assert.equal(c.stable,4);
+  assert.equal(c.baselineCount,0);assert.equal(c.hasFailure,false);assert.equal(c.candidate.completion.epoch,'end');
+  assert.equal(c.candidate.generation,c.movement);assert.equal(c.completion.generation,c.movement);
+  assert.deepEqual(c.candidate.vector,c.completion.vector);
+  const f=r.finalState;assert.equal(f.phase,'compared');assert.equal(f.baselineCount,1);assert.equal(f.hasFailure,false);
+  assert.equal(f.resetCount,1);assert.equal(f.focusCount,1);assert.equal(f.keydownCount,1);assert.equal(f.keyupCount,1);
+  assert(Number.isFinite(r.expected));assert.equal(r.expected,r.actual);assert.equal(r.expected,f.baselineValue);
+  assert.equal(r.expected,c.candidate.vector.top);assert.equal(r.expected,f.candidate.vector.top);assert.equal(r.strict,'PASS');
+}
 
 async function assertLayout(page,label) {
   // Narrow layouts present network and inspector as explicit alternate views.
@@ -93,7 +112,8 @@ async function main() {
   const credentialResult=spawnSync(python,['-m','tools.browser_fixture','--credential-contract'],{cwd:root,encoding:'utf8'});
   assert.equal(credentialResult.status,0,credentialResult.stderr);
   const credentialScenario=JSON.parse(credentialResult.stdout);
-  const providerRequests=[],report={schemaVersion:1,fixture:'SYNTHETIC: no inference or user data',commit:process.env.GITHUB_SHA||null,runId:process.env.GITHUB_RUN_ID||null,checks:[],pageErrors:[],externalRequests:[],cspErrors:[]};
+  const providerRequests=[],report={schemaVersion:1,fixture:'SYNTHETIC: no inference or user data',commit:process.env.GITHUB_SHA||null,runId:process.env.GITHUB_RUN_ID||null,checks:[],pageErrors:[],externalRequests:[],cspErrors:[],
+    headingBaselineIntegration:{reached:false,completed:false,sinkCalls:0,timeoutCloseCalls:0,receipt:null}};
   const provider=http.createServer((request,response)=>{
     providerRequests.push({method:request.method,path:request.url});
     response.writeHead(request.url==='/v1/models'?200:400,{'Content-Type':'application/json'});
@@ -118,6 +138,7 @@ async function main() {
     context=await browser.newContext({viewport:{width:1366,height:768},reducedMotion:'reduce',locale:'ja-JP',timezoneId:'UTC'});
     await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort('blockedbyclient'));
     page=await context.newPage();page.setDefaultTimeout(10000);
+    const ownedHeadingTarget=Object.freeze({page,context});
     page.on('pageerror',error=>report.pageErrors.push(error.message));
     page.on('console',message=>{if(/Content Security Policy|violates.*directive/i.test(message.text()))report.cspErrors.push(message.text());});
     page.on('request',request=>{const url=new URL(request.url());if(url.protocol.startsWith('http')&&url.origin!==origin)report.externalRequests.push(url.origin+url.pathname);});
@@ -466,16 +487,24 @@ async function main() {
     fixture.agents[0].configured_profile={...ordinaryProfile,label:'[SYNTHETIC] 最大長表示名 '+ '長'.repeat(180),model:'x'.repeat(200)};
     await page.locator('#conversationProfile').filter({hasText:'最大長表示名'}).waitFor();
     await assertLayout(page,'tablet maximum profile identity and long question');
-    assert(await page.locator('#conversationHeading').evaluate(node=>{
-      node.scrollTop=0;return document.querySelector('#conversationTitle').getBoundingClientRect().top>=node.getBoundingClientRect().top;
-    }),'Beginning of full identity remains reachable above the scroll region');
-    await page.locator('#conversationHeading').focus();await page.keyboard.press('End');
-    await page.waitForFunction(()=>{const node=document.querySelector('#conversationHeading');return node.scrollTop>0&&node.scrollHeight-node.clientHeight-node.scrollTop<=1;});
-    assert(await page.locator('#conversationHeading').evaluate(node=>document.querySelector('#conversationProfile').getBoundingClientRect().bottom<=node.getBoundingClientRect().bottom),'Keyboard reaches full model identity and disclaimer');
-    const headingScroll=await page.locator('#conversationHeading').evaluate(node=>node.scrollTop);
-    const unchangedProfilePoll=await page.waitForResponse(response=>response.url().includes('/api/state?'));
-    await unchangedProfilePoll.finished();await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-    assert.equal(await page.locator('#conversationHeading').evaluate(node=>node.scrollTop),headingScroll,'Unchanged polling preserves keyboard metadata scroll');
+    report.headingBaselineIntegration.reached=true;
+    await assertHeadingPollPreservation(page,{
+      closeOwnedPageOnTimeout:async candidate=>{
+        const integration=report.headingBaselineIntegration;
+        assert.equal(integration.timeoutCloseCalls,0);integration.timeoutCloseCalls++;
+        assert.strictEqual(candidate,ownedHeadingTarget.page);assert.strictEqual(page,ownedHeadingTarget.page);
+        assert.strictEqual(candidate.context(),ownedHeadingTarget.context);assert.strictEqual(context,ownedHeadingTarget.context);
+        await candidate.close({runBeforeUnload:false});assert.equal(candidate.isClosed(),true);
+        return {target:ownedHeadingTarget.page,owned:true};
+      },
+      recordReceipt:receipt=>{
+        const integration=report.headingBaselineIntegration;
+        integration.sinkCalls++;integration.receipt=receipt;
+        assert.equal(integration.sinkCalls,1);
+      }
+    });
+    validateHeadingReceipt(report.headingBaselineIntegration);
+    report.headingBaselineIntegration.completed=true;
     await assertLayout(page,'tablet scrolled profile identity');
     await page.screenshot({path:path.join(artifacts,'workbench-attribution-long-tablet.png'),fullPage:true,animations:'disabled'});
     await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow maximum profile identity');
@@ -725,11 +754,12 @@ async function main() {
     report.checks.push('stop, settings unlock, narrow-screen layout, zero browser storage and zero external page requests');report.ok=true;
     fs.writeFileSync(path.join(artifacts,'browser-smoke.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
   } catch(error) {
-    if(page)await page.screenshot({path:path.join(artifacts,'workbench-failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{});
+    if(page&&!page.isClosed())await page.screenshot({path:path.join(artifacts,'workbench-failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{report.failureScreenshot='unavailable';});
+    else report.failureScreenshot=page?'owned page already closed':'page not created';
     report.ok=false;const redact=value=>[...Object.values(redactionCases).flatMap(item=>[item.old,item.new]),
       ...['old','new','search_old','search_new','other'].map(name=>credentialScenario[name]),'fixture-memory-secret']
       .reduce((text,key)=>text.replaceAll(key,'[REDACTED]'),String(value).replace(/(#token=|X-Workbench-Bootstrap[=: ]+)[A-Za-z0-9_-]+/gi,'$1[REDACTED]'));
-    report.error=redact(error.stack||error.message);report.serverError=redact(stderr);
+    report.error=redact(error?.stack||error?.message||error);report.serverError=redact(stderr);
     fs.writeFileSync(path.join(artifacts,'browser-smoke.json'),JSON.stringify(report,null,2));
     console.error(JSON.stringify(report,null,2));process.exitCode=1;
   } finally {
@@ -739,4 +769,4 @@ async function main() {
     fs.rmSync(sandbox,{recursive:true,force:true,maxRetries:5,retryDelay:200});
   }
 }
-main().catch(error=>{console.error(error.message);process.exitCode=1;});
+main().catch(error=>{console.error(error?.stack||error?.message||error);process.exitCode=1;});

@@ -123,7 +123,18 @@ async function disclosureFocusAcceptance({page,fixture,compactFixture,artifacts,
         assert.equal(await focused(page.locator('#humanQuestion')),true,'The selected human question is a native keyboard reading region');
         await page.keyboard.press('Tab');
       }
-      assert.equal(await focused(page.locator('#resultsPanel > summary')),true,'The existing results disclosure keeps its keyboard position');
+      // Chromium includes overflowing, otherwise unfocusable reading regions
+      // in native Tab order. The deadline/recommendation text is such a region.
+      const timing=page.locator('#questionTiming');
+      if(await focused(timing)){
+        assert.equal(await timing.isVisible(),true,'The timing reading region is visible');
+        const size=await timing.evaluate(element=>({height:element.clientHeight,scrollHeight:element.scrollHeight,
+          width:element.clientWidth,scrollWidth:element.scrollWidth}));
+        assert(size.scrollHeight>size.height||size.scrollWidth>size.width,'Native timing focus belongs to overflowing readable content');
+        await page.keyboard.press('Tab');
+      }
+      assert.equal(await focused(page.locator('#resultsPanel > summary')),true,
+        'The results disclosure follows question reading regions; active='+await page.evaluate(()=>document.activeElement?.id||document.activeElement?.tagName));
       await page.keyboard.press('Tab');
       assert.equal(await focused(summary(firstId)),true,'Native Tab reaches the first disclosure');
       assert.equal(await details(firstId).evaluate(element=>element.open),false);

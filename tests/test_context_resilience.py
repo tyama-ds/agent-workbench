@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from workbench.context import SUMMARY_KEYS, groups, pressure
+from workbench.context import SUMMARY_KEYS, groups, pressure, request_size
 from workbench.engine import Engine
 from workbench.providers import ModelReply
 from test_context_compaction import call_args, seeded, summary_reply
@@ -91,19 +91,41 @@ async def test_huge_tool_group_is_replaced_whole_without_summarizer_call(tmp_pat
         await engine.close()
 
 
-async def test_last_model_call_can_use_deterministic_overflow_reduction(tmp_path):
+@pytest.mark.parametrize('scope_padding', [0, 32], ids=['ordinary-path', 'longer-path'])
+async def test_last_model_call_can_use_deterministic_overflow_reduction(tmp_path, scope_padding):
+    fixture_path = tmp_path / ('p' * scope_padding) if scope_padding else tmp_path
+    fixture_path.mkdir(exist_ok=True)
     client = ScriptClient([reply('Last bounded work call')])
-    engine, run, agent = await seeded(tmp_path, client, context=28000)
+    engine, run, agent = await seeded(fixture_path, client)
     try:
         limit = run['_config']['limits']['max_model_calls']
         run['model_calls'] = limit - 1
-        assert engine.message_eligibility(agent)['allowed']
+        human = {'role': 'user', 'content': 'Continue without additional authority'}
+        profile, tools, _ = call_args(engine, run, agent)
+        limits = run['_config']['limits']
+        fixed_chars, _ = request_size(profile, [agent.conversation[0], human],
+                                      tools, engine._policy(run, agent))
+        # Absolute scope paths and live budget timestamps belong to the actual
+        # policy. Size this fixture from that overhead, not one machine's path.
+        # Allow the bounded summary JSON twice for string escaping, plus its
+        # wrapper/live-counter margin; the original 18 records must still overflow.
+        limits['max_context_chars'] = fixed_chars + 2 * limits['context_summary_chars'] + 2048
+        engine.settings.value['limits']['max_context_chars'] = limits['max_context_chars']
+        assert 4000 <= limits['max_context_chars'] <= 2000000
+        assert pressure(profile, [*agent.conversation, human], tools,
+                        engine._policy(run, agent), limits)[0] > 1
+        eligibility = engine.message_eligibility(agent)
+        assert eligibility['allowed'], eligibility
         engine.kick = Engine.kick.__get__(engine, Engine)
-        await engine.human_message(agent.id, 'Continue without additional authority')
+        await engine.human_message(agent.id, human['content'])
         await settled(engine)
         assert agent.status == 'done', agent.last_error
         assert run['model_calls'] == limit and len(client.calls) == 1
         assert agent.fallback_compactions == 1
+        assert 0 < agent.context_chars <= limits['max_context_chars']
+        assert pressure(profile, client.calls[0], tools, engine._policy(run, agent), limits)[0] <= 1
+        assert client.calls[0][0]['content'] == agent.assignment
+        assert client.calls[0][-1]['content'] == human['content']
     finally:
         await engine.close()
 
