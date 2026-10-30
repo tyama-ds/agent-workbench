@@ -40,19 +40,25 @@ function assertUnchangedWaitingRun(before,after) {
   assert.deepEqual(comparable[1],comparable[0],message);
 }
 
+function createSettingsMutationObserver(origin,mutations) {
+  const observe=request=>{
+    const url=new URL(request.url()),method=request.method();
+    if(url.origin!==origin||!url.pathname.startsWith('/api/')||['GET','HEAD','OPTIONS'].includes(method))return;
+    if(method==='POST'&&url.pathname==='/api/run-preflight')return;
+    const body=request.postDataJSON();
+    mutations.push({method,path:url.pathname,
+      body:url.pathname==='/api/secrets'?{id:body.id,config_revision:body.config_revision}:body});
+  };
+  return observe;
+}
+
 async function settingsSaveAcceptance({page,context,origin,providerUrl,providerRequests,stateDir,artifacts,
   report,assertLayout,assertDialogLayout}) {
   const pending=new Set(),handlers=new Set(),mutations=[],providerBefore=structuredClone(providerRequests);
   const externalBefore=[...report.externalRequests],settingsFile=path.join(stateDir,'settings.json');
   let sibling,activeRunId;
   const paint=target=>target.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  const observe=request=>{
-    const url=new URL(request.url()),method=request.method();
-    if(url.origin!==origin||!url.pathname.startsWith('/api/')||['GET','HEAD','OPTIONS'].includes(method))return;
-    const body=request.postDataJSON();
-    mutations.push({method,path:url.pathname,
-      body:url.pathname==='/api/secrets'?{id:body.id,config_revision:body.config_revision}:body});
-  };
+  const observe=createSettingsMutationObserver(origin,mutations);
   const writes=()=>mutations.filter(item=>item.path==='/api/config'&&item.method==='PUT');
   // Setup uses an explicitly fresh revision, independently of either UI client.
   // Acceptance Save requests must retain their own original loaded revision.
@@ -220,6 +226,9 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
       }
       return {before,after:snapshot(),pattern,required,rows};
     },idCases);
+    const idValidationReport=report.settingsSaveProfileValidation={idValidityRows:idValidity.rows,
+      baselineMutationCount:idMutationsBefore,endMutationCount:mutations.length,
+      mutationDelta:mutations.slice(idMutationsBefore).map(({method,path})=>({method,path}))};
     assert.equal(idValidity.pattern,'[A-Za-z][A-Za-z0-9_\\-]{0,63}');assert.equal(idValidity.required,true);
     assert.deepEqual(idValidity.rows,idCases.map(item=>({...item,customError:false})),
       'The real profile ID input enforces native HTML pattern and required boundaries');
@@ -242,9 +251,13 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
         if(before.start!==null)input.setSelectionRange(before.start,before.end,before.direction);
       }
     });
+    idValidationReport.invalidIdSubmit=invalidIdSubmit;
     assert.deepEqual(invalidIdSubmit,{submits:0,invalid:1,patternMismatch:true,valueMissing:false},
       'Native invalid-ID submission is rejected before the application submit handler');
-    await poll();assert.equal(mutations.length,idMutationsBefore,'Invalid profile ID sends no mutating API request');
+    await poll();
+    idValidationReport.endMutationCount=mutations.length;
+    idValidationReport.mutationDelta=mutations.slice(idMutationsBefore).map(({method,path})=>({method,path}));
+    assert.equal(mutations.length,idMutationsBefore,'Invalid profile ID sends no mutating API request');
     const idConfigAfter=await api('/api/config');
     assert.equal(idConfigAfter.config_revision,idConfigBefore.config_revision);assert.deepEqual(idConfigAfter.config,idConfigBefore.config);
     assert.deepEqual(fs.readFileSync(settingsFile),idFileBefore);assert.deepEqual(await taskSnapshot(),emptyDraft);
@@ -474,4 +487,4 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
   }
 }
 
-module.exports={settingsSaveAcceptance};
+module.exports={settingsSaveAcceptance,createSettingsMutationObserver};

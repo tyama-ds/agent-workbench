@@ -85,6 +85,51 @@ const worker=(results=[],output_receipts=[],run_id='run')=>({id:'worker',run_id,
     assert 'worker receipt and timeout checks passed' in result.stdout
 
 
+def test_settings_mutation_observer_exempts_only_exact_readonly_preview():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('Node is required for the browser-helper contract')
+    script = r"""
+const assert=require('node:assert/strict');
+const {createSettingsMutationObserver}=require('./tools/browser-tests/settings_save_acceptance.cjs');
+const origin='http://127.0.0.1:49321',mutations=[],observe=createSettingsMutationObserver(origin,mutations);
+let parses=0;
+const request=(method,url,body)=>({method:()=>method,url:()=>url,postDataJSON(){parses++;return body;}});
+observe(request('POST',origin+'/api/run-preflight',{task:'preview'}));
+assert.equal(mutations.length,0);assert.equal(parses,0);
+for(const [method,url] of [
+  ['PUT',origin+'/api/config'],['POST',origin+'/api/runs'],['POST',origin+'/api/unknown'],
+  ['PUT',origin+'/api/run-preflight'],['POST',origin+'/api/run-preflight-extra'],
+  ['POST',origin+'/api/run-preflight/']
+]){
+  const before=mutations.length,beforeParses=parses,body={sentinel:'keep original body'};
+  observe(request(method,url,body));
+  assert.equal(mutations.length,before+1);assert.equal(parses,beforeParses+1);
+  assert.deepEqual(mutations.at(-1),{method,path:new URL(url).pathname,body});
+}
+const secret='synthetic-secret-never-record',beforeSecret=mutations.length,beforeSecretParses=parses;
+observe(request('POST',origin+'/api/secrets',{id:'local',config_revision:7,key:secret}));
+assert.equal(mutations.length,beforeSecret+1);assert.equal(parses,beforeSecretParses+1);
+assert.deepEqual(mutations.at(-1),{method:'POST',path:'/api/secrets',body:{id:'local',config_revision:7}});
+assert(!JSON.stringify(mutations).includes(secret));
+const beforeIgnored=mutations.length,beforeIgnoredParses=parses;
+for(const [method,url] of [
+  ['POST','http://127.0.0.1:49322/api/config'],['GET',origin+'/api/config'],
+  ['HEAD',origin+'/api/config'],['OPTIONS',origin+'/api/config'],['POST',origin+'/assets/unknown']
+])observe({method:()=>method,url:()=>url,postDataJSON(){throw new Error('Ignored request body parsed');}});
+assert.equal(mutations.length,beforeIgnored);assert.equal(parses,beforeIgnoredParses);
+const original=new SyntaxError('synthetic malformed JSON');
+assert.throws(()=>observe({method:()=>'PUT',url:()=>origin+'/api/config',
+  postDataJSON(){throw original;}}),error=>error===original);
+assert.equal(mutations.length,beforeIgnored,'A parsing failure does not fabricate a mutation receipt');
+console.log('shared observer classification, original parse exception and secret redaction passed');
+"""
+    result = subprocess.run([node, '-'], input=script, cwd=Path(__file__).resolve().parents[1],
+                            capture_output=True, text=True, encoding='utf-8', timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert 'shared observer classification' in result.stdout
+
+
 async def test_browser_fixture_exercises_real_engine(tmp_path):
     settings = Settings(tmp_path / 'state')
     settings.value['providers'][0]['model'] = 'synthetic-no-network'
