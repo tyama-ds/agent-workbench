@@ -58,7 +58,8 @@
     },
     "orchestration": {
       "delegation_level": 1,
-      "workers_per_pm": 2
+      "workers_per_pm": 2,
+      "max_delegation_depth": 3
     },
     "paths": {
       "read_roots": [],
@@ -285,9 +286,17 @@
     "timeout": "Human answer and timeout resolve once. Automatic continuation is system-origin, never human consent. Stop, settings, credentials, dependency validity and existing shared budgets remain authoritative. Server shutdown cancels timers. No model polling while waiting.",
     "notice": "In-app notice covers all live teams. An explicit user gesture can request browser desktop notification permission; already permitted notifications use generic text without task/question content. Browser/OS restrictions may prevent delivery. The server deadline does not depend on the UI being open."
   },
+  "hierarchical_units": {
+    "depth": "Root PM depth0; child1, grandchild2, great-grandchild3. Saved orchestration.max_delegation_depth is a strict integer1-3 upper bound and default. A run may lower it but cannot exceed it. parent_id is server-owned and immutable; role text grants no root authority.",
+    "scope": "All descendants consume the same max_workers, model/tool/time/handoff budgets and allowed profiles/path permissions. workers_per_pm applies only to root PMs, never recursively to workers. Existing root required-delegation slots remain reserved across the whole team.",
+    "units": "A parent and its direct children form a unit. A worker may coordinate its own child unit while reporting to its direct parent. agent.hierarchy contains depth, root_pm_id, unit_id (direct parent or self for root), direct_children and informational can_delegate; it is not an authorization token.",
+    "completion": "Every worker with children, and root PMs in a nested team, must consume and explicitly accept all current direct-child formal reports before their own completion. A changed descendant invalidates old aggregate reports and their dependents. Ancestor prerequisite changes block stale descendant turns, tools and automatic question fallback; the direct parent must reassign after prerequisites are accepted.",
+    "communication": "Same-run agent-ID mail crosses units. Mail does not grant report-review or human authority. depends_on remains between siblings of the same direct parent; coordinator reports carry cross-unit prerequisites. Flat ordered-work participants and nested descendants cannot be mixed.",
+    "history": "Display archives validate bounded acyclic parent linkage and matching hierarchy metadata. Archive can_delegate is false; no child, task, timer or permission is restored from history. Legacy flat archives remain readable."
+  },
   "run_selection": {
     "pm_profiles": "Optional array of 1-16 enabled profile IDs on both run-preflight and runs. Repeated IDs create independent PMs. Omission preserves a single pm_profile. When both fields are present pm_profile must equal pm_profiles[0]. All PMs receive the original brief; PM 1 coordinates initial division through peer messages.",
-    "shared_limits": "max_workers counts workers across all PMs, excluding PMs. Model/tool/time/automatic-collaboration budgets are run-wide. Each PM waits for its own workers; run completion waits for every PM and worker. Worker parent_id, not role text, determines delegation authority.",
+    "shared_limits": "max_workers counts all descendants across all root PMs, excluding root PMs. Model/tool/time/automatic-collaboration budgets are run-wide. Unit coordinators review their direct children; run completion waits for every PM and descendant. Immutable parent linkage and configured depth, never role text, determine delegation authority.",
     "preflight_destinations": "Unique profile destinations include pm_count and worker_available; all selected PM profiles are checked before starting.",
     "orchestration": "Optional integer delegation_level (0=PM-led,1=prefer delegation,2=require delegation) and workers_per_pm (1-16) override the saved orchestration defaults for this run only. Both are captured in the public run and preflight. Level 1 is guidance, not a guaranteed worker count. Level 2 requires enough total worker slots for every PM and checks delegation and current worker-report delivery before PM completion; plain text cannot bypass completion checks. Tools for PM review and integration remain available after the required reports. This verifies workflow order, not report truth or semantic integration. ask_user remains available. wait_for_workers yields a PM turn until completion mail, without polling inference. Repeated spawn_worker calls with one permitted profile create independent IDs, histories and conversations; worker_profiles is an allowlist, not one worker per profile."
   },

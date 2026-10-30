@@ -22,12 +22,12 @@ MAX_RUN_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
-    'delegation_level', 'workers_per_pm', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
+    'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
     'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
     'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))
@@ -92,6 +92,7 @@ def redact_document(document, redact):
     restore_coordination_metadata(document['run'].get('coordination'), result['run'].get('coordination'))
     for before, after in zip(document['agents'], result['agents']):
         restore(before, after, ('id', 'run_id', 'parent_id'))
+        restore(before, after, ('hierarchy',))
         enum(before, after, 'status', statuses)
         restore(before, after, ('stop_reason',))
         restore_coordination_metadata(before.get('coordination'), after.get('coordination'))
@@ -236,6 +237,38 @@ def _budget(value):
         raise HistoryError('履歴の共有予算の時間が不正です。')
 
 
+def _hierarchy(run, agents):
+    """Validate display linkage, not a capability or resumable scheduler state."""
+    cap = run.get('max_delegation_depth', 1)
+    if type(cap) is not int or not 1 <= cap <= 3:
+        raise HistoryError('履歴の委任階層上限が不正です。')
+    by_id = {agent['id']: agent for agent in agents}
+    strict = 'max_delegation_depth' in run or any('hierarchy' in agent for agent in agents)
+    for agent in agents:
+        current, seen, depth = agent, set(), 0
+        while current.get('parent_id') is not None:
+            if current['id'] in seen or current['parent_id'] not in by_id:
+                raise HistoryError('履歴の親子関係が循環または欠落しています。')
+            seen.add(current['id'])
+            depth += 1
+            if depth > cap:
+                raise HistoryError('履歴の委任階層が上限を超えています。')
+            current = by_id[current['parent_id']]
+        if strict and current['id'] not in run['pm_agent_ids']:
+            raise HistoryError('履歴の親子関係に正しい最上位PMがありません。')
+        value = agent.get('hierarchy')
+        if value is None:
+            continue  # Old display archives do not gain executable capabilities.
+        expected = {'depth': depth, 'root_pm_id': current['id'],
+                    'unit_id': agent.get('parent_id') or agent['id'],
+                    'direct_children': [row['id'] for row in agents if row.get('parent_id') == agent['id']]}
+        if (not isinstance(value, dict) or set(value) != set(expected) | {'can_delegate'} or
+                type(value['depth']) is not int or type(value['can_delegate']) is not bool or
+                any(value[key] != item for key, item in expected.items()) or
+                (depth >= cap and value['can_delegate'])):
+            raise HistoryError('履歴のユニット表示が親子関係と一致しません。')
+
+
 def validate(document):
     if not isinstance(document, dict) or set(document) != {'run', 'agents', 'events', 'board'}:
         raise HistoryError('履歴の構造が不正です。')
@@ -312,6 +345,7 @@ def validate(document):
                 _text_fields(row, ('kind', 'text') if key == 'logs' else ('source', 'text') if key == 'results' else ('tool', 'path', 'sha256', 'operation'))
                 if key == 'logs' and 'thinking' in row and not isinstance(row['thinking'], str):
                     raise HistoryError('履歴の表示内容が不正です。')
+    _hierarchy(run, document['agents'])
     _rows(document['events'], EVENT_FIELDS)
     for row in document['events']:
         _text_fields(row, ('kind', 'text', 'run_id', 'agent_id'))
@@ -662,6 +696,8 @@ def archived_view(document, saved_at):
                          'message': '保存された履歴は閲覧専用です。'})
         if agent['status'] not in TERMINAL:
             agent['status'] = 'interrupted'
+        if agent.get('hierarchy'):
+            agent['hierarchy']['can_delegate'] = False
         logs = agent.get('logs', [])
         agent['activity'] = agent.get('activity') or {'latest_log': ({key: logs[-1][key] for key in ('kind', 'text', 'at')} if logs else None),
                              'pending_count': 0, 'result_count': len(agent.get('results', [])),

@@ -76,7 +76,7 @@ def test_legacy_settings_add_defaults_without_rewriting(tmp_path):
     original = json.dumps(raw).encode()
     (tmp_path / 'settings.json').write_bytes(original)
     settings = Settings(tmp_path)
-    assert settings.value['orchestration'] == {'delegation_level': 1, 'workers_per_pm': 2}
+    assert settings.value['orchestration'] == {'delegation_level': 1, 'workers_per_pm': 2, 'max_delegation_depth': 3}
     assert settings.value['copilot_agent']['max_concurrent_requests'] == 1
     assert settings.path.read_bytes() == original and settings.revision == 0
 
@@ -137,7 +137,7 @@ async def test_run_policy_snapshot_is_separate_from_saved_config(manual):
     before = copy.deepcopy(engine.settings.value)
     payload = request(target=3)
     preview = engine.preflight(payload)
-    assert preview['orchestration'] == {'delegation_level': 2, 'workers_per_pm': 3}
+    assert preview['orchestration'] == {'delegation_level': 2, 'workers_per_pm': 3, 'max_delegation_depth': 3}
     run, (pm,) = await team(engine, target=3)
     assert run['delegation_level'] == 2 and run['workers_per_pm'] == 3
     assert run['_config'] == before and engine.settings.value == before
@@ -299,12 +299,12 @@ async def test_wait_missing_quota_does_not_hide_remaining_delegation(manual):
 async def test_ask_user_remains_available_and_workers_cannot_wait_or_spawn(manual):
     engine, _ = manual
     run, (pm,) = await team(engine, target=1)
+    worker = await spawn(engine, run, pm)
     result = await engine.execute_tool(run, pm, 'ask_user', {'question': 'Which permitted output folder?'})
     assert result['waiting_for_human'] and pm.question
-    worker = await spawn(engine, run, pm)
-    with pytest.raises(ValueError, match='PM 専用'):
+    with pytest.raises(ValueError, match='待機するworker'):
         await engine.execute_tool(run, worker, 'wait_for_workers', {})
-    with pytest.raises(ValueError, match='増員'):
+    with pytest.raises(ValueError, match='最大 worker'):
         await spawn(engine, run, worker)
 
 
@@ -324,7 +324,7 @@ async def test_optional_modes_allow_pm_only_and_old_run_fixtures(manual, level):
     run.pop('delegation_level')
     run.pop('workers_per_pm')
     run['_config'].pop('orchestration')
-    assert engine._orchestration(run['_config'], run) == {'delegation_level': 1, 'workers_per_pm': 2}
+    assert engine._orchestration(run['_config'], run) == {'delegation_level': 1, 'workers_per_pm': 2, 'max_delegation_depth': 3}
     assert engine._delegation_issue(run, pm) is None
 
 

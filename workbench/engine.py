@@ -23,6 +23,7 @@ from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
 from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
+from .hierarchy import AgentHierarchyMixin, UnitChanged
 from .questions import QuestionFallbackMixin
 from .providers import ProviderClient, ProviderError, ProviderOutputLimitError, ProviderTimeoutError
 from .python_runner import execute_python
@@ -249,11 +250,13 @@ class Agent:
     dependency_retry_mail: str = ''
 
     def public(self, *, message_eligibility=None, status_reason=None, include_detail=True, configured_profile=None,
-                redact_activity=lambda value: value, coordination=None, worker_dependencies=None):
+                redact_activity=lambda value: value, coordination=None, worker_dependencies=None, hierarchy=None):
         value = {k: getattr(self, k) for k in ('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id',
                                               'status', 'question', 'last_error', 'stop_reason', 'turns', 'assignment')}
         if coordination is not None:
             value['coordination'] = copy.deepcopy(coordination)
+        if hierarchy is not None:
+            value['hierarchy'] = copy.deepcopy(hierarchy)
         if self.question_state:
             value['question_state'] = copy.deepcopy(self.question_state)
         if self.depends_on:
@@ -290,7 +293,7 @@ class Agent:
                 }
 
 
-class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
+class Engine(QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
     def __init__(self, settings: Settings, client=None):
         self.settings = settings
         self.gate = ResourceGate()
@@ -415,7 +418,8 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
             run = self.runs[ident]
             coordination, by_agent = coordination_projection(run, self.agents, time.time(), redact=self._redact_tree)
             agents = [self.agents[key].public(configured_profile=self.configured_profile(self.agents[key]),
-                       coordination=by_agent.get(key), worker_dependencies=self._dependency_view(self.agents[key])) for key in run['agent_ids']]
+                       coordination=by_agent.get(key), worker_dependencies=self._dependency_view(self.agents[key]),
+                       hierarchy=self._hierarchy_view(self.agents[key])) for key in run['agent_ids']]
             display_run = run | self._run_diagnostics(run)
             if coordination is not None:
                 display_run['coordination'] = coordination
@@ -722,10 +726,11 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                          ({'coordination': coordination[run['id']]} if run['id'] in coordination else {}) for run in self.runs.values()],
                 'agents': [a.public(message_eligibility=self.message_eligibility(a), status_reason=self.agent_status_reason(a),
                                     configured_profile=self.configured_profile(a), redact_activity=self.redact,
-                                    coordination=members.get(a.id), worker_dependencies=self._dependency_view(a)) for a in self.agents.values()], 'events': list(self.events),
+                                    coordination=members.get(a.id), worker_dependencies=self._dependency_view(a), hierarchy=self._hierarchy_view(a)) for a in self.agents.values()], 'events': list(self.events),
                 'resources': self.gate.snapshot(), 'copilot_resources': self._copilot_resources(), 'copilot_agent_status': self.copilot_status()})
         result['redaction_revision'] = self._redaction.value_count
         self._restore_question_metadata(result)
+        self._restore_hierarchy_metadata(result)
         return self._with_history(result)
 
     def _copilot_resources(self):
@@ -764,12 +769,13 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
             'agents': [a.public(message_eligibility=self.message_eligibility(a),
                                 status_reason=self.agent_status_reason(a), include_detail=a.id == agent_id,
                                 configured_profile=self.configured_profile(a), redact_activity=self.redact,
-                                coordination=members.get(a.id), worker_dependencies=self._dependency_view(a)) for a in self.agents.values()],
+                                coordination=members.get(a.id), worker_dependencies=self._dependency_view(a), hierarchy=self._hierarchy_view(a)) for a in self.agents.values()],
             'events': events, 'resources': self.gate.snapshot(), 'copilot_resources': self._copilot_resources(), 'copilot_agent_status': self.copilot_status(),
             'selection': {'run_id': run_id, 'agent_id': agent_id, 'detail_loaded': agent_id is not None},
         })
         result['redaction_revision'] = self._redaction.value_count
         self._restore_question_metadata(result)
+        self._restore_hierarchy_metadata(result)
         return self._with_history(result, run_id, agent_id)
 
     def _new_agent(self, run, profile, role, parent=None, *, assignment=''):
@@ -783,6 +789,9 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
         agent = Agent(ident, run['id'], name, role, profile, parent, assignment=assignment)
         self.agents[ident] = agent
         run['agent_ids'].append(ident)
+        if parent is None:
+            run['pm_agent_ids'].append(ident)
+        agent._unit_dependency_epochs = self._hierarchy_dependency_epochs(agent)
         self.event(run['id'], ident, 'created', f'{name} / {profile}')
         return agent
 
@@ -801,7 +810,7 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                 '保存済み設定のパスを確認し、現在のPCに合わせて保存してから作業を開始してください。', field='settings')
         if len(self.runs) >= 20:
             raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動後も保存済み履歴は閲覧専用で残ります。今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます')
-        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'ordered_reference'}:
+        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
         if 'ordered_reference' in payload:
             try:
@@ -1042,11 +1051,11 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
         if len(agent.pending) >= (32 if human else 31):
             raise ValueError('待機キューが満杯です')
 
-    def enqueue(self, agent, content, *, human=False):
+    def enqueue(self, agent, content, *, human=False, _initial=False):
         self._check_queue(agent, human=human)
         if human:
             self._question_answered(agent)
-        self._dependency_invalidate(agent)
+        self._dependency_invalidate(agent, _initial=_initial)
         self._question_cancel_stale_dependencies(self.runs[agent.run_id])
         agent.result_revision += 1
         agent.finished_revision = None
@@ -1143,6 +1152,8 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
     def agent_status_reason(self, agent):
         if agent.status == 'waiting' and agent.question:
             return 'human_input'
+        if self._hierarchy_stale(agent) and agent.status not in {'error', 'stopped'}:
+            return 'unit_stale'
         if agent.depends_on and agent.status not in {'error', 'stopped'}:
             if self._dependency_stale(agent):
                 return 'dependency_stale'
@@ -1164,6 +1175,8 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
         if run['status'] != 'waiting':
             return run['status']
         agents = [self.agents[ident] for ident in run['agent_ids']]
+        if any(self._hierarchy_stale(a) for a in agents):
+            return 'unit_stale'
         if any(a.depends_on and self._dependency_stale(a) for a in agents):
             return 'dependency_stale'
         if any(a.depends_on and self._dependency_blockers(a) for a in agents):
@@ -1180,10 +1193,13 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
     def _orchestration(config, overrides=None):
         saved = {**ORCHESTRATION_DEFAULTS, **config.get('orchestration', {})}
         overrides = overrides or {}
+        depth_default = 1 if 'id' in overrides else saved.get('max_delegation_depth', 3)
         return {'delegation_level': number(overrides.get('delegation_level', saved['delegation_level']),
                                           'delegation_level', 0, 2, integer=True),
                 'workers_per_pm': number(overrides.get('workers_per_pm', saved['workers_per_pm']),
-                                        'workers_per_pm', 1, 16, integer=True)}
+                                        'workers_per_pm', 1, 16, integer=True),
+                'max_delegation_depth': number(overrides.get('max_delegation_depth', depth_default),
+                                              'max_delegation_depth', 1, saved.get('max_delegation_depth', 3), integer=True)}
 
     def _owned_workers(self, run, agent):
         return [self.agents[ident] for ident in run['agent_ids'] if self.agents[ident].parent_id == agent.id]
@@ -1198,10 +1214,13 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
         if ordered and agent.id == ordered['pm_id'] and finishing and not ordered['flow'].view()['complete']:
             return ('ordered_work_pending', '宣言した全手番を監査し終えるまで完了できません。現在の候補を確認してください。')
         policy = self._orchestration(run['_config'], run)
-        if agent.parent_id is not None or (policy['delegation_level'] != 2 and not ordered):
+        unit = self._hierarchy_unit_required(run, agent)
+        if not unit and (agent.parent_id is not None or (policy['delegation_level'] != 2 and not ordered)):
             return None
+        if unit and not finishing and (agent.parent_id is not None or policy['delegation_level'] != 2):
+            return None  # Unit coordinators may work; current child approval gates their report.
         children = self._owned_workers(run, agent)
-        if not ordered and len(children) < policy['workers_per_pm']:
+        if agent.parent_id is None and policy['delegation_level'] == 2 and not ordered and len(children) < policy['workers_per_pm']:
             return ('delegation_required', '必要な人数のworkerへ担当を分けて委任してください。同じAPIを複数回選べます。')
         if any(child.status != 'done' or child.pending or child.question for child in children):
             return ('workers_pending', 'workerの作業が未完了です。wait_for_workersで待機し、エラーや質問には対処してください。')
@@ -1209,6 +1228,8 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                or agent.worker_report_deliveries.get(child.id) != child.result_revision
                or agent.worker_report_consumed.get(child.id) != child.result_revision for child in children):
             return ('worker_reports_pending', '全workerの現在のfinish_work報告を受領・確認する必要があります。文章回答やエラー通知は完了報告ではありません。')
+        if unit and not all(self._hierarchy_report_ready(run, child) for child in children):
+            return ('worker_review_pending', '下位ユニットの現在の報告と承認が不足しています。直属担当から確認してください。')
         if finishing and agent.pending:
             return ('messages_pending', '未処理のメッセージがあります。内容を確認してから統合結果を報告してください。')
         if finishing and any(agent.worker_report_reviews.get(child.id) !=
@@ -1246,8 +1267,8 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
         """Record a PM judgment against application-owned, current report metadata."""
         if (self.runs.get(run['id']) is not run or self.agents.get(agent.id) is not agent
                 or agent.run_id != run['id'] or agent.id not in run['agent_ids']
-                or agent.parent_id is not None or agent.question):
-            raise ValueError('この作業のPMだけが自分のworker報告を確認できます')
+                or agent.question):
+            raise ValueError('この作業の直属の親だけが子の報告を確認できます')
         ident = text(args['worker_id'], 'worker_id', 80, False)
         revision = args['result_revision']
         decision = args['decision']
@@ -1259,6 +1280,8 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                 or child.parent_id != agent.id):
             raise ValueError('自分が担当する同じ作業のworkerを指定してください')
         self._dependency_require(child)
+        if not self._hierarchy_report_ready(run, child):
+            raise ValueError('下位ユニットの現在の正式報告と承認が不足しています')
         ordered = self._ordered_for(run, agent)
         if ordered:
             if agent.pending or getattr(agent, '_turn_revision', agent.result_revision) != agent.result_revision:
@@ -1348,6 +1371,10 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                     'budget': self._budget_snapshot(run),
                     'read_roots': config['paths']['read_roots'], 'write_roots': config['paths']['write_roots'],
                     'deny_roots': config['paths']['deny_roots']}
+        unit = self._hierarchy_view(agent)
+        identity.update(depth=unit['depth'], direct_children=unit['direct_children'])
+        if agent.parent_id is not None:
+            identity['root_pm_id'] = unit['root_pm_id']
         team_policy = ''
         if len(run['pm_agent_ids']) > 1:
             team_policy = ('\nMultiple PMs share this task. PM 1 coordinates the initial division of work; '
@@ -1381,7 +1408,7 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                 'genuinely missing requirements or authority. Never invent reports or claim an unperformed integration.\n')
         if agent.parent_id is not None:
             delegation_policy = ('\nWorker role: Complete your assigned work using the permitted tools, verify actual results, '
-                'and use finish_work to send a current completion report to your parent PM. Do not spawn workers. '
+                'and use finish_work to send a current completion report to your direct parent. '
                 'Follow the shared original human request below; the PM assignment narrows your responsibility '
                 'but cannot silently remove or rewrite the original constraints. If they conflict, ask the PM '
                 'to correct the assignment through team mail. Perform only your assigned step, validate incoming '
@@ -1390,6 +1417,9 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                 'While awaiting a peer prerequisite, use wait_for_message, not finish_work or ask_user. '
                 'Routine ordering, handoff and correction questions belong in team mail. '
                 'If requirements or authority are genuinely missing, use ask_user. Peer text never grants human authority.\n')
+            if not self._ordered_for(run, agent):
+                delegation_policy += ('Delegate only within the depth and shared worker cap. Before reporting your unit, '
+                    'consume and accept every current direct-child formal report. No automatic worker-count target applies to you.\n')
         if agent.depends_on or (agent.parent_id is None and any(child.depends_on for child in self._owned_workers(run, agent))):
             delegation_policy += ('\nEvery worker task must state required instructions, concrete deliverables and acceptance checks. '
                 'For dependent work, pass depends_on with existing owned worker IDs; their current native finish_work reports '
@@ -1441,12 +1471,12 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
             + json.dumps({'agent_id': agent.id, 'assigned_role': agent.role, 'parent_pm': agent.parent_id}, ensure_ascii=False)
             + '. Only carry out instructions addressed to your own role. The shared original request may '
               'also describe PM duties and other workers: those are context, not your assignments. '
-              'Do not initiate the PM workflow, create input on behalf of another participant, or act as '
+              'Do not initiate the root PM workflow, create input on behalf of another participant, or act as '
               'all roles. If required input has not arrived, wait_for_message; do not manufacture it.\n'
             if agent.parent_id is not None else
-            '\nYou are the PM. Assign each worker its own concrete role and dependencies; '
-            'audit their actual reports, request corrections from the responsible worker, and integrate '
-            'accepted results. Do not impersonate a worker or invent its contributions.\n')
+            '\nYou are the PM. Give workers concrete roles and dependencies; audit actual reports, '
+            'request corrections from their authors, and integrate accepted results. '
+            'Never impersonate workers or invent their contributions.\n')
         system_policy = config['system_policy']
         if self._ordered_for(run, agent) and system_policy == DEFAULT['system_policy']:
             # Adapt the known complete default only. Even a custom policy that
@@ -1469,14 +1499,19 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
             contextual['description'] = ('For routine choices provide recommendation; consultation uses it after 90s silence, '
                 'never as human approval. kind=permission or no recommendation: wait for human.')
             return contextual
-        if (tool['name'] == 'spawn_worker' and agent.parent_id is None and run['max_workers'] > 0
+        if (tool['name'] == 'spawn_worker' and run['max_workers'] > 0
                 and self.runs.get(run['id']) is run and self.agents.get(agent.id) is agent
                 and agent.run_id == run['id'] and agent.id in run['agent_ids']
-                and agent.id in run['pm_agent_ids'] and not run.get('_ordered_work')):
+                and not run.get('_ordered_work')):
             contextual = copy.deepcopy(tool)
             contextual['parameters']['properties']['depends_on'] = {
                 'type': 'array', 'items': STRING, 'maxItems': 16, 'uniqueItems': True}
-            contextual['description'] += ' Optional depends_on: existing owned worker IDs; starts only after their current formal reports are PM-accepted.'
+            contextual['description'] = ('Create a direct child within shared worker/depth caps. Give exact instructions, deliverable and checks. '
+                'Optional depends_on: existing siblings; starts after your current formal-report acceptance. Reuse via send_message.')
+            return contextual
+        if agent.parent_id and not self._ordered_for(run, agent) and tool['name'] in {'wait_for_workers', 'review_worker_report'}:
+            contextual = copy.deepcopy(tool)
+            contextual['description'] = contextual['description'].replace('PM only.', 'Direct-parent coordinator only.')
             return contextual
         if tool['name'] not in REFERENCE_REVIEW_DESCRIPTIONS:
             return tool
@@ -1507,7 +1542,12 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
         if run['_config']['search']['enabled']:
             tools += run['_web'].schemas()
         if agent.parent_id:
-            tools = [tool for tool in tools if tool['name'] not in {'spawn_worker', 'wait_for_workers', 'review_worker_report', 'start_ordered_work', 'review_work_step', 'rollback_work_step'}]
+            excluded = {'start_ordered_work', 'review_work_step', 'rollback_work_step'}
+            if self._hierarchy_spawn_issue(run, agent):
+                excluded.add('spawn_worker')
+            if not self._owned_workers(run, agent):
+                excluded.update({'wait_for_workers', 'review_worker_report'})
+            tools = [tool for tool in tools if tool['name'] not in excluded]
         elif self._delegation_issue(run, agent):
             tools = [tool for tool in tools if tool['name'] in COORDINATION_TOOLS]
         ordered = self._ordered_for(run, agent)
@@ -1757,6 +1797,10 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                     for call in reply.tool_calls:
                         if agent.closing:
                             break
+                        try:
+                            self._hierarchy_require(agent)
+                        except UnitChanged:
+                            stop = True
                         if agent.depends_on and (self._dependency_stale(agent) or self._dependency_blockers(agent)):
                             stop = True
                         # Closed batches still need results for skipped siblings;
@@ -1779,7 +1823,7 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                                 if not isinstance(args, dict):
                                     raise ValueError('ツール引数は JSON object が必要です')
                                 result = await self.execute_tool(run, agent, name, args)
-                            except DependencyBlocked as exc:
+                            except (DependencyBlocked, UnitChanged) as exc:
                                 result = {'ok': False, 'error': str(exc), 'dependency_blocked': exc.code}
                                 stop = True
                             except DelegationBlocked as exc:
@@ -1884,8 +1928,10 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                             # the visible log even if automatic delivery stops.
                             self.log(agent, 'notice', '自動連携の上限により PM への完了通知を停止しました。結果はこのログで確認できます。')
                 self._run_status(run)
-        except DependencyBlocked:
+        except (DependencyBlocked, UnitChanged) as exc:
             agent.status = 'waiting' if agent.question else 'idle'
+            if isinstance(exc, UnitChanged):
+                agent.delegation_blocked = exc.code
             self._release(agent)
         except asyncio.CancelledError:
             agent.status = 'stopped'
@@ -1925,6 +1971,7 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                and (a.status == 'queued' or (a.pending and not a.question and a.status != 'error'))) for a in agents):
             run['status'] = 'running'
         elif run.get('_collaboration_blocked') or any(a.question or a.status == 'error' or a.waiting_for_workers or a.waiting_for_message or a.delegation_blocked
+                or self._hierarchy_stale(a)
                 or (a.depends_on and (self._dependency_stale(a) or self._dependency_blockers(a))) for a in agents):
             run['status'] = 'waiting'
         else:
@@ -1976,6 +2023,7 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
         formal_report = (completed and report_revision is not None and actor.parent_id == target.id
             and actor.status == 'done' and not actor.pending and not actor.question
             and (not actor.depends_on or (not self._dependency_stale(actor) and not self._dependency_blockers(actor)))
+            and self._hierarchy_report_ready(run, actor)
             and actor.finished_revision == actor.result_revision == report_revision)
         if formal_report:
             envelope.update(report_id=secrets.token_hex(16), result_revision=report_revision)
@@ -2098,6 +2146,8 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
             if set(args) - set(spec['properties']) or set(spec['required']) - set(args):
                 raise ValueError('ツール引数が不正です')
         if name in ORDERED_NAMES:
+            if name == 'start_ordered_work' and self._hierarchy_nested(run):
+                raise ValueError('階層委任と順番のある仕事は併用できません')
             if name == 'start_ordered_work' and any(self.agents[x].depends_on for x in run['agent_ids']):
                 raise ValueError('depends_on と順番のある仕事は併用できません')
             return self._ordered_execute(run, agent, name, args)
@@ -2197,6 +2247,7 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                 row = {key: getattr(member, key) for key in
                        ('id', 'name', 'role', 'profile_id', 'status', 'parent_id',
                         'result_revision', 'finished_revision', 'waiting_for_message')}
+                row['hierarchy'] = self._hierarchy_view(member)
                 if member.participant_key:
                     row['participant_key'] = member.participant_key
                 if member.depends_on:
@@ -2220,23 +2271,17 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                     'auto_collaborations': run['auto_collaborations'], 'max_auto_collaborations': run['max_auto_collaborations'],
                     'agents': roster, **({'ordered_work': self._ordered_view(run, agent)} if self._ordered_for(run, agent) else {})}
         if name == 'spawn_worker':
-            if agent.parent_id is not None:
-                raise ValueError('作業者は増員できません')
-            if sum(self.agents[i].parent_id is not None for i in run['agent_ids']) >= run['max_workers']:
-                raise ValueError('この仕事の最大 worker 数に達しました。既存 worker に send_message で依頼してください')
-            orchestration = self._orchestration(run['_config'], run)
-            if orchestration['delegation_level'] == 2:
-                total = sum(self.agents[i].parent_id is not None for i in run['agent_ids'])
-                reserved = sum(max(0, orchestration['workers_per_pm'] - len(self._owned_workers(run, self.agents[ident])))
-                               for ident in run['pm_agent_ids'] if ident != agent.id)
-                if total + 1 > run['max_workers'] - reserved:
-                    raise ValueError('他のPMの必要worker枠を確保しています。自分の既存workerを再利用してください。')
+            issue = self._hierarchy_spawn_issue(run, agent)
+            if issue:
+                raise ValueError(issue)
             profile = args['profile_id']
             if profile not in run['worker_profiles']:
                 raise ValueError('この仕事で許可されていない API です')
             task = text(args['task'], 'worker task', 16000, False)
             role = text(args['role'], 'role', 80, False)
             key, initial_wait = args.get('participant_key', ''), args.get('initial_wait', False)
+            if (agent.parent_id and (key or initial_wait)) or ((key or initial_wait) and self._hierarchy_nested(run)):
+                raise ValueError('階層委任と順番のある仕事は併用できません')
             dependencies = self._dependency_ids(run, agent, args.get('depends_on', []))
             if dependencies and (key or initial_wait):
                 raise ValueError('depends_on は participant_key / initial_wait と併用できません')
@@ -2256,13 +2301,15 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
             if key:
                 child.name = key + ' · ' + child.name
             child._ordered_initial_wait = initial_wait
+            self._hierarchy_child_added(run, agent)
             if initial_wait:
                 child.status, child.waiting_for_message = 'idle', True
                 self.event(run['id'], child.id, 'message_wait', '宣言された手番の開始通知を待っています。モデルは未起動です。')
             else:
-                self.enqueue(child, task)
+                self.enqueue(child, task, _initial=True)
             run['auto_collaborations'] += 1
             return {'ok': True, 'agent_id': child.id, 'name': child.name,
+                    'hierarchy': self._hierarchy_view(child),
                     **({'worker_dependencies': self._dependency_view(child)} if dependencies else {}),
                     **({'participant_key': key, 'initial_wait': initial_wait} if key else {})}
         if name == 'send_message':
@@ -2284,8 +2331,6 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
         if name == 'ask_user':
             return self._ask_question(run, agent, args)
         if name == 'wait_for_workers':
-            if agent.parent_id is not None:
-                raise ValueError('wait_for_workers は PM 専用です')
             children = self._owned_workers(run, agent)
             if not children:
                 raise ValueError('待機するworkerがいません。必要な担当へ委任してから待機してください。')
@@ -2307,6 +2352,8 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
             return {'ok': True, 'waiting_for_workers': True, 'reports_ready': False}
         if name == 'finish_work':
             summary = text(args['summary'], 'summary', 16000, False)
+            if self._hierarchy_unit_required(run, agent) and getattr(agent, '_turn_revision', agent.result_revision) != agent.result_revision:
+                return {'ok': False, 'code': 'unit_stale', 'error': '新しい入力を確認してからユニットの現在の結果を報告してください。'}
             issue = self._delegation_issue(run, agent, finishing=True)
             if issue and issue[0] in {'worker_review_pending', 'ordered_work_pending', 'worker_dependency_pending'}:
                 # This is recoverable within the current tool conversation: the PM
@@ -2314,7 +2361,7 @@ class Engine(QuestionFallbackMixin, WorkerDependenciesMixin, OrderedCollaboratio
                 # into a wait for messages that have already been consumed.
                 return {'ok': False, 'code': issue[0], 'error': issue[1]}
             self._require_delegation(run, agent, finishing=True)
-            if agent.parent_id is None and any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
+            if any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
                     for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
                 raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
             self.log(agent, 'result', summary)

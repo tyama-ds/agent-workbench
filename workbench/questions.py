@@ -120,6 +120,7 @@ class QuestionFallbackMixin:
         except (ValueError, OSError):
             return 'storage_unavailable'
         if (agent.dependency_epoch != record['dependency_epoch'] or agent.dependency_revisions != record['dependencies']
+                or not self._hierarchy_can_start(agent)
                 or (agent.depends_on and (self._dependency_stale(agent) or self._dependency_blockers(agent)))):
             return 'dependency_changed'
         if agent.result_revision != record['revision']:
@@ -201,7 +202,7 @@ class QuestionFallbackMixin:
         for ident in run['agent_ids']:
             agent = self.agents[ident]
             record = self._questions.get(ident)
-            if record is not None and agent.depends_on and self._dependency_stale(agent):
+            if record is not None and ((agent.depends_on and self._dependency_stale(agent)) or self._hierarchy_stale(agent)):
                 self._question_resolve(agent, record, 'cancelled', 'dependency_changed', clear=True)
 
     def _question_stop(self, run=None):

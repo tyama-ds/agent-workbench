@@ -128,9 +128,29 @@ value.config.selenium={...value.config.selenium,library_paths:['C:\\Selenium'],p
 value.config.search={...value.config.search,enabled:true,provider:'searxng',endpoint:'https://search.example/api'};
 value.config.local={...value.config.local,min_interval_seconds:2};value.config.limits={...value.config.limits,max_workers:2};
 value.config.copilot_agent={...COPILOT_AGENT_DEFAULTS,base_url:'http://127.0.0.1:8801/v1',model:'restored-model',max_concurrent_requests:3};
-value.config.orchestration={delegation_level:2,workers_per_pm:4};
+value.config.orchestration={delegation_level:2,workers_per_pm:4,max_delegation_depth:2};
 const pending=importSettingsFile(selected());await flush();requests[0].resolve(value);await pending;paths();
 assert.deepEqual(collectConfig(),value.config);assert.deepEqual(ui.config,saved);assert.deepEqual(runPayload(),task);
 const saving=submit();assert.deepEqual(requests[1].options.body.config,value.config);accept(1);await saving;
 assert.deepEqual(ui.config,value.config);assert.deepEqual(runPayload(),task);
+''')
+
+
+def test_legacy_import_defaults_only_missing_depth_in_draft_until_explicit_save():
+    check(r'''
+await boot();const saved=structuredClone(ui.config),task=runPayload(),legacy=backup();
+legacy.config.orchestration={delegation_level:2,workers_per_pm:4};
+// Older accepted preview shapes may also omit the new depth field. The UI
+// normalizes the editable draft, without mutating the response or saved state.
+const value={config:structuredClone(legacy.config),config_revision:4,warnings:[]};
+const expected=structuredClone(value.config);expected.orchestration.max_delegation_depth=3;
+const pending=importSettingsFile(selected(legacy));await flush();
+assert.deepEqual(requests[0].options.body.backup,legacy);
+requests[0].resolve(value);await pending;paths();
+assert.deepEqual(collectConfig(),expected);assert.deepEqual(ui.config,saved);assert.deepEqual(runPayload(),task);
+assert.equal(Object.hasOwn(value.config.orchestration,'max_delegation_depth'),false);
+assert.equal(Object.hasOwn(legacy.config.orchestration,'max_delegation_depth'),false);assert(ui.settingsDirty);
+const saving=submit();assert.deepEqual(requests[1].options.body.config,expected);
+assert.equal(requests[1].options.body.config_revision,4);accept(1);await saving;
+assert.deepEqual(ui.config,expected);assert.deepEqual(runPayload(),task);assert.equal(requests.length,2);
 ''')

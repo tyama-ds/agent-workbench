@@ -177,3 +177,9 @@ main{height:auto;min-height:0;overflow:hidden}.view{height:100%;min-height:0}.wo
 .question-timing{grid-column:1/-1;color:#dbbe88}
 .question-card .question-timing{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .question-timing-status{flex:0 1 auto;min-height:0;max-height:95px;overflow:auto;color:#dbbe88;padding:6px 12px}
+
+/* Application-provided hierarchy is descriptive, never an authority control. */
+.agent-hierarchy{grid-column:1/-1;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;line-height:1.6;color:#b4c6d8;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.hierarchy-relations{margin-top:8px;max-height:150px;overflow:auto;display:grid;gap:6px;min-width:0}
+.hierarchy-relation{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.hierarchy-relation .button{white-space:normal;overflow-wrap:anywhere;max-width:100%;text-align:left}

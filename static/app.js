@@ -15,6 +15,7 @@ const FIELD_GROUPS = {
   orchestration: [
     ['delegation_level','新しい作業の PM 分担方針','range',0,'1','PM中心／委任優先／委任必須。人数・権限・呼び出し予算は別の上限です。',2],
     ['workers_per_pm','PM1人あたりの委任人数（既定値）','range',1,'1','委任優先では目標人数、委任必須では各 PM が満たす人数です。PM中心では使用しません。',16],
+    ['max_delegation_depth','委任の最大深さ（上限・既定値）','range',1,'1','PMを深さ0として、1＝子、2＝孫、3＝ひ孫まで。全階層で作業者数と予算を共有します。',3],
   ],
   paths: [
     ['read_roots','読み取りを許可する場所','paths','例：C:\\Projects\\research'],
@@ -113,10 +114,10 @@ Object.assign(ui,{networkHoverAgent:null,networkFocusAgent:null,networkPreviewHo
 const NETWORK_NODE_SIZE=112,NETWORK_NODE_RADIUS=56,NETWORK_MAIL_SEEN_LIMIT=200,NETWORK_PULSE_LIMIT=16,NETWORK_PULSE_MS=1200,NETWORK_PREVIEW_DISMISS_MS=240;
 Object.assign(ui,{effectiveProviders:null,copilotAgentStatus:null,copilotDefaultsPending:false,modelChoicesTouched:false,copilotReconnectOperation:null});
 const COPILOT_AGENT_DEFAULTS={enabled:false,bridge_directory:'',python_executable:'',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600,max_concurrent_requests:1};
-const ORCHESTRATION_DEFAULTS={delegation_level:1,workers_per_pm:2};
+const ORCHESTRATION_DEFAULTS={delegation_level:1,workers_per_pm:2,max_delegation_depth:3};
 const DELEGATION_LABELS=['PM中心','委任優先','委任必須'];
 NUMBER_BOUNDS.copilot_agent={startup_timeout_seconds:[5,1200],max_concurrent_requests:[1,16]};
-NUMBER_BOUNDS.orchestration={delegation_level:[0,2],workers_per_pm:[1,16]};
+NUMBER_BOUNDS.orchestration={delegation_level:[0,2],workers_per_pm:[1,16],max_delegation_depth:[1,3]};
 NUMBER_BOUNDS.python={timeout_seconds:[1,600],max_memory_mb:[128,8192],max_output_bytes:[1024,1048576]};
 NUMBER_BOUNDS.selenium={timeout_seconds:[10,300],max_memory_mb:[256,8192],max_output_chars:[1000,100000]};
 const $ = id => document.getElementById(id);
@@ -280,7 +281,9 @@ async function api(path,options={}) {
 }
 
 function delegationLabel(value) { return Number.isInteger(value)&&value>=0&&value<=2?DELEGATION_LABELS[value]:'未記録'; }
-function rangeLabel(key,value) { return key==='delegation_level'?delegationLabel(Number(value)):key==='workers_per_pm'?`${value} 人`:`${value} リクエスト`; }
+function delegationDepthLabel(value) { return Number.isInteger(value)&&value>=1&&value<=3?`${value}（${['','子','孫','ひ孫'][value]}まで）`:'未記録'; }
+function savedDelegationDepth() { const policy=ui.config?.orchestration,value=policy&&Object.hasOwn(policy,'max_delegation_depth')?policy.max_delegation_depth:3;return Number.isInteger(value)&&value>=1&&value<=3?value:null; }
+function rangeLabel(key,value) { return key==='delegation_level'?delegationLabel(Number(value)):key==='workers_per_pm'?`${value} 人`:key==='max_delegation_depth'?delegationDepthLabel(Number(value)):`${value} リクエスト`; }
 function makeField(spec,value,prefix) {
   const [key,label,type,extra,step,help,max]=spec,id=`${prefix}-${key}`;
   const wrap=element('div','field'+(type==='checkbox'?' checkbox-field':''));
@@ -437,6 +440,7 @@ function validSavedSettings(response,revision) {
     p.id&&Object.hasOwn(PROFILE_KINDS,p.kind)&&typeof p.enabled==='boolean'&&typeof status[p.id]==='boolean'))return false;
   return Object.entries(FIELD_GROUPS).every(([group,specs])=>['copilot_agent','orchestration'].includes(group)&&config[group]===undefined||record(config[group])&&specs.every(([key,,type])=>{
     const value=config[group][key];
+    if(group==='orchestration'&&key==='max_delegation_depth')return !Object.hasOwn(config[group],key)||(Number.isInteger(value)&&value>=1&&value<=3);
     if(type==='paths')return Array.isArray(value)&&value.every(path=>typeof path==='string');
     if(type==='checkbox')return typeof value==='boolean';
     return type==='number'||type==='range'?Number.isFinite(value):typeof value==='string';
@@ -747,13 +751,13 @@ function showView(view) {
   paintNetworkMotionState();reconcileTaskReuse();
 }
 function runPayload() {
-  const payload={task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value),delegation_level:Number($('delegationLevel').value),workers_per_pm:Number($('workersPerPM').value)};
+  const payload={task:$('taskInput').value,pm_profile:$('pmProfile').value,worker_profiles:[...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value),max_workers:Number($('maxWorkers').value),delegation_level:Number($('delegationLevel').value),workers_per_pm:Number($('workersPerPM').value),max_delegation_depth:Number($('maxDelegationDepth').value)};
   const extra=[...($('additionalPMs')?.querySelectorAll('select')||[])].map(select=>select.value);
   if(extra.length)payload.pm_profiles=[payload.pm_profile,...extra];
   return payload;
 }
 function trackTaskDraft(event) {
-  if(['input','change'].includes(event?.type)&&[ $('delegationLevel'),$('workersPerPM') ].includes(event.target))ui.taskOrchestrationInitialized=true;
+  if(['input','change'].includes(event?.type)&&[ $('delegationLevel'),$('workersPerPM'),$('maxDelegationDepth') ].includes(event.target))ui.taskOrchestrationInitialized=true;
   if(['input','change'].includes(event?.type)&&(event.target===$('pmProfile')||event.target?.dataset?.focusKey?.startsWith('task-worker:')||event.target?.id?.startsWith('additional-pm-')))ui.modelChoicesTouched=true;
   // An actual edit also invalidates a choice when numeric parsing would hide
   // it (0 → blank, 1 → 01), or when the user re-enters the same value.
@@ -767,10 +771,13 @@ function trackTaskDraft(event) {
 function applyTaskOrchestrationDefaults() {
   const defaults=ui.config?.orchestration||ORCHESTRATION_DEFAULTS;
   $('delegationLevel').value=String(defaults.delegation_level);$('workersPerPM').value=String(defaults.workers_per_pm);
+  $('maxDelegationDepth').max=String(savedDelegationDepth()??3);$('maxDelegationDepth').value=String(savedDelegationDepth()??'');
 }
 function taskOrchestrationIssue() {
   const level=Number($('delegationLevel').value),count=Number($('workersPerPM').value),total=Number($('maxWorkers').value);
   if($('delegationLevel').value===''||!Number.isInteger(level)||level<0||level>2||$('workersPerPM').value===''||!Number.isInteger(count)||count<1||count>16)return 'PMの分担方針と委任人数を確認してください。';
+  const depth=Number($('maxDelegationDepth').value),cap=savedDelegationDepth();
+  if(cap===null||$('maxDelegationDepth').value===''||!Number.isInteger(depth)||depth<1||depth>cap)return `この作業の委任深さを1〜${cap??3}の整数で指定してください。保存済み上限を超える入力は開始できません。`;
   const pms=1+($('additionalPMs')?.querySelectorAll('select')||[]).length,required=pms*count;
   return level===2&&(!Number.isInteger(total)||total<required)?`委任必須には PM ${pms} 人 × ${count} 人 = ${required} 人分の作業者上限が必要です。現在の上限は ${total} 人です。人数または方針を変更してください。`:'';
 }
@@ -778,6 +785,10 @@ function renderTaskOrchestration() {
   const level=Number($('delegationLevel').value),label=delegationLabel(level),count=$('workersPerPM').value;
   $('delegationLevelValue').textContent=label;$('delegationLevel').setAttribute('aria-valuetext',label);
   $('workersPerPMValue').textContent=`${count} 人${level===0?'（PM中心では未使用）':''}`;$('workersPerPM').setAttribute('aria-valuetext',$('workersPerPMValue').textContent);
+  const depth=$('maxDelegationDepth');
+  // Updating a range's max can silently clamp a live draft in the browser. This
+  // number input retains an out-of-range draft for explicit correction instead.
+  depth.max=String(savedDelegationDepth()??3);$('maxDelegationDepthValue').textContent=delegationDepthLabel(Number(depth.value));depth.setAttribute('aria-valuetext',$('maxDelegationDepthValue').textContent);
   const issue=taskOrchestrationIssue();inlineStatus($('delegationStatus'),issue|| (level===0?'PM中心では、この委任人数を使用しません。':level===1?'目標人数です。PMが必要に応じて委任し、全体の作業者上限と予算を守ります。':'各PMの委任手順が必須です。成果の品質・成功を保証する設定ではなく、全体の権限・予算も増えません。'),Boolean(issue));
   return issue;
 }
@@ -912,7 +923,7 @@ async function refreshPreflight(request) {
     for(const issue of [...(response.blockers||[]),...(response.warnings||[])])parts.push(issue.message);
     inlineStatus($('preflightStatus'),(response.can_start?'開始に必要な設定を確認しました。推論・ツール動作は未確認です。':'開始前に修正が必要です。')+' '+parts.join(' '),!response.can_start);
     const target=$('preflightDetails'),scopeOpen=Boolean(target.querySelector('.readiness-scope')?.open);target.replaceChildren();
-    if(response.orchestration){const policy=response.orchestration;target.append(element('p','small',`確認した分担方針: ${delegationLabel(policy.delegation_level)} · PM1人あたり ${Number.isInteger(policy.workers_per_pm)?policy.workers_per_pm:'未記録'} 人${policy.delegation_level===0?'（未使用）':''}`));}
+    if(response.orchestration){const policy=response.orchestration;target.append(element('p','small',`確認した分担方針: ${delegationLabel(policy.delegation_level)} · PM1人あたり ${Number.isInteger(policy.workers_per_pm)?policy.workers_per_pm:'未記録'} 人${policy.delegation_level===0?'（未使用）':''} · 委任深さ ${delegationDepthLabel(policy.max_delegation_depth)}`));}
     if(response.destinations){
       target.append(element('p','small','送信される可能性のある接続先（実際の呼び出し記録ではありません）'));
       for(const p of response.destinations)target.append(element('p','readiness-destination',`${p.pm_count?`PM ${p.pm_count} 人${p.worker_available?' / 作業者候補':''}`:p.role} · ${p.label} · ${p.model} — ${p.endpoint}${p.proxy?' · proxy: '+p.proxy:''}`));
@@ -937,6 +948,66 @@ function needsHuman(agent) { return !archivedAgent(agent)&&(agent.status_reason=
 function filteredAgents(agents) {
   const query=$('agentSearch').value.trim().toLocaleLowerCase();
   return agents.filter(agent=>(!ui.needsOnly||needsHuman(agent))&&(!query||[agent.name,agent.id,agent.assignment,agent.profile_id].join(' ').toLocaleLowerCase().includes(query)));
+}
+function agentHierarchy(agent) {
+  const value=agent?.hierarchy,run=agent&&ui.state.runs.find(item=>item.id===agent.run_id);
+  const ident=id=>typeof id==='string'&&id.length>0;
+  if(!run||!value||typeof value!=='object'||Array.isArray(value)||!Number.isInteger(value.depth)||value.depth<0||value.depth>3||
+    !ident(value.root_pm_id)||!ident(value.unit_id)||typeof value.can_delegate!=='boolean'||!Array.isArray(value.direct_children)||
+    value.direct_children.length>16||!value.direct_children.every(ident)||new Set(value.direct_children).size!==value.direct_children.length)return null;
+  const members=ui.state.agents.filter(item=>item.run_id===agent.run_id),ids=new Map();
+  for(const member of members){if(ids.has(member.id))return null;ids.set(member.id,member);}
+  if(ids.get(agent.id)!==agent||Array.isArray(run.agent_ids)&&!run.agent_ids.includes(agent.id))return null;
+  const seen=new Set();let root=agent,depth=0;
+  while(root.parent_id){
+    if(seen.has(root.id)||depth>=3)return null;seen.add(root.id);root=ids.get(root.parent_id);if(!root)return null;depth++;
+  }
+  if(value.depth!==depth||value.root_pm_id!==root.id||value.unit_id!==(agent.parent_id||agent.id))return null;
+  const children=members.filter(item=>item.parent_id===agent.id).map(item=>item.id);
+  if(children.length!==value.direct_children.length||children.some(id=>!value.direct_children.includes(id)))return null;
+  return value;
+}
+function hierarchyPeerLabel(agent,id) {
+  const peer=ui.state.agents.find(item=>item.id===id&&item.run_id===agent.run_id);
+  return peer?`${peer.name||peer.id} [${id}]`:`担当未取得 [${id}]`;
+}
+function agentRoleLabel(agent) {
+  if(!agent)return '';
+  if(!agent.parent_id)return 'PM';
+  return agentHierarchy(agent)?.direct_children.length?'作業者・単位まとめ役':'作業者';
+}
+function agentHierarchyLabel(agent) {
+  if(!agent||!Object.hasOwn(agent,'hierarchy'))return '';
+  const value=agentHierarchy(agent),prefix=archivedAgent(agent)?'保存時点の階層':!ui.networkConnected?'最後に取得した階層':'階層';
+  if(!value)return `${prefix}: 詳細を確認できません。`;
+  const parts=[`${prefix}: ${agentRoleLabel(agent)} · 深さ ${value.depth}（${['PM','子','孫','ひ孫'][value.depth]}）`,
+    `所属単位: ${hierarchyPeerLabel(agent,value.unit_id)}`];
+  if(agent.parent_id)parts.push(`報告先: ${hierarchyPeerLabel(agent,agent.parent_id)}`);
+  if(value.direct_children.length)parts.push(`管理する子単位: ${hierarchyPeerLabel(agent,agent.id)} · 直属の子 ${value.direct_children.length} 人`);
+  parts.push(`再委任: ${value.can_delegate?'可能との表示':'不可との表示'}（取得時点。実行時にサーバーが再確認）`);
+  return parts.join('\n');
+}
+function openHierarchyRelation(owner,id,mail=false) {
+  const agent=getAgent(),value=agentHierarchy(agent);
+  if(owner.instance!==ui.instanceId||!agent||agent.id!==owner.agent||agent.run_id!==owner.run||!value||![agent.parent_id,...value.direct_children].includes(id))return;
+  if(mail)selectMailPair(agent.id,id);else selectAgent(id);
+}
+function renderHierarchyRelations(agent) {
+  const value=agentHierarchy(agent),panel=$('hierarchyRelations'),items=value?[...(agent.parent_id?[{id:agent.parent_id,label:'報告先'}]:[]),...value.direct_children.map(id=>({id,label:'直属の子'}))]:[];
+  const signature=JSON.stringify([agent?.run_id,agent?.id,items.map(item=>[item.id,item.label,hierarchyPeerLabel(agent,item.id)])]);
+  if(signature===ui.hierarchyRelationsSignature)return;ui.hierarchyRelationsSignature=signature;
+  const scroll=panel.scrollTop;
+  preserveControlFocus(()=>{
+    panel.replaceChildren();panel.hidden=!items.length;
+    for(const item of items){
+      const row=element('div','hierarchy-relation'),label=hierarchyPeerLabel(agent,item.id),owner={run:agent.run_id,agent:agent.id,instance:ui.instanceId};
+      const select=element('button','button minor',`${item.label}: ${label}`),mail=element('button','button minor','この親子の通信を見る');
+      select.type='button';mail.type='button';select.dataset.focusKey=`hierarchy:${agent.id}:${item.id}:select`;mail.dataset.focusKey=`hierarchy:${agent.id}:${item.id}:mail`;
+      select.addEventListener('click',()=>openHierarchyRelation(owner,item.id));mail.addEventListener('click',()=>openHierarchyRelation(owner,item.id,true));
+      row.append(select,mail);panel.appendChild(row);
+    }
+    panel.scrollTop=scroll;
+  },()=>$('conversationHeading'));
 }
 function hasMessageInput(agent) {
   const run=agent&&ui.state.runs.find(run=>run.id===agent.run_id);
@@ -1149,7 +1220,7 @@ function questionFocusFallback() {
 }
 function renderQuestions(entries) {
   const filtered=entries.filter(questionMatches),signature=JSON.stringify(['questions',ui.selectedRun,ui.selectedAgent,$('agentSearch').value,entries.length,
-    filtered.map(({run,agent})=>[run.id,run.task,run.created_at,agent.id,agent.name,agent.parent_id,agent.profile_id,agent.configured_profile,agent.question,agent.question_state,agent.message_eligibility,hasMessageInput(agent)])]);
+    filtered.map(({run,agent})=>[run.id,run.task,run.created_at,agent.id,agent.name,agent.parent_id,agent.hierarchy,agent.profile_id,agent.configured_profile,agent.question,agent.question_state,agent.message_eligibility,hasMessageInput(agent)])]);
   if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   const fallback=questionFocusFallback(),focusedKey=document.activeElement?.dataset.focusKey;
   preserveControlFocus(()=>{
@@ -1164,7 +1235,7 @@ function renderQuestions(entries) {
       sourceLine.append(element('span','question-run-id',`チーム ${shortRunId(run)}`));if(inputBadge)sourceLine.append(inputBadge);
       source.append(sourceLine,element('span','question-run-title',String(run.task||'作業').split('\n')[0]));
       card.append(source,
-        element('span','agent-name',`${!agent.parent_id?'PM':'作業者'} · ${agent.name||agent.id}`),
+        element('span','agent-name',`${agentRoleLabel(agent)} · ${agent.name||agent.id}`),
         element('span','question-preview',agent.question.length>180?agent.question.slice(0,180)+'…':agent.question),
         element('span','question-timing',questionTimingLabel(agent)),
         element('span','question-availability',availability.label+(availability.message?' · '+availability.message:'')));
@@ -1287,7 +1358,7 @@ function renderWorkBoard(run) {
     node.quote.textContent=post.reply_to===null?'':workBoardQuote(board,post.reply_to);
     node.quote.disabled=!board.posts.has(post.reply_to);
     const agent=ui.state.agents.find(agent=>agent.run_id===run.id&&agent.id===post.author_id);
-    node.role.textContent=post.author_kind==='human'?'あなた':agent?`${agent.parent_id?'作業者':'PM'} · ${stateLabel(agent)}`:'担当者';
+    node.role.textContent=post.author_kind==='human'?'あなた':agent?`${agentRoleLabel(agent)} · ${stateLabel(agent)}`:'担当者';
     node.avatar.textContent=post.author_kind==='human'?'YOU':agent&&!agent.parent_id?'PM':'W';
   }
   if(board.view.atBottom){feed.scrollTop=feed.scrollHeight;if(board.loaded)board.seenSeq=Math.max(board.seenSeq,board.cursor);}
@@ -1388,18 +1459,22 @@ function networkLayout(agents) {
   const roots=agents.filter(agent=>!agent.parent_id||!ids.has(agent.parent_id));
   for(const root of [...roots,...agents]) {
     if(placed.has(root.id))continue;
-    placed.set(root.id,{x:304,y:top});let row=0;const descendants=[];
+    placed.set(root.id,{x:304,y:top});const levels=[];
     // Parent identity, not a model-written role label, defines the hierarchy.
-    const pending=agents.filter(agent=>agent.parent_id===root.id);
+    const pending=agents.filter(agent=>agent.parent_id===root.id).map(agent=>({agent,depth:1}));
     while(pending.length) {
-      const agent=pending.shift();if(placed.has(agent.id))continue;
-      placed.set(agent.id,{x:92+(row%3)*212,y:top+176+Math.floor(row/3)*164});row++;descendants.push(agent.id);
-      pending.push(...agents.filter(child=>child.parent_id===agent.id&&!placed.has(child.id)));
+      const {agent,depth}=pending.shift();if(placed.has(agent.id))continue;
+      placed.set(agent.id,null);(levels[depth-1]??=[]).push(agent.id);
+      pending.push(...agents.filter(child=>child.parent_id===agent.id&&!placed.has(child.id)).map(agent=>({agent,depth:depth+1})));
     }
-    // Deterministic balanced rows; no physics or model-written hierarchy.
-    const lastRowCount=row%3,offset=(3-lastRowCount)*212/2;
-    if(lastRowCount)for(const id of descendants.slice(-lastRowCount))placed.get(id).x+=offset;
-    top+=176+Math.ceil(row/3)*164+40;
+    // Keep the original one-level coordinates. Grandchildren occupy later rows;
+    // the existing per-run cache still owns all positions already shown/dragged.
+    let y=top+176;
+    for(const level of levels){
+      for(let i=0;i<level.length;i++){const rowCount=Math.min(3,level.length-Math.floor(i/3)*3);placed.set(level[i],{x:92+(i%3)*212+(3-rowCount)*106,y:y+Math.floor(i/3)*164});}
+      y+=Math.ceil(level.length/3)*164;
+    }
+    top=y+40;
   }
   return {positions:placed,width:720,height:Math.max(360,top)};
 }
@@ -1484,7 +1559,7 @@ function renderNetworkPreview() {
   const activity=agent.activity||{},latest=activity.latest_log,count=value=>Number.isSafeInteger(value)&&value>=0?String(value):'未取得';
   $('networkPreviewTitle').textContent=agent.name||agent.id;
   $('networkPreviewState').textContent=stateLabel(agent);
-  $('networkPreviewRole').textContent=`${agent.parent_id?'WORKER':'PM'}${agent.role?` · ${agent.role}`:''}${archivedAgent(agent)?' · 保存履歴':''}`;
+  $('networkPreviewRole').textContent=`${agentHierarchy(agent)?agentRoleLabel(agent):agent.parent_id?'WORKER':'PM'}${agent.role?` · ${agent.role}`:''}${archivedAgent(agent)?' · 保存履歴':''}`;
   $('networkPreviewAssignment').textContent=agent.assignment||'担当内容は未記録';
   $('networkPreviewLatest').textContent=latest?`${localTime(latest.at)} · ${String(latest.text||'')}`:'最新ログは未取得';
   $('networkPreviewCounts').textContent=`待機入力 ${count(activity.pending_count)} · 結果 ${count(activity.result_count)} · 保存記録 ${count(activity.output_receipt_count)}`;
@@ -1726,7 +1801,7 @@ function renderTeamMap(agents) {
       button.addEventListener('focus',()=>{cancelNetworkPreviewDismiss();ui.networkFocusAgent=agent.id;renderNetworkPreview();});
       button.addEventListener('blur',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
       button.setAttribute('aria-controls','networkPreview');button.setAttribute('aria-describedby','networkInteractionHelp');canvas.appendChild(button);
-      ui.networkNodes.set(agent.id,{button,name,state,monogram});
+      ui.networkNodes.set(agent.id,{button,name,state,monogram,role});
     }
     map.appendChild(canvas);
     if(!view.camera)fitNetwork();else paintNetworkCamera();
@@ -1735,11 +1810,13 @@ function renderTeamMap(agents) {
   for(const agent of agents) {
     const monogram=agent.parent_id?`W${++workerOrdinal}`:'PM';
     const node=ui.networkNodes.get(agent.id);if(!node)continue;
-    const displayed=displayStatus(agent),status=Object.hasOwn(STATUS_LABELS,displayed)?displayed:'unknown';
+    const displayed=displayStatus(agent),status=Object.hasOwn(STATUS_LABELS,displayed)?displayed:'unknown',hierarchy=agentHierarchy(agent);
     node.button.className=`network-node ${status}${needsHuman(agent)?' human-input':''}${agent.id===ui.selectedAgent?' selected':''}`;
-    node.button.setAttribute('aria-label',`${agent.name||agent.id} · ${stateLabel(agent)} · クリックまたは Enter で詳細を固定`);
+    node.button.setAttribute('aria-label',`${agent.name||agent.id} · ${stateLabel(agent)}${hierarchy?` · ${agentRoleLabel(agent)} · 深さ ${hierarchy.depth}`:''} · クリックまたは Enter で詳細を固定`);
     node.name.textContent=agent.name||agent.id;node.state.textContent=stateLabel(agent);
     node.monogram.textContent=monogram;
+    node.role.textContent=hierarchy?`${agent.parent_id?(hierarchy.direct_children.length?'LEAD':'WORKER'):'PM'} · D${hierarchy.depth}`:agent.parent_id?'WORKER':'PM';
+    node.button.title=agentHierarchyLabel(agent);
   }
   const links=currentMailLinks(agents,retainedTeamEvents(getRun())),mailKey=JSON.stringify(links);
   if(ui.networkSvg&&mailKey!==ui.networkMailKey) {
@@ -1803,21 +1880,22 @@ function renderRunList() {
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
   [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
-const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
-function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
-function badge(status,reason) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),REASON_LABELS[reason]||statusLabel(status)); }
+const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
+function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
+function badge(status,reason,agent=null) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),agent?stateLabel(agent):REASON_LABELS[reason]||statusLabel(status)); }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   filteredAgents(agents).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
     const top=element('div','agent-card-top'),stateLine=element('span','agent-state-line'),inputBadge=messageInputBadge(agent);
-    stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason));if(inputBadge)stateLine.append(inputBadge);
+    stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason,agent));if(inputBadge)stateLine.append(inputBadge);
     top.append(element('span','agent-avatar',!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`),stateLine);
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
     card.append(top,element('span','agent-name',agent.name||agent.id),model,element('span','agent-task',agent.assignment||agent.question||agent.last_error||(!agent.parent_id?'チームの作業を管理':'割り当てられた作業を担当')));
     const dependency=workerDependencyLabel(agent);if(dependency)card.appendChild(element('span','agent-dependencies',dependency));
+    const hierarchy=agentHierarchyLabel(agent);if(hierarchy)card.appendChild(element('span','agent-hierarchy',hierarchy));
     card.addEventListener('click',()=>selectAgent(agent.id));$('agentCards').appendChild(card);
   });
 }
@@ -1934,6 +2012,7 @@ function exportSelectedOutput() {
 function setVisibleText(node,text) { const value=String(text??'');if(node.textContent!==value)node.textContent=value; }
 function renderInspector(agent) {
   if($('inspectorMonitor'))$('inspectorMonitor').textContent=agentMonitorText(agent);
+  renderHierarchyRelations(agent);
   const activity=agent?.activity,latest=activity?.latest_log;
   setVisibleText($('inspectorAssignment'),agent?.assignment||'担当内容は未記録です。');
   setVisibleText($('inspectorLatest'),latest?`${localTime(latest.at)} · ${latest.kind||'ログ'}\n${latest.text||''}`:'公開された最新ログはまだありません。');
@@ -1952,7 +2031,7 @@ function renderConversation(agent) {
   if(detailStatus.textContent!==detailMessage)detailStatus.textContent=detailMessage;
   $('conversationLog').setAttribute('aria-busy',String(loading));$('resultsPanel').setAttribute('aria-busy',String(loading));
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
-  $('conversationMeta').textContent=agent?`${!agent.parent_id?'PM':'作業者'} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
+  $('conversationMeta').textContent=agent?`${agentRoleLabel(agent)} · ${agent.profile_id} · ${agent.turns||0} turns`:'';
   const memory=agent?.context_memory;
   $('contextMemoryStatus').hidden=!memory;
   $('contextMemoryStatus').textContent=memory?`${memory.compacting&&!archivedAgent(agent)?'会話を要約中 · ':''}文脈圧縮 ${memory.compactions} 回${memory.fallback_compactions>0?`（うち自動抜粋 ${memory.fallback_compactions} 回・AIによる要約ではありません。内容の一部を省略）`:''} · 元の履歴 ${memory.history_records} 件（上限で除外 ${memory.history_omitted} 件）· モデル用の会話文脈は今回の起動中のみ。要約には情報が抜けることがあります。`:'';
@@ -2203,12 +2282,12 @@ function workerDependencyLabel(agent) {
   const name=ident=>{const peer=ui.state.agents.find(item=>item.run_id===agent.run_id&&item.id===ident);return `${peer?.name||'担当未取得'} [${ident}]`;};
   const parts=[`${prefix}: ${value.depends_on.map(name).join('、')}`];
   if(value.blocked_by.length)parts.push(`前工程の承認待ち: ${value.blocked_by.map(name).join('、')}`);
-  if(value.stale)parts.push('前工程が変更されました。以前の成果は失効し、PMの明示的な再依頼が必要です。');
+  if(value.stale)parts.push(`前工程が変更されました。以前の成果は失効し、${agentHierarchy(agent)?.depth>=2?'直属親':'PM'}の明示的な再依頼が必要です。`);
   const accepted=Object.entries(value.accepted_revisions);
   if(accepted.length)parts.push('使用した承認版: '+accepted.map(([ident,revision])=>`${name(ident)} / ${revision}`).join('、'));
   return parts.join('\n');
 }
-function agentMonitorText(agent) { return [coordinationAgentLabel(agent),workerDependencyLabel(agent),providerObservationLabel(agent)].filter(Boolean).join('\n'); }
+function agentMonitorText(agent) { return [agentHierarchyLabel(agent),coordinationAgentLabel(agent),workerDependencyLabel(agent),providerObservationLabel(agent)].filter(Boolean).join('\n'); }
 function mailLifecycles(events,runId) {
   const rows=new Map();
   for(const event of events) {
@@ -2277,7 +2356,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',delegationLabel(run.delegation_level)],['PMごとの委任人数',Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録']],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録']],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }

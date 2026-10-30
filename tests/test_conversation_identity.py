@@ -1,6 +1,8 @@
 """Real engine dispatch keeps one identity per agent conversation, excluding summaries."""
 import re
 
+import pytest
+
 from test_context_compaction import summary_reply
 from test_engine import ScriptClient, configured, reply, settled, start
 
@@ -35,11 +37,13 @@ async def test_identity_survives_tool_followups_and_human_turns(tmp_path):
 
 
 async def test_workers_and_separate_runs_have_distinct_identities(tmp_path):
-    client = IdentityClient([reply('Complete') for _ in range(4)])
+    client = IdentityClient([reply(calls=[('wait_for_message', {})]),
+                             *[reply('Complete') for _ in range(3)]])
     engine, _ = configured(tmp_path, client)
     try:
         first_run, lead = await start(engine)
         await settled(engine)
+        assert first_run['status'] == 'waiting' and lead.status == 'idle' and lead.waiting_for_message
         created = await engine.execute_tool(first_run, lead, 'spawn_worker', {
             'profile_id': 'local', 'role': 'reviewer', 'task': 'Review the existing result'})
         worker = engine.agents[created['agent_id']]
@@ -53,6 +57,25 @@ async def test_workers_and_separate_runs_have_distinct_identities(tmp_path):
         assert len({expected_lead, expected_worker, expected_other}) == 3
         # Worker completion is another turn of the existing PM conversation.
         assert client.conversation_ids == [expected_lead, expected_worker, expected_lead, expected_other]
+    finally:
+        await engine.close()
+
+
+async def test_completed_run_cannot_spawn_a_new_conversation(tmp_path):
+    client = IdentityClient([reply('Complete')])
+    engine, _ = configured(tmp_path, client)
+    try:
+        run, lead = await start(engine)
+        await settled(engine)
+        assert run['status'] == lead.status == 'done'
+        assert engine._hierarchy_view(lead)['can_delegate'] is False
+        before = (list(run['agent_ids']), run['model_calls'], run['tool_calls'], run['auto_collaborations'])
+        with pytest.raises(ValueError, match='増員'):
+            await engine.execute_tool(run, lead, 'spawn_worker', {
+                'profile_id': 'local', 'role': 'late reviewer', 'task': 'Must not start after completion'})
+        assert (run['agent_ids'], run['model_calls'], run['tool_calls'], run['auto_collaborations']) == before
+        assert client.conversation_ids == [f'{run["id"]}/{lead.id}']
+        assert len(engine.agents) == len(client.calls) == 1 and run['status'] == 'done'
     finally:
         await engine.close()
 

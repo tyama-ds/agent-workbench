@@ -112,7 +112,7 @@ async def test_pm_worker_limit_parentage_privileges_and_peer_mail_are_shared(tmp
     engine, _ = configured(tmp_path, ScriptClient([]))
     engine.kick = lambda agent: None
     try:
-        run, (pm1, pm2) = await multi_start(engine)
+        run, (pm1, pm2) = await multi_start(engine, max_delegation_depth=1)
         children = []
         for lead in (pm1, pm2):
             created = await engine.execute_tool(run, lead, 'spawn_worker',
@@ -313,7 +313,7 @@ async def test_real_api_two_pm_team_delegates_writes_and_returns_to_each_parent(
         settings, workspace = configured_settings(tmp_path, endpoint)
         engine = Engine(settings)
         try:
-            run, leads = await multi_start(engine, ['local', second_profile])
+            run, leads = await multi_start(engine, ['local', second_profile], max_delegation_depth=1)
             await eventually(lambda: run['status'] in {'done', 'waiting'}, engine)
             assert not errors and run['status'] == 'done', engine.snapshot()
             workers = [engine.agents[i] for i in run['agent_ids'] if i not in run['pm_agent_ids']]

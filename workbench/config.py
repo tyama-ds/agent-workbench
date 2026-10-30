@@ -17,7 +17,7 @@ ENV = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}\Z')
 LOOPBACK = {'127.0.0.1', 'localhost', '::1'}
 LAN = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7')]
 COPILOT_PROFILE_ID = 'copilot-agent'
-ORCHESTRATION_DEFAULTS = {'delegation_level': 1, 'workers_per_pm': 2}
+ORCHESTRATION_DEFAULTS = {'delegation_level': 1, 'workers_per_pm': 2, 'max_delegation_depth': 3}
 DUCKDUCKGO_ENDPOINT = 'https://html.duckduckgo.com/html/'
 SEARCH_KEY_UNSUPPORTED = 'Web 検索は API キー不要です。検索キーは保存できません。'
 
@@ -284,6 +284,7 @@ def validate_settings(raw, *, check_paths=True):
     orchestration = value.setdefault('orchestration', copy.deepcopy(ORCHESTRATION_DEFAULTS))
     number(orchestration['delegation_level'], 'orchestration.delegation_level', 0, 2, integer=True)
     number(orchestration['workers_per_pm'], 'orchestration.workers_per_pm', 1, 16, integer=True)
+    number(orchestration.setdefault('max_delegation_depth', 3), 'orchestration.max_delegation_depth', 1, 3, integer=True)
     if type(value['work_board']['enabled']) is not bool:
         raise ValueError('work_board.enabled: bool が必要です')
     return value

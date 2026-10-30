@@ -23,7 +23,7 @@ class WorkerDependenciesMixin:
             child = self.agents.get(ident)
             if (child is None or child.run_id != run['id'] or ident not in run['agent_ids']
                     or child.parent_id != pm.id or child.closing or child.status == 'stopped'):
-                raise ValueError('depends_on は同じ作業・同じPMの既存workerだけを指定できます')
+                raise ValueError('depends_on は同じ作業・同じ直属親の既存workerだけを指定できます')
         # Only older workers can be named; dependencies have no mutation tool.
         return tuple(values)
 
@@ -35,12 +35,14 @@ class WorkerDependenciesMixin:
         pm = self.agents.get(child.parent_id)
         revision = child.result_revision
         if (pm is None or child.run_id != run['id'] or child.id not in run['agent_ids']
-                or pm.id not in run['pm_agent_ids'] or child.closing or child.status != 'done'
+                or pm.run_id != run['id'] or pm.id not in run['agent_ids'] or child.closing or child.status != 'done'
                 or child.pending or child.question or child.last_error or child.dependency_stale
                 or child.finished_revision != revision or revision < 1
                 or pm.worker_report_deliveries.get(child.id) != revision
                 or pm.worker_report_consumed.get(child.id) != revision
                 or pm.worker_report_reviews.get(child.id) != {'result_revision': revision, 'decision': 'accept'}):
+            return False
+        if not self._hierarchy_report_ready(run, child, seen - {child.id}):
             return False
         for ident in child.depends_on:
             upstream = self.agents.get(ident)
@@ -75,15 +77,20 @@ class WorkerDependenciesMixin:
                      and agent.pending_mail_metadata.get(content, {}).get('mail_id') == agent.dependency_retry_mail), None)
 
     def _dependency_can_start(self, agent):
-        return not agent.depends_on or (not self._dependency_blockers(agent)
-            and (not self._dependency_stale(agent) or self._dependency_retry_index(agent) is not None))
+        return self._hierarchy_can_start(agent) and (not agent.depends_on or (not self._dependency_blockers(agent)
+            and (not self._dependency_stale(agent) or self._dependency_retry_index(agent) is not None)))
 
     def _dependency_require(self, agent):
+        self._hierarchy_require(agent)
         if agent.depends_on and (not agent.dependency_revisions or self._dependency_stale(agent) or self._dependency_blockers(agent)
                 or (getattr(agent, '_dependency_turn_epoch', agent.dependency_epoch) != agent.dependency_epoch)):
             raise DependencyBlocked(self._dependency_stale(agent))
 
     def _dependency_begin(self, agent):
+        if not self._dependency_can_start(agent):
+            self._hierarchy_require(agent)
+            raise DependencyBlocked(self._dependency_stale(agent))
+        self._hierarchy_begin(agent)
         if not agent.depends_on:
             return
         if not self._dependency_can_start(agent):
@@ -100,7 +107,11 @@ class WorkerDependenciesMixin:
         agent.dependency_revisions = self._dependency_vector(agent)
         agent._dependency_turn_epoch = agent.dependency_epoch
 
-    def _dependency_invalidate(self, changed):
+    def _dependency_invalidate(self, changed, *, _seen=None, _initial=False):
+        seen = set() if _seen is None else _seen
+        if changed.id in seen:
+            return
+        seen.add(changed.id)
         run = self.runs[changed.run_id]
         affected, frontier = set(), {changed.id}
         while frontier:
@@ -110,8 +121,9 @@ class WorkerDependenciesMixin:
             frontier = following
         for ident in affected:
             child = self.agents[ident]
-            if not child.dependency_revisions:
+            if ident in seen or not child.dependency_revisions:
                 continue  # Initial waiting assignment has never used old input.
+            seen.add(ident)
             child.dependency_epoch += 1
             child.dependency_stale = True
             child.dependency_retry_mail = ''
@@ -126,8 +138,13 @@ class WorkerDependenciesMixin:
                 pm.status = 'idle'
             if child.status not in {'working', 'stopped', 'error'}:
                 child.status = 'idle'
+            self._hierarchy_invalidate_ancestors(child, seen)
+            self._hierarchy_invalidate_descendants(child, seen)
+        if not _initial:
+            self._hierarchy_invalidate_ancestors(changed, seen)
 
     def _dependency_reassign(self, actor, target, receipt):
+        self._hierarchy_reassign(actor, target, receipt)
         if (target.depends_on and self._dependency_stale(target) and actor.id == target.parent_id
                 and receipt.get('queued') is True and not self._dependency_blockers(target)):
             target.dependency_retry_mail = receipt['mail_id']
@@ -145,7 +162,7 @@ class WorkerDependenciesMixin:
 
     def _dependency_pm_issue(self, run, pm):
         children = self._owned_workers(run, pm)
-        if pm.parent_id is not None or not any(child.depends_on for child in children):
+        if not any(child.depends_on for child in children):
             return None
         if not all(self._dependency_current_report(run, child) for child in children):
             return ('worker_dependency_pending', '依存する工程があります。全workerの現在の正式報告を確認・承認してから完了してください。')

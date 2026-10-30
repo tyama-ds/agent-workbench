@@ -125,7 +125,7 @@ async def test_python_tools_and_runtime_use_per_run_settings_snapshot(tmp_path, 
     monkeypatch.setattr(engine_module, 'execute_python', fake)
     try:
         initial = enable_python(engine, tmp_path)
-        run, pm = await start(engine)
+        run, pm = await start(engine, max_delegation_depth=1)
         worker = engine._new_agent(run, 'local', 'helper', pm.id)
         assert all('python_execute' in {tool['name'] for tool in engine._model_tools(run, agent)} for agent in (pm, worker))
         assert 'spawn_worker' not in {tool['name'] for tool in engine._model_tools(run, worker)}
