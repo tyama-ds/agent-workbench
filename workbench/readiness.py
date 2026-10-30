@@ -3,7 +3,7 @@ from .providers import _endpoint
 from .config import ORCHESTRATION_DEFAULTS
 
 
-def summarize(prepared, *, orchestration=None):
+def summarize(prepared, *, orchestration=None, adaptive_team=False):
     _, config, pms, workers, _, harness, web = prepared
     selected = dict.fromkeys([*pms, *workers])
     destinations = []
@@ -36,7 +36,10 @@ def summarize(prepared, *, orchestration=None):
         for root in roots:
             if any(root.is_relative_to(denied) for denied in harness.deny_roots):
                 warnings.append({'code': kind + '_scope_denied', 'message': f'{root}: 拒否範囲に含まれるため使用できません。'})
-    return {'ok': True, 'can_start': True, 'blockers': [], 'warnings': warnings,
+    formation = ({'adaptive_team': True, 'formation_rules': {
+        'workers': {'low': 1, 'medium': 2, 'high': 3}, 'reviewer_slots': 1,
+        'min_cap': 2, 'manual_counts_used': False}} if adaptive_team else {})
+    return {'ok': True, 'can_start': True, 'blockers': [], 'warnings': warnings, **formation,
         'orchestration': orchestration or {**ORCHESTRATION_DEFAULTS, **config.get('orchestration', {})},
         'inference_tested': False, 'tools_tested': False, 'destinations': destinations,
         'scope': {'read_roots': [str(p) for p in harness.read_roots],

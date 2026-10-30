@@ -349,7 +349,8 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab reaches optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false,'The default single-PM scenario keeps additional PM controls collapsed');
-    for(const id of ['delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults']){
+    assert.equal(await page.locator('#adaptiveTeam').isChecked(),false,'The retained-worker focus scenario remains in manual mode');
+    for(const id of ['adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults']){
       await page.keyboard.press('Tab');
       assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
     }
@@ -386,7 +387,8 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('#maxWorkers').focus();await page.keyboard.press('Tab');
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab preserves the optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false);
-    for(const id of ['delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults']){
+    assert.equal(await page.locator('#adaptiveTeam').isChecked(),false,'The removed-worker focus scenario remains in manual mode');
+    for(const id of ['adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults']){
       await page.keyboard.press('Tab');
       assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
     }
