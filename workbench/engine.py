@@ -121,7 +121,6 @@ REFERENCE_REVIEW_DESCRIPTIONS = {
     'review_work_step': 'PM only. Review the current candidate mail that entered your context. Check whether the word is an ordinary noun with the stated meaning. Accept routes the author output to the next worker. Reference-mode accept requires audit matching every pending_audit field in application context. Feedback remains an unverified comment, not verified reasoning. Revise requires a specific discrepancy. Do not supply an answer. Character/link and fixed-source checks do not prove semantic understanding.',
     'review_worker_report': 'PM only. Review an owned worker current formal report after it entered your context. Use list_team for the exact current result_revision. Reference-mode accept requires audit containing every assigned accepted step from formal_reports in application context. Feedback remains an unverified comment. Independent current report reviews may share a native tool batch; check each result before finish_work. Otherwise revise with a specific discrepancy (ordered corrections use rollback_work_step). This records judgment and fixed-source matching, not semantic understanding.',
 }
-TEAM_TOOLS += FORMATION_TOOLS
 TEAM_NAMES = {t['name'] for t in TEAM_TOOLS}
 COORDINATION_TOOLS = frozenset({'list_team', 'spawn_worker', 'send_message', 'ask_user',
                               'wait_for_workers', 'wait_for_message', 'review_worker_report',
@@ -1571,7 +1570,8 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
         return contextual
 
     def _model_tools(self, run, agent):
-        tools = [*[tool for tool in TEAM_TOOLS if run.get('work_board', {}).get('enabled') is True
+        team_tools = [*TEAM_TOOLS, *(FORMATION_TOOLS if run.get('adaptive_team') else [])]
+        tools = [*[tool for tool in team_tools if run.get('work_board', {}).get('enabled') is True
                    or tool['name'] not in {'post_work_board', 'read_work_board'}], *run['_executor'].schemas()]
         if run['_config']['python']['enabled'] and os.name == 'nt':
             network = ('Network access is enabled by the human for this run; scripts connect directly, '
@@ -2201,8 +2201,9 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
         self._formation_guard(run, agent, name)
         if name not in {'list_team', 'ask_user', 'send_message', 'wait_for_message', 'read_context_history'}:
             self._dependency_require(agent)
-        if name in TEAM_NAMES:
-            tool = next(t for t in TEAM_TOOLS if t['name'] == name)
+        if name in TEAM_NAMES or name in FORMATION_NAMES:
+            definitions = FORMATION_TOOLS if name in FORMATION_NAMES else TEAM_TOOLS
+            tool = next(t for t in definitions if t['name'] == name)
             spec = self._contextual_team_tool(run, agent, tool)['parameters']
             if set(args) - set(spec['properties']) or set(spec['required']) - set(args):
                 raise ValueError('ツール引数が不正です')
