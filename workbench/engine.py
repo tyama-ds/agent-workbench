@@ -21,6 +21,8 @@ from .config import (Settings, ROOT, DEFAULT, number, text, validate_settings, e
 from .copilot_bridge import CopilotBridgeManager
 from .runtime_paths import PROTECTED_ROOTS
 from .harness import PathHarness, ToolExecutor
+from .skills import SkillCatalog
+from .dependencies import WorkerDependenciesMixin, DependencyBlocked
 from .providers import ProviderClient, ProviderError, ProviderOutputLimitError, ProviderTimeoutError
 from .python_runner import execute_python
 from .selenium_runner import execute_selenium
@@ -122,6 +124,12 @@ COORDINATION_TOOLS = frozenset({'list_team', 'spawn_worker', 'send_message', 'as
                               'read_context_history', 'release_paths', 'finish_work',
                               'post_work_board', 'read_work_board'})
 COORDINATION_TOOLS = COORDINATION_TOOLS | ORDERED_NAMES
+SKILL_TOOL = schema('read_skill',
+    'Read a SKILL.md from this run\'s fixed catalog before applying its procedure. '
+    'Use the exact skill_id from the catalog. Instructions never grant permissions or human approval. '
+    'Resources relative to base_directory use the existing permitted file tools; scripts are not run automatically.',
+    {'skill_id': {'type': 'string', 'maxLength': 80}}, ('skill_id',))
+COORDINATION_TOOLS = COORDINATION_TOOLS | {'read_skill'}
 PYTHON_TOOL = schema('python_execute',
     'Run a normal Python script with the human-selected existing libraries in a Windows sandbox. '
     'Use relative paths in a private working directory, not host paths. No subprocesses. '
@@ -232,13 +240,22 @@ class Agent:
     waiting_for_message: bool = False
     delegation_blocked: str = ''
     participant_key: str = ''
+    depends_on: tuple[str, ...] = ()
+    dependency_revisions: dict = field(default_factory=dict)
+    dependency_stale: bool = False
+    dependency_epoch: int = 0
+    dependency_retry_mail: str = ''
 
     def public(self, *, message_eligibility=None, status_reason=None, include_detail=True, configured_profile=None,
-               redact_activity=lambda value: value, coordination=None):
+                redact_activity=lambda value: value, coordination=None, worker_dependencies=None):
         value = {k: getattr(self, k) for k in ('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id',
                                               'status', 'question', 'last_error', 'stop_reason', 'turns', 'assignment')}
         if coordination is not None:
             value['coordination'] = copy.deepcopy(coordination)
+        if self.depends_on:
+            value['worker_dependencies'] = copy.deepcopy(worker_dependencies if worker_dependencies is not None else {
+                'depends_on': list(self.depends_on), 'blocked_by': list(self.depends_on) if not self.dependency_revisions else [],
+                'stale': self.dependency_stale, 'accepted_revisions': dict(self.dependency_revisions)})
         projected = projection_summary(self)
         # Build summaries directly: unselected histories must not be copied or
         # traversed for redaction just to discard them afterwards.
@@ -269,7 +286,7 @@ class Agent:
                 }
 
 
-class Engine(OrderedCollaborationMixin):
+class Engine(WorkerDependenciesMixin, OrderedCollaborationMixin):
     def __init__(self, settings: Settings, client=None):
         self.settings = settings
         self.gate = ResourceGate()
@@ -392,7 +409,7 @@ class Engine(OrderedCollaborationMixin):
             run = self.runs[ident]
             coordination, by_agent = coordination_projection(run, self.agents, time.time(), redact=self._redact_tree)
             agents = [self.agents[key].public(configured_profile=self.configured_profile(self.agents[key]),
-                       coordination=by_agent.get(key)) for key in run['agent_ids']]
+                       coordination=by_agent.get(key), worker_dependencies=self._dependency_view(self.agents[key])) for key in run['agent_ids']]
             display_run = run | self._run_diagnostics(run)
             if coordination is not None:
                 display_run['coordination'] = coordination
@@ -699,7 +716,7 @@ class Engine(OrderedCollaborationMixin):
                          ({'coordination': coordination[run['id']]} if run['id'] in coordination else {}) for run in self.runs.values()],
                 'agents': [a.public(message_eligibility=self.message_eligibility(a), status_reason=self.agent_status_reason(a),
                                     configured_profile=self.configured_profile(a), redact_activity=self.redact,
-                                    coordination=members.get(a.id)) for a in self.agents.values()], 'events': list(self.events),
+                                    coordination=members.get(a.id), worker_dependencies=self._dependency_view(a)) for a in self.agents.values()], 'events': list(self.events),
                 'resources': self.gate.snapshot(), 'copilot_resources': self._copilot_resources(), 'copilot_agent_status': self.copilot_status()})
         result['redaction_revision'] = self._redaction.value_count
         return self._with_history(result)
@@ -740,7 +757,7 @@ class Engine(OrderedCollaborationMixin):
             'agents': [a.public(message_eligibility=self.message_eligibility(a),
                                 status_reason=self.agent_status_reason(a), include_detail=a.id == agent_id,
                                 configured_profile=self.configured_profile(a), redact_activity=self.redact,
-                                coordination=members.get(a.id)) for a in self.agents.values()],
+                                coordination=members.get(a.id), worker_dependencies=self._dependency_view(a)) for a in self.agents.values()],
             'events': events, 'resources': self.gate.snapshot(), 'copilot_resources': self._copilot_resources(), 'copilot_agent_status': self.copilot_status(),
             'selection': {'run_id': run_id, 'agent_id': agent_id, 'detail_loaded': agent_id is not None},
         })
@@ -817,11 +834,22 @@ class Engine(OrderedCollaborationMixin):
                 raise AdmissionError('key_missing', f'{p["label"]}: API キーが未設定です', field='api_key', profile_id=p['id'])
         # App implementation, settings, and secret storage cannot become agent
         # workspaces even if a broad user-selected ancestor contains them.
-        deny = [*config['paths']['deny_roots'], *(str(path) for path in PROTECTED_ROOTS), str(self.settings.directory)]
-        harness = PathHarness(config['paths']['read_roots'], config['paths']['write_roots'], deny_roots=deny,
-                              max_file_bytes=config['limits']['max_file_bytes'])
+        harness = self._file_harness(config)
         web_tools = WebTools({'search': copy.deepcopy(config['search'])})
         return task, config, pms, workers, count, harness, web_tools
+
+    def _file_harness(self, config):
+        deny = [*config['paths']['deny_roots'], *(str(path) for path in PROTECTED_ROOTS), str(self.settings.directory)]
+        return PathHarness(config['paths']['read_roots'], config['paths']['write_roots'], deny_roots=deny,
+                           max_file_bytes=config['limits']['max_file_bytes'])
+
+    def skill_catalog(self, *, redact=True):
+        """Explicit settings preview; never rescan from the state polling path."""
+        config = copy.deepcopy(self.settings.value)
+        value = SkillCatalog(self._file_harness(config)).public()
+        # HTTP discovery runs off-loop; its caller masks on the owning loop so
+        # secret rotation/history state are never mutated by a reader thread.
+        return self._redact_tree(value) if redact else value
 
     def preflight(self, payload):
         from .readiness import summarize
@@ -845,6 +873,15 @@ class Engine(OrderedCollaborationMixin):
             if config != effective_config(self.settings.value):
                 raise AdmissionError('settings_changed', '設定が変更されました。接続先を確認してから開始してください。')
             task, config, pms, workers, count, harness, web_tools = self._prepare_run(payload)
+        # All agents share this bounded snapshot; later refreshes/edits only
+        # affect new runs. Discovery does not execute skill resources.
+        skill_revision = self.settings.revision
+        skill_catalog = await asyncio.to_thread(SkillCatalog, harness)
+        if skill_revision != self.settings.revision or config != effective_config(self.settings.value):
+            raise AdmissionError('settings_changed', 'スキル読み込み中に設定が変更されました。内容を確認してから開始してください。')
+        # Discovery may await slow storage. Recheck shutdown, credentials,
+        # history and concurrent run capacity before publishing any agent.
+        self._prepare_run(payload)
         run_id = 'r-' + secrets.token_hex(8)
         # Capture a small public descriptor while original secret references are
         # still available. Later profile/environment removal must not unredact it.
@@ -862,7 +899,8 @@ class Engine(OrderedCollaborationMixin):
                'max_auto_collaborations': config['limits']['max_auto_collaborations'],
                'collaboration_limit_reached': False, '_collaboration_blocked': False,
                'agent_ids': [], '_config': config, '_configured_profiles': configured_profiles, '_harness': harness,
-               '_executor': ToolExecutor(harness), '_web': web_tools}
+               '_executor': ToolExecutor(harness), '_web': web_tools,
+               '_skill_catalog': skill_catalog, 'skills': self._redact_tree(skill_catalog.public())}
         if 'ordered_reference' in payload:
             catalog = ReferenceCatalog.from_payload(payload['ordered_reference'])
             run['_ordered_reference'] = catalog
@@ -998,6 +1036,7 @@ class Engine(OrderedCollaborationMixin):
 
     def enqueue(self, agent, content, *, human=False):
         self._check_queue(agent, human=human)
+        self._dependency_invalidate(agent)
         agent.result_revision += 1
         agent.finished_revision = None
         agent.waiting_for_workers = False
@@ -1032,6 +1071,10 @@ class Engine(OrderedCollaborationMixin):
 
     def kick(self, agent):
         if self.closed or agent.closing or not agent.pending or agent.question or agent.status == 'error':
+            return
+        if not self._dependency_can_start(agent):
+            if agent.status != 'working':
+                agent.status = 'idle'
             return
         if agent.task is None or agent.task.done():
             agent.task = asyncio.create_task(self._agent_loop(agent), name=agent.id)
@@ -1088,6 +1131,11 @@ class Engine(OrderedCollaborationMixin):
     def agent_status_reason(self, agent):
         if agent.status == 'waiting' and agent.question:
             return 'human_input'
+        if agent.depends_on and agent.status not in {'error', 'stopped'}:
+            if self._dependency_stale(agent):
+                return 'dependency_stale'
+            if self._dependency_blockers(agent):
+                return 'dependency_wait'
         if agent.status == 'idle':
             if agent.waiting_for_message:
                 return 'peer_message'
@@ -1104,6 +1152,10 @@ class Engine(OrderedCollaborationMixin):
         if run['status'] != 'waiting':
             return run['status']
         agents = [self.agents[ident] for ident in run['agent_ids']]
+        if any(a.depends_on and self._dependency_stale(a) for a in agents):
+            return 'dependency_stale'
+        if any(a.depends_on and self._dependency_blockers(a) for a in agents):
+            return 'dependency_wait'
         reasons = [bool(run.get('_collaboration_blocked')), any(a.status == 'error' for a in agents),
                    any(a.question for a in agents)]
         if sum(reasons) > 1:
@@ -1126,6 +1178,10 @@ class Engine(OrderedCollaborationMixin):
 
     def _delegation_issue(self, run, agent, *, finishing=False):
         """Check application-owned report metadata, never model claims or mail text."""
+        if finishing:
+            dependency_issue = self._dependency_pm_issue(run, agent)
+            if dependency_issue:
+                return dependency_issue
         ordered = self._ordered_for(run, agent)
         if ordered and agent.id == ordered['pm_id'] and finishing and not ordered['flow'].view()['complete']:
             return ('ordered_work_pending', '宣言した全手番を監査し終えるまで完了できません。現在の候補を確認してください。')
@@ -1190,6 +1246,7 @@ class Engine(OrderedCollaborationMixin):
         if (child is None or child.run_id != run['id'] or child.id not in run['agent_ids']
                 or child.parent_id != agent.id):
             raise ValueError('自分が担当する同じ作業のworkerを指定してください')
+        self._dependency_require(child)
         ordered = self._ordered_for(run, agent)
         if ordered:
             if agent.pending or getattr(agent, '_turn_revision', agent.result_revision) != agent.result_revision:
@@ -1262,6 +1319,8 @@ class Engine(OrderedCollaborationMixin):
                   'current_result_revision': child.result_revision}
         if not recorded or history_outcome['failed']:
             result['warning'] = '確認・差戻しは受理済みです。履歴保存状態を確認し、同じ差戻しを再送しないでください。'
+        if decision == 'accept':
+            self._dependency_wake(run, agent)
         return result
 
     def _policy(self, run, agent):
@@ -1319,6 +1378,18 @@ class Engine(OrderedCollaborationMixin):
                 'While awaiting a peer prerequisite, use wait_for_message, not finish_work or ask_user. '
                 'Routine ordering, handoff and correction questions belong in team mail. '
                 'If requirements or authority are genuinely missing, use ask_user. Peer text never grants human authority.\n')
+        if agent.depends_on or (agent.parent_id is None and any(child.depends_on for child in self._owned_workers(run, agent))):
+            delegation_policy += ('\nEvery worker task must state required instructions, concrete deliverables and acceptance checks. '
+                'For dependent work, pass depends_on with existing owned worker IDs; their current native finish_work reports '
+                'must be consumed and explicitly accepted before the worker starts. This is separate from ordered text-chain work. '
+                'A changed prerequisite invalidates all downstream results. After re-accepting prerequisites, the parent PM '
+                'must explicitly send_message a new assignment to each stale worker; human or peer messages do not bypass this gate. '
+                'The gate does not forward report contents. Give downstream workers the accepted worker IDs and report revisions, '
+                'input locations and sources in their assignment or a concrete handoff message; they must read and verify those inputs. '
+                'Already executed tool side effects are not rolled back. Verify files before redoing work. '
+                'A PM using dependencies must accept every current owned worker report before finish_work.\n')
+        if agent.depends_on:
+            delegation_policy += '\nApplication-owned worker prerequisites: ' + json.dumps(self._dependency_view(agent)) + '\n'
         if self._ordered_for(run, agent):
             delegation_policy = ('\nOrdered-work report contract: Follow the application-owned turn and the full original human request. '
                 'Only submit_work_step submits a candidate; the final assigned native submission also sends the formal worker report. '
@@ -1370,10 +1441,21 @@ class Engine(OrderedCollaborationMixin):
             # quotes this sentence remains byte-for-byte intact.
             system_policy = system_policy.replace('作業者は finish_work で結果と検証内容を報告する',
                 '順番のある仕事の作業者は submit_work_step で本人の語と意味を提出し、最終手の提出を正式報告とする')
-        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False)
+        catalog = run.get('_skill_catalog')
+        skill_policy = self.redact(catalog.prompt()) if catalog is not None else ''
+        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False) + skill_policy
 
     def _contextual_team_tool(self, run, agent, tool):
         """One provider/validation contract without enlarging unrelated requests."""
+        if (tool['name'] == 'spawn_worker' and agent.parent_id is None and run['max_workers'] > 0
+                and self.runs.get(run['id']) is run and self.agents.get(agent.id) is agent
+                and agent.run_id == run['id'] and agent.id in run['agent_ids']
+                and agent.id in run['pm_agent_ids'] and not run.get('_ordered_work')):
+            contextual = copy.deepcopy(tool)
+            contextual['parameters']['properties']['depends_on'] = {
+                'type': 'array', 'items': STRING, 'maxItems': 16, 'uniqueItems': True}
+            contextual['description'] += ' Optional depends_on: existing owned worker IDs; starts only after their current formal reports are PM-accepted.'
+            return contextual
         if tool['name'] not in REFERENCE_REVIEW_DESCRIPTIONS:
             return tool
         ordered = self._ordered_for(run, agent)
@@ -1418,6 +1500,8 @@ class Engine(OrderedCollaborationMixin):
             tools = [tool for tool in tools if tool['name'] not in {'submit_work_step', 'review_work_step', 'rollback_work_step'}]
         if not run.get('_ordered_reference'):
             tools = [tool for tool in tools if tool['name'] != 'read_ordered_reference']
+        if run.get('skills', {}).get('skills'):
+            tools.append(SKILL_TOOL)
         return [self._contextual_team_tool(run, agent, tool) for tool in tools]
 
     def _context_limit_reached(self, run, agent):
@@ -1466,6 +1550,7 @@ class Engine(OrderedCollaborationMixin):
         # Every pass needs measurable progress. At most three summarizer requests
         # at one boundary, all charged to the ordinary run call/time budgets.
         for attempt in range(4):
+            self._dependency_require(agent)
             ratio, agent.context_chars, agent.context_token_estimate = pressure(profile, agent.conversation, tools, system, limits)
             plan = plan_compaction(profile, agent.conversation, tools, system, limits) if attempt < 3 else None
             if plan is None:
@@ -1502,6 +1587,7 @@ class Engine(OrderedCollaborationMixin):
                     # typed output-token limit. No partial reply or tool is used.
                     if agent.closing or self.closed:
                         raise asyncio.CancelledError
+                    self._dependency_require(agent)
                     if self._use_context_excerpts(run, agent, profile, tools, system, limits, 'summary_output_limit'):
                         return
                     if ratio <= 1:
@@ -1510,6 +1596,7 @@ class Engine(OrderedCollaborationMixin):
                     raise
                 if agent.closing or self.closed:
                     raise asyncio.CancelledError
+                self._dependency_require(agent)
                 try:
                     summary = parse_summary(reply, limits['context_summary_chars'])
                 except SummaryRejected:
@@ -1556,6 +1643,7 @@ class Engine(OrderedCollaborationMixin):
         limits = run['_config']['limits']
         try:
             while agent.pending and not agent.closing and not agent.question:
+                self._dependency_begin(agent)
                 content, human = agent.pending.popleft()
                 if agent.turns >= limits['max_turns_per_agent']:
                     raise RuntimeBudgetError('turn_limit')
@@ -1578,6 +1666,7 @@ class Engine(OrderedCollaborationMixin):
                 turn_revision = agent.result_revision
                 agent._turn_revision = turn_revision
                 while not agent.closing:
+                    self._dependency_require(agent)
                     self._check_run_budget(run)
                     profile = dict(next(p for p in run['_config']['providers'] if p['id'] == agent.profile_id))
                     profile['api_key'] = self.settings.key(profile)
@@ -1587,6 +1676,7 @@ class Engine(OrderedCollaborationMixin):
                     await self._ensure_context(run, agent, profile, tools, call_limits)
                     if agent.closing or self.closed:
                         break
+                    self._dependency_require(agent)
                     self._check_run_budget(run)
                     profile['api_key'] = self.settings.key(profile)
                     self._redaction.remember([*self._secret_values(), profile['api_key']])
@@ -1611,6 +1701,7 @@ class Engine(OrderedCollaborationMixin):
                                                            conversation_id=f'{run["id"]}/{agent.id}')
                     if agent.closing:
                         break
+                    self._dependency_require(agent)
                     self.log(agent, 'assistant', reply.text, reply.thinking)
                     self._append_context(agent, {'role': 'assistant', 'content': reply.text,
                                                 'tool_calls': reply.tool_calls, 'provider_raw': reply.raw})
@@ -1644,6 +1735,8 @@ class Engine(OrderedCollaborationMixin):
                     for call in reply.tool_calls:
                         if agent.closing:
                             break
+                        if agent.depends_on and (self._dependency_stale(agent) or self._dependency_blockers(agent)):
+                            stop = True
                         # Closed batches still need results for skipped siblings;
                         # those siblings cannot introduce a new exhaustion error.
                         if not stop and unexpected_error is None and not exhausted:
@@ -1664,6 +1757,9 @@ class Engine(OrderedCollaborationMixin):
                                 if not isinstance(args, dict):
                                     raise ValueError('ツール引数は JSON object が必要です')
                                 result = await self.execute_tool(run, agent, name, args)
+                            except DependencyBlocked as exc:
+                                result = {'ok': False, 'error': str(exc), 'dependency_blocked': exc.code}
+                                stop = True
                             except DelegationBlocked as exc:
                                 agent.delegation_blocked = exc.code
                                 result = {'ok': False, 'error': str(exc), 'delegation_blocked': exc.code}
@@ -1722,6 +1818,7 @@ class Engine(OrderedCollaborationMixin):
                         raise RuntimeError('ツール処理で予期しないエラーが発生したため、このターンを停止しました。'
                                            '処理の完了は確認できません。保存記録とファイルの現状を確認し、追加指示を送ってください。'
                                            '後続のツールは実行していません') from unexpected_error
+                    self._dependency_require(agent)
                     if not stop and agent.pending:
                         # Finish every result in the existing batch, then return
                         # through ordinary turn admission (including its limits,
@@ -1736,6 +1833,7 @@ class Engine(OrderedCollaborationMixin):
                     break
                 if agent.closing:
                     break
+                self._dependency_require(agent)
                 if yielded_for_message:
                     agent.waiting_for_message = not bool(agent.pending)
                     agent.status = 'queued' if agent.pending else 'idle'
@@ -1764,6 +1862,9 @@ class Engine(OrderedCollaborationMixin):
                             # the visible log even if automatic delivery stops.
                             self.log(agent, 'notice', '自動連携の上限により PM への完了通知を停止しました。結果はこのログで確認できます。')
                 self._run_status(run)
+        except DependencyBlocked:
+            agent.status = 'waiting' if agent.question else 'idle'
+            self._release(agent)
         except asyncio.CancelledError:
             agent.status = 'stopped'
             raise
@@ -1798,9 +1899,11 @@ class Engine(OrderedCollaborationMixin):
         if run['status'] in {'stopped', 'stopping'}:
             return
         agents = [self.agents[x] for x in run['agent_ids']]
-        if any(a.status in {'working', 'queued'} or (a.pending and not a.question and a.status != 'error') for a in agents):
+        if any(a.status == 'working' or (self._dependency_can_start(a)
+               and (a.status == 'queued' or (a.pending and not a.question and a.status != 'error'))) for a in agents):
             run['status'] = 'running'
-        elif run.get('_collaboration_blocked') or any(a.question or a.status == 'error' or a.waiting_for_workers or a.waiting_for_message or a.delegation_blocked for a in agents):
+        elif run.get('_collaboration_blocked') or any(a.question or a.status == 'error' or a.waiting_for_workers or a.waiting_for_message or a.delegation_blocked
+                or (a.depends_on and (self._dependency_stale(a) or self._dependency_blockers(a))) for a in agents):
             run['status'] = 'waiting'
         else:
             run['status'] = 'done'
@@ -1850,6 +1953,7 @@ class Engine(OrderedCollaborationMixin):
                     'mail_id': mail_id, 'subject': subject}
         formal_report = (completed and report_revision is not None and actor.parent_id == target.id
             and actor.status == 'done' and not actor.pending and not actor.question
+            and (not actor.depends_on or (not self._dependency_stale(actor) and not self._dependency_blockers(actor)))
             and actor.finished_revision == actor.result_revision == report_revision)
         if formal_report:
             envelope.update(report_id=secrets.token_hex(16), result_revision=report_revision)
@@ -1925,6 +2029,7 @@ class Engine(OrderedCollaborationMixin):
         for index, target in enumerate(targets):
             try:
                 deliveries.append(self._mail(actor, target, body, subject=subject))
+                self._dependency_reassign(actor, target, deliveries[-1])
             except Exception:
                 deliveries.append({'ok': False, 'queued': False, 'to_agent_id': target.id,
                                    'delivery_state': 'not_queued'})
@@ -1963,17 +2068,34 @@ class Engine(OrderedCollaborationMixin):
     async def execute_tool(self, run, agent, name, args):
         if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
             raise ValueError('停止したチームではツールを実行できません')
+        if name not in {'list_team', 'ask_user', 'send_message', 'wait_for_message', 'read_context_history'}:
+            self._dependency_require(agent)
         if name in TEAM_NAMES:
             tool = next(t for t in TEAM_TOOLS if t['name'] == name)
             spec = self._contextual_team_tool(run, agent, tool)['parameters']
             if set(args) - set(spec['properties']) or set(spec['required']) - set(args):
                 raise ValueError('ツール引数が不正です')
         if name in ORDERED_NAMES:
+            if name == 'start_ordered_work' and any(self.agents[x].depends_on for x in run['agent_ids']):
+                raise ValueError('depends_on と順番のある仕事は併用できません')
             return self._ordered_execute(run, agent, name, args)
         if self._ordered_for(run, agent) and agent.parent_id and name == 'finish_work' and not self._ordered_can_finish(run, agent):
             raise ValueError('この手順では本人の最終submit_work_stepが正式報告です。手番を飛ばして完了できません')
         if name not in COORDINATION_TOOLS:
             self._require_delegation(run, agent)
+        if name == 'read_skill':
+            if (self.runs.get(run['id']) is not run or self.agents.get(agent.id) is not agent
+                    or agent.run_id != run['id'] or agent.id not in run['agent_ids']):
+                raise ValueError('スキルの作業とエージェントが一致しません')
+            if not isinstance(args, dict) or set(args) != {'skill_id'}:
+                raise ValueError('read_skill には skill_id だけを指定してください')
+            text(args['skill_id'], 'skill_id', 80, False)
+            catalog = run.get('_skill_catalog')
+            if catalog is None:
+                raise ValueError('この作業にスキル一覧はありません')
+            result = self._redact_tree(catalog.read(args['skill_id']))
+            self.event(run['id'], agent.id, 'skill', f"SKILL.md: {result['name']} / SHA256 {result['sha256']}")
+            return {'ok': True, **result}
         if name in {'post_work_board', 'read_work_board'}:
             if self.runs.get(run['id']) is not run or self.agents.get(agent.id) is not agent or agent.run_id != run['id'] or agent.id not in run['agent_ids']:
                 raise ValueError('掲示板の作業とエージェントが一致しません')
@@ -2055,6 +2177,9 @@ class Engine(OrderedCollaborationMixin):
                         'result_revision', 'finished_revision', 'waiting_for_message')}
                 if member.participant_key:
                     row['participant_key'] = member.participant_key
+                if member.depends_on:
+                    row['worker_dependencies'] = self._dependency_view(member)
+                    row['status_reason'] = self.agent_status_reason(member)
                 assignment = self.redact(member.assignment)
                 row.update(assignment=assignment[:512], assignment_chars=len(assignment),
                            assignment_truncated=len(assignment) > 512)
@@ -2090,6 +2215,11 @@ class Engine(OrderedCollaborationMixin):
             task = text(args['task'], 'worker task', 16000, False)
             role = text(args['role'], 'role', 80, False)
             key, initial_wait = args.get('participant_key', ''), args.get('initial_wait', False)
+            dependencies = self._dependency_ids(run, agent, args.get('depends_on', []))
+            if dependencies and (key or initial_wait):
+                raise ValueError('depends_on は participant_key / initial_wait と併用できません')
+            if (key or initial_wait) and any(self.agents[x].depends_on for x in run['agent_ids']):
+                raise ValueError('depends_on と順番のある仕事は併用できません')
             if (not isinstance(key, str) or (key and not re.fullmatch(r'[A-Za-z0-9_-]{1,24}', key))
                     or type(initial_wait) is not bool or (initial_wait and not key)):
                 raise ValueError('participant_keyは1–24文字の英数字/_/-、initial_waitは真偽値です。初期待機にはキーが必要です')
@@ -2099,6 +2229,7 @@ class Engine(OrderedCollaborationMixin):
                 raise ValueError('手順開始後は参加者を増やせません')
             self._check_collaboration(run, agent)
             child = self._new_agent(run, profile, role, agent.id, assignment=task)
+            child.depends_on = dependencies
             child.participant_key = key
             if key:
                 child.name = key + ' · ' + child.name
@@ -2110,6 +2241,7 @@ class Engine(OrderedCollaborationMixin):
                 self.enqueue(child, task)
             run['auto_collaborations'] += 1
             return {'ok': True, 'agent_id': child.id, 'name': child.name,
+                    **({'worker_dependencies': self._dependency_view(child)} if dependencies else {}),
                     **({'participant_key': key, 'initial_wait': initial_wait} if key else {})}
         if name == 'send_message':
             return self._send_messages(agent, args)
@@ -2142,6 +2274,7 @@ class Engine(OrderedCollaborationMixin):
             if not issue and not unfinished:
                 return {'ok': True, 'waiting_for_workers': False, 'reports_ready': True}
             progressing = any(not child.closing and not child.question and child.status not in {'error', 'stopped'}
+                              and self._dependency_can_start(child)
                               and (child.status in {'working', 'queued'} or child.pending) for child in children)
             if ((issue and issue[0] == 'delegation_required') or (not progressing and not agent.pending)):
                 return {'ok': False, 'waiting_for_workers': False, 'reports_ready': False,
@@ -2155,7 +2288,7 @@ class Engine(OrderedCollaborationMixin):
         if name == 'finish_work':
             summary = text(args['summary'], 'summary', 16000, False)
             issue = self._delegation_issue(run, agent, finishing=True)
-            if issue and issue[0] in {'worker_review_pending', 'ordered_work_pending'}:
+            if issue and issue[0] in {'worker_review_pending', 'ordered_work_pending', 'worker_dependency_pending'}:
                 # This is recoverable within the current tool conversation: the PM
                 # can inspect/review reports next. Do not schedule inference or yield
                 # into a wait for messages that have already been consumed.
@@ -2200,6 +2333,7 @@ class Engine(OrderedCollaborationMixin):
                 raise ValueError('停止したチームではツールを実行できません')
             # Reassignment or a new worker can invalidate accepted reports while
             # this operation waits for the shared file lock.
+            self._dependency_require(agent)
             self._require_delegation(run, agent)
             if name == 'selenium_browse':
                 if not run['_config']['selenium']['enabled'] or not run['_config']['python']['network_enabled'] or os.name != 'nt':

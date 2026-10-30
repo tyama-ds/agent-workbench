@@ -24,10 +24,10 @@ MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
     'delegation_level', 'workers_per_pm', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
     'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
-    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination'))
+    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))

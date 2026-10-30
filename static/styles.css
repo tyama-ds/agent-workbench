@@ -160,3 +160,6 @@ main{height:auto;min-height:0;overflow:hidden}.view{height:100%;min-height:0}.wo
 /* Revealing the inner list must leave room for its surrounding feed on narrow screens. */
 @media(max-width:640px){.app-shell[data-cockpit-view=network] .reference-audit-facts{scroll-margin-block:24px}}
 .reference-audit-comment{border-top:1px solid #4c4437;padding-top:8px}.audit-unverified{font-size:11px;line-height:1.7;color:#d9bd92;overflow-wrap:anywhere}
+#skillsList,#skillsErrors{overflow-wrap:anywhere;padding-left:22px;margin:12px 0}
+#skillsList>li,#skillsErrors>li{margin:10px 0}
+.agent-dependencies{grid-column:2;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;line-height:1.6;color:#a4e3d8}

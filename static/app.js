@@ -99,6 +99,7 @@ const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resou
 Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map()});
 Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,credentialGeneration:0,credentialOperations:new Map(),secretSources:{},credentialStorage:null,credentialRecoveryControls:[]});
 Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
+Object.assign(ui,{skillsOperation:null,skillsCatalog:null,skillsGeneration:0});
 Object.assign(ui,{settingsStorage:null,settingsTransferOperation:null,historyStorage:null,instanceId:null,retiredInstances:new Set(),messageOperation:null});
 Object.assign(ui,{workBoards:new Map(),boardOwner:null,boardComposingRun:null,boardRedactionRevision:null});
 const WORK_BOARD_DEFAULTS={enabled:false};
@@ -130,6 +131,7 @@ function availableProfiles() {
 }
 function acceptConnectionSettings(response) {
   acceptServerInstance(response,true);acceptSettingsStorage(response);acceptHistoryStorage(response);acceptCredentialMetadata(response);
+  invalidateSkillsCatalog('保存済み設定のスキル一覧は未確認です。ボタンで再読込してください。');
   ui.effectiveProviders=Array.isArray(response.effective_providers)?response.effective_providers:null;
   if(ui.config?.copilot_agent?.enabled===true&&availableProfiles().some(profile=>profile.id==='copilot-agent'))ui.copilotDefaultsPending=true;
   else ui.copilotDefaultsPending=false;
@@ -189,6 +191,7 @@ function acceptServerInstance(response,configuration=false) {
   ui.logSignature='';ui.outputSignature='';ui.taskReuseCandidate=null;ui.startOperation=null;ui.startingRun=false;ui.stoppingRuns.clear();ui.busyMessage=false;ui.messageOperation=null;
   ui.credentialOperations.clear();ui.secretSources={};ui.credentialStorage=null;ui.credentialRecoveryControls=[];renderCredentialStorage();ui.copilotAgentStatus=null;ui.copilotReconnectOperation=null;ui.historyStorage=null;
   ui.configStale=!configuration;clearCredentialInputs();
+  invalidateSkillsCatalog('サーバーが変わりました。保存済み設定を確認してから一覧を再読込してください。');
   $('messageInput').value='';$('workBoardInput').value='';$('conversationLog').replaceChildren();$('resultText').textContent='';$('resultText').hidden=true;
   $('activityFeed').replaceChildren();$('taskReuseConfirm').hidden=true;$('taskReusePreview').textContent='';
   ui.state={runs:[],agents:[],events:[],resources:{}};renderState();renderHistoryStorage();
@@ -600,6 +603,62 @@ function renderSettings(config=ui.config) {
   $('seleniumFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','seleniumRuntimeHelp seleniumBoundaryHelp');
   $('systemPolicy').value=config.system_policy||'';ui.settingsDirty=false;inlineStatus($('settingsStatus'),'');refreshSecretStatus(ui.secretStatus);setSettingsLock(true);
 }
+function renderSkillControls() {
+  $('reloadSkills').disabled=Boolean(ui.skillsOperation||!ui.authenticated||!ui.config||ui.configStale||ui.settingsSaving||ui.settingsReloading);
+  $('skillsList').setAttribute('aria-busy',String(Boolean(ui.skillsOperation)));
+}
+function invalidateSkillsCatalog(message) {
+  ui.skillsGeneration++;ui.skillsOperation=null;ui.skillsCatalog=null;
+  $('skillsList').replaceChildren();$('skillsErrors').replaceChildren();
+  inlineStatus($('skillsStatus'),message||'一覧は未確認です。ボタンで読み込みます。');
+  renderSkillControls();
+}
+function validSkillsCatalog(value,action) {
+  const record=item=>item!==null&&typeof item==='object'&&!Array.isArray(item);
+  const strings=(item,keys)=>record(item)&&keys.every(key=>typeof item[key]==='string');
+  return record(value)&&value.config_revision===action.revision&&value.instance_id===action.instance&&
+    Array.isArray(value.skills)&&Array.isArray(value.errors)&&
+    value.skills.every(item=>strings(item,['id','name','description','path','base_directory','sha256'])&&item.id&&item.name&&/^[a-f0-9]{64}$/.test(item.sha256))&&
+    new Set(value.skills.map(item=>item.id)).size===value.skills.length&&
+    value.errors.every(item=>strings(item,['path','error']));
+}
+function displaySkillsCatalog(value) {
+  const list=$('skillsList'),errors=$('skillsErrors');list.replaceChildren();errors.replaceChildren();
+  for(const skill of value.skills){
+    const row=element('li');row.append(element('strong','',skill.name),element('p','small',skill.description));
+    const details=element('details');details.append(element('summary','','場所と読み込んだ版を確認'),
+      element('p','field-help',`スキル ID: ${skill.id}`),
+      element('p','field-help',skill.path),element('p','field-help',`参照ファイルの基準: ${skill.base_directory}`),
+      element('p','field-help',`SHA-256: ${skill.sha256}`));row.append(details);list.append(row);
+  }
+  for(const issue of value.errors){
+    const row=element('li','error');row.append(element('strong','',issue.path||'スキルの探索'),element('p','small',issue.error));errors.append(row);
+  }
+  const message=value.skills.length?`${value.skills.length} 件のスキルを確認しました。`:'読み込めるスキルはありません。';
+  inlineStatus($('skillsStatus'),message+(value.errors.length?` 読込エラー ${value.errors.length} 件を確認してください。`:'')+
+    ' 保存済み設定での確認です。実行中の作業には反映しません。',value.errors.length>0);
+}
+async function reloadSkills() {
+  if(ui.skillsOperation||!$('settingsDialog').open||!ui.authenticated||!ui.config||ui.configStale||ui.settingsSaving||ui.settingsReloading)return;
+  if(!Number.isSafeInteger(ui.configRevision)||ui.configRevision<0||typeof ui.instanceId!=='string'||!ui.instanceId){
+    inlineStatus($('skillsStatus'),'保存済み設定とサーバーの識別情報を確認してください。',true);return;
+  }
+  const action={generation:++ui.skillsGeneration,revision:ui.configRevision,instance:ui.instanceId,workspace:ui.workspaceGeneration};
+  const owns=()=>ui.skillsOperation===action&&action.generation===ui.skillsGeneration&&action.revision===ui.configRevision&&
+    action.instance===ui.instanceId&&action.workspace===ui.workspaceGeneration&&$('settingsDialog').open&&!ui.configStale;
+  ui.skillsOperation=action;ui.skillsCatalog=null;$('skillsList').replaceChildren();$('skillsErrors').replaceChildren();renderSkillControls();
+  inlineStatus($('skillsStatus'),'保存済みの読み取り許可フォルダーからスキルを確認しています…');
+  try{
+    const value=await api('/api/skills');if(!owns())return;
+    if(!validSkillsCatalog(value,action))throw new Error('スキル一覧の応答を確認できませんでした。保存済み設定を読み直してください。');
+    ui.skillsCatalog=value;displaySkillsCatalog(value);
+  }catch(error){
+    if(owns()){
+      if(error.code==='settings_changed'){ui.configStale=true;setSettingsLock(true);}
+      inlineStatus($('skillsStatus'),errorText(error)+' 一覧は未確認です。必要ならボタンで再読込してください。',true);
+    }
+  }finally{if(ui.skillsOperation===action)ui.skillsOperation=null;renderSkillControls();}
+}
 function collectConfig() {
   const config=structuredClone(ui.config);
   config.providers=[...$('profilesEditor').querySelectorAll('.profile-editor')].map(card=>{
@@ -628,6 +687,7 @@ function setSettingsLock(force=false) {
   const lockText=(locked?'作業の実行中は接続先・モデル・権限を変更できません。保存済み接続先のキーだけ変更できます。':'')+(ui.configStale?' 保存済み設定が変わったか、保存結果が未確認です。変更内容を控えてから「変更を破棄・保存済み設定を読み直す」で確認してください。保存・キー更新・モデル確認はそれまで行いません。':'');
   if($('settingsLockStatus').textContent!==lockText)$('settingsLockStatus').textContent=lockText;
   renderCopilotStatus();
+  renderSkillControls();
 }
 function renderProfileChoices(preserveDraft=false,preferDefault=false) {
   if(!ui.taskOrchestrationInitialized){applyTaskOrchestrationDefaults();ui.taskOrchestrationInitialized=true;}
@@ -1645,11 +1705,11 @@ function renderRunList() {
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
   [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
-const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
+const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
 function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
 function badge(status,reason) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),REASON_LABELS[reason]||statusLabel(status)); }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   filteredAgents(agents).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
@@ -1659,6 +1719,7 @@ function renderAgents(agents) {
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
     card.append(top,element('span','agent-name',agent.name||agent.id),model,element('span','agent-task',agent.assignment||agent.question||agent.last_error||(!agent.parent_id?'チームの作業を管理':'割り当てられた作業を担当')));
+    const dependency=workerDependencyLabel(agent);if(dependency)card.appendChild(element('span','agent-dependencies',dependency));
     card.addEventListener('click',()=>selectAgent(agent.id));$('agentCards').appendChild(card);
   });
 }
@@ -2025,7 +2086,25 @@ function coordinationAgentLabel(agent) {
   if(c.history_only===true)parts.unshift('保存時点');
   return parts.join(' · ');
 }
-function agentMonitorText(agent) { return [coordinationAgentLabel(agent),providerObservationLabel(agent)].filter(Boolean).join('\n'); }
+function workerDependencyLabel(agent) {
+  const value=agent?.worker_dependencies;if(value===undefined)return '';
+  const record=item=>item!==null&&typeof item==='object'&&!Array.isArray(item);
+  const id=item=>typeof item==='string'&&item.trim().length>0&&item.length<=80&&!item.includes('\u0000');
+  const ids=items=>Array.isArray(items)&&items.length<=16&&items.every(id)&&new Set(items).size===items.length;
+  const prefix=archivedAgent(agent)?'保存時点の依存関係':ui.networkConnected?'取得した依存関係':'最後に取得した依存関係';
+  if(!record(value)||!ids(value.depends_on)||!value.depends_on.length||!ids(value.blocked_by)||
+     value.blocked_by.some(ident=>!value.depends_on.includes(ident))||typeof value.stale!=='boolean'||
+     !record(value.accepted_revisions)||Object.entries(value.accepted_revisions).some(([ident,revision])=>
+       !value.depends_on.includes(ident)||!Number.isSafeInteger(revision)||revision<1))return `${prefix}: 詳細を確認できません。`;
+  const name=ident=>{const peer=ui.state.agents.find(item=>item.run_id===agent.run_id&&item.id===ident);return `${peer?.name||'担当未取得'} [${ident}]`;};
+  const parts=[`${prefix}: ${value.depends_on.map(name).join('、')}`];
+  if(value.blocked_by.length)parts.push(`前工程の承認待ち: ${value.blocked_by.map(name).join('、')}`);
+  if(value.stale)parts.push('前工程が変更されました。以前の成果は失効し、PMの明示的な再依頼が必要です。');
+  const accepted=Object.entries(value.accepted_revisions);
+  if(accepted.length)parts.push('使用した承認版: '+accepted.map(([ident,revision])=>`${name(ident)} / ${revision}`).join('、'));
+  return parts.join('\n');
+}
+function agentMonitorText(agent) { return [coordinationAgentLabel(agent),workerDependencyLabel(agent),providerObservationLabel(agent)].filter(Boolean).join('\n'); }
 function mailLifecycles(events,runId) {
   const rows=new Map();
   for(const event of events) {
@@ -2048,7 +2127,7 @@ function mailLifecycleLabel(row) {
 function renderCoordinationMonitor(run,agents) {
   const panel=$('coordinationMonitor');if(!panel)return;panel.hidden=!run;if(!run)return;
   const c=run.coordination,rows=mailLifecycles(retainedTeamEvents(run),run.id);
-  const signature=JSON.stringify([run.id,run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.provider_observation]),rows]);
+  const signature=JSON.stringify([run.id,run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.worker_dependencies,a.provider_observation]),rows]);
   if(signature===ui.monitorSignature)return;ui.monitorSignature=signature;
   const content=$('coordinationContent');content.replaceChildren();
   const name=id=>agents.find(a=>a.id===id)?.name||id||'未記録';
@@ -2193,7 +2272,8 @@ async function initialize() {
   $('addPM').addEventListener('click',addPM);
   $('useOrchestrationDefaults').addEventListener('click',()=>{applyTaskOrchestrationDefaults();ui.taskOrchestrationInitialized=true;trackTaskDraft({type:'change'});syncStartControl();schedulePreflight();});
   $('taskDialog').addEventListener('close',()=>{ui.taskDialogGeneration++;clearTaskReuse();releaseStartPointer();ui.preflightKey='';ui.preflightRequest++;clearTimeout(ui.preflightTimer);});
-  $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
+  $('settingsDialog').addEventListener('close',()=>{ui.workspaceGeneration++;clearCredentialInputs();invalidateSkillsCatalog();if(ui.settingsSaving)inlineStatus($('settingsStatus'),'設定を送信しました。閉じても保存要求は取り消されません。必要なら応答後に保存済み設定を読み直してください。');for(const control of credentialControls())if(ui.credentialOperations.has(control.id)){control.status.textContent='キーの更新結果は未確認です。保存済み設定を読み直しても、キー設定の有無だけでは今回の更新を確認できません。';if(control.result!==control.status)inlineStatus(control.result,'');}invalidateDiagnostics();schedulePreflight();});
+  $('reloadSkills').addEventListener('click',reloadSkills);
   $('discardSettings').addEventListener('click',discardSettings);
   $('reconnectCopilotAgent').addEventListener('click',reconnectCopilotAgent);
   $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
