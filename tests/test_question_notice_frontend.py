@@ -8,6 +8,11 @@ from test_questions_frontend import check as question_check
 
 
 SETUP = r'''
+// The common fake DOM does not parse static HTML. Model this disclosure's
+// actual ancestry so focus removal covers all of its descendants.
+$('questionNoticeDetails').tagName='DETAILS';$('questionNoticeSummary').tagName='SUMMARY';
+$('questionNoticeDetails').append($('questionNoticeSummary'),$('questionNoticeBody'));
+$('questionNotice').append($('questionNoticeTitle'),$('openQuestionNotice'),$('questionNoticeDetails'));
 const originalFullState=fullState;
 fullState=(...args)=>({...originalFullState(...args),instance_id:'instance-a'});
 const qid='q-'+'a'.repeat(32),qid2='q-'+'b'.repeat(32),osNotices=[];
@@ -45,7 +50,7 @@ def test_arrival_is_prominent_across_runs_without_stealing_draft_or_focus():
     check(r'''
 installNotifications();await prepareNotice();editReply('Original draft');$('messageInput').focus();
 setQuestion(2,qid2);renderState();renderState();
-assert.equal($('questionNotice').hidden,false);assert.match($('questionNoticeTitle').textContent,/2 件/);
+assert.equal($('questionNotice').hidden,false);assert.equal($('questionNoticeTitle').textContent,'質問 2件');
 assert.match($('questionNoticeBody').textContent,/推奨回答/);
 assert.equal($('messageInput').value,'Original draft');assert.equal(document.activeElement,$('messageInput'));
 assert.equal(ui.selectedAgent,'agent-a');assert.equal(osNotices.length,2);assert.equal(requests.length,0);
@@ -141,10 +146,57 @@ assert.equal(requests.length,0);
 ''')
 
 
-def test_resolved_notice_returns_only_its_own_hidden_focus_to_question_control():
+@pytest.mark.parametrize('focused', ['openQuestionNotice', 'questionNoticeSummary', 'questionNoticeBody', 'messageInput'])
+def test_resolved_notice_returns_only_its_own_hidden_focus_to_question_control(focused):
     check(r'''
-await prepareNotice();$('openQuestionNotice').focus();getAgent().question='';getAgent().status='working';getAgent().status_reason='model';
-renderState();assert.equal($('questionNotice').hidden,true);assert.equal(document.activeElement,$('needsYou'));
+await prepareNotice();editReply('Retained answer');$('questionNoticeDetails').open=true;
+const focused=FOCUSED;$(focused).focus();getAgent().question='';getAgent().status='working';getAgent().status_reason='model';
+renderState();assert.equal($('questionNotice').hidden,true);
+assert.equal(document.activeElement,$(focused==='messageInput'?'messageInput':'needsYou'));
+if(focused!=='messageInput')assert.deepEqual($('needsYou').lastFocusOptions,{preventScroll:true});
+assert.equal($('messageInput').value,'Retained answer');assert.equal(requests.length,0);
+'''.replace('FOCUSED', json.dumps(focused)))
+
+
+def test_unchanged_poll_retains_open_notice_details_focus_scroll_and_draft():
+    check(r'''
+await prepareNotice();editReply('Retained answer');
+const details=$('questionNoticeDetails'),summary=$('questionNoticeSummary'),body=$('questionNoticeBody');
+details.open=true;body.scrollTop=35;summary.focus();const text=body.textContent;
+const pending=pollState();await drainStates();await pending;
+assert.equal($('questionNoticeDetails'),details);assert.equal($('questionNoticeSummary'),summary);assert.equal($('questionNoticeBody'),body);
+assert.equal(details.open,true);assert.equal(body.scrollTop,35);assert.equal(body.textContent,text);
+assert.match(body.textContent,/推奨回答/);assert.equal(document.activeElement,summary);
+assert.equal($('messageInput').value,'Retained answer');assert(requests.every(item=>item.path.startsWith('/api/state')));
+''')
+
+
+def test_offline_notice_retains_last_count_and_marks_connection_unconfirmed():
+    check(r'''
+installNotifications();await prepareNotice();setQuestion(2,qid2);renderState();
+const selectedRun=ui.selectedRun,selectedAgent=ui.selectedAgent;
+setConnection(false,'offline');renderState();
+assert.equal($('questionNoticeTitle').textContent,'最後に取得 2件（接続未確認）');
+assert.equal($('questionCount').textContent,'2');assert.equal($('questionNotice').hidden,false);
+assert.equal(ui.selectedRun,selectedRun);assert.equal(ui.selectedAgent,selectedAgent);
+assert.equal(requests.length,0);assert.equal(osNotices.length,2);
+setConnection(true,'online');assert.equal($('questionNoticeTitle').textContent,'質問 2件');
+assert.equal(osNotices.length,2);assert.equal(requests.length,0);
+''')
+
+
+def test_compact_notice_action_has_explicit_name_and_opens_without_answering():
+    button = HTML.split('<button id="openQuestionNotice"', 1)[1].split('</button>', 1)[0]
+    assert 'type="button"' in button
+    assert 'aria-label="全チームの回答待ち質問を開く"' in button
+    assert button.endswith('>開く')
+    assert '<details id="questionNoticeDetails"><summary id="questionNoticeSummary">詳細</summary><p id="questionNoticeBody"></p></details>' in HTML
+    check(r'''
+await prepareNotice();changeSelection('run-b','agent-c');renderState();
+$('openQuestionNotice').listeners.click();await drainStates();
+assert.equal(ui.selectedRun,'run-a');assert.equal(ui.selectedAgent,'agent-a');
+assert.equal(document.activeElement,$('humanQuestion'));assert.equal(getAgent().question,'Private human question');
+assert(requests.every(item=>item.path.startsWith('/api/state')));assert.equal(permissionCalls,0);
 ''')
 
 

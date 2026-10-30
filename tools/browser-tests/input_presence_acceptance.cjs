@@ -172,6 +172,43 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       focusKey:document.activeElement?.dataset.focusKey,agent:document.activeElement?.dataset.agentId}));
     assert.fail(label+': native Tab did not reach the exact card within '+maximum+' roster positions; target='+agent.id+'; active='+JSON.stringify(active));
   };
+  const assertSidebarControls=async label=>{
+    const tabTo=async(selector,anchor,limit)=>{
+      await page.locator(anchor).focus();
+      for(let step=0;step<limit;step++){
+        await page.keyboard.press('Tab');
+        if(await focused(selector)){await paint();return assertVisible(page.locator(selector),label+' '+selector);}
+      }
+      assert.fail(label+': native Tab did not reach '+selector);
+    };
+    const stableState=async()=>({owner:await owner(),...await page.evaluate(()=>({
+      active:document.activeElement?.dataset.focusKey||document.activeElement?.id,
+      scroll:[scrollX,scrollY,...['.sidebar','.question-notifications','#agentCards','#runList'].flatMap(selector=>{
+        const node=document.querySelector(selector);return [node.scrollLeft,node.scrollTop];
+      })],
+    }))});
+    await tabTo('#openQuestionNotice','#navSettings',8);
+    await assertVisible(page.locator('#questionNoticeTitle'),label+' notification count');
+    await tabTo('#questionNoticeSummary','#openQuestionNotice',4);
+    await page.keyboard.press('Space');await paint();
+    assert.equal(await page.locator('#questionNoticeDetails').evaluate(node=>node.open),true);
+    const summary=await page.locator('#questionNoticeSummary').elementHandle(),before=await stableState();
+    try{
+      await poll();
+      assert.equal(await page.locator('#questionNoticeDetails').evaluate(node=>node.open),true,label+': unchanged poll retains expanded notice');
+      assert.equal(await summary.evaluate(node=>node===document.querySelector('#questionNoticeSummary')&&node===document.activeElement),true,label+': unchanged poll retains summary node and native focus');
+      assert.deepEqual(await stableState(),before,label+': unchanged poll retains owner and all sidebar scroll positions');
+    }finally{await summary.dispose();}
+    await page.keyboard.press('Space');await paint();
+    assert.equal(await page.locator('#questionNoticeDetails').evaluate(node=>node.open),false);
+    await tabTo('.question-notification-settings>summary','#openQuestionNotice',6);
+    await tabTo('#runList .run-link:first-child','.history-storage-details>summary',4);
+    await tabTo('#runList .run-link:last-child','#runList .run-link:nth-last-child(2)',3);
+    const lastState=await stableState();await poll();
+    assert.deepEqual(await stableState(),lastState,label+': unchanged poll retains final session focus and scroll');
+    await assertVisible(page.locator('#runList .run-link:last-child'),label+' final session after poll');
+    (report.sidebarControls??=[]).push({label,nativeTab:true,noticeDisclosurePollStable:true,firstAndLastSessionVisible:true});
+  };
   const assertGeometry=async label=>{
     await assertLayout(page,label);
     const boxes=await page.evaluate(()=>{
@@ -353,6 +390,7 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       await poll();assert.equal(await focused('#nextMessageInput'),true,name+': unchanged polls retain discovery focus');
       await page.screenshot({path:path.join(artifacts,'workbench-input-presence-'+name+'-crew.png'),fullPage:true,animations:'disabled'});
       await focusCardByTab(root,name+' crew input owner');await assertVisible(card(root.id),name+' crew input owner');await assertMarker(root);
+      await assertSidebarControls(name+' crew');
       await mode(true);await page.locator('#agentSearch').clear();
       for(const [agent,state] of [[root,'enabled'],[worker,'blocked'],[unknown,'unknown eligibility']]){
         await focusCardByTab(agent,name+' '+state+' question input owner');await assertVisible(card(agent.id),name+' '+state+' question input owner');
@@ -374,6 +412,7 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
       assert.deepEqual(afterViewport.layout,beforeCapture.layout,name+': viewport capture does not change focus or scroll');
       await poll();const afterPoll=await questionCaptureState('after post-capture poll',name);capture.afterPoll=afterPoll;
       assert.deepEqual(afterPoll.layout,beforeCapture.layout,name+': a later unchanged poll preserves the focused viewport geometry');
+      await assertSidebarControls(name+' questions');
       let position=cycle.indexOf(root);
       for(const action of ['pointer','Space']){
         position=(position+1)%cycle.length;await activate(cycle[position],action);

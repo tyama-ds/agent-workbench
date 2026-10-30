@@ -183,3 +183,15 @@ main{height:auto;min-height:0;overflow:hidden}.view{height:100%;min-height:0}.wo
 .hierarchy-relations{margin-top:8px;max-height:150px;overflow:auto;display:grid;gap:6px;min-width:0}
 .hierarchy-relation{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
 .hierarchy-relation .button{white-space:normal;overflow-wrap:anywhere;max-width:100%;text-align:left}
+
+/* Keep notice actions compact; full question details remain explicitly available. */
+.question-notice{grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:5px;padding:6px}
+.question-notice #questionNoticeTitle{font-size:10px;line-height:1.5}
+.question-notice .button{padding:5px 7px;font-size:10px}
+#questionNoticeDetails{font-size:10px}
+#questionNoticeDetails[open]{grid-column:1/-1}
+#questionNoticeSummary{cursor:pointer}
+/* One vertical sidebar scroll preserves natural card, notice and session sizes. */
+@media(min-width:641px){.sidebar{overflow-y:auto}.sidebar>.question-notifications{flex:none;max-height:none}.sidebar>.agent-cards{flex:none;height:auto;min-height:0;max-height:none}.sidebar>.sidebar-section{flex:none;max-height:none}}
+/* The narrow sidebar already scrolls vertically; retain its horizontal lists. */
+@media(max-width:640px){.sidebar>.question-notifications{flex:none;max-height:none}}

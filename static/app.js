@@ -532,7 +532,7 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   const content=element('div','profile-content');content.hidden=!expanded;card.classList.toggle('collapsed',!expanded);content.id=`profile-content-${index}`;toggle.setAttribute('aria-controls',content.id);
   toggle.addEventListener('click',()=>{content.hidden=!content.hidden;card.classList.toggle('collapsed',content.hidden);toggle.textContent=content.hidden?'編集':'閉じる';toggle.setAttribute('aria-expanded',String(!content.hidden));});
   const fields=element('div','profile-fields');PROFILE_FIELDS.forEach(spec=>fields.appendChild(makeField(spec,profile[spec[0]],`profile-${index}`)));content.appendChild(fields);card.appendChild(content);
-  card.querySelector('[data-key="id"]').required=true;card.querySelector('[data-key="id"]').pattern='[A-Za-z][A-Za-z0-9_-]{0,63}';
+  card.querySelector('[data-key="id"]').required=true;card.querySelector('[data-key="id"]').pattern='[A-Za-z][A-Za-z0-9_\\-]{0,63}';
   card.querySelector('[data-key="id"]').title='英字で始まる64文字以内の半角英数字・ハイフン・アンダースコア';
   card.querySelector('[data-key="base_url"]').required=true;
   card.querySelector('[data-key="label"]').addEventListener('input',event=>{title.textContent=event.target.value||'新しいプロファイル';});
@@ -1061,13 +1061,13 @@ function openNextMessageInput() {
 }
 function revealAgentCardAfterTab(event) {
   if(event.key!=='Tab'||event.altKey||event.ctrlKey||event.metaKey||event.defaultPrevented||$('taskDialog').open||$('settingsDialog').open)return;
-  // Native Tab can reveal only a card's center in the horizontal narrow roster.
+  // Native Tab can reveal only a card or session link's center in a horizontal list.
   // Reveal the actual current keyboard target; polls and delayed detail never
   // schedule this, and a newer focus/modal choice wins before the frame runs.
   window.requestAnimationFrame(()=>{
     if($('taskDialog').open||$('settingsDialog').open)return;
     const card=document.activeElement;
-    if([...$('agentCards').querySelectorAll('[data-focus-key]')].includes(card))card.scrollIntoView({block:'nearest',inline:'nearest'});
+    if([...$('agentCards').querySelectorAll('[data-focus-key]'),...$('runList').querySelectorAll('.run-link[data-focus-key]')].includes(card))card.scrollIntoView({block:'nearest',inline:'nearest'});
   });
 }
 function questionEntries() {
@@ -1161,10 +1161,10 @@ function renderQuestionNotice(entries) {
   button.textContent=ui.notificationPermissionRequest?'通知の許可を確認中…':'ブラウザー通知を有効にする';
   const status=ui.notificationError||({unavailable:'この環境ではブラウザー通知を利用できません。画面内で確認してください。',denied:'ブラウザー通知は拒否されています。変更する場合はブラウザーの設定を確認してください。',granted:'ブラウザー通知は許可済みです。この画面を開いている間に通知します。OS側の表示は保証されません。',default:'ブラウザー通知は未許可です。ボタンを押したときだけ許可を確認します。'})[capability];
   if($('questionNotificationStatus').textContent!==status)$('questionNotificationStatus').textContent=status;
-  const lostNoticeFocus=!entries.length&&document.activeElement===$('openQuestionNotice');
+  const lostNoticeFocus=!entries.length&&$('questionNotice').contains(document.activeElement);
   $('questionNotice').hidden=!entries.length;
   if(lostNoticeFocus)$('needsYou').focus({preventScroll:true});
-  const title=ui.networkConnected?`全チームで ${entries.length} 件の質問が回答待ちです`:`最後に取得した回答待ちの質問 ${entries.length} 件（接続未確認）`;
+  const title=ui.networkConnected?`質問 ${entries.length}件`:`最後に取得 ${entries.length}件（接続未確認）`;
   if($('questionNoticeTitle').textContent!==title)$('questionNoticeTitle').textContent=title;
   const entry=entries[0],body=entry?`チーム ${shortRunId(entry.run)} · ${entry.agent.name||entry.agent.id}\n${questionTimingLabel(entry.agent)}`:'';
   if($('questionNoticeBody').textContent!==body)$('questionNoticeBody').textContent=body;

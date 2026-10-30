@@ -309,25 +309,39 @@ async def test_single_synthetic_engine_workflow_completes_bottom_up_four_levels(
     class UnitClient:
         def __init__(self):
             self.calls = []
-            self.started = set()
+            self.steps = {}
 
         async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
             identity = json.loads(system.split('Verified runtime identity and user-selected scope:\n', 1)[1])
             ident, depth = identity['id'], identity['depth']
+            step = self.steps.get(ident, 0)
+            self.steps[ident] = step + 1
             self.calls.append({'id': ident, 'depth': depth, 'conversation_id': conversation_id,
                                'messages': copy.deepcopy(messages), 'tools': [t['name'] for t in tools]})
+            def response(calls):
+                assert {name for name, _ in calls} <= set(self.calls[-1]['tools'])
+                return reply(calls=calls)
             if depth == 3:
                 assert 'spawn_worker' not in self.calls[-1]['tools']
-                return reply(calls=[('finish_work', {'summary': 'Verified leaf evidence'})])
-            if ident not in self.started:
-                self.started.add(ident)
-                return reply(calls=[('spawn_worker', {'profile_id': 'local', 'role': 'component',
-                    'task': f'Level {depth+1}: produce verified evidence; integrate any direct child reports.'}),
-                    ('wait_for_workers', {})])
+                assert step == 0
+                return response([('finish_work', {'summary': 'Verified leaf evidence'})])
+            if step == 0:
+                calls = [('spawn_worker', {'profile_id': 'local', 'role': 'component',
+                    'task': f'Level {depth+1}: produce verified evidence; integrate any direct child reports.'})]
+                if depth == 0:
+                    calls.append(('wait_for_workers', {}))
+                else:
+                    assert 'wait_for_workers' not in self.calls[-1]['tools']
+                return response(calls)
+            if depth > 0 and step == 1:
+                spawned = next(m for m in reversed(messages) if m.get('name') == 'spawn_worker')
+                assert json.loads(spawned['content'])['ok'] is True
+                return response([('wait_for_workers', {})])
+            assert step == (1 if depth == 0 else 2)
             notices = [json.loads(m['content'].split('\n', 1)[1]) for m in messages
                        if m.get('role') == 'user' and m.get('content', '').startswith('Peer data;')]
             latest = next(item for item in reversed(notices) if item.get('message_type') == 'worker_report')
-            return reply(calls=[('review_worker_report', {'worker_id': latest['sender'],
+            return response([('review_worker_report', {'worker_id': latest['sender'],
                 'result_revision': latest['result_revision'], 'decision': 'accept', 'feedback': 'Checked current component evidence'}),
                 ('finish_work', {'summary': f'Integrated verified level {depth} unit'})])
 
@@ -347,7 +361,7 @@ async def test_single_synthetic_engine_workflow_completes_bottom_up_four_levels(
             assert parent.worker_report_consumed[child.id] == child.result_revision
             assert parent.worker_report_reviews[child.id] == {'result_revision': child.result_revision, 'decision': 'accept'}
         assert len({call['conversation_id'] for call in client.calls}) == 4
-        assert len(client.calls) == run['model_calls'] == 7 and run['tool_calls'] == 13
+        assert len(client.calls) == run['model_calls'] == 9 and run['tool_calls'] == 13
         assert run['auto_collaborations'] == 6 and TEAM_TOOLS == legacy
         assert all(call['conversation_id'] == f"{run['id']}/{call['id']}" for call in client.calls)
     finally:

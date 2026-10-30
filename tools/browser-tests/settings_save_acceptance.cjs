@@ -192,6 +192,66 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await sibling.goto(origin);await sibling.getByText('Workbench 接続中',{exact:true}).waitFor({state:'attached'});
     const emptyDraft={task:'[SYNTHETIC] Keep empty workers through Settings Save.',pm_profile:'local',max_workers:'0',worker_profiles:[]};
     await newTask(emptyDraft);await page.keyboard.press('Escape');await openSettings();await openSettings(sibling);
+    const idInput=page.locator('#profile-0-id'),idMutationsBefore=mutations.length;
+    const idConfigBefore=await api('/api/config'),idFileBefore=fs.readFileSync(settingsFile);
+    const idCases=[
+      {name:'one ASCII letter',value:'A',valid:true,patternMismatch:false,valueMissing:false},
+      {name:'64 ASCII letters, digits, underscore and hyphen',value:'A'+'9_-'.repeat(21),valid:true,patternMismatch:false,valueMissing:false},
+      {name:'leading digit',value:'7invalid',valid:false,patternMismatch:true,valueMissing:false},
+      {name:'embedded space',value:'A B',valid:false,patternMismatch:true,valueMissing:false},
+      {name:'non-ASCII letter',value:'A日',valid:false,patternMismatch:true,valueMissing:false},
+      {name:'65 characters',value:'A'+'x'.repeat(64),valid:false,patternMismatch:true,valueMissing:false},
+      {name:'required empty value',value:'',valid:false,patternMismatch:false,valueMissing:true}
+    ];
+    const idValidity=await idInput.evaluate((input,cases)=>{
+      const snapshot=()=>({value:input.value,customError:input.validity.customError,validationMessage:input.validationMessage,
+        selectionStart:input.selectionStart,selectionEnd:input.selectionEnd,selectionDirection:input.selectionDirection});
+      const before=snapshot(),pattern=input.pattern,required=input.required,rows=[];
+      try {
+        input.setCustomValidity('');
+        for(const item of cases){
+          input.value=item.value;
+          rows.push({name:item.name,value:input.value,valid:input.checkValidity(),patternMismatch:input.validity.patternMismatch,
+            valueMissing:input.validity.valueMissing,customError:input.validity.customError});
+        }
+      } finally {
+        input.value=before.value;input.setCustomValidity(before.customError?before.validationMessage:'');
+        if(before.selectionStart!==null)input.setSelectionRange(before.selectionStart,before.selectionEnd,before.selectionDirection);
+      }
+      return {before,after:snapshot(),pattern,required,rows};
+    },idCases);
+    assert.equal(idValidity.pattern,'[A-Za-z][A-Za-z0-9_\\-]{0,63}');assert.equal(idValidity.required,true);
+    assert.deepEqual(idValidity.rows,idCases.map(item=>({...item,customError:false})),
+      'The real profile ID input enforces native HTML pattern and required boundaries');
+    assert.deepEqual(idValidity.after,idValidity.before,'Validity checks restore the original value, selection and custom validity');
+    assert.equal(await page.locator('#saveSettings').isEnabled(),true);
+    const invalidIdSubmit=await idInput.evaluate(input=>{
+      const form=input.form,button=document.querySelector('#saveSettings');
+      const before={value:input.value,customError:input.validity.customError,validationMessage:input.validationMessage,
+        start:input.selectionStart,end:input.selectionEnd,direction:input.selectionDirection};
+      let submits=0,invalid=0;
+      const onSubmit=()=>{submits++;},onInvalid=()=>{invalid++;};
+      form.addEventListener('submit',onSubmit);input.addEventListener('invalid',onInvalid);
+      try {
+        input.setCustomValidity('');input.value='7invalid';
+        form.requestSubmit(button);
+        return {submits,invalid,patternMismatch:input.validity.patternMismatch,valueMissing:input.validity.valueMissing};
+      } finally {
+        form.removeEventListener('submit',onSubmit);input.removeEventListener('invalid',onInvalid);
+        input.value=before.value;input.setCustomValidity(before.customError?before.validationMessage:'');
+        if(before.start!==null)input.setSelectionRange(before.start,before.end,before.direction);
+      }
+    });
+    assert.deepEqual(invalidIdSubmit,{submits:0,invalid:1,patternMismatch:true,valueMissing:false},
+      'Native invalid-ID submission is rejected before the application submit handler');
+    await poll();assert.equal(mutations.length,idMutationsBefore,'Invalid profile ID sends no mutating API request');
+    const idConfigAfter=await api('/api/config');
+    assert.equal(idConfigAfter.config_revision,idConfigBefore.config_revision);assert.deepEqual(idConfigAfter.config,idConfigBefore.config);
+    assert.deepEqual(fs.readFileSync(settingsFile),idFileBefore);assert.deepEqual(await taskSnapshot(),emptyDraft);
+    assert.equal(await idInput.inputValue(),idValidity.before.value);
+    assert.deepEqual(await idInput.evaluate(input=>({customError:input.validity.customError,validationMessage:input.validationMessage})),
+      {customError:idValidity.before.customError,validationMessage:idValidity.before.validationMessage});
+    report.checks.push('settings-save: real profile ID HTML validation accepts ASCII 1/64-character boundaries with digits/underscore/hyphen; rejects leading digit, space, non-ASCII, 65 characters and required empty value; invalid native submission sends no mutation and preserves saved config/revision/file and task draft');
     const staleLabel='[SYNTHETIC] Tab B unrelated label draft';
     await page.locator('#profile-0-label').fill(staleLabel);
     await sibling.locator('#limits-max_model_calls').fill('5');

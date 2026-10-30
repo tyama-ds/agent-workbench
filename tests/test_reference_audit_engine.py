@@ -43,32 +43,39 @@ def assert_legacy_review_tools(tools, names):
 
 async def prepared(tmp_path, *, on_complete=None, fail_result_history=False):
     engine, run, pm, workers, client, work = await grounded_team(tmp_path)
-    await install_scripts(engine, run, pm, workers, client, finish=False)
-    if fail_result_history:
-        original_record = engine.record_result
+    try:
+        await install_scripts(engine, run, pm, workers, client, finish=False)
+        if fail_result_history:
+            original_record = engine.record_result
 
-        def record(agent, source, text, **kwargs):
-            if source == 'submit_work_step':
-                raise OSError('Synthetic result persistence failure')
-            return original_record(agent, source, text, **kwargs)
+            def record(agent, source, text, **kwargs):
+                if source == 'submit_work_step':
+                    raise OSError('Synthetic result persistence failure')
+                return original_record(agent, source, text, **kwargs)
 
-        engine.record_result = record
-    observed = []
+            engine.record_result = record
+        observed = []
 
-    async def review(request):
-        state = ordered_request_state(request)
-        observed.append(copy.deepcopy(state))
-        if state['pending']:
-            return reply(calls=[('review_work_step', {'decision': 'accept',
-                'feedback': 'Synthetic source comparison; no semantic-understanding claim.',
-                'audit': copy.deepcopy(state['pending_audit'])})])
-        return on_complete(state) if on_complete else reply(calls=[('wait_for_message', {})])
+        async def review(request):
+            state = ordered_request_state(request)
+            observed.append(copy.deepcopy(state))
+            if state['pending']:
+                return reply(calls=[('review_work_step', {'decision': 'accept',
+                    'feedback': 'Synthetic source comparison; no semantic-understanding claim.',
+                    'audit': copy.deepcopy(state['pending_audit'])})])
+            return on_complete(state) if on_complete else reply(calls=[('wait_for_message', {})])
 
-    client.handlers[pm.id] = review
-    await begin_grounded(engine, run, pm)
-    await advance_grounded(engine, run, pm, workers, 6)
-    assert not pm.last_error and observed[-1]['complete']
-    return engine, run, pm, workers, client, observed[-1]
+        client.handlers[pm.id] = review
+        await begin_grounded(engine, run, pm)
+        await advance_grounded(engine, run, pm, workers, 6)
+        assert not pm.last_error and observed[-1]['complete']
+        return engine, run, pm, workers, client, observed[-1]
+    except BaseException as exc:
+        try:
+            await engine.close()
+        except BaseException as cleanup_error:
+            exc.add_note('prepared failure cleanup also failed: ' + type(cleanup_error).__name__[:80])
+        raise
 
 
 def report_args(state, key, *, comment='Synthetic reference match only'):

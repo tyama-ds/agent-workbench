@@ -86,8 +86,35 @@ async def begin(engine, run, pm, *, order=('A', 'B', 'C'), rounds=2):
 
 async def drive(agent):
     Engine.kick(agent._test_engine, agent)
-    assert agent.task is not None
-    await asyncio.wait_for(asyncio.shield(agent.task), 10)
+    task = agent.task
+    assert task is not None
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), 10)
+    except TimeoutError as exc:
+        try:
+            observed = getattr(agent, '_provider_observation', {}) or {}
+            task_error = task.exception() if task.done() and not task.cancelled() else None
+            def label(value):
+                return value[:64] if isinstance(value, str) else None
+            diagnostic = {
+                'elapsed_seconds': loop.time() - started,
+                'task_done': task.done(), 'task_cancelled': task.cancelled(),
+                'task_error_type': type(task_error).__name__[:80] if task_error is not None else None,
+                'same_task_error': task_error is exc,
+                'agent_status': label(agent.status), 'stop_reason': label(agent.stop_reason),
+                'has_error': bool(agent.last_error), 'has_question': bool(agent.question),
+                'pending_count': len(agent.pending),
+                'provider_phase': label(observed.get('phase')), 'provider_purpose': label(observed.get('purpose')),
+                'stack': [{'file': frame.f_code.co_filename.replace('\\', '/').rsplit('/', 1)[-1][:120],
+                           'function': frame.f_code.co_name[:80], 'line': frame.f_lineno}
+                          for frame in task.get_stack(limit=6)],
+            }
+            exc.add_note('drive timeout observation (no locals/content): ' + json.dumps(diagnostic))
+        except Exception as observation_error:
+            exc.add_note('drive timeout observation failed: ' + type(observation_error).__name__[:80])
+        raise
     await asyncio.sleep(0)
 
 
