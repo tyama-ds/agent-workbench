@@ -18,7 +18,7 @@ class AgentHierarchyMixin:
             seen.add(current.id)
             lineage.append(current)
             if current.parent_id is None:
-                if current.id not in run['pm_agent_ids']:
+                if current.id not in run['pm_agent_ids'] and not self._formation_reviewer(run, current):
                     raise ValueError('ユニットの起点PMが一致しません')
                 return lineage
             current = self.agents.get(current.parent_id)
@@ -119,6 +119,7 @@ class AgentHierarchyMixin:
             self._dependency_invalidate(child, _seen=seen)
 
     def _hierarchy_child_added(self, run, parent):
+        self._formation_invalidate(parent, '新しい子担当により候補が失効しました。')
         if not self._hierarchy_nested(run):
             return
         previous = parent.result_revision
@@ -142,6 +143,8 @@ class AgentHierarchyMixin:
         return bool(children and (agent.parent_id is not None or any(self._owned_workers(run, child) for child in children)))
 
     def _hierarchy_spawn_issue(self, run, agent):
+        if self._formation_reviewer(run, agent):
+            return '独立reviewerは委任できません'
         lineage = self._hierarchy_lineage(run, agent)
         if self.closed or agent.closing or agent.question or run['status'] in {'stopped', 'stopping', 'error', 'done'}:
             return '停止中・質問待ちの担当は増員できません'
@@ -155,11 +158,12 @@ class AgentHierarchyMixin:
             return '担当の前提が未承認または失効しています'
         if getattr(agent, '_unit_turn_epoch', getattr(agent, '_unit_epoch', 0)) != getattr(agent, '_unit_epoch', 0):
             return '現在のユニット情報を確認してから委任してください'
-        total = sum(self.agents[x].parent_id is not None for x in run['agent_ids'])
+        total = sum(self.agents[x].parent_id is not None or self._formation_reviewer(run, self.agents[x])
+                    for x in run['agent_ids'])
         if total >= run['max_workers']:
             return 'この仕事の最大 worker 数に達しました。既存 worker に send_message で依頼してください'
         policy = self._orchestration(run['_config'], run)
-        if policy['delegation_level'] == 2:
+        if policy['delegation_level'] == 2 and not run.get('adaptive_team'):
             reserved = sum(max(0, policy['workers_per_pm'] - len(self._owned_workers(run, self.agents[x])))
                            for x in run['pm_agent_ids'] if x != agent.id)
             if total + 1 > run['max_workers'] - reserved:
@@ -171,9 +175,13 @@ class AgentHierarchyMixin:
         lineage = self._hierarchy_lineage(run, agent)
         return {'depth': len(lineage) - 1, 'root_pm_id': lineage[-1].id, 'unit_id': agent.parent_id or agent.id,
                 'direct_children': [child.id for child in self._owned_workers(run, agent)],
-                'can_delegate': not bool(self._hierarchy_spawn_issue(run, agent))}
+                'can_delegate': not bool(self._hierarchy_spawn_issue(run, agent))
+                    and not (run.get('adaptive_team') and agent.id in run['pm_agent_ids'])}
 
     def _restore_hierarchy_metadata(self, result):
         for agent, row in zip(self.agents.values(), result.get('agents', [])):
-            row['hierarchy'] = self._hierarchy_view(agent)
+            if self._formation_reviewer(self.runs[agent.run_id], agent):
+                row.pop('hierarchy', None)
+            else:
+                row['hierarchy'] = self._hierarchy_view(agent)
         return result

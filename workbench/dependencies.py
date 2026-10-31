@@ -108,6 +108,8 @@ class WorkerDependenciesMixin:
         agent._dependency_turn_epoch = agent.dependency_epoch
 
     def _dependency_invalidate(self, changed, *, _seen=None, _initial=False):
+        if not _initial:
+            self._formation_invalidate(changed, '作者の前提・依存revisionが変わりました。')
         seen = set() if _seen is None else _seen
         if changed.id in seen:
             return

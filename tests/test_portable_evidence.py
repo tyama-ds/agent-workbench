@@ -215,5 +215,9 @@ def test_current_ci_is_source_only_with_exact_nonbinary_evidence_allowlist():
         paths.extend(x.strip() for x in match[1].splitlines())
     assert set(paths) == {
         "runtime/verification/workbench-*.png", "runtime/verification/browser-smoke.json",
-        "runtime/verification/state-benchmark.json"}
+        "runtime/verification/state-benchmark.json",
+        "${{ runner.temp }}/workbench-adaptive-acceptance/result.json",
+        "${{ runner.temp }}/workbench-adaptive-acceptance/*.png",
+        "${{ runner.temp }}/workbench-adaptive-acceptance/fixture/closure-ack.json",
+        "${{ runner.temp }}/workbench-adaptive-acceptance/fixture/live-proof.json"}
     assert workflow.count("uses: actions/upload-artifact@") == 1

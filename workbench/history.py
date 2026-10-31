@@ -24,10 +24,10 @@ MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
     'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
     'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
-    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills'))
+    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))
@@ -89,10 +89,21 @@ def redact_document(document, redact):
     enum(document['run'], result['run'], 'status', statuses)
     # Validated diagnostics are fixed application metadata, never credential text.
     restore(document['run'], result['run'], ('budget', 'stop_reason', 'stop_reasons'))
+    if document['run'].get('adaptive_team') is True:
+        before, after = document['run']['formation'], result['run']['formation']
+        restore(before, after, ('version', 'phase', 'difficulty', 'worker_ids', 'reviewer_id', 'reviewer_slots', 'candidate_count'))
+        # Preserve only validated opaque linkage/enum/hash metadata, not prose.
+        after['reason'] = after['reason'][:2000]
+        after['stale_reason'] = after['stale_reason'][:1000]
+        if before['candidate'] is not None:
+            restore(before['candidate'], after['candidate'], ('id', 'round', 'summary_sha256', 'manifest_sha256',
+                    'artifact_count', 'summary_only', 'read_count', 'consumed_read_count', 'decision'))
+            after['candidate']['feedback'] = after['candidate']['feedback'][:4000]
     restore_coordination_metadata(document['run'].get('coordination'), result['run'].get('coordination'))
     for before, after in zip(document['agents'], result['agents']):
         restore(before, after, ('id', 'run_id', 'parent_id'))
         restore(before, after, ('hierarchy',))
+        enum(before, after, 'kind', {'author', 'independent_reviewer'})
         enum(before, after, 'status', statuses)
         restore(before, after, ('stop_reason',))
         restore_coordination_metadata(before.get('coordination'), after.get('coordination'))
@@ -237,6 +248,67 @@ def _budget(value):
         raise HistoryError('履歴の共有予算の時間が不正です。')
 
 
+def _formation(run, agents):
+    """Bounded display evidence, never a restored reviewer capability."""
+    present = 'adaptive_team' in run or 'formation' in run
+    if not present:
+        if any('kind' in agent for agent in agents):
+            raise HistoryError('履歴の独立レビュー種別に編成情報がありません。')
+        return
+    fields = {'version', 'phase', 'difficulty', 'reason', 'worker_ids', 'reviewer_id',
+              'reviewer_slots', 'candidate_count', 'candidate', 'stale_reason'}
+    value = run.get('formation')
+    phases = ('unplanned', 'working', 'reviewing', 'accepted', 'revise', 'stale', 'blocked', 'complete')
+    if (run.get('adaptive_team') is not True or not isinstance(value, dict) or set(value) != fields or
+            type(value['version']) is not int or value['version'] != 1 or
+            not isinstance(value['phase'], str) or value['phase'] not in phases or
+            value['difficulty'] is not None and value['difficulty'] not in ('low', 'medium', 'high') or
+            not isinstance(value['reason'], str) or len(value['reason']) > 2000 or
+            not isinstance(value['stale_reason'], str) or len(value['stale_reason']) > 1000 or
+            type(value['reviewer_slots']) is not int or value['reviewer_slots'] != 1 or
+            type(value['candidate_count']) is not int or not 0 <= value['candidate_count'] <= 3):
+        raise HistoryError('履歴の編成情報が不正です。')
+    by_id = {agent['id']: agent for agent in agents}
+    workers, reviewer = value['worker_ids'], value['reviewer_id']
+    if (len(run['pm_agent_ids']) != 1 or not isinstance(workers, list) or len(workers) > 3 or
+            any(not isinstance(ident, str) or ident not in by_id for ident in workers) or
+            len(set(workers)) != len(workers) or
+            reviewer is not None and (not isinstance(reviewer, str) or reviewer not in by_id)):
+        raise HistoryError('履歴の編成担当が不正です。')
+    pm = run['pm_agent_ids'][0]
+    if any(by_id[ident].get('parent_id') != pm for ident in workers):
+        raise HistoryError('履歴の編成担当は直属の作業者である必要があります。')
+    if reviewer is not None and (reviewer in run['pm_agent_ids'] or reviewer in workers or
+            by_id[reviewer].get('parent_id') is not None or 'hierarchy' in by_id[reviewer]):
+        raise HistoryError('履歴の独立レビュワーが作成者の系統に含まれています。')
+    for agent in agents:
+        expected = 'independent_reviewer' if agent['id'] == reviewer else 'author'
+        if agent.get('kind') != expected or reviewer is not None and agent.get('parent_id') == reviewer:
+            raise HistoryError('履歴の担当種別が編成と一致しません。')
+    candidate = value['candidate']
+    if candidate is None:
+        if value['phase'] in ('reviewing', 'accepted', 'revise', 'complete'):
+            raise HistoryError('履歴のレビュー対象がありません。')
+        return
+    candidate_fields = {'id', 'round', 'summary_sha256', 'manifest_sha256', 'artifact_count',
+                        'summary_only', 'read_count', 'consumed_read_count', 'decision', 'feedback'}
+    if (not isinstance(candidate, dict) or set(candidate) != candidate_fields or
+            not isinstance(candidate['id'], str) or re.fullmatch(r'c-[0-9a-f]{32}', candidate['id']) is None or
+            type(candidate['round']) is not int or not 1 <= candidate['round'] <= value['candidate_count'] or
+            any(not isinstance(candidate[key], str) or re.fullmatch(r'[0-9a-f]{64}', candidate[key]) is None
+                for key in ('summary_sha256', 'manifest_sha256')) or
+            any(type(candidate[key]) is not int or not 0 <= candidate[key] <= 32
+                for key in ('artifact_count', 'read_count', 'consumed_read_count')) or
+            not candidate['consumed_read_count'] <= candidate['read_count'] <= candidate['artifact_count'] or
+            type(candidate['summary_only']) is not bool or candidate['summary_only'] != (candidate['artifact_count'] == 0) or
+            candidate['decision'] not in (None, 'accept', 'revise') or
+            not isinstance(candidate['feedback'], str) or len(candidate['feedback']) > 4000 or
+            reviewer is None or
+            value['phase'] in ('accepted', 'complete') and candidate['decision'] != 'accept' or
+            value['phase'] == 'revise' and candidate['decision'] != 'revise'):
+        raise HistoryError('履歴の独立レビュー対象が不正です。')
+
+
 def _hierarchy(run, agents):
     """Validate display linkage, not a capability or resumable scheduler state."""
     cap = run.get('max_delegation_depth', 1)
@@ -245,6 +317,8 @@ def _hierarchy(run, agents):
     by_id = {agent['id']: agent for agent in agents}
     strict = 'max_delegation_depth' in run or any('hierarchy' in agent for agent in agents)
     for agent in agents:
+        if run.get('adaptive_team') is True and agent.get('kind') == 'independent_reviewer':
+            continue  # _formation validates this separate root; it is never a PM.
         current, seen, depth = agent, set(), 0
         while current.get('parent_id') is not None:
             if current['id'] in seen or current['parent_id'] not in by_id:
@@ -345,6 +419,7 @@ def validate(document):
                 _text_fields(row, ('kind', 'text') if key == 'logs' else ('source', 'text') if key == 'results' else ('tool', 'path', 'sha256', 'operation'))
                 if key == 'logs' and 'thinking' in row and not isinstance(row['thinking'], str):
                     raise HistoryError('履歴の表示内容が不正です。')
+    _formation(run, document['agents'])
     _hierarchy(run, document['agents'])
     _rows(document['events'], EVENT_FIELDS)
     for row in document['events']:
