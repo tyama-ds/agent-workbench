@@ -40,6 +40,7 @@ from .provider_monitor import complete_observed, provider_display
 from .ordered_audit import (REFERENCE_AUDIT_SCHEMA, ReferenceAuditError, audit_event,
     reference_mode, report_proof, validate_reference_audit, current_reference_report_approval, completion_evidence)
 from .formation import AdaptiveTeamMixin, FORMATION_TOOLS, FORMATION_NAMES, FormationError
+from .recovery import WorkerRecoveryMixin, recovery_view, RECOVERY_POLICY, RUN_RECOVERY_LIMIT
 
 
 class AdmissionError(ValueError):
@@ -117,6 +118,12 @@ TEAM_TOOLS = [
     schema('reserve_paths', 'Reserve relative or absolute permitted paths before edits. This prevents overlapping tool writes by teammates; not an operating system lock.', {'paths': {'type': 'array', 'items': STRING, 'minItems': 1, 'maxItems': 32}}, ('paths',)),
     schema('release_paths', 'Release your own file reservations.', {'paths': {'type': 'array', 'items': STRING}}),
 ]
+RECOVERY_TOOLS = [schema('recover_worker', 'Direct parent only. Recover one current output-limit failure after checking earlier successful outputs. split: give the same executor a smaller next task. handoff: replace the executor in the SAME worker ID with a DIFFERENT allowed profile. Include inputs, remaining deliverable and checks. Original assignment, history, authority and budgets remain. Max 2 per worker / 4 per run; consumes one automatic collaboration. Never repeat an accepted recovery; at exhaustion ask the human.',
+    {'worker_id': STRING, 'failure_id': {'type': 'integer', 'minimum': 1},
+     'action': {'type': 'string', 'enum': ['split', 'handoff']},
+     'task': {'type': 'string', 'minLength': 1, 'maxLength': 8000}, 'profile_id': STRING},
+    ('worker_id', 'failure_id', 'action', 'task'))]
+RECOVERY_NAMES = {'recover_worker'}
 REFERENCE_REVIEW_DESCRIPTIONS = {
     'review_work_step': 'PM only. Review the current candidate mail that entered your context. Check whether the word is an ordinary noun with the stated meaning. Accept routes the author output to the next worker. Reference-mode accept requires audit matching every pending_audit field in application context. Feedback remains an unverified comment, not verified reasoning. Revise requires a specific discrepancy. Do not supply an answer. Character/link and fixed-source checks do not prove semantic understanding.',
     'review_worker_report': 'PM only. Review an owned worker current formal report after it entered your context. Use list_team for the exact current result_revision. Reference-mode accept requires audit containing every assigned accepted step from formal_reports in application context. Feedback remains an unverified comment. Independent current report reviews may share a native tool batch; check each result before finish_work. Otherwise revise with a specific discrepancy (ordered corrections use rollback_work_step). This records judgment and fixed-source matching, not semantic understanding.',
@@ -125,7 +132,7 @@ TEAM_NAMES = {t['name'] for t in TEAM_TOOLS}
 COORDINATION_TOOLS = frozenset({'list_team', 'spawn_worker', 'send_message', 'ask_user',
                               'wait_for_workers', 'wait_for_message', 'review_worker_report',
                               'read_context_history', 'release_paths', 'finish_work',
-                              'post_work_board', 'read_work_board'})
+                              'post_work_board', 'read_work_board', 'recover_worker'})
 COORDINATION_TOOLS = COORDINATION_TOOLS | ORDERED_NAMES
 COORDINATION_TOOLS = COORDINATION_TOOLS | FORMATION_NAMES
 SKILL_TOOL = schema('read_skill',
@@ -251,6 +258,9 @@ class Agent:
     dependency_epoch: int = 0
     dependency_retry_mail: str = ''
     kind: str = ''  # App-owned capability, never a model-supplied role.
+    output_limit_failures: int = 0
+    recovery_attempts: int = 0
+    recovery_history: list = field(default_factory=list)
 
     def public(self, *, message_eligibility=None, status_reason=None, include_detail=True, configured_profile=None,
                 redact_activity=lambda value: value, coordination=None, worker_dependencies=None, hierarchy=None):
@@ -260,6 +270,8 @@ class Agent:
             value['coordination'] = copy.deepcopy(coordination)
         if self.kind:
             value['kind'] = self.kind
+        if self.output_limit_failures or self.recovery_attempts:
+            value['recovery'] = recovery_view(self)
         if hierarchy is not None and self.kind != 'independent_reviewer':
             value['hierarchy'] = copy.deepcopy(hierarchy)
         if self.question_state:
@@ -298,7 +310,7 @@ class Agent:
                 }
 
 
-class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
+class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
     def __init__(self, settings: Settings, client=None):
         self.settings = settings
         self.gate = ResourceGate()
@@ -932,7 +944,7 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
                'pm_agent_ids': [], 'worker_profiles': list(dict.fromkeys(workers)),
                **orchestration,
                'max_workers': count, 'status': 'running', 'created_at': time.time(), 'model_calls': 0,
-               'tool_calls': 0, 'auto_collaborations': 0,
+               'tool_calls': 0, 'auto_collaborations': 0, 'worker_recoveries': 0,
                'work_board': {'enabled': config.get('work_board', {}).get('enabled') is True, 'post_count': 0, 'last_seq': 0},
                '_work_board_posts': [], '_work_board_submissions': {},
                'max_auto_collaborations': config['limits']['max_auto_collaborations'],
@@ -1526,7 +1538,10 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
             delegation_policy = ''
             if self._formation_reviewer(run, agent):
                 role_binding = mail_policy = board_policy = ''
-        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent)
+        recovery_policy = RECOVERY_POLICY if not self._ordered_for(run, agent) and any(
+            child.status == 'error' and child.stop_reason == 'provider_output_limit'
+            for child in self._owned_workers(run, agent)) else ''
+        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy
 
     def _contextual_team_tool(self, run, agent, tool):
         """One provider/validation contract without enlarging unrelated requests."""
@@ -1571,6 +1586,9 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
 
     def _model_tools(self, run, agent):
         team_tools = [*TEAM_TOOLS, *(FORMATION_TOOLS if run.get('adaptive_team') else [])]
+        if any(child.status == 'error' and child.stop_reason == 'provider_output_limit'
+               for child in self._owned_workers(run, agent)):
+            team_tools += RECOVERY_TOOLS
         tools = [*[tool for tool in team_tools if run.get('work_board', {}).get('enabled') is True
                    or tool['name'] not in {'post_work_board', 'read_work_board'}], *run['_executor'].schemas()]
         if run['_config']['python']['enabled'] and os.name == 'nt':
@@ -1999,7 +2017,10 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
         except Exception as exc:
             agent.status = 'error'
             agent.stop_reason = (exc.reason if isinstance(exc, RuntimeBudgetError) else
-                                 'provider_timeout' if isinstance(exc, ProviderTimeoutError) else '')
+                                 'provider_timeout' if isinstance(exc, ProviderTimeoutError) else
+                                 'provider_output_limit' if isinstance(exc, ProviderOutputLimitError) else '')
+            if isinstance(exc, ProviderOutputLimitError):
+                agent.output_limit_failures += 1
             try:
                 agent.last_error = self.redact(str(exc) or type(exc).__name__)[:1000]
             except RedactionCapacityError:
@@ -2011,7 +2032,12 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
             self._release(agent)
             if agent.parent_id and not self.agents[agent.parent_id].closing:
                 try:
-                    self._mail(agent, self.agents[agent.parent_id], 'Worker blocked: ' + agent.last_error, completed=True)
+                    recovery = ('\nstop_reason=provider_output_limit; failure_id=' + str(agent.output_limit_failures)
+                        + f'; recoveries={agent.recovery_attempts}/2, run={run.get("worker_recoveries", 0)}/{RUN_RECOVERY_LIMIT}. '
+                        + 'This rejected response executed no tools; earlier saved outputs remain. Inspect them and use '
+                        + 'recover_worker to split or hand off within allowed profiles. At the cap, report the blocker to the human.'
+                        if isinstance(exc, ProviderOutputLimitError) else '')
+                    self._mail(agent, self.agents[agent.parent_id], 'Worker blocked: ' + agent.last_error + recovery, completed=True)
                 except ValueError:
                     pass
         finally:
@@ -2201,8 +2227,9 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
         self._formation_guard(run, agent, name)
         if name not in {'list_team', 'ask_user', 'send_message', 'wait_for_message', 'read_context_history'}:
             self._dependency_require(agent)
-        if name in TEAM_NAMES or name in FORMATION_NAMES:
-            definitions = FORMATION_TOOLS if name in FORMATION_NAMES else TEAM_TOOLS
+        if name in TEAM_NAMES or name in FORMATION_NAMES or name in RECOVERY_NAMES:
+            definitions = (RECOVERY_TOOLS if name in RECOVERY_NAMES else
+                           FORMATION_TOOLS if name in FORMATION_NAMES else TEAM_TOOLS)
             tool = next(t for t in definitions if t['name'] == name)
             spec = self._contextual_team_tool(run, agent, tool)['parameters']
             if set(args) - set(spec['properties']) or set(spec['required']) - set(args):
@@ -2316,6 +2343,9 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
                         'result_revision', 'finished_revision', 'waiting_for_message')}
                 if member.kind:
                     row['kind'] = member.kind
+                row['stop_reason'] = member.stop_reason
+                if member.output_limit_failures or member.recovery_attempts:
+                    row['recovery'] = recovery_view(member)
                 if not self._formation_reviewer(run, member):
                     row['hierarchy'] = self._hierarchy_view(member)
                 if member.participant_key:
@@ -2336,11 +2366,14 @@ class Engine(AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, Work
                 roster.append(row)
             return {'self': agent.id, 'max_workers': run['max_workers'], 'allowed_profiles': run['worker_profiles'],
                     'budget': self._budget_snapshot(run),
+                    'worker_recoveries': run.get('worker_recoveries', 0), 'max_worker_recoveries': RUN_RECOVERY_LIMIT,
                     **self._orchestration(run['_config'], run),
                     'pm_agent_ids': list(run['pm_agent_ids']),
                     'auto_collaborations': run['auto_collaborations'], 'max_auto_collaborations': run['max_auto_collaborations'],
                     'agents': roster, **({'formation': copy.deepcopy(run['formation'])} if run.get('adaptive_team') else {}),
                     **({'ordered_work': self._ordered_view(run, agent)} if self._ordered_for(run, agent) else {})}
+        if name == 'recover_worker':
+            return self._recover_worker(run, agent, args)
         if name == 'spawn_worker':
             issue = self._hierarchy_spawn_issue(run, agent)
             if issue:

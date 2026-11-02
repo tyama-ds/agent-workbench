@@ -24,10 +24,10 @@ MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
     'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
     'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
-    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation'))
+    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind', 'recovery'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))
@@ -35,7 +35,7 @@ EVENT_FIELDS = frozenset(('id', 'run_id', 'agent_id', 'kind', 'text', 'at', 'mai
     'to_agent_id', 'from', 'to', 'subject', 'message_type', 'delivery_state'))
 POST_FIELDS = frozenset(('seq', 'run_id', 'author_kind', 'author_id', 'author_name', 'body', 'reply_to', 'created_at'))
 TERMINAL = frozenset(('done', 'stopped', 'error', 'interrupted'))
-STOP_REASONS = frozenset(('time_limit', 'model_limit', 'tool_limit', 'turn_limit', 'provider_timeout'))
+STOP_REASONS = frozenset(('time_limit', 'model_limit', 'tool_limit', 'turn_limit', 'provider_timeout', 'provider_output_limit'))
 
 
 class HistoryError(ValueError):
@@ -106,6 +106,10 @@ def redact_document(document, redact):
         enum(before, after, 'kind', {'author', 'independent_reviewer'})
         enum(before, after, 'status', statuses)
         restore(before, after, ('stop_reason',))
+        if 'recovery' in before:
+            restore(before['recovery'], after['recovery'], ('failure_id', 'attempts', 'max_attempts', 'remaining'))
+            for old, new in zip(before['recovery']['history'], after['recovery']['history']):
+                restore(old, new, ('attempt', 'failure_id', 'action', 'at'))
         restore_coordination_metadata(before.get('coordination'), after.get('coordination'))
         if before.get('question_state'):
             restore(before['question_state'], after['question_state'], ('question_id', 'kind', 'resolution'))
@@ -343,6 +347,26 @@ def _hierarchy(run, agents):
             raise HistoryError('履歴のユニット表示が親子関係と一致しません。')
 
 
+def _recovery(value):
+    fields = {'failure_id', 'attempts', 'max_attempts', 'remaining', 'history'}
+    if (not isinstance(value, dict) or set(value) != fields
+            or type(value['failure_id']) is not int or value['failure_id'] < 1
+            or type(value['attempts']) is not int or not 0 <= value['attempts'] <= 2
+            or type(value['max_attempts']) is not int or value['max_attempts'] != 2
+            or type(value['remaining']) is not int or value['remaining'] != 2 - value['attempts']
+            or not isinstance(value['history'], list) or len(value['history']) != value['attempts']):
+        raise HistoryError('履歴の復旧回数が不正です。')
+    previous_failure = 0
+    for index, row in enumerate(value['history'], 1):
+        if (not isinstance(row, dict) or set(row) != {'attempt', 'failure_id', 'action', 'from_profile_id',
+                'to_profile_id', 'task', 'error', 'at'} or type(row['attempt']) is not int or row['attempt'] != index
+                or type(row['failure_id']) is not int or not previous_failure < row['failure_id'] <= value['failure_id']
+                or row['action'] not in ('split', 'handoff') or not _time(row['at'])
+                or any(not isinstance(row[key], str) for key in ('from_profile_id', 'to_profile_id', 'task', 'error'))):
+            raise HistoryError('履歴の復旧記録が不正です。')
+        previous_failure = row['failure_id']
+
+
 def validate(document):
     if not isinstance(document, dict) or set(document) != {'run', 'agents', 'events', 'board'}:
         raise HistoryError('履歴の構造が不正です。')
@@ -372,6 +396,14 @@ def validate(document):
             type(board_meta['enabled']) is not bool or not _number(board_meta['post_count']) or not _number(board_meta['last_seq'])):
         raise HistoryError('履歴の掲示板情報が不正です。')
     _rows(document['agents'], AGENT_FIELDS)
+    for member in document['agents']:
+        if 'recovery' in member:
+            _recovery(member['recovery'])
+    if 'worker_recoveries' in run and (type(run['worker_recoveries']) is not int
+            or not 0 <= run['worker_recoveries'] <= 4
+            or run['worker_recoveries'] != sum(a.get('recovery', {}).get('attempts', 0)
+                                              for a in document['agents'] if isinstance(a.get('recovery', {}), dict))):
+        raise HistoryError('履歴の仕事全体の復旧回数が不正です。')
     if len(document['agents']) > 64:
         raise HistoryError('履歴の担当者数が上限を超えました。')
     ids = {agent['id'] for agent in document['agents']}

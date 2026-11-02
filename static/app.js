@@ -233,7 +233,8 @@ function configuredProfile(agent) {
 }
 function configuredProfileLabel(agent) {
   const profile=configuredProfile(agent);
-  return profile?`開始時の設定: ${profileLabel(profile)} · ${PROFILE_KINDS[profile.kind]}`:'開始時の設定情報なし';
+  const replaced=Array.isArray(agent?.recovery?.history)&&agent.recovery.history.some(item=>item?.action==='handoff');
+  return profile?`${replaced?'現在の担当設定（開始時に許可）':'開始時の設定'}: ${profileLabel(profile)} · ${PROFILE_KINDS[profile.kind]}`:'開始時の設定情報なし';
 }
 function lines(value) { return String(value||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean); }
 function localTime(value) {
@@ -1947,10 +1948,10 @@ function renderRunList() {
   [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
 const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
-function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
+function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:item?.status==='error'&&item?.stop_reason==='provider_output_limit'?'モデル出力上限':item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
 function badge(status,reason,agent=null) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),agent?stateLabel(agent):REASON_LABELS[reason]||statusLabel(status)); }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   filteredAgents(agents).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
@@ -2076,6 +2077,26 @@ function exportSelectedOutput() {
   catch(_){outputFeedback(action,'.txt ダウンロードを開始できませんでした。表示されたテキストを選択してコピーしてください。',true);}
 }
 function setVisibleText(node,text) { const value=String(text??'');if(node.textContent!==value)node.textContent=value; }
+function renderWorkerRecovery(agent) {
+  const recovery=agent?.recovery,limited=agent?.stop_reason==='provider_output_limit';
+  const valid=Number.isInteger(recovery?.attempts)&&recovery.attempts>=0&&Number.isInteger(recovery?.max_attempts)&&recovery.max_attempts>0;
+  const panel=$('inspectorRecovery');
+  if(!panel)return;
+  if(!valid||(!recovery.attempts&&!limited)){panel.hidden=true;return;}
+  panel.hidden=false;
+  const run=ui.state.runs.find(item=>item.id===agent.run_id),runUsed=run?.worker_recoveries;
+  const runKnown=Number.isInteger(runUsed)&&runUsed>=0&&runUsed<=4,runLimited=runKnown&&runUsed===4;
+  setVisibleText(panel.children[0],`出力上限からの復旧 ${recovery.attempts} / ${recovery.max_attempts} 回${runKnown?` · 仕事全体 ${runUsed} / 4 回（残り ${4-runUsed} 回）`:''}${archivedAgent(agent)?'（保存時点）':''}`);
+  const history=Array.isArray(recovery.history)?recovery.history:[];
+  const lines=[`直属親が小さい作業への分割や許可済み別モデルへの担当交代を判断します。同じ担当IDと予算を引き継ぎます。`];
+  if(limited)lines.push(runLimited?'この仕事全体の自動復旧回数を使い切りました。未完了の内容を確認してください。':recovery.remaining===0?'この担当の自動復旧回数を使い切りました。未完了の内容を確認してください。':'この応答のツールは実行されていません。再開には直属親の復旧判断が必要です。');
+  for(const item of history){
+    if(!item||typeof item!=='object')continue;
+    const action=item.action==='split'?'作業を分割':item.action==='handoff'?'担当モデルを交代':'復旧';
+    lines.push(`${item.at?localTime(item.at)+' · ':''}${item.attempt}回目 · ${action} · ${item.from_profile_id} → ${item.to_profile_id}\n${String(item.task??'')}`);
+  }
+  setVisibleText(panel.children[1],lines.join('\n\n'));
+}
 function renderInspector(agent) {
   if($('inspectorMonitor'))$('inspectorMonitor').textContent=agentMonitorText(agent);
   renderHierarchyRelations(agent);
@@ -2084,6 +2105,7 @@ function renderInspector(agent) {
   setVisibleText($('inspectorLatest'),latest?`${localTime(latest.at)} · ${latest.kind||'ログ'}\n${latest.text||''}`:'公開された最新ログはまだありません。');
   const count=value=>Number.isInteger(value)&&value>=0?value:'未取得';
   setVisibleText($('inspectorCounts'),`待機入力 ${count(activity?.pending_count)} · 報告 ${count(activity?.result_count)} · 保存 ${count(activity?.output_receipt_count)}`);
+  renderWorkerRecovery(agent);
   $('inspectorError').hidden=!agent?.last_error;setVisibleText($('inspectorError'),agent?.last_error||'');
   $('inspectAgentMail').disabled=!agent;
 }
@@ -2303,7 +2325,7 @@ function sharedBudgetMetrics(run) {
   return rows;
 }
 function runtimeStopMetrics(run) {
-  const labels={time_limit:'実行時間の上限',model_limit:'モデル呼び出し回数の上限',tool_limit:'ツール実行回数の上限',turn_limit:'担当のターン数上限',provider_timeout:'モデルAPIの応答待ちタイムアウト（自動再試行なし）'};
+  const labels={time_limit:'実行時間の上限',model_limit:'モデル呼び出し回数の上限',tool_limit:'ツール実行回数の上限',turn_limit:'担当のターン数上限',provider_timeout:'モデルAPIの応答待ちタイムアウト（自動再試行なし）',provider_output_limit:'モデル出力上限（未完了）'};
   const reasons=Array.isArray(run.stop_reasons)?run.stop_reasons:[run.stop_reason];
   const values=[...new Set(reasons.filter(reason=>typeof reason==='string'&&Object.hasOwn(labels,reason)))].map(reason=>labels[reason]);
   return values.length?[['担当の停止理由',values.join(' / ')]]:[];
