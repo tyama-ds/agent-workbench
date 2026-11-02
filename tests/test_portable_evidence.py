@@ -205,7 +205,7 @@ def test_checked_in_reference_has_exact_archive_identity_and_pinned_original_byt
 
 def test_current_ci_is_source_only_with_exact_nonbinary_evidence_allowlist():
     workflow = (builder.ROOT / ".github/workflows/tests.yml").read_text()
-    assert re.findall(r"(?m)^  ([a-z_]+):$", workflow) == ["tests", "browser"]
+    assert re.findall(r"(?m)^  ([a-z_]+):$", workflow) == ["recovery", "tests", "browser"]
     assert "os: [windows-latest, ubuntu-latest]" in workflow
     assert "python: ['3.11', '3.13']" in workflow
     for retired in ("build_portable", "portable.spec", "requirements-build.lock", "portable_smoke", "portable_console", "PyInstaller", "dist/"):

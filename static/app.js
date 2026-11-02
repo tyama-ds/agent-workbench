@@ -2080,13 +2080,9 @@ function setVisibleText(node,text) { const value=String(text??'');if(node.textCo
 function renderWorkerRecovery(agent) {
   const recovery=agent?.recovery,limited=agent?.stop_reason==='provider_output_limit';
   const valid=Number.isInteger(recovery?.attempts)&&recovery.attempts>=0&&Number.isInteger(recovery?.max_attempts)&&recovery.max_attempts>0;
-  let panel=$('inspectorRecovery');
-  if(!valid||(!recovery.attempts&&!limited)){if(panel)panel.hidden=true;return;}
-  if(!panel){
-    panel=element('details','history-details');panel.id='inspectorRecovery';
-    panel.append(element('summary'),element('p','inspector-latest'));
-    $('inspectorBrief').append(panel);
-  }
+  const panel=$('inspectorRecovery');
+  if(!panel)return;
+  if(!valid||(!recovery.attempts&&!limited)){panel.hidden=true;return;}
   panel.hidden=false;
   const run=ui.state.runs.find(item=>item.id===agent.run_id),runUsed=run?.worker_recoveries;
   const runKnown=Number.isInteger(runUsed)&&runUsed>=0&&runUsed<=4,runLimited=runKnown&&runUsed===4;

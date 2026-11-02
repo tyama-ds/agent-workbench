@@ -15,6 +15,8 @@ class Node {
 function element(tag,classes,text){const node=new Node(tag);node.className=classes||'';node.textContent=text||'';return node;}
 const $=id=>nodes.get(id)||null;
 const brief=element('details');brief.id='inspectorBrief';
+const recoveryPanel=element('details','history-details');recoveryPanel.id='inspectorRecovery';recoveryPanel.hidden=true;
+recoveryPanel.append(element('summary'),element('p','inspector-latest'));brief.append(recoveryPanel);
 function archivedAgent(agent){return agent?.archived===true;}
 function localTime(){return '12:30';}
 const ui={selectedRun:'other-run',state:{runs:[{id:'other-run',worker_recoveries:0},{id:'run',worker_recoveries:3}]}};
