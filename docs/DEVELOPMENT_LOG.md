@@ -38,6 +38,9 @@ returned to the model, truncated tool output, and coordinator prompting.
   workers run. Budget text states that worker calls are expected.
 - Defaults for new settings: 200 model calls, 400 tool calls, 40 turns per
   agent, 8,192 output tokens. Existing saved settings are not changed.
+- Cockpit: crew roster and mission network redesigned after ORRERY's design
+  language (no ORRERY code or assets), and the mission network can be opened in
+  its own tab or window (`/?view=network&run=<id>`) showing only the map.
 - Fixes from review: mixed-separator UNC paths (`\/host/share`,
   `/\host/share`) are rejected before any filesystem access; settings import
   preview no longer probes UNC paths; reviewing a worker whose report is stale or

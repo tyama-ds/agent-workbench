@@ -109,6 +109,15 @@ Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotifie
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
 Object.assign(ui,{cockpitView:'network',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
+// A separate tab/window that shows only the mission network (?view=network&run=ID).
+// It is the same page and session cookie; no new server route or credential.
+const NETWORK_POPOUT=(()=>{const query=new URLSearchParams(globalThis.location?.search||'');return query.get('view')==='network'?{run:query.get('run')||''}:null;})();
+function networkPopoutHref(runId) { const query=new URLSearchParams({view:'network'});if(runId)query.set('run',runId);return '/?'+query.toString(); }
+function openNetworkWindow() {
+  const name='awb-network-'+String(ui.selectedRun||'latest').replace(/[^A-Za-z0-9_-]/g,'');
+  const opened=window.open(networkPopoutHref(ui.selectedRun),name,'popup,width=1440,height=900');
+  if(opened)opened.opener=null;else notice('別ウィンドウを開けませんでした。ブラウザーのポップアップ設定を確認するか「別タブ」を使ってください。',true);
+}
 Object.assign(ui,{networkViews:new Map(),networkGesture:null,networkSuppressClick:null,networkParentLines:[],networkMailLines:[]});
 Object.assign(ui,{networkHoverAgent:null,networkFocusAgent:null,networkPreviewHovered:false,networkPreviewDismissTimer:null,networkPreviewReady:false,networkPulses:new Map(),networkPulseSequence:0,networkMotionEnabled:true,networkConnected:false,networkReducedMotion:false});
 const NETWORK_NODE_SIZE=112,NETWORK_NODE_RADIUS=56,NETWORK_MAIL_SEEN_LIMIT=200,NETWORK_PULSE_LIMIT=16,NETWORK_PULSE_MS=1200,NETWORK_PREVIEW_DISMISS_MS=240;
@@ -2527,9 +2536,12 @@ function resourceLabel(resources,gpuIndex=0) {
 function renderState() {
   // Reconcile before automatic initial selection can change the navigation epoch.
   reconcileStartedRun();
-  const runId=ui.state.runs.some(run=>run.id===ui.selectedRun)?ui.selectedRun:ui.state.runs.at(-1)?.id||null,agents=ui.state.agents.filter(agent=>agent.run_id===runId);
+  const pinned=NETWORK_POPOUT&&!ui.networkPopoutApplied&&ui.state.runs.some(run=>run.id===NETWORK_POPOUT.run)?NETWORK_POPOUT.run:null;
+  if(pinned)ui.networkPopoutApplied=true;
+  const runId=pinned||(ui.state.runs.some(run=>run.id===ui.selectedRun)?ui.selectedRun:ui.state.runs.at(-1)?.id||null),agents=ui.state.agents.filter(agent=>agent.run_id===runId);
   const agentId=agents.some(agent=>agent.id===ui.selectedAgent)?ui.selectedAgent:agents.find(rootPMAgent)?.id||agents[0]?.id||null;
   changeSelection(runId,agentId);
+  const popoutLink=$('networkOpenTab');if(popoutLink)popoutLink.href=networkPopoutHref(runId);
   preserveControlFocus(()=>{renderRunList();renderRun();});setSettingsLock();$('resourceSummary').textContent=resourceLabel(ui.state.resources,ui.config?.local?.gpu_index||0);
 }
 function selectedStatePath(selection) {
@@ -2588,6 +2600,8 @@ async function initialize() {
   renderQuestionNotice(questionEntries());
   initializeNetworkControls();
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
+  $('networkOpenWindow')?.addEventListener('click',openNetworkWindow);
+  if(NETWORK_POPOUT){document.documentElement.dataset.layout='network-popout';document.title='Mission Network · Workbench';}
   $('boardView').addEventListener('click',()=>setCockpitView('board'));
   $('workBoardForm').addEventListener('submit',event=>{event.preventDefault();void submitWorkBoardPost();});
   $('workBoardInput').addEventListener('input',event=>{saveWorkBoardDraft(event);renderWorkBoardControls(getRun());});
