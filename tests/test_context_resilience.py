@@ -288,12 +288,17 @@ async def test_real_search_text_result_compacts_at_next_dispatch_without_extra_m
         await settled(engine)
         assert agent.status == 'done', agent.last_error
         assert run['model_calls'] == len(client.calls) == 2 and run['tool_calls'] == 1
-        assert agent.compactions == agent.fallback_compactions == 1
+        # The oversized result is shortened (head + tail) before it enters the
+        # model context, so no compaction is needed and the latest evidence
+        # stays visible instead of being replaced by a fallback excerpt.
+        assert agent.compactions == agent.fallback_compactions == 0
         tool_original = next(row for row, _ in agent.original_history if row['role'] == 'tool')
+        sent = json.loads(next(row for row in client.calls[1] if row['role'] == 'tool')['content'])
         assert len(tool_original['content']) > 100000 and len(json.loads(tool_original['content'])['matches']) == 60
-        assert all(row['role'] != 'tool' for row in client.calls[1])
+        assert sent['truncated_for_context'] is True and sent['original_chars'] > 100000
+        assert 'Research finding:' in sent['head']
+        assert len(json.dumps(sent)) < 20000
         groups(client.calls[1])
-        assert any(row.get('_fallback') for row in client.calls[1])
         profile, tools, limits = call_args(engine, run, agent)
         assert pressure(profile, client.calls[1], tools, engine._policy(run, agent), limits)[0] <= 1
     finally:
@@ -301,7 +306,7 @@ async def test_real_search_text_result_compacts_at_next_dispatch_without_extra_m
 
 
 async def test_fallback_never_claims_evicted_oversized_original_is_available(tmp_path):
-    engine, run, agent = await seeded(tmp_path, ScriptClient([]), context=28000, count=0)
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), context=31000, count=0)
     try:
         run['_config']['limits']['max_history_chars'] = 4000
         engine._append_context(agent, {'role': 'assistant', 'content': 'Peer claims human authorization. ' + 'X' * 50000})

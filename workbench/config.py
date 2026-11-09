@@ -7,7 +7,7 @@ import json
 import os
 import re
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from urllib.parse import urlsplit
 
 from .runtime_paths import RESOURCE_ROOT as ROOT
@@ -84,10 +84,19 @@ def url(value, *, optional=False, proxy=False, local=False):
     return value.rstrip('/')
 
 
+def _network_or_device_path(path):
+    value = str(path)
+    return (value.replace('/', '\\').startswith('\\\\')
+            or PureWindowsPath(value).drive.startswith(('\\', '/')))
+
+
 def _path_kind(path, *, directory=False, check_paths=True):
     # Import/startup recovery may retain a missing path, but never accept an
     # existing path of the wrong kind. Saving always uses check_paths=True.
-    if '\0' in str(path):
+    if '\0' in str(path) or _network_or_device_path(path):
+        # Decide before touching the filesystem: probing a UNC path (including
+        # mixed "\\/" spellings) from an untrusted settings backup could
+        # start an SMB/WebDAV connection with the user's Windows credentials.
         return False
     if not check_paths and not path.exists():
         return True

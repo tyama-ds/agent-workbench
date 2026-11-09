@@ -157,7 +157,7 @@ async def test_incoming_human_and_peer_queues_are_not_lost_during_summary(tmp_pa
 
 async def test_budget_exhaustion_and_oversize_pins_fail_without_call(tmp_path):
     client = ScriptClient([])
-    engine, run, agent = await seeded(tmp_path, client, context=28000)
+    engine, run, agent = await seeded(tmp_path, client, context=31000)
     try:
         run['model_calls'] = run['_config']['limits']['max_model_calls'] - 1
         before = copy.deepcopy(agent.original_history)
@@ -391,7 +391,7 @@ async def test_token_window_overflow_is_shared_by_dispatch_and_admission(tmp_pat
 async def test_last_call_is_usable_below_hard_cap_without_optional_summary(tmp_path):
     # Include current policy/tool overhead while keeping this fixture in the
     # optional-summary band; the separate hard-cap tests remain unchanged.
-    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=13)
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=12)
     try:
         profile, tools, limits = call_args(engine, run, agent)
         ratio, chars, _ = pressure(profile, agent.conversation, tools, engine._policy(run, agent), limits)

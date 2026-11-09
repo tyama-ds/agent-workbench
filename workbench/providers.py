@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import email.utils
 import ipaddress
 import json
+import random
 import re
+import time
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit, urlunsplit
 
@@ -24,16 +27,57 @@ from .copilot_protocol import (
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_TOOL_ARGUMENT_BYTES = 256 * 1024
+# Transient HTTP statuses that are safe to re-send: no tool ran and the
+# provider produced no accepted reply. 529 is Anthropic "overloaded".
+RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 529})
+# Cloud profiles cannot carry retry keys, so they need a built-in default.
+# One transient 429/5xx must not permanently stop an agent.
+CLOUD_DEFAULT_RETRIES = 3
+CLOUD_DEFAULT_BACKOFF_SECONDS = 2
+MAX_RETRY_DELAY_SECONDS = 60
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
 _PRIVATE_NETWORKS = tuple(ipaddress.ip_network(value) for value in
                           ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
 
 
 class ProviderError(RuntimeError):
-    def __init__(self, message: str, *, status: int | None = None, retryable: bool = False):
+    def __init__(self, message: str, *, status: int | None = None, retryable: bool = False,
+                 retry_after: float | None = None):
         super().__init__(message)
         self.status = status
         self.retryable = retryable
+        self.retry_after = retry_after
+
+
+def retry_after_seconds(headers) -> float | None:
+    """Parse server retry advice (retry-after-ms, Retry-After seconds or HTTP date)."""
+    try:
+        value = headers.get("retry-after-ms")
+        if value is not None:
+            seconds = float(value) / 1000
+        else:
+            value = headers.get("Retry-After")
+            if value is None:
+                return None
+            value = value.strip()
+            if re.fullmatch(r"\d+(?:\.\d+)?", value):
+                seconds = float(value)
+            else:
+                moment = email.utils.parsedate_to_datetime(value)
+                seconds = moment.timestamp() - time.time()
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return None
+    if seconds != seconds or seconds < 0:
+        return 0.0 if seconds == seconds else None
+    return min(float(MAX_RETRY_DELAY_SECONDS), seconds)
+
+
+def retry_delay(exc: "ProviderError", attempt: int, backoff: float) -> float:
+    """Honor server advice; otherwise exponential backoff with +/-10% jitter."""
+    if exc.retry_after is not None:
+        return min(float(MAX_RETRY_DELAY_SECONDS), exc.retry_after)
+    base = min(float(MAX_RETRY_DELAY_SECONDS), backoff * 2 ** attempt)
+    return base * random.uniform(0.9, 1.1)
 
 
 class ProviderTimeoutError(ProviderError):
@@ -94,6 +138,29 @@ def _call(call_id, name, arguments, seen: set[str]) -> dict:
         raise ProviderError("Provider returned an invalid or duplicate tool call")
     seen.add(call_id)
     return {"id": call_id, "name": name, "arguments": _arguments(arguments)}
+
+
+def _native_call(call_id, name, arguments, seen: set[str]) -> dict:
+    """Parse a provider-native tool call without discarding the whole reply.
+
+    An invalid ID/name cannot be paired with a result and stays fatal. Bad
+    arguments are kept as a call with an ``error`` that the engine returns to
+    the model as a tool result, so the model can correct itself (Codex does
+    the same) instead of the agent stopping. Such a call is never executed.
+    """
+    if (not isinstance(call_id, str) or not 1 <= len(call_id) <= 256 or call_id in seen
+            or not isinstance(name, str) or not _NAME.fullmatch(name)):
+        raise ProviderError("Provider returned an invalid or duplicate tool call")
+    seen.add(call_id)
+    if arguments is None or isinstance(arguments, str) and not arguments.strip():
+        # Local servers often send "" for tools without parameters.
+        arguments = {}
+    try:
+        return {"id": call_id, "name": name, "arguments": _arguments(arguments)}
+    except ProviderError:
+        return {"id": call_id, "name": name, "arguments": {},
+                "error": "Tool arguments were not one valid JSON object, so this tool was not executed. "
+                         "Call it again with a single JSON object that matches the tool schema."}
 
 
 def split_thinking(content: str) -> tuple[str, str]:
@@ -373,7 +440,9 @@ class ProviderClient:
         proxy = None
         if kind != "local" and profile.get("proxy_url"):
             proxy = _proxy_url(profile["proxy_url"])
-        retry_config = local if kind == "local" else {key: profile[key] for key in ("max_retries", "retry_backoff_seconds") if key in profile}
+        retry_config = local if kind == "local" else {
+            "max_retries": CLOUD_DEFAULT_RETRIES, "retry_backoff_seconds": CLOUD_DEFAULT_BACKOFF_SECONDS,
+            **{key: profile[key] for key in ("max_retries", "retry_backoff_seconds") if key in profile}}
         retries, backoff = retry_settings(retry_config)
         configure_observation(provider_kind=kind,
             admission_kind=('copilot' if request_gate is self.copilot_resource_gate else 'local') if kind == 'local' else 'none',
@@ -413,10 +482,12 @@ class ProviderClient:
                     return copilot_json_reply(reply, definitions, finish_reason=response['choices'][0].get('finish_reason'))
                 return reply
             except ProviderError as exc:
+                # Timeouts stay non-retryable (ProviderTimeoutError): the server
+                # may still be generating, and a replay would duplicate the work.
                 if not exc.retryable or attempt == retries:
                     raise
                 observation_phase('error', error=exc)
-                delay = min(60, backoff * 2 ** attempt)
+                delay = retry_delay(exc, attempt, backoff)
                 observation_phase('retry_wait', retry_after_seconds=delay)
                 await asyncio.sleep(delay)
         raise ProviderError("Provider request did not finish")
@@ -427,7 +498,8 @@ class ProviderClient:
                 async with session.post(endpoint, json=payload, headers=headers, proxy=proxy, allow_redirects=False) as response:
                     if response.status != 200:
                         raise ProviderError(f"Provider returned HTTP {response.status}; response body withheld",
-                                            status=response.status, retryable=response.status in {429, 503})
+                                            status=response.status, retryable=response.status in RETRYABLE_STATUSES,
+                                            retry_after=retry_after_seconds(response.headers))
                     parts, size = [], 0
                     async for part in response.content.iter_chunked(65536):
                         size += len(part)
@@ -443,7 +515,8 @@ class ProviderClient:
         except asyncio.TimeoutError:
             raise ProviderTimeoutError("Provider request timed out; no automatic retry") from None
         except aiohttp.ClientError:
-            raise ProviderError("Provider connection failed; check the endpoint and network settings") from None
+            raise ProviderError("Provider connection failed; check the endpoint and network settings",
+                                retryable=True) from None
         except (ValueError, TypeError, UnicodeError, RecursionError):
             raise ProviderError("Provider returned invalid JSON") from None
 
@@ -469,7 +542,7 @@ class ProviderClient:
                     if item.get("status") not in {None, "completed"}:
                         raise ProviderError("OpenAI output was incomplete or unconfirmed; no tools were executed")
                     if item["type"] == "function_call":
-                        reply.tool_calls.append(_call(item["call_id"], item["name"], item["arguments"], seen))
+                        reply.tool_calls.append(_native_call(item["call_id"], item["name"], item["arguments"], seen))
                     elif item["type"] == "message":
                         for block in item["content"]:
                             if block["type"] in {"output_text", "refusal"}:
@@ -491,7 +564,7 @@ class ProviderClient:
                     elif block["type"] == "thinking":
                         reply.thinking += block["thinking"]
                     elif block["type"] == "tool_use":
-                        reply.tool_calls.append(_call(block["id"], block["name"], block["input"], seen))
+                        reply.tool_calls.append(_native_call(block["id"], block["name"], block["input"], seen))
             else:
                 choice = data["choices"][0]
                 if choice.get("finish_reason") == "length" and data.get("error") is None:
@@ -519,12 +592,23 @@ class ProviderClient:
                 native = {key: copy.deepcopy(message[key]) for key in ("role", "content", "refusal", "tool_calls", "reasoning_content", "reasoning") if key in message}
                 native.setdefault("role", "assistant")
                 reply.raw = {"provider": kind, "model": model, "message": native}
-                for call in message.get("tool_calls") or []:
+                for index, call in enumerate(message.get("tool_calls") or []):
                     if call.get("type", "function") != "function":
                         raise ValueError
-                    reply.tool_calls.append(_call(call["id"], call["function"]["name"], call["function"]["arguments"], seen))
-            if any(call["name"] not in allowed for call in reply.tool_calls):
+                    parsed = _native_call(call["id"], call["function"]["name"], call["function"]["arguments"], seen)
+                    if "error" in parsed or not str(call["function"]["arguments"] or "").strip():
+                        # Replay a well-formed object: some local servers re-parse
+                        # history arguments and would reject the next request.
+                        native["tool_calls"][index]["function"]["arguments"] = "{}"
+                    reply.tool_calls.append(parsed)
+            unknown = [call for call in reply.tool_calls if call["name"] not in allowed]
+            if unknown and not allowed:
                 raise ProviderError("Provider requested an unknown tool; no tools were executed")
+            for call in unknown:
+                # Not advertised in this turn: never execute it, but tell the
+                # model instead of discarding its whole reply.
+                call["error"] = (f"Unknown or currently unavailable tool: {call['name']}. It was not executed. "
+                                 "Use only these tools: " + ", ".join(sorted(allowed))[:2000])
             if not isinstance(reply.text, str) or not isinstance(reply.thinking, str) or not isinstance(reply.usage, dict):
                 raise ValueError
             return reply
