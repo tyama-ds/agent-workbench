@@ -29,9 +29,9 @@ returned to the model, truncated tool output, and coordinator prompting.
   answer is unchanged.
 - Tool results sent to the model are bounded to 1/4 of `max_context_chars`
   (4,000–40,000 characters, head + tail with a notice). The retained original
-  keeps the complete text under the same record ID for `read_context_history`.
-  `read_text` pages large files (default 20,000 characters, `offset`/`limit`,
-  `next_offset`, `start_line`); `sha256` still covers the whole file.
+  keeps the complete text under the same record ID, which the shortened copy
+  names so the model can page it with `read_context_history`. Tool schemas are
+  unchanged, so per-request overhead stays identical to dev45.
 - PM orchestration prompt: plan the critical-path step, delegate independent
   subtasks, spawn workers together in one response with self-contained
   assignments and file ownership, and wait instead of ending with prose while

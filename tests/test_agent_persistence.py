@@ -9,7 +9,7 @@ import pytest
 from workbench.config import preview_settings_import, DEFAULT
 from workbench.dependencies import DependencyBlocked
 from workbench.engine import CONTINUATION_NUDGE, bounded_tool_output
-from workbench.harness import HarnessError, PathHarness, _literal_path
+from workbench.harness import HarnessError, _literal_path
 from test_engine import configured, reply, settled, start
 
 
@@ -31,20 +31,6 @@ def test_settings_preview_rejects_unc_roots_without_touching_the_path(monkeypatc
         backup['paths']['read_roots'] = [root]
         with pytest.raises(ValueError):
             preview_settings_import(backup)
-
-
-def test_read_text_pages_large_files_and_keeps_whole_file_hash(tmp_path):
-    target = tmp_path / 'big.txt'
-    target.write_text(''.join(f'line {i}\n' for i in range(5000)), encoding='utf-8')
-    harness = PathHarness([str(tmp_path)], [], [])
-    first = harness.read_text(str(target), 0, 1000)
-    assert first['truncated'] is True and first['next_offset'] == 1000 and first['start_line'] == 1
-    second = harness.read_text(str(target), first['next_offset'], 1000)
-    assert second['text'] == target.read_text()[1000:2000]
-    assert second['start_line'] == target.read_text()[:1000].count('\n') + 1
-    assert first['sha256'] == second['sha256'] == harness.read_text(str(target))['sha256']
-    small = harness.read_text(str(target), 0, 10 ** 5)
-    assert small['truncated'] is False and 'next_offset' not in small
 
 
 def test_bounded_tool_output_keeps_head_and_tail_and_small_results_unchanged():

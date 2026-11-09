@@ -94,8 +94,8 @@ def bounded_tool_output(encoded, limits, record_id=None):
     head, tail = encoded[:limit * 2 // 3], encoded[-(limit // 3):]
     return json.dumps({'truncated_for_context': True, 'original_chars': len(encoded), 'record_id': record_id,
                        'note': 'This tool result was too large for the context and its middle was omitted. '
-                               'Request smaller parts (for example read_text with offset/limit), or page the '
-                               'complete original with read_context_history using this record ID.',
+                               'Page the complete original with read_context_history(record_ids=[record_id], '
+                               'offset, limit), or request a narrower result.',
                        'head': head, 'tail': tail}, ensure_ascii=False)
 
 
@@ -1479,6 +1479,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             'and which files it owns; tell workers they are not alone, so they must not edit files another worker owns. '
             'While your workers are running, do not duplicate their work: coordinate, do your own non-overlapping step, '
             'or call wait_for_workers. Do not end your turn with plain text while workers are still running. '
+            'Budget spent by workers on real subtasks is expected, not waste. '
             'A profile is an API/model choice, NOT one person: repeat the same allowed profile in spawn_worker '
             'to create independent workers with separate histories and conversation identities. '
             'Assign concrete deliverables and evidence checks, use wait_for_workers rather than polling, '
@@ -1547,7 +1548,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                         'to resolve a routine worker question, or replace native finish_work reports and actual file readback.\n'
                         if run.get('work_board', {}).get('enabled') is True else '')
         budget_policy = ('\nThe budget below is shared by all teammates; summary inference also consumes model calls. '
-            'It is sized for a team: calls spent by parallel workers on real subtasks are expected, not waste. '
+
             'Remaining counts are observations, not reserved capacity. Plan enough remaining calls, tools and time '
             'to integrate reports, save the requested output and read it back. Define the needed region, dates and '
             'fields from this task before fetching data. Obtain enough relevant evidence, then integrate and save '
