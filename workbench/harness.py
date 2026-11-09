@@ -16,7 +16,7 @@ import stat
 import tempfile
 import threading
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from xml.etree import ElementTree
 
@@ -89,7 +89,11 @@ def _bool(value: Any, label: str) -> bool:
 
 def _literal_path(value: str) -> Path:
     value = _string(value, "path", 4096)
-    if any(ord(c) < 32 for c in value) or value.startswith(("\\\\", "//")):
+    # Windows treats "/" and "\\" alike, so "\\/host/share" and "/\\host/share"
+    # are UNC paths too. Reject every separator spelling before any filesystem
+    # access: even an lstat() of a UNC parent can start an SMB/WebDAV session.
+    if (any(ord(c) < 32 for c in value) or value.replace("/", "\\").startswith("\\\\")
+            or PureWindowsPath(value).drive.startswith(("\\", "/"))):
         raise HarnessError("UNC, device paths and control characters are not supported")
     components = value.replace("\\", "/").split("/")
     for index, component in enumerate(components):

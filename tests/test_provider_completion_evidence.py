@@ -226,7 +226,9 @@ async def test_truncated_second_call_arguments_reject_the_whole_batch(tmp_path, 
         try:
             run, agent = await start(engine, pm_profile=kind, max_workers=0)
             await settled(engine)
-            assert agent.status == 'error' and run['status'] == 'waiting' and len(requests) == 1
+            # No call from a batch with truncated arguments ever runs; the model
+            # is asked to re-issue it a bounded number of times, then the agent stops.
+            assert agent.status == 'error' and run['status'] == 'waiting' and len(requests) == 3
             assert run['tool_calls'] == 0 and not list(work.iterdir())
             assert not agent.results and not agent.output_receipts
         finally:

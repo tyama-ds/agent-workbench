@@ -254,10 +254,21 @@ async def test_invalid_provider_batch_cannot_execute_an_earlier_valid_call(tmp_p
         try:
             run, agent = await start(engine, pm_profile=kind, max_workers=0)
             await settled(engine)
-            assert len(requests) == 1 and agent.status == 'error'
             assert run['tool_calls'] == 0 and not list(work.iterdir())
             assert not agent.output_receipts and not agent.results
-            assert all(item['role'] == 'user' for item in agent.conversation)
+            assert agent.status == 'error'
+            if invalid == 'duplicate':
+                # Unpairable IDs still reject the whole reply before history.
+                assert len(requests) == 1
+                assert all(item['role'] == 'user' for item in agent.conversation)
+            else:
+                # Correctable: nothing in the batch runs, every call receives a
+                # result, and the model is asked again a bounded number of times.
+                assert len(requests) == 3
+                results = [item for item in agent.conversation if item['role'] == 'tool']
+                assert [item['tool_call_id'] for item in results] == ['first', 'second'] * 3
+                assert all(json.loads(item['content'])['ok'] is False for item in results)
+                assert 'invalid tool calls' in agent.last_error
         finally:
             await engine.close()
 

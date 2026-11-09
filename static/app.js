@@ -109,6 +109,15 @@ Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotifie
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
 Object.assign(ui,{cockpitView:'network',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
+// A separate tab/window that shows only the mission network (?view=network&run=ID).
+// It is the same page and session cookie; no new server route or credential.
+const NETWORK_POPOUT=(()=>{const query=new URLSearchParams(globalThis.location?.search||'');return query.get('view')==='network'?{run:query.get('run')||''}:null;})();
+function networkPopoutHref(runId) { const query=new URLSearchParams({view:'network'});if(runId)query.set('run',runId);return '/?'+query.toString(); }
+function openNetworkWindow() {
+  const name='awb-network-'+String(ui.selectedRun||'latest').replace(/[^A-Za-z0-9_-]/g,'');
+  const opened=window.open(networkPopoutHref(ui.selectedRun),name,'popup,width=1440,height=900');
+  if(opened)opened.opener=null;else notice('別ウィンドウを開けませんでした。ブラウザーのポップアップ設定を確認するか「別タブ」を使ってください。',true);
+}
 Object.assign(ui,{networkViews:new Map(),networkGesture:null,networkSuppressClick:null,networkParentLines:[],networkMailLines:[]});
 Object.assign(ui,{networkHoverAgent:null,networkFocusAgent:null,networkPreviewHovered:false,networkPreviewDismissTimer:null,networkPreviewReady:false,networkPulses:new Map(),networkPulseSequence:0,networkMotionEnabled:true,networkConnected:false,networkReducedMotion:false});
 const NETWORK_NODE_SIZE=112,NETWORK_NODE_RADIUS=56,NETWORK_MAIL_SEEN_LIMIT=200,NETWORK_PULSE_LIMIT=16,NETWORK_PULSE_MS=1200,NETWORK_PREVIEW_DISMISS_MS=240;
@@ -1626,6 +1635,7 @@ function renderNetworkPreview() {
   const activity=agent.activity||{},latest=activity.latest_log,count=value=>Number.isSafeInteger(value)&&value>=0?String(value):'未取得';
   $('networkPreviewTitle').textContent=agent.name||agent.id;
   $('networkPreviewState').textContent=stateLabel(agent);
+  if($('networkPreviewState').dataset)$('networkPreviewState').dataset.crewState=crewStateKey(agent);
   $('networkPreviewRole').textContent=`${independentReviewer(agent)||agentHierarchy(agent)?agentRoleLabel(agent):agent.parent_id?'WORKER':'PM'}${agent.role?` · ${agent.role}`:''}${archivedAgent(agent)?' · 保存履歴':''}`;
   $('networkPreviewAssignment').textContent=agent.assignment||'担当内容は未記録';
   $('networkPreviewLatest').textContent=latest?`${localTime(latest.at)} · ${String(latest.text||'')}`:'最新ログは未取得';
@@ -1728,6 +1738,8 @@ function paintNetworkCamera() {
   if(!ui.networkCanvas||!ui.selectedRun)return;
   const camera=networkViewState().camera;if(!camera)return;
   ui.networkCanvas.style.transform=`translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`;
+  // Far zoom: show medallion, glyph and name only; role/state text is disclosed by the preview (hover/focus).
+  $('teamMap').classList.toggle('is-compact',camera.scale<.66);
   $('networkZoomValue').textContent=`${Math.round(camera.scale*100)}%`;
   $('networkZoomOut').disabled=camera.scale<=.01;$('networkZoomIn').disabled=camera.scale>=2;
 }
@@ -1861,14 +1873,14 @@ function renderTeamMap(agents) {
     for(const agent of agents) {
       const place=layout.positions.get(agent.id),button=element('button','network-node');button.type='button';button.dataset.agentId=agent.id;button.dataset.networkRole=independentReviewer(agent)?'reviewer':agent.parent_id?'worker':'pm';button.dataset.focusKey=`map:${agent.id}`;
       button.style.left=`${place.x}px`;button.style.top=`${place.y}px`;
-      const inner=element('span','network-orb-inner'),monogram=element('span','network-monogram'),role=element('span','network-role',independentReviewer(agent)?'REVIEWER':agent.parent_id?'WORKER':'PM'),name=element('strong','network-name'),state=element('span','network-state');
-      inner.append(monogram,role);button.append(inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
+      const glyph=element('span','network-glyph'),inner=element('span','network-orb-inner'),monogram=element('span','network-monogram'),role=element('span','network-role',independentReviewer(agent)?'REVIEWER':agent.parent_id?'WORKER':'PM'),name=element('strong','network-name'),state=element('span','network-state');
+      glyph.setAttribute('aria-hidden','true');inner.append(monogram,role);button.append(glyph,inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
       button.addEventListener('pointerenter',()=>{cancelNetworkPreviewDismiss();if(!ui.networkGesture){ui.networkHoverAgent=agent.id;renderNetworkPreview();}});
       button.addEventListener('pointerleave',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
       button.addEventListener('focus',()=>{cancelNetworkPreviewDismiss();ui.networkFocusAgent=agent.id;renderNetworkPreview();});
       button.addEventListener('blur',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
       button.setAttribute('aria-controls','networkPreview');button.setAttribute('aria-describedby','networkInteractionHelp');canvas.appendChild(button);
-      ui.networkNodes.set(agent.id,{button,name,state,monogram,role});
+      ui.networkNodes.set(agent.id,{button,name,state,monogram,role,glyph});
     }
     map.appendChild(canvas);
     if(!view.camera)fitNetwork();else paintNetworkCamera();
@@ -1881,6 +1893,7 @@ function renderTeamMap(agents) {
     node.button.className=`network-node ${status}${needsHuman(agent)?' human-input':''}${agent.id===ui.selectedAgent?' selected':''}`;
     node.button.setAttribute('aria-label',`${agent.name||agent.id} · ${stateLabel(agent)}${independentReviewer(agent)?' · 独立レビュワー':hierarchy?` · ${agentRoleLabel(agent)} · 深さ ${hierarchy.depth}`:''} · クリックまたは Enter で詳細を固定`);
     node.name.textContent=agent.name||agent.id;node.state.textContent=stateLabel(agent);
+    const crew=crewStateKey(agent);node.button.dataset.crewState=crew;if(node.glyph)node.glyph.textContent=CREW_STATES[crew].glyph;
     node.monogram.textContent=monogram;
     node.role.textContent=independentReviewer(agent)?'REVIEWER':hierarchy?`${agent.parent_id?(hierarchy.direct_children.length?'LEAD':'WORKER'):'PM'} · D${hierarchy.depth}`:agent.parent_id?'WORKER':'PM';
     node.button.title=agentHierarchyLabel(agent);
@@ -1950,19 +1963,81 @@ function renderRunList() {
 const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
 function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:item?.status==='error'&&item?.stop_reason==='provider_output_limit'?'モデル出力上限':item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
 function badge(status,reason,agent=null) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),agent?stateLabel(agent):REASON_LABELS[reason]||statusLabel(status)); }
+// Crew state vocabulary: icon + label + motion, never color alone. The label stays stateLabel().
+const CREW_STATES={working:{glyph:'▶',label:'作業中'},human:{glyph:'⏎',label:'回答待ち'},queued:{glyph:'⋯',label:'順番待ち'},waiting:{glyph:'Ⅱ',label:'待機'},
+  done:{glyph:'✓',label:'完了'},error:{glyph:'!',label:'エラー'},stopped:{glyph:'■',label:'停止・中断'},archived:{glyph:'◇',label:'保存履歴'}};
+const CREW_STATE_ORDER=['human','error','working','queued','waiting','done','stopped','archived'];
+function crewStateKey(agent) {
+  if(!agent)return 'waiting';
+  if(archivedAgent(agent))return 'archived';
+  const status=displayStatus(agent);
+  if(needsHuman(agent)||['waiting_human','needs_input'].includes(status))return 'human';
+  if(['working','running'].includes(status))return 'working';
+  if(status==='queued')return 'queued';
+  if(['done','completed'].includes(status))return 'done';
+  if(['error','failed'].includes(status))return 'error';
+  if(['stopping','stopped','interrupted'].includes(status))return 'stopped';
+  return 'waiting';
+}
+function crewDepth(agent,agents) {
+  const ids=new Map(agents.map(item=>[item.id,item]));let depth=0,current=agent;const seen=new Set();
+  while(current?.parent_id&&ids.has(current.parent_id)&&!seen.has(current.id)&&depth<4){seen.add(current.id);current=ids.get(current.parent_id);depth++;}
+  return depth;
+}
+function crewOrder(agents) {
+  // Parent → child reading order (stable; cycles and orphans keep their original position).
+  const ids=new Set(agents.map(agent=>agent.id)),placed=new Set(),order=[];
+  const visit=agent=>{if(placed.has(agent.id))return;placed.add(agent.id);order.push(agent);for(const child of agents)if(child.parent_id===agent.id)visit(child);};
+  for(const agent of agents)if(!agent.parent_id||!ids.has(agent.parent_id))visit(agent);
+  for(const agent of agents)visit(agent);
+  return order;
+}
+function crewTokens(agent) {
+  const memory=agent?.context_memory,tokens=memory?.estimated_input_tokens,parts=[];
+  if(Number.isSafeInteger(tokens)&&tokens>0)parts.push(`CTX ≈${tokens>=1000?`${Math.round(tokens/1000)}k`:tokens}`);
+  if(Number.isSafeInteger(agent?.turns))parts.push(`${agent.turns} TURNS`);
+  const results=agent?.activity?.result_count;if(Number.isSafeInteger(results)&&results>0)parts.push(`報告 ${results}`);
+  return parts.join(' · ');
+}
+function renderCrewSummary(agents) {
+  const panel=$('crewSummary');if(!panel)return;
+  const counts=new Map(CREW_STATE_ORDER.map(key=>[key,0]));for(const agent of agents)counts.set(crewStateKey(agent),counts.get(crewStateKey(agent))+1);
+  const signature=JSON.stringify([ui.needsOnly,agents.length,[...counts]]);if(signature===ui.crewSummarySignature)return;ui.crewSummarySignature=signature;
+  panel.hidden=Boolean(ui.needsOnly)||!agents.length;panel.replaceChildren();if(panel.hidden)return;
+  const bar=element('span','crew-meter'),chips=element('span','crew-chips'),finished=counts.get('done');
+  for(const key of CREW_STATE_ORDER){
+    const count=counts.get(key);if(!count)continue;
+    const segment=element('span','crew-meter-segment');segment.dataset.crewState=key;segment.style.flexGrow=String(count);bar.appendChild(segment);
+    const chip=element('span','crew-chip');chip.dataset.crewState=key;
+    chip.append(element('span','crew-glyph',CREW_STATES[key].glyph),element('span','crew-chip-label',CREW_STATES[key].label),element('strong','crew-chip-count',count));chips.appendChild(chip);
+  }
+  bar.setAttribute('aria-hidden','true');
+  const total=element('span','crew-total',`完了 ${finished} / ${agents.length}`);
+  panel.setAttribute('aria-label',`担当の状態: ${CREW_STATE_ORDER.filter(key=>counts.get(key)).map(key=>`${CREW_STATES[key].label} ${counts.get(key)}人`).join('、')}`);
+  panel.append(total,bar,chips);
+}
 function renderAgents(agents) {
   const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
-  filteredAgents(agents).forEach((agent,index)=>{
+  crewOrder(filteredAgents(agents)).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
+    const crew=crewStateKey(agent),depth=crewDepth(agent,agents);card.dataset.crewState=crew;card.dataset.depth=String(Math.min(depth,3));
     const top=element('div','agent-card-top'),stateLine=element('span','agent-state-line'),inputBadge=messageInputBadge(agent);
+    const glyph=element('span','crew-glyph',CREW_STATES[crew].glyph);glyph.setAttribute('aria-hidden','true');
     stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason,agent));if(inputBadge)stateLine.append(inputBadge);
-    top.append(element('span','agent-avatar',independentReviewer(agent)?'R':!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`),stateLine);
+    const avatar=element('span','agent-avatar');avatar.append(element('span','agent-avatar-ring'),glyph,element('span','agent-avatar-mark',independentReviewer(agent)?'R':!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`));avatar.setAttribute('aria-hidden','true');
+    top.append(avatar,stateLine);
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
-    card.append(top,element('span','agent-name',agent.name||agent.id),model,element('span','agent-task',agent.assignment||agent.question||agent.last_error||(independentReviewer(agent)?'独立した成果レビューを担当':!agent.parent_id?'チームの作業を管理':'割り当てられた作業を担当')));
-    const dependency=workerDependencyLabel(agent);if(dependency)card.appendChild(element('span','agent-dependencies',dependency));
-    const hierarchy=agentHierarchyLabel(agent);if(hierarchy)card.appendChild(element('span','agent-hierarchy',hierarchy));
+    const chips=element('span','agent-chips'),role=element('span','agent-role-chip',independentReviewer(agent)?'REVIEWER':!agent.parent_id?'PM':agentHierarchy(agent)?.direct_children.length?`LEAD · D${depth}`:`WORKER · D${depth}`);
+    chips.append(role,model);
+    const focus=needsHuman(agent)&&agent.question?agent.question:crew==='error'&&agent.last_error?agent.last_error:'';
+    const task=element('span','agent-task',agent.assignment||agent.question||agent.last_error||(independentReviewer(agent)?'独立した成果レビューを担当':!agent.parent_id?'チームの作業を管理':'割り当てられた作業を担当'));
+    card.append(top,element('span','agent-name',agent.name||agent.id),chips,task);
+    if(focus&&focus!==agent.assignment&&agent.assignment){const alert=element('span','agent-alert');alert.dataset.crewState=crew;alert.textContent=focus;card.appendChild(alert);}
+    const telemetry=crewTokens(agent);if(telemetry)card.appendChild(element('span','agent-telemetry',telemetry));
+    const dependency=workerDependencyLabel(agent);if(dependency){const node=element('span','agent-dependencies',dependency);node.title=dependency;card.appendChild(node);}
+    const hierarchy=agentHierarchyLabel(agent);if(hierarchy){const node=element('span','agent-hierarchy',hierarchy);node.title=hierarchy;card.appendChild(node);}
     card.addEventListener('click',()=>selectAgent(agent.id));$('agentCards').appendChild(card);
   });
 }
@@ -2438,6 +2513,7 @@ function renderRunContent() {
   $('agentSearch').placeholder=ui.needsOnly?'質問・チームの依頼・担当者で検索':'エージェント・担当で検索';
   $('agentCards').classList.toggle('question-list',Boolean(ui.needsOnly));
   if(ui.needsOnly)renderQuestions(questions);else renderAgents(agents);
+  renderCrewSummary(agents);
   if(!run){renderTeamMap(agents);renderAgentTabs(agents);renderConversation(null);renderActivity(null);return;}
   $('activeRunTitle').textContent=`表示中のチーム · ${shortRunId(run)}`;$('activeRunStatus').className='status-badge '+(archivedRun(run)?'archived':Object.hasOwn(STATUS_LABELS,run.status)?run.status:'');$('activeRunStatus').textContent=stateLabel(run);$('activeRunTask').textContent=run.task||'';
   const collaborationBlocked=!archivedRun(run)&&run.collaboration_limit_reached===true;
@@ -2460,9 +2536,12 @@ function resourceLabel(resources,gpuIndex=0) {
 function renderState() {
   // Reconcile before automatic initial selection can change the navigation epoch.
   reconcileStartedRun();
-  const runId=ui.state.runs.some(run=>run.id===ui.selectedRun)?ui.selectedRun:ui.state.runs.at(-1)?.id||null,agents=ui.state.agents.filter(agent=>agent.run_id===runId);
+  const pinned=NETWORK_POPOUT&&!ui.networkPopoutApplied&&ui.state.runs.some(run=>run.id===NETWORK_POPOUT.run)?NETWORK_POPOUT.run:null;
+  if(pinned)ui.networkPopoutApplied=true;
+  const runId=pinned||(ui.state.runs.some(run=>run.id===ui.selectedRun)?ui.selectedRun:ui.state.runs.at(-1)?.id||null),agents=ui.state.agents.filter(agent=>agent.run_id===runId);
   const agentId=agents.some(agent=>agent.id===ui.selectedAgent)?ui.selectedAgent:agents.find(rootPMAgent)?.id||agents[0]?.id||null;
   changeSelection(runId,agentId);
+  const popoutLink=$('networkOpenTab');if(popoutLink)popoutLink.href=networkPopoutHref(runId);
   preserveControlFocus(()=>{renderRunList();renderRun();});setSettingsLock();$('resourceSummary').textContent=resourceLabel(ui.state.resources,ui.config?.local?.gpu_index||0);
 }
 function selectedStatePath(selection) {
@@ -2521,6 +2600,8 @@ async function initialize() {
   renderQuestionNotice(questionEntries());
   initializeNetworkControls();
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
+  $('networkOpenWindow')?.addEventListener('click',openNetworkWindow);
+  if(NETWORK_POPOUT){document.documentElement.dataset.layout='network-popout';document.title='Mission Network · Workbench';}
   $('boardView').addEventListener('click',()=>setCockpitView('board'));
   $('workBoardForm').addEventListener('submit',event=>{event.preventDefault();void submitWorkBoardPost();});
   $('workBoardInput').addEventListener('input',event=>{saveWorkBoardDraft(event);renderWorkBoardControls(getRun());});

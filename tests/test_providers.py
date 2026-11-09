@@ -137,8 +137,22 @@ async def test_malformed_tool_arguments_are_never_interpreted(arguments):
         return web.json_response({'choices': [{'message': {'role': 'assistant', 'content': '', 'tool_calls': [
             {'id': 'one', 'function': {'name': 'read_file', 'arguments': arguments}}]}, 'finish_reason': 'tool_calls'}]})
     async with fake_server(handler) as url:
-        with pytest.raises(ProviderError, match='malformed tool arguments'):
-            await ProviderClient().complete(dict(kind='local', base_url=url, model='test'), [], TOOLS, '', {})
+        reply = await ProviderClient().complete(dict(kind='local', base_url=url, model='test'), [], TOOLS, '', {})
+    # Never interpreted: the call carries no arguments and an error the engine
+    # returns to the model instead of executing it or discarding the reply.
+    [call] = reply.tool_calls
+    assert call['arguments'] == {} and 'not executed' in call['error']
+    assert reply.raw['message']['tool_calls'][0]['function']['arguments'] == '{}'
+
+
+@pytest.mark.asyncio
+async def test_empty_local_tool_arguments_mean_an_empty_object():
+    async def handler(request):
+        return web.json_response({'choices': [{'message': {'role': 'assistant', 'content': '', 'tool_calls': [
+            {'id': 'one', 'function': {'name': 'read_file', 'arguments': ''}}]}, 'finish_reason': 'tool_calls'}]})
+    async with fake_server(handler) as url:
+        reply = await ProviderClient().complete(dict(kind='local', base_url=url, model='test'), [], TOOLS, '', {})
+    assert reply.tool_calls == [{'id': 'one', 'name': 'read_file', 'arguments': {}}]
 
 
 @pytest.mark.asyncio
@@ -171,9 +185,52 @@ async def test_local_retry_limit_exhausted_and_unknown_tool_refused():
                                             {'local': {'max_retries': 1, 'retry_backoff_seconds': 0}})
     assert len(calls) == 2 and caught.value.status == 429
     assert 'sensitive' not in str(caught.value)
+    reply = ProviderClient()._parse('anthropic', 'test', {'stop_reason': 'tool_use', 'content': [
+        {'type': 'tool_use', 'id': 'one', 'name': 'execute_shell', 'input': {}}]}, {'read_file'})
+    assert 'not executed' in reply.tool_calls[0]['error'] and 'read_file' in reply.tool_calls[0]['error']
+    # Tool-free requests (summaries) still reject any tool request outright.
     with pytest.raises(ProviderError, match='unknown tool'):
         ProviderClient()._parse('anthropic', 'test', {'stop_reason': 'tool_use', 'content': [
-            {'type': 'tool_use', 'id': 'one', 'name': 'execute_shell', 'input': {}}]}, {'read_file'})
+            {'type': 'tool_use', 'id': 'one', 'name': 'execute_shell', 'input': {}}]}, set())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [500, 502, 504, 529])
+async def test_cloud_transient_errors_retry_by_default_and_honor_retry_after(status):
+    calls = []
+    async def handler(request):
+        calls.append(True)
+        if len(calls) == 1:
+            return web.Response(status=status, headers={'Retry-After': '0'}, text='busy')
+        return web.json_response({'stop_reason': 'end_turn', 'content': [{'type': 'text', 'text': 'ok'}]})
+    async with fake_server(handler) as url:
+        reply = await ProviderClient().complete(dict(kind='anthropic', base_url=url, model='test', api_key='fake'), [], [], '', {})
+    assert reply.text == 'ok' and len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_non_transient_cloud_errors_are_not_retried():
+    calls = []
+    async def handler(request):
+        calls.append(True)
+        return web.Response(status=400, text='bad request')
+    async with fake_server(handler) as url:
+        with pytest.raises(ProviderError) as caught:
+            await ProviderClient().complete(dict(kind='anthropic', base_url=url, model='test', api_key='fake'), [], [], '', {})
+    assert caught.value.status == 400 and len(calls) == 1
+
+
+def test_retry_after_parsing_and_bounded_jittered_backoff():
+    from workbench.providers import retry_after_seconds, retry_delay
+    assert retry_after_seconds({'Retry-After': '7'}) == 7
+    assert retry_after_seconds({'retry-after-ms': '1500'}) == 1.5
+    assert retry_after_seconds({'Retry-After': '99999'}) == 60
+    assert retry_after_seconds({'Retry-After': 'garbage'}) is None
+    assert retry_after_seconds({}) is None
+    assert retry_delay(ProviderError('x', retry_after=3), 5, 2) == 3
+    for attempt in range(4):
+        delay = retry_delay(ProviderError('x'), attempt, 2)
+        assert 0.9 * min(60, 2 * 2 ** attempt) <= delay <= 1.1 * min(60, 2 * 2 ** attempt)
 
 
 @pytest.mark.asyncio

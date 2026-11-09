@@ -201,3 +201,183 @@ main{height:auto;min-height:0;overflow:hidden}.view{height:100%;min-height:0}.wo
 .formation-panel summary { cursor: pointer; font-size: 12px; }
 .formation-panel .formation-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 .network-node[data-network-role="reviewer"] .network-orb-inner { border-style: double; }
+
+/* Crew cockpit (2026-11): instrument panel × crew. Inspired by ORRERY's design language
+   (near-monochrome slate, parchment ink, one amber accent, medallion + state ring); written
+   from scratch for Agent Workbench. State = ring motion + glyph + text label, never color alone. */
+:root{--cp-bg:#0d0f13;--cp-panel:#121519;--cp-tile:#171a1f;--cp-tile-hover:#1d2128;--cp-line:#2a2e35;--cp-line-strong:#3c414a;--cp-ink:#ece5d6;--cp-ink-2:#c3bcad;--cp-muted:#959aa2;--cp-amber:#efb45c;
+  --st-working:#74c7a9;--st-human:#f2b35b;--st-queued:#a3acb8;--st-waiting:#c2b593;--st-done:#9cc283;--st-error:#f08f86;--st-stopped:#c09a63;--st-archived:#9eb0c0}
+[data-crew-state]{--st:var(--st-waiting)}[data-crew-state=working]{--st:var(--st-working)}[data-crew-state=human]{--st:var(--st-human)}[data-crew-state=queued]{--st:var(--st-queued)}[data-crew-state=done]{--st:var(--st-done)}[data-crew-state=error]{--st:var(--st-error)}[data-crew-state=stopped]{--st:var(--st-stopped)}[data-crew-state=archived]{--st:var(--st-archived)}
+.crew-glyph{display:inline-grid;place-items:center;flex:none;width:16px;height:16px;border-radius:50%;background:var(--st);color:#101216;font:700 9px/1 var(--mono)}
+
+/* Sidebar / roster */
+.app-shell{grid-template-columns:256px minmax(380px,1fr) 360px}
+.sidebar{background:var(--cp-panel);border-right-color:var(--cp-line)}
+.rail-heading{border-bottom-color:var(--cp-line)}.rail-heading h2{color:var(--cp-ink-2);letter-spacing:.2em}
+.agent-search{background:#0f1115;border:1px solid var(--cp-line-strong);border-radius:6px;color:var(--cp-ink);padding:8px 10px}
+.agent-search::placeholder{color:#80858d}
+.crew-summary{flex:none;display:grid;gap:7px;margin:2px 12px 10px;padding:10px 11px;border:1px solid var(--cp-line);border-radius:8px;background:#0f1215}
+.crew-total{font:10px var(--mono);letter-spacing:.08em;color:var(--cp-ink-2)}
+.crew-meter{display:flex;gap:2px;height:5px;border-radius:3px;overflow:hidden;background:#22262c}
+.crew-meter-segment{min-width:6px;background:var(--st)}
+.crew-chips{display:flex;flex-wrap:wrap;gap:5px}
+.crew-chip{display:inline-flex;align-items:center;gap:5px;padding:2px 7px 2px 3px;border:1px solid var(--cp-line-strong);border-radius:11px;font:10px var(--mono);color:var(--cp-ink-2)}
+.crew-chip-count{color:var(--cp-ink);font-weight:600}
+.agent-cards{padding:0 10px 4px;gap:8px}
+.agent-card{border:1px solid var(--cp-line);border-radius:9px;background:var(--cp-tile);color:var(--cp-ink);transition:border-color .15s,background .15s}.agent-card:not(.question-card){grid-template-columns:44px minmax(0,1fr);column-gap:11px;row-gap:5px;padding:12px 11px 11px}
+.agent-card:hover{background:var(--cp-tile-hover);border-color:#565c66}
+.agent-card.selected{border-color:#8f6f3e;background:#1d1c1b;box-shadow:inset 3px 0 var(--cp-amber)}
+.agent-card:focus-visible{outline:2px solid var(--cp-amber);outline-offset:2px}
+.agent-card[data-crew-state=human]:not(.question-card){border-color:#7a5a2c;background:#1f1b16}
+.agent-card[data-crew-state=error]{border-color:#6f3b3a}
+.agent-card[data-depth="1"]{margin-left:14px}.agent-card[data-depth="2"]{margin-left:28px}.agent-card[data-depth="3"]{margin-left:42px}
+.agent-card[data-depth]:not([data-depth="0"])::before{content:"";position:absolute;left:-10px;top:-9px;height:31px;width:9px;border-left:1px solid #5b5f66;border-bottom:1px solid #5b5f66;border-bottom-left-radius:5px;pointer-events:none}
+.agent-avatar{grid-column:1;grid-row:1/4;align-self:start;position:relative;width:42px;height:42px;margin:2px 0 0 1px;border:1px solid #4c4f55;border-radius:50%;display:grid;place-items:center;background:radial-gradient(circle at 34% 26%,#3a3b3d,#1a1c20 72%);box-shadow:inset 0 0 0 3px #15171b;font:600 12px var(--serif);color:var(--cp-ink)}
+.agent-avatar-mark{position:relative;z-index:1}
+.agent-avatar-ring{position:absolute;inset:-5px;border-radius:50%;border:2px solid transparent;pointer-events:none}
+[data-crew-state=working] .agent-avatar-ring{border-top-color:var(--st);border-right-color:var(--st);animation:crew-orbit 4s linear infinite}
+[data-crew-state=human] .agent-avatar-ring{border-color:var(--st);animation:crew-call 1.6s ease-in-out infinite}
+[data-crew-state=queued] .agent-avatar-ring{border:1px dashed var(--st);inset:-4px;opacity:.75}
+[data-crew-state=waiting] .agent-avatar-ring{border:1px solid var(--st);inset:-4px;opacity:.45}
+[data-crew-state=done] .agent-avatar-ring{border-color:var(--st);opacity:.8}
+[data-crew-state=error] .agent-avatar-ring{border-color:var(--st)}
+[data-crew-state=stopped] .agent-avatar-ring,[data-crew-state=archived] .agent-avatar-ring{border:1px solid var(--st);inset:-4px;opacity:.6}
+.agent-name{grid-column:2;grid-row:1;font:600 15px/1.3 var(--serif);color:var(--cp-ink);letter-spacing:.01em}
+.agent-state-line{grid-column:2;grid-row:2;display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.agent-card:not(.question-card) .status-badge{grid-column:auto;grid-row:auto;font:600 10px/1.3 var(--mono);padding:2px 7px;border-radius:4px;border:1px solid color-mix(in srgb,var(--st) 55%,transparent);background:color-mix(in srgb,var(--st) 12%,transparent);color:var(--st);white-space:normal}
+.agent-chips{grid-column:2;grid-row:3;display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.agent-role-chip,.agent-card:not(.question-card) .agent-model{font:9.5px/1.35 var(--mono);letter-spacing:.06em;padding:2px 6px;border:1px solid var(--cp-line-strong);border-radius:4px;color:#b7bcc4;background:#121418;min-width:0}
+.agent-role-chip{color:var(--cp-ink-2);letter-spacing:.1em}
+.agent-card:not(.question-card) .agent-model{-webkit-line-clamp:1;overflow-wrap:anywhere}
+.agent-task{grid-column:1/-1;margin-top:3px;padding-left:16px;position:relative;font:11.5px/1.6 var(--serif);color:#cfc8b9;-webkit-line-clamp:2}
+.agent-task::before{content:"◇";position:absolute;left:0;top:0;color:var(--cp-amber);font:10px/1.9 var(--mono)}
+.agent-alert{grid-column:1/-1;padding:5px 8px;border-left:2px solid var(--st);border-radius:0 5px 5px 0;background:color-mix(in srgb,var(--st) 10%,transparent);color:var(--cp-ink);font:11px/1.55 var(--serif);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+.agent-telemetry{grid-column:1/-1;font:9.5px var(--mono);letter-spacing:.08em;color:var(--cp-muted)}
+.agent-card:not(.question-card) .agent-hierarchy,.agent-card:not(.question-card) .agent-dependencies{grid-column:1/-1;font:9.5px/1.5 var(--mono);color:#9fa4ab;-webkit-line-clamp:1;display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden;white-space:pre-wrap;padding-top:5px;border-top:1px solid #24282e}
+.agent-card .agent-dependencies+.agent-hierarchy{border-top:0;padding-top:0}
+.agent-card:not(.question-card) .input-presence-badge{font:9px var(--mono)}
+.sidebar-section{border-top-color:var(--cp-line)}.run-link:hover,.run-link.selected{background:#1b1e23;border-color:#3a3f47}.run-link.selected{box-shadow:inset 2px 0 var(--cp-amber)}
+.sidebar-footer{background:#0f1114;border-top-color:var(--cp-line)}
+
+/* Mission network: medallion orbs with a state ring and glyph */
+.network-panel{background:var(--cp-panel);border-color:var(--cp-line)}
+.network-heading .eyebrow{color:var(--cp-amber)}
+.network-counts{color:var(--cp-ink-2)}
+.app-shell[data-cockpit-view=network] .network-workspace{grid-template-rows:minmax(520px,1fr) minmax(300px,.36fr)}
+.team-map{background-color:#0b0d10;background-image:radial-gradient(ellipse at 50% 30%,#2a2a2a40,transparent 62%),radial-gradient(circle,#ffffff14 1px,transparent 1px);background-size:100% 100%,26px 26px}
+.team-map:focus-visible{outline:2px solid var(--cp-amber);outline-offset:-3px}
+.network-node,.network-node[data-network-role=pm]{--orb:var(--st,var(--st-waiting));border:1px solid var(--cp-line-strong);background:radial-gradient(circle at 34% 24%,#303236,#16181c 70%);box-shadow:inset 0 0 0 4px #121418,0 10px 26px #00000080;color:var(--cp-ink);padding:14px 10px 12px;gap:2px}
+.network-node[data-network-role=pm]{border-color:#77694f;box-shadow:inset 0 0 0 4px #121418,inset 0 0 0 5px #4f4433,0 10px 26px #00000080}
+.network-node:hover,.network-node[data-network-role=pm]:hover{background:radial-gradient(circle at 34% 24%,#383a3f,#1b1d22 70%);border-color:#6a6f78}
+.network-node.waiting_human,.network-node.needs_input,.network-node.human-input,.network-node.error,.network-node.failed{background:radial-gradient(circle at 34% 24%,#303236,#16181c 70%)}
+.network-node::before{inset:-12px;border:1px solid transparent;z-index:-1}
+.network-node.selected::before,.network-node.pinned::before{border-color:#ece5d6b3;opacity:1;animation:none}
+.network-node.selected,.network-node.pinned{box-shadow:inset 0 0 0 4px #121418,0 10px 26px #00000080}
+.network-node::after{inset:-6px;border:2px solid transparent;opacity:1;z-index:-1}
+.network-node[data-crew-state=working]::after{border-top-color:var(--st);border-right-color:var(--st)}
+.network-node.is-live[data-crew-state=working]::after{animation:network-orbit 4s linear infinite}
+.network-node[data-crew-state=human]::after{border-color:var(--st);box-shadow:0 0 18px color-mix(in srgb,var(--st) 45%,transparent)}
+.network-node[data-crew-state=error]::after{border-color:var(--st)}
+.network-node[data-crew-state=done]::after{border-color:var(--st);opacity:.75}
+.network-node[data-crew-state=queued]::after{border:1px dashed var(--st);inset:-5px;opacity:.8}
+.network-node[data-crew-state=waiting]::after,.network-node[data-crew-state=stopped]::after,.network-node[data-crew-state=archived]::after{border:1px solid var(--st);inset:-5px;opacity:.5}
+.network-node:focus-visible{outline:2px solid var(--cp-amber);outline-offset:14px}
+.network-glyph{position:absolute;top:-2px;right:-2px;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--st);color:#0f1114;border:3px solid #0b0d10;font:700 14px/1 var(--mono);pointer-events:none;z-index:2}
+.network-monogram{font:600 22px/1 var(--serif);color:var(--cp-ink);letter-spacing:0}
+.network-role{font:8px/1.3 var(--mono);letter-spacing:.14em;color:#a9adb4}
+.network-name{font:600 12px/1.25 var(--serif);color:var(--cp-ink);max-width:94px}
+.network-state{font:600 9.5px/1.25 var(--mono);color:var(--st);max-width:90px}
+.network-parent-line{stroke:#b9b09d;stroke-opacity:.42;stroke-width:1.2}
+.network-mail-track{stroke:#86b9c9;stroke-opacity:.65}
+.network-mail-line:hover+.network-mail-track,.network-mail-line:focus-visible+.network-mail-track{stroke:var(--cp-amber)}
+.network-lines{color:#86b9c9}
+.network-mail-pulse{fill:#bfe3ec;stroke:#e6f6fa;filter:drop-shadow(0 0 4px #86b9c9)}
+#networkMotion[aria-pressed=true]{border-color:#6b5c43;color:var(--cp-ink)}
+.network-zoom{color:var(--cp-ink-2)}
+.network-legend{align-items:center;gap:8px 14px;color:var(--cp-ink-2);font-size:10px}
+.network-legend .legend-parent:before{border-top-color:#b9b09d}.network-legend .legend-mail:before{border-top-color:#86b9c9}
+.network-legend .legend-states{display:inline-flex;flex-wrap:wrap;gap:4px 10px}.network-legend .legend-states:before{content:none}
+.legend-state{display:inline-flex;align-items:center;gap:4px}.network-legend .legend-state:before,.network-legend .legend-hint:before{content:none}
+.legend-hint{color:var(--cp-muted)}
+.network-help,.network-retention{color:#a3a7ad}
+.network-preview{background:linear-gradient(150deg,#1c1e22f7,#131518fa);border-color:#4d4f55;color:var(--cp-ink)}
+.network-preview-top .eyebrow,.network-preview-role{color:var(--cp-amber)}
+.network-preview-latest{background:#0b0c0e99;border-left-color:#86b9c9;color:#c9c3b6}
+.network-preview-counts{color:#a7abb2}
+.network-preview>.button{background:#24262a;border-color:#5b5e64;color:var(--cp-ink)}
+@keyframes crew-orbit{to{transform:rotate(360deg)}}
+@keyframes crew-call{50%{opacity:.25}}
+@media(prefers-reduced-motion:reduce){.agent-avatar-ring{animation:none!important}.agent-card{transition:none}}
+@media(max-width:1366px){.app-shell{grid-template-columns:240px minmax(360px,1fr) 360px}.agent-card:not(.question-card){grid-template-columns:40px minmax(0,1fr);column-gap:10px}.agent-avatar{width:38px;height:38px}}
+@media(max-width:1100px){.app-shell{grid-template-columns:230px minmax(0,1fr)}.app-shell[data-cockpit-view=inspector]{grid-template-columns:230px minmax(0,1fr)}}
+@media(max-width:640px){.app-shell,.app-shell[data-cockpit-view=inspector]{grid-template-columns:minmax(0,1fr)}.agent-card[data-depth]{margin-left:0}.agent-card[data-depth]::before{content:none}.crew-summary{margin:0 12px 6px;padding:6px 8px}.crew-chips{display:none}.app-shell[data-cockpit-view=network] .network-workspace{grid-template-rows:minmax(370px,1fr) minmax(300px,.36fr)}}
+.agent-avatar .crew-glyph{position:absolute;right:-7px;bottom:-5px;z-index:2;width:18px;height:18px;border:2px solid var(--cp-tile);font-size:9px}
+.agent-card.selected .agent-avatar .crew-glyph{border-color:#1d1c1b}
+.agent-card:not(.selected) .agent-hierarchy{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);padding:0;border:0}
+.agent-card.selected .agent-hierarchy{-webkit-line-clamp:4}
+.team-map.is-compact .network-role,.team-map.is-compact .network-state{display:none}
+.team-map.is-compact .network-monogram{font-size:30px}
+.team-map.is-compact .network-name{font-size:17px;line-height:1.2;max-width:100px;max-height:42px;margin-top:4px}
+.team-map.is-compact .network-glyph{width:40px;height:40px;font-size:19px;top:-6px;right:-6px}
+
+/* Shell: same slate / parchment / amber family as the crew views. */
+body{background:var(--cp-bg)}
+.topbar{background:#101216;border-bottom-color:var(--cp-line)}
+.brand span{color:#a39d90}
+.button{background:#1b1e23;border-color:#3a3e46;color:#cdc7ba}
+.button.minor{background:#15171b}
+.button:hover:not(:disabled){border-color:#676c75;color:var(--cp-ink)}
+.button[aria-pressed=true]{background:#2a241b;border-color:#8b7350;color:#f1cd8c}
+.workspace-tab{color:#f1cd8c;background:#2a241b;border-color:#6b5838}
+.workspace-toolbar{border-bottom-color:var(--cp-line)}
+.coordination-monitor{background:linear-gradient(125deg,#16181c,#121418);border-color:var(--cp-line-strong);color:var(--cp-ink)}
+.monitor-heading .eyebrow{color:var(--cp-amber)}
+.activity-panel{background:var(--cp-panel);border-color:var(--cp-line)}
+.activity-item{background:#171a1f;border-color:#2d3138;border-left-color:#86b9c9}
+.activity-title{color:var(--cp-ink)}.activity-body{color:#c3bdb0}.activity-time{color:#a3a7ad}
+.inspector-rail,.inspector-rail .conversation-panel{background:var(--cp-panel)}
+.inspector-rail{border-left:1px solid var(--cp-line)}
+.conversation-panel>.panel-heading,.message-form{background:#16191d}
+.conversation-log{background:#0f1114}
+.log-text{color:#ddd6c8}.log-role{color:var(--cp-amber)}
+.agent-tab{background:#15171b;border-color:#33373e;color:#c3bdb0}
+.agent-tab.active{color:#f1cd8c;background:#2a241b;border-color:#6b5838}
+.inspector-brief>summary{color:var(--cp-ink-2)}.inspector-brief{color:#bdb7aa}
+.message-form>label{color:var(--cp-ink-2)}.message-form textarea{background:#0f1114}
+.button.primary{background:#2a231a;border-color:#94784b;color:#f3d49b}
+.button.primary:hover:not(:disabled){background:#3a2e1d;border-color:#d0a463;color:#fbe2b2}
+.results-panel,.results-panel>summary{background:#16191d;border-bottom-color:var(--cp-line)}
+.results-panel>summary{color:var(--cp-ink-2)}
+.crew-chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:4px 6px}
+.crew-chip{padding:0;border:0;border-radius:0;gap:4px;font-size:9.5px;white-space:nowrap}
+.crew-chip .crew-glyph{width:14px;height:14px;font-size:8px}
+.crew-chip-count{margin-left:auto;padding-right:2px}
+.agent-avatar{grid-row:1/3}
+.agent-chips{grid-column:1/-1;grid-row:auto;margin-top:2px}
+.agent-card.selected .agent-hierarchy{-webkit-line-clamp:3}
+.agent-monitor{color:#cdc6b6}
+.coordination-phase{color:var(--cp-ink)}
+.coordination-candidate{background:#121418;border-left-color:#86b9c9}
+.metric{color:#a3a7ad}.metric b{color:#e9cf9e}
+.monitor-agent{background:#171a1f;border-color:#30343b;color:var(--cp-ink)}
+.monitor-agent:hover{background:#1d2128;border-color:#565c66}
+.mail-lifecycle{background:#171a1f;border-color:#30343b;color:var(--cp-ink)}
+.monitor-agent span,.mail-lifecycle span{color:#c3bdb0}
+.mail-lifecycle:hover{background:#1d2128;border-color:#565c66}
+.monitor-agent:focus-visible,.mail-lifecycle:focus-visible{outline-color:var(--cp-amber)}
+.network-preview .status-badge[data-crew-state]{font:600 10px/1.3 var(--mono);padding:2px 7px;border-radius:4px;border:1px solid color-mix(in srgb,var(--st) 55%,transparent);background:color-mix(in srgb,var(--st) 12%,transparent);color:var(--st)}
+@media(max-width:640px){.crew-chips{display:none}.crew-summary{gap:5px}}
+.workspace-toolbar{background:#111317}
+.inspector-rail-heading{border-bottom-color:var(--cp-line)}
+@media(max-width:640px){.agent-card:not(.question-card) .agent-alert,.agent-card:not(.question-card) .agent-telemetry{display:none}.agent-card:not(.question-card) .agent-task{-webkit-line-clamp:1;margin-top:0}}
+@media(max-width:640px){.agent-card:not(.question-card) .agent-chips{flex-wrap:nowrap;min-width:0}.agent-card:not(.question-card) .agent-chips .agent-model{flex:1 1 auto;min-width:0;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+@media(max-width:640px){.agent-card:not(.question-card) .agent-chips .agent-role-chip{flex:none;white-space:nowrap}}
+/* Mission network in its own tab/window (?view=network): only the map and its preview. */
+.network-popout-link{text-decoration:none;white-space:nowrap}
+:root[data-layout=network-popout] .network-popout-link,:root[data-layout=network-popout] .cockpit-view-controls,:root[data-layout=network-popout] .app-shell>.sidebar,:root[data-layout=network-popout] .app-shell>.right-rail,:root[data-layout=network-popout] .workspace-toolbar,:root[data-layout=network-popout] #runOverview,:root[data-layout=network-popout] #formationPanel,:root[data-layout=network-popout] #coordinationMonitor,:root[data-layout=network-popout] .network-workspace>.activity-panel,:root[data-layout=network-popout] #workBoardPanel{display:none!important}
+:root[data-layout=network-popout] .app-shell,:root[data-layout=network-popout] .app-shell[data-cockpit-view]{display:block;height:calc(100dvh - 56px);min-height:0}
+:root[data-layout=network-popout] .app-shell>main{display:block;height:100%;min-height:0}
+:root[data-layout=network-popout] .view,:root[data-layout=network-popout] .active-run{height:100%;min-height:0;padding:10px}
+:root[data-layout=network-popout] .network-workspace{grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(0,1fr);height:100%;min-height:0;overflow:hidden}
+:root[data-layout=network-popout] .network-panel{height:100%}
+:root[data-layout=network-popout] .team-map{min-height:0}

@@ -4,6 +4,49 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev46 — Keep agents working through transient and correctable failures (2026-11-09)
+
+Motivation: agents stopped permanently on a single transient provider error,
+a malformed tool call, a worker narrating its next step, or one oversized tool
+result, and PMs rarely delegated. Mechanisms follow openai/codex
+(`codex-rs/core`): bounded retries that honor server advice, tool-call errors
+returned to the model, truncated tool output, and coordinator prompting.
+
+- Provider retries: HTTP 408/425/429/500/502/503/504/529 and connection
+  failures are retryable. `Retry-After` / `retry-after-ms` is honored (capped at
+  60 s); otherwise exponential backoff with ±10% jitter. Cloud profiles, which
+  cannot carry retry keys, now default to 3 retries. Timeouts remain
+  non-retryable, so a request the server may still be generating is never
+  replayed; the Copilot bridge still never retries.
+- Tool-call errors return to the model: empty arguments mean `{}`; malformed
+  arguments or a tool not offered in the current turn produce an error result.
+  The batch rule is unchanged: if any call in a response is invalid, no call in
+  that response runs (including earlier valid ones). Every call receives a
+  result, and the model may re-issue the batch at most 2 times before the agent
+  stops with an error. Unpairable/duplicate call IDs still reject the reply.
+- Workers that used tools in a turn and then reply with prose only are asked
+  once to continue with tools or send `finish_work`. A PM's plain-text final
+  answer is unchanged.
+- Tool results sent to the model are bounded to 1/4 of `max_context_chars`
+  (4,000–40,000 characters, head + tail with a notice). The retained original
+  keeps the complete text under the same record ID, which the shortened copy
+  names so the model can page it with `read_context_history`. Tool schemas are
+  unchanged, so per-request overhead stays identical to dev45.
+- PM orchestration prompt: plan the critical-path step, delegate independent
+  subtasks, spawn workers together in one response with self-contained
+  assignments and file ownership, and wait instead of ending with prose while
+  workers run. Budget text states that worker calls are expected.
+- Defaults for new settings: 200 model calls, 400 tool calls, 40 turns per
+  agent, 8,192 output tokens. Existing saved settings are not changed.
+- Cockpit: crew roster and mission network redesigned after ORRERY's design
+  language (no ORRERY code or assets), and the mission network can be opened in
+  its own tab or window (`/?view=network&run=<id>`) showing only the map.
+- Fixes from review: mixed-separator UNC paths (`\/host/share`,
+  `/\host/share`) are rejected before any filesystem access; settings import
+  preview no longer probes UNC paths; reviewing a worker whose report is stale or
+  blocked by a dependency is an ordinary tool error instead of pausing the
+  reviewing PM.
+
 ## 0.1.1.dev30 — Keep credential Enter shortcuts out of IME composition (2026-10-06)
 
 - A production-callback audit found that both provider and search credential
