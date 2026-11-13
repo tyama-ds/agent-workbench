@@ -25,7 +25,8 @@ Phase 2 of the agent-persistence work (dev46), again following openai/codex
 - Read-only file tools run concurrently across agents. They are admitted under
   the exclusive file lock with the usual stop/budget/dependency/delegation/
   reservation checks; writes, Python and Selenium stay exclusive and wait for
-  admitted reads. Independent-review rechecks stay exclusive.
+  admitted reads. An independent reviewer's reads keep the original single
+  exclusive read-and-recheck operation.
 - Edit errors say how to recover: a stale `expected_sha256` reports whether the
   file is missing, already exists or was modified (the current hash is not
   disclosed, so write-only folders stay unreadable); `patch_text` reports

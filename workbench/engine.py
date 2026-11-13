@@ -2607,7 +2607,9 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 self._redaction.remember(self._secret_values())
             async with self._run_deadline(run):
                 return await run['_web'].execute(name, args)
-        if name in READ_ONLY_FILE_TOOLS:
+        if name in READ_ONLY_FILE_TOOLS and not self._formation_reviewer(run, agent):
+            # An independent reviewer's read and its evidence recheck stay one
+            # exclusive operation (the original path below).
             return await self._execute_read_tool(run, agent, name, args)
         # Serialize file tool operations to make optimistic hashes + reservations
         # meaningful for cooperating agents; no arbitrary shell is available.
@@ -2699,14 +2701,6 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             self._file_readers -= 1
             if not self._file_readers:
                 self._file_readers_idle.set()
-        if self._formation_reviewer(run, agent):
-            # Independent-review evidence is rechecked exclusively, as before.
-            async with self.lock:
-                self._formation_guard(run, agent, name)
-                candidate = run['_formation']['candidate']
-                if candidate:
-                    async with self._run_deadline(run):
-                        await self._formation_recheck(run, candidate)
         return result
 
     def _reservation_path(self, run, value, write=True):
