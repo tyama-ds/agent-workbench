@@ -42,7 +42,7 @@ async def test_local_conversation_header_does_not_change_payload_or_leak_to_late
         "model": "local-test",
         "messages": [{"role": "system", "content": "Visible policy"}, *messages],
         "max_tokens": 123,
-        "stream": False,
+        "stream": True,
         "tools": [{"type": "function", "function": TOOLS[0]}],
         "chat_template_kwargs": {"enable_thinking": False},
     }
