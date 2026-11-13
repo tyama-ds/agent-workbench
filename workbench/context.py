@@ -217,8 +217,17 @@ def plan_compaction(profile, messages, tools, system, limits):
     # by record ID until the bounded original archive evicts them.
     human = [i for i, item in enumerate(messages) if item.get('_human')]
     protected = {0, *human[-2:]}
-    eligible = [block for block in blocks[:-limits['context_recent_groups']]
-                if not protected.intersection(block)]
+    # Summarize one contiguous run of unprotected groups. The single summary
+    # marker replaces the run in place, so it must not span a protected human
+    # message: work done after that message would otherwise be summarized in
+    # front of it, making the instruction look unanswered.
+    eligible = []
+    for block in blocks[:-limits['context_recent_groups']]:
+        if protected.intersection(block):
+            if eligible:
+                break
+            continue
+        eligible.append(block)
     indexes, source = set(), []
     output = min(limits['max_output_tokens'], 4096)
     summary_system = SUMMARY_POLICY + f'\nKeep the complete JSON output within {limits["context_summary_chars"]} characters.'
