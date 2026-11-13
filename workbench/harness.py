@@ -87,6 +87,18 @@ def _bool(value: Any, label: str) -> bool:
     return value
 
 
+def _stale_hash_error(expected: str, current: str) -> HarnessError:
+    """Explain a hash mismatch so the model can recover without guessing."""
+    if current == "missing":
+        return HarnessError("File changed: expected_sha256 does not match. The file does not exist; "
+                            "use expected_sha256='missing' to create it")
+    if expected == "missing":
+        return HarnessError("File changed: expected_sha256 does not match. The file already exists; "
+                            "read it (read_text or file_hash) and pass its current sha256")
+    return HarnessError("File changed: expected_sha256 does not match. The file was modified after you read it; "
+                        "read it again and retry with its current sha256")
+
+
 def _literal_path(value: str) -> Path:
     value = _string(value, "path", 4096)
     # Windows treats "/" and "\\" alike, so "\\/host/share" and "/\\host/share"
@@ -305,7 +317,7 @@ class PathHarness:
                 original = self._read(path) if path.exists() else None
                 before = hashlib.sha256(original).hexdigest() if original is not None else "missing"
                 if before != expected_sha256:
-                    raise HarnessError("File changed: expected_sha256 does not match")
+                    raise _stale_hash_error(expected_sha256, before)
                 # Check the same bounded, write-authorized snapshot used for the
                 # hash, before creating a temporary file. No read API permission
                 # is implied by this internal validation of an overwrite target.
@@ -615,7 +627,7 @@ class ToolExecutor:
     def _load_for_edit(self, args: dict, extension: str) -> bytes:
         data = self._load(args["path"], extension)
         if hashlib.sha256(data).hexdigest() != args["expected_sha256"]:
-            raise HarnessError("File changed: expected_sha256 does not match")
+            raise _stale_hash_error(args["expected_sha256"], "present")
         return data
 
     def _save(self, document, args: dict, extension: str) -> dict:
@@ -648,12 +660,23 @@ class ToolExecutor:
             else:
                 data = self.harness.read_bytes(path)
                 if hashlib.sha256(data).hexdigest() != args["expected_sha256"]:
-                    raise HarnessError("File changed: expected_sha256 does not match")
+                    raise _stale_hash_error(args["expected_sha256"], "present")
                 text = _decode_text(data)
                 find = _string(args["find"], "find")
                 replacement = _string(args["replace"], "replace", empty=True)
-                if text.count(find) != 1:
-                    raise HarnessError("Patch find text must occur exactly once")
+                count = text.count(find)
+                if count == 0 and "\r\n" in text and "\n" in find and "\r\n" not in find:
+                    # The file uses CRLF but the model quoted LF line breaks:
+                    # match and replace in the file's own line-ending style.
+                    crlf = find.replace("\n", "\r\n")
+                    if text.count(crlf) == 1:
+                        find, replacement, count = crlf, replacement.replace("\r\n", "\n").replace("\n", "\r\n"), 1
+                if count == 0:
+                    raise HarnessError("Patch find text must occur exactly once: it was not found. Read the file again "
+                                       "and copy the exact current text, including whitespace and line breaks")
+                if count > 1:
+                    raise HarnessError(f"Patch find text must occur exactly once: it occurs {count} times. "
+                                       "Include more surrounding text so it matches one place")
                 text = text.replace(find, replacement, 1)
             return self.harness.write_bytes(path, text.encode("utf-8"), args["expected_sha256"], text_only=True)
         if name.startswith("docx_"):
