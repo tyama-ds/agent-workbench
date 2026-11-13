@@ -192,6 +192,8 @@ SELENIUM_TOOL = schema('selenium_browse',
         'required': ['action', 'selector'], 'additionalProperties': False}},
      'screenshot': {'type': 'object', 'properties': {'path': STRING, 'expected_sha256': STRING},
                     'required': ['path', 'expected_sha256'], 'additionalProperties': False}}, ('url',))
+READ_ONLY_FILE_TOOLS = frozenset({'read_text', 'list_directory', 'search_text', 'search_paths', 'file_hash',
+                                  'docx_read', 'xlsx_read', 'pptx_read'})
 WRITE_TOOLS = frozenset({'write_text', 'patch_text', 'docx_write', 'docx_edit', 'xlsx_write', 'pptx_write', 'pptx_edit'})
 DIRECTORY_TOOLS = frozenset({'create_directory'})
 # Include this workflow at dispatch, so existing saved policies receive it too.
@@ -349,6 +351,13 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         self._question_tasks = {}
         self.closed = False
         self.lock = asyncio.Lock()
+        # Read-only file tools run concurrently: they are admitted under the
+        # exclusive lock (so they still queue behind a running write, Python or
+        # Selenium operation) and then run outside it. A writer holding the lock
+        # waits for admitted readers to finish before it starts.
+        self._file_readers = 0
+        self._file_readers_idle = asyncio.Event()
+        self._file_readers_idle.set()
         # Output-only masks: never consulted by Settings.key or an API request.
         # Like retained conversations, these live until this Engine is discarded.
         self._redaction = SecretRedactor()
@@ -1632,8 +1641,12 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         if any(child.status == 'error' and child.stop_reason == 'provider_output_limit'
                for child in self._owned_workers(run, agent)):
             team_tools += RECOVERY_TOOLS
+        paths = run['_config']['paths']
+        # With no read or write folder every file tool can only fail; do not
+        # spend context or invite calls that cannot succeed.
+        file_tools = run['_executor'].schemas() if paths['read_roots'] or paths['write_roots'] else []
         tools = [*[tool for tool in team_tools if run.get('work_board', {}).get('enabled') is True
-                   or tool['name'] not in {'post_work_board', 'read_work_board'}], *run['_executor'].schemas()]
+                   or tool['name'] not in {'post_work_board', 'read_work_board'}], *file_tools]
         if run['_config']['python']['enabled'] and os.name == 'nt':
             network = ('Network access is enabled by the human for this run; scripts connect directly, '
                        'without the Web tool proxy or destination restrictions. Windows loopback/firewall restrictions still apply. '
@@ -2594,9 +2607,15 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 self._redaction.remember(self._secret_values())
             async with self._run_deadline(run):
                 return await run['_web'].execute(name, args)
+        if name in READ_ONLY_FILE_TOOLS and not self._formation_reviewer(run, agent):
+            # An independent reviewer's read and its evidence recheck stay one
+            # exclusive operation (the original path below).
+            return await self._execute_read_tool(run, agent, name, args)
         # Serialize file tool operations to make optimistic hashes + reservations
         # meaningful for cooperating agents; no arbitrary shell is available.
         async with self.lock:
+            # Admitted read-only operations finish before any mutation starts.
+            await self._file_readers_idle.wait()
             # Waiting for another file operation does not start this one. The
             # run can expire while queued; only already-started saves may drain.
             if time.time() - run['created_at'] >= run['_config']['limits']['max_run_seconds']:
@@ -2656,6 +2675,33 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     async with self._run_deadline(run):
                         await self._formation_recheck(run, candidate)
             return result
+
+    async def _execute_read_tool(self, run, agent, name, args):
+        """Run a read-only file tool concurrently with other reads.
+
+        Admission uses the same checks as every file operation, under the
+        exclusive lock, so a read still waits for an in-progress mutation and
+        still honours other agents' reservations.
+        """
+        async with self.lock:
+            if time.time() - run['created_at'] >= run['_config']['limits']['max_run_seconds']:
+                raise RuntimeBudgetError('time_limit')
+            if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
+                raise ValueError('停止したチームではツールを実行できません')
+            self._dependency_require(agent)
+            self._require_delegation(run, agent)
+            self._formation_guard(run, agent, name)
+            if isinstance(args.get('path'), str):
+                self._check_reservation(agent, run['_harness'].resolve(args['path'], write=False, must_exist=False))
+            self._file_readers += 1
+            self._file_readers_idle.clear()
+        try:
+            result = await run['_executor'].execute(name, args)
+        finally:
+            self._file_readers -= 1
+            if not self._file_readers:
+                self._file_readers_idle.set()
+        return result
 
     def _reservation_path(self, run, value, write=True):
         return run['_harness'].resolve(value, write=write, must_exist=False)

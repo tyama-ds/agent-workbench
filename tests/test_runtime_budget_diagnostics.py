@@ -425,7 +425,8 @@ async def test_http_timeout_is_typed_at_transport_and_never_replayed(monkeypatch
         await ProviderClient().complete({'kind': 'openai', 'model': 'fixture', 'api_key': 'synthetic',
             'request_timeout_seconds': 12, 'max_retries': 3}, [], [], '', {})
     assert caught.value.retryable is False and len(sessions) == 1
-    assert sessions[0]['timeout'].total == 12
+    # The request timeout bounds silence between bytes, not total generation.
+    assert sessions[0]['timeout'].total is None and sessions[0]['timeout'].sock_read == 12
 
 
 async def test_summary_counts_against_same_budget_and_reserves_no_extra_calls(tmp_path):

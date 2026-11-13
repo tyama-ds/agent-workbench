@@ -35,6 +35,18 @@ RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 529})
 CLOUD_DEFAULT_RETRIES = 3
 CLOUD_DEFAULT_BACKOFF_SECONDS = 2
 MAX_RETRY_DELAY_SECONDS = 60
+# One in-provider retry after an explicit output-token limit doubles the limit,
+# never past this cap, the validated maximum or the profile's own cap.
+OUTPUT_LIMIT_RETRY_CAP = 32768
+MAX_OUTPUT_TOKENS = 131072
+# Connecting is bounded separately; request_timeout_seconds is the maximum
+# silence between received bytes, not the total generation time.
+CONNECT_TIMEOUT_SECONDS = 15
+# Wire formats are told apart by the endpoint suffix _endpoint() always adds.
+_STREAM_FORMATS = (("/responses", "openai"), ("/messages", "anthropic"), ("/chat/completions", "local"))
+# Stream error codes that, like HTTP 429/5xx, are safe to re-send.
+_RETRYABLE_STREAM_ERRORS = frozenset({"overloaded_error", "api_error", "rate_limit_error", "server_error",
+                                      "rate_limit_exceeded", "internal_error", "overloaded", "server_is_overloaded"})
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,127}$")
 _PRIVATE_NETWORKS = tuple(ipaddress.ip_network(value) for value in
                           ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"))
@@ -358,27 +370,348 @@ def _request_payload(kind: str, model: str, profile: dict, messages: list[dict],
     if kind == "openai":
         payload = {"model": model, "instructions": system, "input": _openai_messages(messages),
                    "store": False, "include": ["reasoning.encrypted_content"], "max_output_tokens": maximum,
-                   "tools": [{"type": "function", **tool, "strict": False} for tool in definitions]}
+                   "tools": [{"type": "function", **tool, "strict": False} for tool in definitions],
+                   "stream": True}
         if profile.get("reasoning_effort"):
             payload["reasoning"] = {"effort": profile["reasoning_effort"], "summary": "auto"}
     elif kind == "anthropic":
         payload = {"model": model, "system": system, "messages": _anthropic_messages(messages), "max_tokens": maximum,
-                   "tools": [{"name": tool["name"], "description": tool["description"], "input_schema": tool["parameters"]} for tool in definitions]}
+                   "tools": [{"name": tool["name"], "description": tool["description"], "input_schema": tool["parameters"]} for tool in definitions],
+                   "stream": True}
         if profile.get("thinking") is not None:
             thinking = profile["thinking"]
             if not isinstance(thinking, dict) or thinking.get("type") not in {"adaptive", "enabled", "disabled"}:
                 raise ProviderError("Invalid Anthropic thinking configuration")
             payload["thinking"] = copy.deepcopy(thinking)
     else:
-        parts = (copilot_request_parts(messages, definitions, system) if copilot_json_enabled(profile, definitions)
+        text_mode = copilot_json_enabled(profile, definitions)
+        parts = (copilot_request_parts(messages, definitions, system) if text_mode
                  else {"messages": _local_messages(messages, system),
                        "tools": [{"type": "function", "function": tool} for tool in definitions]})
-        payload = {"model": model, **parts, "max_tokens": maximum, "stream": False}
+        # The Copilot bridge (and its strict JSON text mode) stays one JSON
+        # reply. stream_options is omitted: some local servers reject it.
+        payload = {"model": model, **parts, "max_tokens": maximum,
+                   "stream": not (text_mode or _copilot_bridge(profile))}
         if profile.get("enable_thinking") is not None:
             if not isinstance(profile["enable_thinking"], bool):
                 raise ProviderError("enable_thinking must be true or false")
             payload["chat_template_kwargs"] = {"enable_thinking": profile["enable_thinking"]}
     return payload
+
+
+def _copilot_bridge(profile: dict) -> bool:
+    return profile.get('id') == 'copilot-agent' and profile.get('_copilot_agent') is True
+
+
+def _larger_output_limit(maximum: int, profile: dict) -> int | None:
+    """The single doubled output limit to retry with, or None when it cannot grow."""
+    larger = min(maximum * 2, OUTPUT_LIMIT_RETRY_CAP, MAX_OUTPUT_TOKENS)
+    if "max_output_tokens" in profile:
+        # A profile value is that model's own cap; asking for more fails.
+        larger = min(larger, integer(profile, "max_output_tokens", maximum, 1, MAX_OUTPUT_TOKENS))
+    return larger if larger > maximum else None
+
+
+class _StreamProtocolError(ValueError):
+    """A stream event did not match its wire format."""
+
+
+def _stream_closed() -> ProviderError:
+    # Nothing was accepted or executed, so re-sending is as safe as after a 5xx.
+    return ProviderError("Provider stream closed before completion; no tools were executed", retryable=True)
+
+
+def _stream_error(code) -> ProviderError:
+    return ProviderError("Provider reported an error during the stream; response body withheld",
+                         retryable=isinstance(code, str) and code in _RETRYABLE_STREAM_ERRORS)
+
+
+def _index(value, limit: int = 4096) -> int:
+    if type(value) is not int or not 0 <= value < limit:
+        raise _StreamProtocolError
+    return value
+
+
+def _text(value) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise _StreamProtocolError
+    return value
+
+
+class _ResponsesStream:
+    """OpenAI Responses: the terminal event carries the complete response."""
+
+    def __init__(self):
+        self.result = None
+        self.items = {}
+
+    def feed(self, event: str | None, data: dict) -> bool:
+        kind = data.get("type", event)
+        if kind is not None and not isinstance(kind, str):
+            raise _StreamProtocolError
+        if kind in {"response.completed", "response.incomplete", "response.failed"}:
+            response = data.get("response")
+            if not isinstance(response, dict):
+                raise _StreamProtocolError
+            if not response.get("output") and self.items:
+                # Some compatible servers send only per-item events in full.
+                response = {**response, "output": [self.items[key] for key in sorted(self.items)]}
+            self.result = response
+            return True
+        if kind == "response.output_item.done":
+            item = data.get("item")
+            if not isinstance(item, dict):
+                raise _StreamProtocolError
+            self.items[_index(data.get("output_index"))] = item
+        elif kind == "error":
+            error = data.get("error") if isinstance(data.get("error"), dict) else data
+            raise _stream_error(error.get("code") or error.get("type"))
+        return False
+
+    def finish(self) -> dict:
+        if self.result is None:
+            raise _stream_closed()
+        return self.result
+
+
+class _MessagesStream:
+    """Anthropic Messages: rebuild exactly the blocks a non-streamed reply holds."""
+
+    def __init__(self):
+        self.message = None
+        self.blocks = {}
+        self.partial = {}
+        self.malformed = False
+        self.done = False
+
+    def feed(self, event: str | None, data: dict) -> bool:
+        kind = data.get("type", event)
+        if kind is not None and not isinstance(kind, str):
+            raise _StreamProtocolError
+        if kind == "error":
+            error = data.get("error") if isinstance(data.get("error"), dict) else {}
+            raise _stream_error(error.get("type"))
+        if kind == "message_start":
+            message = data.get("message")
+            if self.message is not None or not isinstance(message, dict):
+                raise _StreamProtocolError
+            self.message = copy.deepcopy(message)
+            self.message["content"] = []
+            return False
+        if kind not in {"content_block_start", "content_block_delta", "content_block_stop",
+                        "message_delta", "message_stop"}:
+            return False  # Unknown events are versioned additions, not content.
+        if self.message is None:
+            raise _StreamProtocolError
+        if kind == "content_block_start":
+            index, block = _index(data.get("index")), data.get("content_block")
+            if index in self.blocks or not isinstance(block, dict) or not isinstance(block.get("type"), str):
+                raise _StreamProtocolError
+            self.blocks[index] = copy.deepcopy(block)
+            if block["type"] == "tool_use":
+                self.partial[index] = []
+        elif kind == "content_block_delta":
+            index, delta = _index(data.get("index")), data.get("delta")
+            block = self.blocks.get(index)
+            if block is None or not isinstance(delta, dict):
+                raise _StreamProtocolError
+            change = delta.get("type")
+            if change == "text_delta":
+                block["text"] = _text(block.get("text")) + _text(delta.get("text"))
+            elif change == "thinking_delta":
+                block["thinking"] = _text(block.get("thinking")) + _text(delta.get("thinking"))
+            elif change == "signature_delta":
+                block["signature"] = _text(block.get("signature")) + _text(delta.get("signature"))
+            elif change == "input_json_delta":
+                if index not in self.partial:
+                    raise _StreamProtocolError
+                self.partial[index].append(_text(delta.get("partial_json")))
+            elif change == "citations_delta":
+                citations = block.get("citations")
+                block["citations"] = [*(citations if isinstance(citations, list) else []),
+                                      copy.deepcopy(delta.get("citation"))]
+        elif kind == "content_block_stop":
+            index = _index(data.get("index"))
+            if index not in self.blocks:
+                raise _StreamProtocolError
+            parts = self.partial.pop(index, None)
+            if parts is not None and "".join(parts).strip():
+                try:
+                    value = strict_json("".join(parts))
+                    if not isinstance(value, dict):
+                        raise ValueError
+                    self.blocks[index]["input"] = value
+                except (ValueError, RecursionError):
+                    # Deferred: an output-token limit explains truncated input.
+                    self.malformed = True
+        elif kind == "message_delta":
+            delta = data.get("delta")
+            if isinstance(delta, dict):
+                for key in ("stop_reason", "stop_sequence"):
+                    if key in delta:
+                        self.message[key] = delta[key]
+            usage = data.get("usage")
+            if isinstance(usage, dict):
+                merged = self.message.get("usage")
+                self.message["usage"] = {**(merged if isinstance(merged, dict) else {}),
+                                         **{key: value for key, value in usage.items() if value is not None}}
+        elif kind == "message_stop":
+            self.done = True
+            return True
+        return False
+
+    def finish(self) -> dict:
+        if self.message is None or not self.done:
+            raise _stream_closed()
+        if self.partial or sorted(self.blocks) != list(range(len(self.blocks))):
+            raise _StreamProtocolError
+        if self.malformed and self.message.get("stop_reason") != "max_tokens":
+            raise ProviderError("Provider returned malformed tool arguments; no tools were executed")
+        self.message["content"] = [self.blocks[index] for index in range(len(self.blocks))]
+        return self.message
+
+
+class _ChatStream:
+    """OpenAI-compatible chat completions: merge choice 0 deltas into one message."""
+
+    def __init__(self):
+        self.role = None
+        self.fields = {}
+        self.calls = {}
+        self.finish_reason = None
+        self.usage = None
+        self.chunks = 0
+
+    def feed(self, event: str | None, data: dict | str) -> bool:
+        if data == "[DONE]":
+            return True
+        if not isinstance(data, dict):
+            raise _StreamProtocolError
+        if data.get("error") is not None:
+            error = data["error"] if isinstance(data["error"], dict) else {}
+            code = error.get("code")
+            raise _stream_error("server_error" if type(code) is int and code in RETRYABLE_STATUSES
+                                else code or error.get("type"))
+        self.chunks += 1
+        if isinstance(data.get("usage"), dict):
+            self.usage = copy.deepcopy(data["usage"])
+        choices = data.get("choices") or []
+        if not isinstance(choices, list):
+            raise _StreamProtocolError
+        for choice in choices:
+            if not isinstance(choice, dict):
+                raise _StreamProtocolError
+            if choice.get("index", 0) != 0:
+                continue  # Only one choice is requested and parsed.
+            delta = choice.get("delta") or {}
+            if not isinstance(delta, dict):
+                raise _StreamProtocolError
+            if isinstance(delta.get("role"), str) and self.role is None:
+                self.role = delta["role"]
+            for key in ("content", "reasoning_content", "reasoning", "refusal"):
+                if delta.get(key) is not None:
+                    self.fields.setdefault(key, []).append(_text(delta[key]))
+            for position, fragment in enumerate(delta.get("tool_calls") or []):
+                self._call(position, fragment)
+            if choice.get("finish_reason") is not None:
+                self.finish_reason = choice["finish_reason"]
+        return False
+
+    def _call(self, position: int, fragment) -> None:
+        if not isinstance(fragment, dict):
+            raise _StreamProtocolError
+        index = fragment.get("index")
+        if index is None:
+            # Servers without indexes send each call whole or continue the last one.
+            ident = fragment.get("id")
+            known = [key for key, call in self.calls.items() if ident and call["id"] == ident]
+            index = known[0] if known else (len(self.calls) if ident or not self.calls else max(self.calls))
+        call = self.calls.setdefault(_index(index, 1024), {"id": None, "type": None, "name": None, "arguments": []})
+        function = fragment.get("function") or {}
+        if not isinstance(function, dict):
+            raise _StreamProtocolError
+        # Identity arrives once; servers that repeat it must not be concatenated.
+        for key, value in (("id", fragment.get("id")), ("type", fragment.get("type")), ("name", function.get("name"))):
+            if value is not None and call[key] is None:
+                call[key] = _text(value)
+        if function.get("arguments") is not None:
+            arguments = function["arguments"]
+            call["arguments"].append(arguments if isinstance(arguments, str) else json.dumps(arguments))
+
+    def finish(self, done: bool) -> dict:
+        if not done and self.finish_reason is None:
+            raise _stream_closed()
+        if not self.chunks:
+            raise _StreamProtocolError
+        message = {"role": self.role or "assistant"}
+        content = "".join(self.fields["content"]) if "content" in self.fields else None
+        message["content"] = content if content is not None or self.calls else ""
+        for key in ("refusal", "reasoning_content", "reasoning"):
+            if key in self.fields:
+                message[key] = "".join(self.fields[key])
+        if self.calls:
+            if sorted(self.calls) != list(range(len(self.calls))):
+                raise _StreamProtocolError
+            message["tool_calls"] = [{"id": call["id"], "type": call["type"] or "function", "function": {
+                "name": call["name"], "arguments": "".join(call["arguments"])}}
+                for call in (self.calls[index] for index in range(len(self.calls)))]
+        result = {"choices": [{"index": 0, "message": message, "finish_reason": self.finish_reason}]}
+        if self.usage is not None:
+            result["usage"] = self.usage
+        return result
+
+
+async def _read_event_stream(response, wire: str) -> dict:
+    """Parse text/event-stream incrementally into the non-streamed reply shape."""
+    state = {"openai": _ResponsesStream, "anthropic": _MessagesStream, "local": _ChatStream}[wire]()
+    buffer, size, event, data, done = b"", 0, None, [], False
+
+    def dispatch() -> bool:
+        nonlocal event, data
+        name, lines = event, data
+        event, data = None, []
+        if not lines:
+            return False
+        text = "\n".join(lines)
+        if wire == "local" and text.strip() == "[DONE]":
+            return state.feed(name, "[DONE]")
+        value = strict_json(text)
+        if not isinstance(value, dict):
+            raise _StreamProtocolError
+        return state.feed(name, value)
+
+    async for part in response.content.iter_any():
+        size += len(part)
+        if size > MAX_RESPONSE_BYTES:
+            raise ProviderError("Provider response exceeded the size limit")
+        buffer += part
+        *lines, buffer = buffer.split(b"\n")
+        for raw in lines:
+            line = raw.rstrip(b"\r").decode("utf-8")
+            if not line:
+                if dispatch():
+                    done = True
+                    break
+            elif line.startswith(":"):
+                continue  # Comment or keep-alive.
+            else:
+                name, _, value = line.partition(":")
+                value = value[1:] if value.startswith(" ") else value
+                if name == "data":
+                    data.append(value)
+                elif name == "event":
+                    event = value
+        if done:
+            break
+    if not done and buffer.strip():
+        line = buffer.rstrip(b"\r").decode("utf-8")
+        if line.startswith("data:"):
+            data.append(line[6:] if line[5:6] == " " else line[5:])
+    if not done and data:
+        done = dispatch()
+    return state.finish(done) if wire == "local" else state.finish()
 
 
 class ProviderClient:
@@ -449,6 +782,36 @@ class ProviderClient:
             request_timeout_seconds=timeout,
             queue_timeout_seconds=retry_config.get('queue_timeout_seconds', 120) if kind == 'local' else None,
             attempt_limit=retries + 1)
+        exchange = dict(kind=kind, model=model, profile=profile, definitions=definitions, endpoint=endpoint,
+                        headers=headers, timeout=timeout, proxy=proxy, request_gate=request_gate,
+                        retry_config=retry_config, retries=retries, backoff=backoff)
+        try:
+            return await self._exchange(payload=payload, **exchange)
+        except ProviderOutputLimitError as exc:
+            larger = _larger_output_limit(maximum, profile)
+            if (larger is None or request_gate is self.copilot_resource_gate or _copilot_bridge(profile)
+                    or copilot_json_enabled(profile, definitions)):
+                raise
+            # Retry once with room for the reply. Nothing was accepted or
+            # executed, and only the output limit differs from the first request.
+            observation_phase('error', error=exc)
+            observation_phase('retry_wait', retry_after_seconds=0)
+            field_name = "max_output_tokens" if kind == "openai" else "max_tokens"
+            try:
+                return await self._exchange(payload={**payload, field_name: larger}, **exchange)
+            except ProviderOutputLimitError:
+                raise
+            except ProviderError as retry_exc:
+                if retry_exc.status in {400, 413, 422}:
+                    # The server refused the larger limit (for example, prompt
+                    # plus output exceeds its context); the original typed
+                    # failure keeps the engine's recovery flow available.
+                    raise exc from None
+                raise
+
+    async def _exchange(self, *, kind: str, model: str, profile: dict, definitions: list[dict], endpoint: str,
+                        payload: dict, headers: dict, timeout: float, proxy: str | None,
+                        request_gate: ResourceGate, retry_config: dict, retries: int, backoff: float) -> ModelReply:
         for attempt in range(retries + 1):
             try:
                 if kind == "local":
@@ -493,13 +856,23 @@ class ProviderClient:
         raise ProviderError("Provider request did not finish")
 
     async def _post(self, endpoint: str, payload: dict, headers: dict, timeout: float, proxy: str | None) -> dict:
+        # No total deadline: a long generation that keeps sending bytes may
+        # continue (the engine enforces the run deadline). Silence longer than
+        # the request timeout, before or during the reply, still fails.
+        connect = min(float(CONNECT_TIMEOUT_SECONDS), timeout)
+        limits = aiohttp.ClientTimeout(total=None, connect=connect, sock_connect=connect, sock_read=timeout)
+        path = urlsplit(endpoint).path
+        wire = next((name for suffix, name in _STREAM_FORMATS if path.endswith(suffix)), None)
         try:
-            async with aiohttp.ClientSession(trust_env=False, timeout=aiohttp.ClientTimeout(total=timeout)) as session:
+            async with aiohttp.ClientSession(trust_env=False, timeout=limits) as session:
                 async with session.post(endpoint, json=payload, headers=headers, proxy=proxy, allow_redirects=False) as response:
                     if response.status != 200:
                         raise ProviderError(f"Provider returned HTTP {response.status}; response body withheld",
                                             status=response.status, retryable=response.status in RETRYABLE_STATUSES,
                                             retry_after=retry_after_seconds(response.headers))
+                    if wire is not None and response.content_type == "text/event-stream":
+                        return await _read_event_stream(response, wire)
+                    # Servers (and fixtures) that ignore "stream" answer with JSON.
                     parts, size = [], 0
                     async for part in response.content.iter_chunked(65536):
                         size += len(part)
@@ -517,6 +890,8 @@ class ProviderClient:
         except aiohttp.ClientError:
             raise ProviderError("Provider connection failed; check the endpoint and network settings",
                                 retryable=True) from None
+        except (_StreamProtocolError, KeyError, AttributeError):
+            raise ProviderError("Provider response did not match the expected protocol") from None
         except (ValueError, TypeError, UnicodeError, RecursionError):
             raise ProviderError("Provider returned invalid JSON") from None
 
