@@ -68,7 +68,11 @@ async def rejected(operation):
     return result
 
 
-async def eventually(predicate, timeout=5):
+# Bounded wait for engine progress. Reaching an independent review performs
+# about 40 durable (fsync'd) SQLite history commits; on loaded Windows CI
+# runners that intermittently exceeded the former 5 s bound. A real stall still
+# fails at this bound.
+async def eventually(predicate, timeout=30):
     async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(.005)
