@@ -75,6 +75,9 @@ def schema(name, description, properties=None, required=()):
 
 STRING = {'type': 'string'}
 CONTINUATION_NUDGES = 1
+# Waits before re-sending a model call after the provider's own retries were
+# exhausted by a transient failure (seconds; one entry per extra attempt).
+TRANSIENT_OUTAGE_DELAYS = (30, 90)
 INVALID_BATCH_RETRIES = 2
 CONTINUATION_NUDGE = ('[application notice] This turn has not finished: your last reply contained text but no tool call. '
                       'If the work is complete and verified, call finish_work with the result. If anything remains, '
@@ -1826,12 +1829,14 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         try:
             while agent.pending and not agent.closing and not agent.question:
                 self._dependency_begin(agent)
+                if agent.turns >= limits['max_turns_per_agent']:
+                    # Check before taking the next input, so the queued mail or
+                    # report stays queued instead of being silently dropped.
+                    raise RuntimeBudgetError('turn_limit')
                 queued_item = agent.pending.popleft()
                 content, human = queued_item
                 if not self._formation_control_admissible(run, agent, queued_item):
                     continue
-                if agent.turns >= limits['max_turns_per_agent']:
-                    raise RuntimeBudgetError('turn_limit')
                 agent.turns += 1
                 agent.status = 'working'
                 agent.waiting_for_workers = False
@@ -1885,10 +1890,32 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     run['model_calls'] += 1
                     self.event(run['id'], agent.id, 'inference', f'{agent.name}: 推論を待機・実行中')
                     self._ordered_capture_dispatch(agent)
-                    async with self._run_deadline(run):
-                        self._formation_before_dispatch(run, agent, messages, system)
-                        reply = await complete_observed(agent, self.client, profile, messages, tools, system, call_limits,
-                                                           conversation_id=f'{run["id"]}/{agent.id}')
+                    for outage in range(len(TRANSIENT_OUTAGE_DELAYS) + 1):
+                        try:
+                            async with self._run_deadline(run):
+                                self._formation_before_dispatch(run, agent, messages, system)
+                                reply = await complete_observed(agent, self.client, profile, messages, tools, system, call_limits,
+                                                                   conversation_id=f'{run["id"]}/{agent.id}')
+                            break
+                        except ProviderError as exc:
+                            # The provider already retried this request. A longer
+                            # outage (connection loss, 5xx, overload) waits and
+                            # re-sends the same call in this turn rather than
+                            # stopping the agent until a human writes. Timeouts and
+                            # non-transient errors stop as before.
+                            if (not exc.retryable or isinstance(exc, ProviderTimeoutError)
+                                    or outage == len(TRANSIENT_OUTAGE_DELAYS) or agent.closing):
+                                raise
+                            delay = TRANSIENT_OUTAGE_DELAYS[outage]
+                            self.log(agent, 'notice', f'一時的な接続・サーバーエラーのため、{delay}秒後に同じ呼び出しを再送します'
+                                                      f'（{outage + 1}/{len(TRANSIENT_OUTAGE_DELAYS)}）。')
+                            async with self._run_deadline(run):
+                                await asyncio.sleep(delay)
+                            if agent.closing:
+                                break
+                            self._dependency_require(agent)
+                    if agent.closing:
+                        break
                     if agent.closing:
                         break
                     self._dependency_require(agent)
@@ -1961,7 +1988,9 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                             break
                         try:
                             self._hierarchy_require(agent)
-                        except UnitChanged:
+                        except (UnitChanged, ValueError):
+                            # Any hierarchy failure pauses the batch; the
+                            # remaining calls still receive "not executed".
                             stop = True
                         if agent.depends_on and (self._dependency_stale(agent) or self._dependency_blockers(agent)):
                             stop = True
@@ -2050,7 +2079,15 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                                                    'content': bounded_tool_output(
                                                        encoded, limits, agent.record_sequence + 1)},
                                              original_content=encoded)
-                        self._formation_record_native(run, agent, review_evidence, encoded)
+                        try:
+                            self._formation_record_native(run, agent, review_evidence, encoded)
+                        except RedactionCapacityError:
+                            raise
+                        except Exception as exc:
+                            # This call already has its result; keep every later
+                            # call in the batch paired with a "not executed" result.
+                            unexpected_error = unexpected_error or exc
+                            stop = True
                         if finished:
                             stop = True
                             summary = args.get('summary', summary)

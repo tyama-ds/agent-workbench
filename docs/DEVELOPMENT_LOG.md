@@ -4,6 +4,28 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev48 — Long runs keep saving and survive outages (2026-11-13)
+
+Phase 3 of the agent-persistence work: robustness for long, multi-agent runs.
+
+- History saves reuse this app's last saved archive instead of decoding and
+  re-validating the stored document every time (dropped on scrub or failure).
+  An archive that would exceed 16 MiB or the per-list item limit is shortened
+  (oldest thinking first, then oldest log rows and events; the newest rows,
+  results and receipts are kept) instead of every later save failing, which
+  left the final run state unsaved.
+- The turn limit is checked before the next queued input is taken, so that
+  mail or report stays queued instead of being dropped.
+- A hierarchy failure or a formation recording failure inside a tool batch no
+  longer leaves later calls without results (which made the agent unusable).
+- Compaction summarizes one contiguous run of unprotected groups, so work done
+  after a protected human message is never placed in front of it.
+- After the provider's own retries, a transient failure (connection, 5xx,
+  overload) waits 30 s, then 90 s, and re-sends the same call in the same turn
+  instead of stopping the agent. Timeouts and non-transient errors stop as
+  before; stop and the run deadline still apply; the call is charged once.
+- Tool schemas and system prompts are unchanged.
+
 ## 0.1.1.dev47 — Streaming replies, concurrent reads and recoverable edits (2026-11-13)
 
 Phase 2 of the agent-persistence work (dev46), again following openai/codex

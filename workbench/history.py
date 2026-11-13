@@ -505,6 +505,44 @@ def _merge_rows(old, new, identity='id'):
     return list(rows.values())
 
 
+# Newest rows kept with full thinking when an archive must be shortened.
+FIT_KEEP_THINKING = 100
+
+
+def _encoded_size(document) -> int:
+    return len(json.dumps(document, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8'))
+
+
+def fit_document(document):
+    """Shorten a merged archive to the storage limits instead of refusing it.
+
+    Long runs accumulate every log row across saves; once the merged document
+    passed 16 MiB (or a list passed MAX_ITEMS) every later save failed and the
+    final state was never stored. Drop, oldest first: thinking text, then log
+    rows, then events. Results, receipts, the run record and the newest rows
+    are kept. Returns the (possibly) shortened document.
+    """
+    for agent in document['agents']:
+        for key in ('logs', 'results', 'output_receipts'):
+            if len(agent.get(key, [])) > MAX_ITEMS:
+                agent[key] = agent[key][-MAX_ITEMS:]
+    for key in ('events', 'board'):
+        if len(document.get(key, [])) > MAX_ITEMS:
+            document[key] = document[key][-MAX_ITEMS:]
+    if _encoded_size(document) <= MAX_RUN_BYTES:
+        return document
+    for agent in document['agents']:
+        for row in agent.get('logs', [])[:-FIT_KEEP_THINKING]:
+            row.pop('thinking', None)
+    keep = 2000
+    while _encoded_size(document) > MAX_RUN_BYTES and keep >= 50:
+        for agent in document['agents']:
+            agent['logs'] = agent.get('logs', [])[-keep:]
+        document['events'] = document.get('events', [])[-keep:]
+        keep //= 2
+    return document
+
+
 def merge(old, new):
     result = copy.deepcopy(new)
     result['events'] = _merge_rows(old['events'], new['events'])
@@ -546,6 +584,9 @@ class HistoryStore:
         self._readable = False
         self._lease = None
         self._agent_owners = {}
+        # run id -> (last document this app saved, its saved_at). Avoids
+        # decoding and re-validating the whole stored archive on every save.
+        self._saved = {}
         try:
             self._acquire_lease()
             self._initialize()
@@ -729,11 +770,20 @@ class HistoryStore:
             if any(self._agent_owners.get(row['id'], ident) != ident for row in document['agents']):
                 raise HistoryError('履歴の担当者IDが別の作業と重複しています。')
             connection = self._write_connection()
-            existing = connection.execute('SELECT owner,payload FROM archives WHERE run_id=?', (ident,)).fetchone()
+            existing = connection.execute('SELECT owner,saved_at FROM archives WHERE run_id=?', (ident,)).fetchone()
             if existing:
                 if existing[0] != self.owner:
                     raise HistoryError('同じ作業IDを別のアプリが保存しています。既存履歴は変更していません。')
-                document = merge(redact_document(decode(existing[1]), redact), document)
+                cached = self._saved.get(ident)
+                if cached is not None and cached[1] == existing[1]:
+                    # This app wrote the stored row (same owner and save time),
+                    # so its decoded, redacted form is already in memory.
+                    previous = cached[0]
+                else:
+                    payload = connection.execute('SELECT payload FROM archives WHERE run_id=?', (ident,)).fetchone()[0]
+                    previous = redact_document(decode(payload), redact)
+                document = merge(previous, document)
+            document = fit_document(document)
             value = encode(document)
             count, total = connection.execute('SELECT count(*),coalesce(sum(length(CAST(payload AS BLOB))),0) FROM archives WHERE run_id<>?', (ident,)).fetchone()
             if count >= MAX_RUNS or total + len(value.encode('utf-8')) > MAX_TOTAL_BYTES:
@@ -742,12 +792,14 @@ class HistoryStore:
             connection.execute('INSERT INTO archives VALUES (?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET saved_at=excluded.saved_at,payload=excluded.payload', (ident, self.owner, at, value))
             connection.commit()
             self.last_saved_at = at
+            self._saved[ident] = (document, at)
             self._agent_owners.update({row['id']: ident for row in document['agents']})
             self.error = ''
             return at
         except (OSError, sqlite3.Error, HistoryError) as exc:
             if connection:
                 connection.rollback()
+            self._saved.pop(document['run']['id'] if isinstance(document, dict) and isinstance(document.get('run'), dict) else None, None)
             self._failed(exc)
         finally:
             if connection:
@@ -755,6 +807,7 @@ class HistoryStore:
 
     def scrub(self, redact):
         """Rewrite all retained public fields under one writer transaction."""
+        self._saved.clear()
         connection = None
         try:
             connection = self._write_connection()
