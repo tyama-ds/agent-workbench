@@ -56,6 +56,7 @@ async def manual(tmp_path):
 async def test_pm_recovers_truncated_local_response_and_accepts_actual_excel(tmp_path, action):
     requests, failures = [], []
     pm_stage, worker_stage = 0, 0
+    truncated_limits = []
     worker_id = None
     revision = None
     path, forbidden = str(tmp_path / 'documents' / 'weather.xlsx'), str(tmp_path / 'documents' / 'truncated.xlsx')
@@ -109,6 +110,14 @@ async def test_pm_recovers_truncated_local_response_and_accepts_actual_excel(tmp
 
             # Earlier tool success must survive the later output failure. Its
             # native local tool-call history cannot be replayed as Anthropic raw.
+            if worker_stage == 2 and len(truncated_limits) == 1:
+                # The provider retries a length-limited reply once with a doubled
+                # output limit (one engine model call); it is truncated again.
+                requests.pop()
+                truncated_limits.append(body['max_tokens'])
+                truncated = json.loads(local_reply([('truncated-retry', 'finish_work', {'summary': 'UNCONFIRMED'})]).body)
+                truncated['choices'][0]['finish_reason'] = 'length'
+                return web.json_response(truncated)
             worker_stage += 1
             if worker_stage == 1:
                 assert request.path == '/v1/chat/completions'
@@ -119,6 +128,7 @@ async def test_pm_recovers_truncated_local_response_and_accepts_actual_excel(tmp
             # because the provider reports a truncated response.
             if worker_stage == 2:
                 assert request.path == '/v1/chat/completions'
+                truncated_limits.append(body['max_tokens'])
                 truncated = json.loads(local_reply([
                     ('truncated-write', 'xlsx_write', {'path': forbidden, 'expected_sha256': 'missing',
                         'cells': [{'sheet': 'Sheet', 'cell': 'A1', 'value': 'UNCONFIRMED'}]}),
@@ -154,6 +164,7 @@ async def test_pm_recovers_truncated_local_response_and_accepts_actual_excel(tmp
                              engine, progress_run=run)
             assert not failures
             assert pm_stage == 5 and worker_stage == 5, engine.snapshot()
+            assert truncated_limits == [truncated_limits[0], min(2 * truncated_limits[0], 32768)]
             child = engine.agents[worker_id]
             assert run['status'] == pm.status == child.status == 'done'
             assert child.parent_id == pm.id and child.assignment == TASK

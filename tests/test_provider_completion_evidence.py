@@ -70,6 +70,8 @@ REJECTED = [
       for status in ('missing', 'null', 'completed')),
     *(('local', 'refusal:' + value) for value in ('malformed', 'false', 'zero', 'list', 'calls')),
 ]
+OUTPUT_LIMITED = {('local', 'length'), ('anthropic', 'max_tokens'),
+                  ('openai', 'details:missing'), ('openai', 'details:null')}
 
 
 @pytest.mark.parametrize('kind,evidence', REJECTED)
@@ -89,7 +91,14 @@ async def test_unconfirmed_response_cannot_admit_any_report_or_tool(tmp_path, ki
         try:
             run, agent = await start(engine, pm_profile=kind, max_workers=0)
             await settled(engine)
-            assert len(requests) == run['model_calls'] == 1
+            # An explicit output-token limit is retried once inside the provider
+            # with a doubled limit; it is still one model call that admits nothing.
+            limited = (kind, evidence) in OUTPUT_LIMITED
+            assert run['model_calls'] == 1 and len(requests) == (2 if limited else 1)
+            if limited:
+                field = 'max_output_tokens' if kind == 'openai' else 'max_tokens'
+                assert requests[1][field] == min(2 * requests[0][field], 32768) > requests[0][field]
+                assert {**requests[1], field: None} == {**requests[0], field: None}
             assert agent.status == 'error' and run['status'] == 'waiting'
             assert run['tool_calls'] == 0 and not list(work.iterdir())
             assert not agent.results and not agent.output_receipts
