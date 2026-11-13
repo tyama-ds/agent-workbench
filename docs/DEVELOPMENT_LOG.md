@@ -4,6 +4,36 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev47 — Streaming replies, concurrent reads and recoverable edits (2026-11-13)
+
+Phase 2 of the agent-persistence work (dev46), again following openai/codex
+(`codex-api` SSE handling, idle timeouts, parallel-safe tools).
+
+- Provider replies are streamed (`stream: true`) for OpenAI Responses,
+  Anthropic Messages and Local chat completions, and rebuilt into exactly the
+  non-streamed JSON shape, so parsing and native replay are unchanged
+  (Anthropic thinking signatures and tool input included). Servers that answer
+  with JSON are read as before. The Copilot bridge stays non-streamed.
+- `request_timeout_seconds` is now the longest allowed silence between received
+  bytes (connect timeout 15 s), not a total generation limit; the run deadline
+  still bounds total time. A stream that ends before its terminal event is
+  retryable; a timeout still is not.
+- An output-token-limit rejection is re-sent once with the limit doubled (cap
+  32,768, never above a profile limit), outside the Copilot bridge. A second
+  limit hit, or a server rejecting the larger limit, keeps the existing
+  recover_worker flow.
+- Read-only file tools run concurrently across agents. They are admitted under
+  the exclusive file lock with the usual stop/budget/dependency/delegation/
+  reservation checks; writes, Python and Selenium stay exclusive and wait for
+  admitted reads. Independent-review rechecks stay exclusive.
+- Edit errors say how to recover: a stale `expected_sha256` reports whether the
+  file is missing, already exists or was modified (the current hash is not
+  disclosed, so write-only folders stay unreadable); `patch_text` reports
+  not-found vs N matches and accepts LF-quoted text in CRLF files.
+- File tools are not offered when no read or write folder is configured.
+- Tool schemas and system prompts are unchanged, so per-request overhead is
+  identical to dev46.
+
 ## 0.1.1.dev46 — Keep agents working through transient and correctable failures (2026-11-09)
 
 Motivation: agents stopped permanently on a single transient provider error,
