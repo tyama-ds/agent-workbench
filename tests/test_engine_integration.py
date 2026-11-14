@@ -18,9 +18,59 @@ from workbench.engine import Engine
 from workbench.harness import ToolExecutor
 
 
+LIVE_NOTE_PREFIX = '[application note: live shared budget'
+
+
+def strip_live_note(body):
+    """Remove the per-request budget note and cache markers added on the wire.
+
+    Fixtures below assert the exact conversation structure the engine replays;
+    the live note and Anthropic cache_control are checked in
+    tests/test_prompt_cache.py instead.
+    """
+    if not isinstance(body, dict):
+        return body
+    if isinstance(body.get('input'), list):
+        body['input'] = [item for item in body['input'] if not (
+            isinstance(item, dict) and item.get('role') == 'user' and isinstance(item.get('content'), str)
+            and item['content'].startswith(LIVE_NOTE_PREFIX))]
+    if isinstance(body.get('messages'), list):
+        kept = []
+        for message in body['messages']:
+            content = message.get('content') if isinstance(message, dict) else None
+            if isinstance(content, list):
+                content = [block for block in content if not (isinstance(block, dict) and block.get('type') == 'text'
+                                                              and str(block.get('text', '')).startswith(LIVE_NOTE_PREFIX))]
+                for block in content:
+                    if isinstance(block, dict):
+                        block.pop('cache_control', None)
+                message['content'] = content
+                if not content:
+                    continue
+            elif isinstance(content, str):
+                if content.startswith(LIVE_NOTE_PREFIX):
+                    continue
+                if '\n\n' + LIVE_NOTE_PREFIX in content:
+                    message['content'] = content.split('\n\n' + LIVE_NOTE_PREFIX, 1)[0]
+            kept.append(message)
+        body['messages'] = kept
+    return body
+
+
+@web.middleware
+async def _strip_live_note(request, handler):
+    raw = await request.read()
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return await handler(request)
+    request._read_bytes = json.dumps(strip_live_note(body)).encode()
+    return await handler(request)
+
+
 @asynccontextmanager
 async def api_server(handler):
-    app = web.Application()
+    app = web.Application(middlewares=[_strip_live_note])
     app.router.add_post("/{path:.*}", handler)
     runner = web.AppRunner(app)
     await runner.setup()

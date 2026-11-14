@@ -438,6 +438,9 @@ def _request_payload(kind: str, model: str, profile: dict, messages: list[dict],
             payload["thinking"] = copy.deepcopy(thinking)
     else:
         text_mode = copilot_json_enabled(profile, definitions)
+        if text_mode and profile.get("_live_note"):
+            # The Copilot JSON envelope has no free message slot; it is not cached.
+            system = system + "\n\n" + profile["_live_note"]
         parts = (copilot_request_parts(messages, definitions, system) if text_mode
                  else {"messages": _local_messages(messages, system),
                        "tools": [{"type": "function", "function": tool} for tool in definitions]})
@@ -449,7 +452,54 @@ def _request_payload(kind: str, model: str, profile: dict, messages: list[dict],
             if not isinstance(profile["enable_thinking"], bool):
                 raise ProviderError("enable_thinking must be true or false")
             payload["chat_template_kwargs"] = {"enable_thinking": profile["enable_thinking"]}
+    if kind == "anthropic":
+        # Breakpoints first, so the last cached block is the latest persisted
+        # content and the per-request note stays after it.
+        _anthropic_cache(payload)
+    if profile.get("_live_note") and not (kind == "local" and copilot_json_enabled(profile, definitions)):
+        _append_live_note(kind, payload, profile["_live_note"])
     return payload
+
+
+_CACHEABLE_BLOCKS = frozenset({"text", "tool_result", "tool_use", "image"})
+
+
+def _anthropic_cache(payload: dict) -> None:
+    """Mark the stable prefix for Anthropic prompt caching.
+
+    One breakpoint on the latest persisted block caches everything before it
+    (tools, system prompt and history); the next call reads that prefix.
+    """
+    messages = payload["messages"]
+    if messages and isinstance(messages[-1].get("content"), list) and messages[-1]["content"]:
+        block = messages[-1]["content"][-1]
+        if isinstance(block, dict) and block.get("type") in _CACHEABLE_BLOCKS:
+            block["cache_control"] = {"type": "ephemeral"}
+
+
+def _append_live_note(kind: str, payload: dict, note: str) -> None:
+    """Add the per-request note after the history, leaving tool results intact.
+
+    OpenAI gets its own user item. Anthropic gets a text block after the last
+    user turn's blocks. Local servers get a separate user message after tool
+    results; after a user message the note is appended to it, because strict
+    chat templates reject two user turns in a row.
+    """
+    if kind == "openai":
+        payload["input"].append({"role": "user", "content": note})
+    elif kind == "anthropic":
+        messages = payload["messages"]
+        if messages and messages[-1]["role"] == "user" and isinstance(messages[-1]["content"], list):
+            messages[-1]["content"].append({"type": "text", "text": note})
+        else:
+            messages.append({"role": "user", "content": [{"type": "text", "text": note}]})
+    else:
+        messages = payload["messages"]
+        last = messages[-1] if messages else None
+        if isinstance(last, dict) and last.get("role") == "user" and isinstance(last.get("content"), str):
+            last["content"] += "\n\n" + note
+        else:
+            messages.append({"role": "user", "content": note})
 
 
 def _copilot_bridge(profile: dict) -> bool:

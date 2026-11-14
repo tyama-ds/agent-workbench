@@ -334,7 +334,8 @@ async def test_compact_runtime_identity_preserves_values_in_actual_synthetic_req
     captured = []
 
     async def complete(profile, messages, tools, system, limits, **kwargs):
-        captured.append({'system': system, 'tools': copy.deepcopy(tools), 'limits': copy.deepcopy(limits)})
+        captured.append({'system': system, 'tools': copy.deepcopy(tools), 'limits': copy.deepcopy(limits),
+                         'note': profile.get('_live_note')})
         return reply('Synthetic response only.')
 
     engine.client.complete = complete
@@ -344,7 +345,10 @@ async def test_compact_runtime_identity_preserves_values_in_actual_synthetic_req
     raw_identity = captured[0]['system'].split('Verified runtime identity and user-selected scope:\n', 1)[1]
     identity = json.loads(raw_identity)
     assert identity['role'] == agent.role and identity['id'] == agent.id
-    assert identity['budget'] == budget_before
+    # The system prompt holds only static limits (cache-stable); live values
+    # travel in the per-request note appended after the history.
+    assert identity['budget'] == engine._budget_limits(run)
+    assert json.loads(captured[0]['note'].split('] ', 1)[1])['budget'] == budget_before
     for field in ('read_roots', 'write_roots', 'deny_roots'):
         assert identity[field] == config_before['paths'][field]
     assert json.loads(json.dumps(identity, ensure_ascii=False)) == identity

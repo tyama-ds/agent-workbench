@@ -70,7 +70,8 @@ def request_size(profile, messages, tools, system):
     converted = (_openai_messages(messages) if kind == 'openai' else
                  _anthropic_messages(messages) if kind == 'anthropic' else _local_messages(messages, system))
     body = encoded({'system': system, 'messages': converted, 'tools': definitions})
-    return len(body), len(body.encode('utf-8'))
+    note = profile.get('_live_note') or ''
+    return len(body) + len(note), len(body.encode('utf-8')) + len(note.encode('utf-8'))
 
 
 def budget_ratio(profile, chars, estimate, limits, *, output_tokens=None):

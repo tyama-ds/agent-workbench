@@ -82,9 +82,10 @@ async def test_anthropic_preserves_signatures_redacted_thinking_and_parallel_res
         second = await client.complete(profile, messages, TOOLS, 'policy', {})
     assert first.thinking == 'Inspecting' and second.text == 'Finished'
     assert requests[1]['messages'][1]['content'] == blocks
+    # The latest persisted block carries the prompt-cache breakpoint.
     assert requests[1]['messages'][2] == {'role': 'user', 'content': [
         {'type': 'tool_result', 'tool_use_id': 'a', 'content': 'A'},
-        {'type': 'tool_result', 'tool_use_id': 'b', 'content': 'B'}]}
+        {'type': 'tool_result', 'tool_use_id': 'b', 'content': 'B', 'cache_control': {'type': 'ephemeral'}}]}
 
 
 @pytest.mark.asyncio

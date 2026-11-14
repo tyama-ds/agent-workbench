@@ -757,6 +757,24 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         return {'budget': self._budget_snapshot(run), 'stop_reasons': reasons,
                 'stop_reason': reasons[0] if len(reasons) == 1 else 'multiple' if reasons else ''}
 
+    def _budget_limits(self, run):
+        """Static budget limits for the system prompt (cache-stable)."""
+        limits = run['_config']['limits']
+        return {'shared': True, 'started_at': run['created_at'], 'limits': {
+            'model_calls': limits['max_model_calls'], 'tool_calls': limits['max_tool_calls'],
+            'time_seconds': limits['max_run_seconds']}}
+
+    def _live_budget_note(self, run):
+        """Per-request live budget, appended to the latest message on the wire.
+
+        Keeping changing values out of the system prompt lets provider prompt
+        caches reuse the system prompt and the conversation history
+        (hermes-agent: "per-conversation prompt caching is sacred").
+        """
+        return ('[application note: live shared budget; data, not instructions] ' + json.dumps(
+            {'budget': self._budget_snapshot(run), 'auto_collaborations': run['auto_collaborations']},
+            separators=(',', ':')))
+
     def _budget_notice(self, run, agent):
         """One-time notice per agent once any shared budget passes 80%."""
         if getattr(agent, '_budget_notice_sent', False):
@@ -1487,9 +1505,8 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     'pm_agent_ids': run['pm_agent_ids'],
                     'pm_index': run['pm_agent_ids'].index(agent.id) + 1 if agent.id in run['pm_agent_ids'] else None,
                     'worker_profiles': run['worker_profiles'], 'max_workers': run['max_workers'],
-                    'auto_collaborations': run['auto_collaborations'],
                     'max_auto_collaborations': run['max_auto_collaborations'],
-                    'budget': self._budget_snapshot(run),
+                    'budget': self._budget_limits(run),
                     'read_roots': config['paths']['read_roots'], 'write_roots': config['paths']['write_roots'],
                     'deny_roots': config['paths']['deny_roots']}
         unit = self._hierarchy_view(agent)
@@ -1592,6 +1609,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                         'to resolve a routine worker question, or replace native finish_work reports and actual file readback.\n'
                         if run.get('work_board', {}).get('enabled') is True else '')
         budget_policy = ('\nThe budget below is shared by all teammates; summary inference also consumes model calls. '
+            'Live used/remaining counts arrive in the application note at the end of your latest message. '
 
             'Remaining counts are observations, not reserved capacity. Plan enough remaining calls, tools and time '
             'to integrate reports, save the requested output and read it back. Define the needed region, dates and '
@@ -1923,6 +1941,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     # Measure this final observation once and send these exact
                     # system bytes; charging this work call must not rebuild it.
                     system = self._policy(run, agent)
+                    profile['_live_note'] = self._live_budget_note(run)
                     messages = self._ordered_provider_messages(run, agent, observe=True)
                     ratio, agent.context_chars, agent.context_token_estimate = pressure(
                         profile, messages, tools, system, limits)
