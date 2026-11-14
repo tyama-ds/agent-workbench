@@ -236,7 +236,8 @@ async def test_slow_steady_stream_outlives_timeout_but_silence_does_not():
                     [], [], '', {'local': {'max_retries': 3, 'retry_backoff_seconds': 0}})
         finally:
             hold.set()
-    assert not caught.value.retryable and len(requests) == 1
+    # The streamed request is re-sent once after a timeout, then the error stands.
+    assert not caught.value.retryable and len(requests) == 2
 
 
 async def test_stream_size_limit_is_enforced_on_raw_bytes(monkeypatch):

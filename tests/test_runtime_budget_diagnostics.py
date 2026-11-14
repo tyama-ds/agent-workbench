@@ -428,9 +428,11 @@ async def test_http_timeout_is_typed_at_transport_and_never_replayed(monkeypatch
     with pytest.raises(ProviderTimeoutError, match='no automatic retry') as caught:
         await ProviderClient().complete({'kind': 'openai', 'model': 'fixture', 'api_key': 'synthetic',
             'request_timeout_seconds': 12, 'max_retries': 3}, [], [], '', {})
-    assert caught.value.retryable is False and len(sessions) == 1
-    # The request timeout bounds silence between bytes, not total generation.
-    assert sessions[0]['timeout'].total is None and sessions[0]['timeout'].sock_read == 12
+    # A streamed request is re-sent once after a timeout; never more.
+    assert caught.value.retryable is False and len(sessions) == 2
+    # The request timeout bounds silence between bytes (explicit asyncio
+    # deadlines in _post), not total generation.
+    assert sessions[0]['timeout'].total is None and sessions[0]['timeout'].sock_read is None
 
 
 async def test_summary_counts_against_same_budget_and_reserves_no_extra_calls(tmp_path):

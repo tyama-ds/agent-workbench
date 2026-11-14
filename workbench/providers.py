@@ -5,6 +5,7 @@ Ordinary prose is never interpreted as an executable tool command.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import email.utils
 import ipaddress
@@ -42,6 +43,14 @@ MAX_OUTPUT_TOKENS = 131072
 # Connecting is bounded separately; request_timeout_seconds is the maximum
 # silence between received bytes, not the total generation time.
 CONNECT_TIMEOUT_SECONDS = 15
+# A local server says nothing while it reads (prefills) a long prompt. A
+# streamed Local request may wait longer for its first byte: the request
+# timeout once more per ~32k estimated input tokens (4 bytes per token), up to
+# 30 minutes (after hermes-agent's local stale-stream scaling). Later silence
+# between chunks is still bounded by the request timeout.
+LOCAL_FIRST_BYTE_CAP_SECONDS = 1800
+LOCAL_PREFILL_TOKENS_PER_TIMEOUT = 32000
+DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:1234/v1"
 # Wire formats are told apart by the endpoint suffix _endpoint() always adds.
 _STREAM_FORMATS = (("/responses", "openai"), ("/messages", "anthropic"), ("/chat/completions", "local"))
 # Stream error codes that, like HTTP 429/5xx, are safe to re-send.
@@ -138,7 +147,17 @@ _STATUS_HINTS = {
 
 
 class ProviderTimeoutError(ProviderError):
-    """The provider HTTP deadline expired; never automatically replay it."""
+    """The provider HTTP deadline expired. Never retryable in the engine.
+
+    ``streamed`` is true only when the request asked for a stream and no JSON
+    (non-streamed) reply had started: closing such a request cancels generation
+    on llama.cpp, vLLM and the cloud APIs, so the provider re-sends it once.
+    A non-streamed request may still be generating and is never replayed.
+    """
+
+    def __init__(self, message: str, *, streamed: bool = False, **kwargs):
+        super().__init__(message, **kwargs)
+        self.streamed = streamed
 
 
 class ProviderOutputLimitError(ProviderError):
@@ -766,10 +785,40 @@ class _ChatStream:
         return result
 
 
-async def _read_event_stream(response, wire: str) -> dict:
-    """Parse text/event-stream incrementally into the non-streamed reply shape."""
+def first_byte_timeout(timeout: float, body_bytes: int, *, local: bool) -> float:
+    """Seconds to wait for the response headers and first body chunk.
+
+    Cloud requests and the non-streamed Copilot bridge wait ``timeout``. A
+    streamed Local request scales it by the estimated prompt size (prefill),
+    capped at LOCAL_FIRST_BYTE_CAP_SECONDS but never below ``timeout``.
+    """
+    if not local:
+        return timeout
+    estimated_tokens = max(0, body_bytes) / 4
+    scaled = timeout * (1 + estimated_tokens / LOCAL_PREFILL_TOKENS_PER_TIMEOUT)
+    return max(timeout, min(float(LOCAL_FIRST_BYTE_CAP_SECONDS), scaled))
+
+
+async def _timed_parts(content, first_deadline: float, idle: float):
+    """Yield body chunks: the first by ``first_deadline`` (loop time), each later
+    one within ``idle`` seconds of the previous. The total is size-bounded."""
+    size, first = 0, True
+    while True:
+        async with (asyncio.timeout_at(first_deadline) if first else asyncio.timeout(idle)):
+            part = await content.readany()
+        if not part:
+            return
+        first = False
+        size += len(part)
+        if size > MAX_RESPONSE_BYTES:
+            raise ProviderError("Provider response exceeded the size limit")
+        yield part
+
+
+async def _read_event_stream(parts, wire: str) -> dict:
+    """Parse text/event-stream chunks incrementally into the non-streamed reply shape."""
     state = {"openai": _ResponsesStream, "anthropic": _MessagesStream, "local": _ChatStream}[wire]()
-    buffer, size, event, data, done = b"", 0, None, [], False
+    buffer, event, data, done = b"", None, [], False
 
     def dispatch() -> bool:
         nonlocal event, data
@@ -785,10 +834,7 @@ async def _read_event_stream(response, wire: str) -> dict:
             raise _StreamProtocolError
         return state.feed(name, value)
 
-    async for part in response.content.iter_any():
-        size += len(part)
-        if size > MAX_RESPONSE_BYTES:
-            raise ProviderError("Provider response exceeded the size limit")
+    async for part in parts:
         buffer += part
         *lines, buffer = buffer.split(b"\n")
         for raw in lines:
@@ -848,7 +894,7 @@ class ProviderClient:
         timeout = number(settings, "request_timeout_seconds", 120, 0.01, 3600)
         if kind == "local":
             timeout = min(timeout, number(local, "request_timeout_seconds", 120, 0.01, 3600))
-        defaults = {"openai": "https://api.openai.com/v1", "anthropic": "https://api.anthropic.com/v1", "local": "http://127.0.0.1:1234/v1"}
+        defaults = {"openai": "https://api.openai.com/v1", "anthropic": "https://api.anthropic.com/v1", "local": DEFAULT_LOCAL_BASE_URL}
         suffix = {"openai": "/responses", "anthropic": "/messages", "local": "/chat/completions"}[kind]
         endpoint = _endpoint(profile.get("base_url") or defaults[kind], suffix, allow_local_network=kind == "local")
         request_gate = self.resource_gate
@@ -915,10 +961,17 @@ class ProviderClient:
     async def _exchange(self, *, kind: str, model: str, profile: dict, definitions: list[dict], endpoint: str,
                         payload: dict, headers: dict, timeout: float, proxy: str | None,
                         request_gate: ResourceGate, retry_config: dict, retries: int, backoff: float) -> ModelReply:
-        for attempt in range(retries + 1):
+        # A timed-out streamed request is re-sent once (see ProviderTimeoutError);
+        # that replay is a provider-level retry and does not use up `retries`.
+        # The Copilot bridge (and its JSON text mode) is never replayed.
+        replayable = not (_copilot_bridge(profile) or request_gate is self.copilot_resource_gate
+                          or copilot_json_enabled(profile, definitions))
+        attempt, replayed = 0, False
+        while True:
             try:
+                sent = attempt + 1 + replayed
                 if kind == "local":
-                    observation_phase('queue_wait', attempt=attempt + 1)
+                    observation_phase('queue_wait', attempt=sent)
                     async with request_gate.slot(retry_config):
                         observation_phase('admitted')
                         # This is the _post boundary, not an exact socket-start
@@ -926,7 +979,7 @@ class ProviderClient:
                         observation_phase('response_wait')
                         response = await self._post(endpoint, payload, headers, timeout, None)
                 else:
-                    observation_phase('response_wait', attempt=attempt + 1)
+                    observation_phase('response_wait', attempt=sent)
                     response = await self._post(endpoint, payload, headers, timeout, proxy)
                 observation_phase('received')
                 observation_phase('parse')
@@ -947,32 +1000,54 @@ class ProviderClient:
                             raise ProviderError('Copilot JSON mode cannot accept native tool calls; no tools were executed')
                     return copilot_json_reply(reply, definitions, finish_reason=response['choices'][0].get('finish_reason'))
                 return reply
-            except ProviderError as exc:
-                # Timeouts stay non-retryable (ProviderTimeoutError): the server
+            except ProviderTimeoutError as exc:
+                # Only a streamed request is replayed: closing it cancelled the
+                # generation, so nothing is left running. A non-streamed request
                 # may still be generating, and a replay would duplicate the work.
-                if not exc.retryable or attempt == retries:
+                if not (exc.streamed and replayable):
+                    raise
+                if replayed:
+                    raise ProviderTimeoutError("Provider request timed out again after one re-send; "
+                                               "no automatic retry", streamed=True) from None
+                replayed = True
+                observation_phase('error', error=exc)
+                observation_phase('retry_wait', retry_after_seconds=0)
+            except ProviderError as exc:
+                if not exc.retryable or attempt >= retries:
                     raise
                 observation_phase('error', error=exc)
                 delay = retry_delay(exc, attempt, backoff)
                 observation_phase('retry_wait', retry_after_seconds=delay)
                 await asyncio.sleep(delay)
-        raise ProviderError("Provider request did not finish")
+                attempt += 1
 
     async def _post(self, endpoint: str, payload: dict, headers: dict, timeout: float, proxy: str | None) -> dict:
         # No total deadline: a long generation that keeps sending bytes may
-        # continue (the engine enforces the run deadline). Silence longer than
-        # the request timeout, before or during the reply, still fails.
+        # continue (the engine enforces the run deadline). The response headers
+        # and first body chunk must arrive within the first-byte timeout (longer
+        # for a streamed Local prompt, which the server prefills silently); after
+        # that, silence longer than the request timeout fails.
         connect = min(float(CONNECT_TIMEOUT_SECONDS), timeout)
-        limits = aiohttp.ClientTimeout(total=None, connect=connect, sock_connect=connect, sock_read=timeout)
+        limits = aiohttp.ClientTimeout(total=None, connect=connect, sock_connect=connect, sock_read=None)
         path = urlsplit(endpoint).path
         wire = next((name for suffix, name in _STREAM_FORMATS if path.endswith(suffix)), None)
+        streamed = wire is not None and payload.get("stream") is True
         try:
+            body = json.dumps(payload).encode("utf-8")
+            # Only Local requests use /chat/completions; the Copilot bridge is not streamed.
+            first_wait = first_byte_timeout(timeout, len(body), local=streamed and wire == "local")
+            first_deadline = asyncio.get_running_loop().time() + first_wait
             async with aiohttp.ClientSession(trust_env=False, timeout=limits) as session:
-                async with session.post(endpoint, json=payload, headers=headers, proxy=proxy, allow_redirects=False) as response:
+                async with asyncio.timeout_at(first_deadline):
+                    response = await session.post(endpoint, data=body, headers=headers, proxy=proxy,
+                                                  allow_redirects=False)
+                async with response:
                     if response.status != 200:
                         message = f"Provider returned HTTP {response.status}; response body withheld"
                         try:
-                            kind = classify_error_body(response.status, await response.content.read(ERROR_BODY_PEEK_BYTES))
+                            async with asyncio.timeout(timeout):
+                                peek = await response.content.read(ERROR_BODY_PEEK_BYTES)
+                            kind = classify_error_body(response.status, peek)
                         except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError):
                             kind = ""
                         if kind == "quota":
@@ -985,23 +1060,21 @@ class ProviderClient:
                         raise ProviderError(message + (f"; {hint}" if hint else ""),
                                             status=response.status, retryable=response.status in RETRYABLE_STATUSES,
                                             retry_after=retry_after_seconds(response.headers))
-                    if wire is not None and response.content_type == "text/event-stream":
-                        return await _read_event_stream(response, wire)
-                    # Servers (and fixtures) that ignore "stream" answer with JSON.
-                    parts, size = [], 0
-                    async for part in response.content.iter_chunked(65536):
-                        size += len(part)
-                        if size > MAX_RESPONSE_BYTES:
-                            raise ProviderError("Provider response exceeded the size limit")
-                        parts.append(part)
-                    parsed = strict_json(b"".join(parts))
+                    async with contextlib.aclosing(_timed_parts(response.content, first_deadline, timeout)) as parts:
+                        if wire is not None and response.content_type == "text/event-stream":
+                            return await _read_event_stream(parts, wire)
+                        # Servers (and fixtures) that ignore "stream" answer with JSON.
+                        # Generation may be finished or still running server-side,
+                        # so a timeout here is never replayed.
+                        streamed = False
+                        parsed = strict_json(b"".join([part async for part in parts]))
                     if not isinstance(parsed, dict):
                         raise ValueError
                     return parsed
         except ProviderError:
             raise
         except asyncio.TimeoutError:
-            raise ProviderTimeoutError("Provider request timed out; no automatic retry") from None
+            raise ProviderTimeoutError("Provider request timed out; no automatic retry", streamed=streamed) from None
         except aiohttp.ClientError:
             raise ProviderError("Provider connection failed; check the endpoint and network settings",
                                 retryable=True) from None
