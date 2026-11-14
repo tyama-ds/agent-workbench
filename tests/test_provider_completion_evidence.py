@@ -235,9 +235,13 @@ async def test_truncated_second_call_arguments_reject_the_whole_batch(tmp_path, 
         try:
             run, agent = await start(engine, pm_profile=kind, max_workers=0)
             await settled(engine)
-            # No call from a batch with truncated arguments ever runs; the model
-            # is asked to re-issue it a bounded number of times, then the agent stops.
-            assert agent.status == 'error' and run['status'] == 'waiting' and len(requests) == 3
+            # Unterminated arguments are an output-limit cut-off: no call from the
+            # batch runs, the request is re-sent once with a larger limit, and the
+            # agent then stops on the existing output-limit path.
+            assert agent.status == 'error' and run['status'] == 'waiting' and len(requests) == 2
+            assert agent.stop_reason == 'provider_output_limit'
+            assert requests[1]['max_output_tokens' if kind == 'openai' else 'max_tokens'] > \
+                requests[0]['max_output_tokens' if kind == 'openai' else 'max_tokens']
             assert run['tool_calls'] == 0 and not list(work.iterdir())
             assert not agent.results and not agent.output_receipts
         finally:

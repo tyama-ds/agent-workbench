@@ -92,6 +92,51 @@ def retry_delay(exc: "ProviderError", attempt: int, backoff: float) -> float:
     return base * random.uniform(0.9, 1.1)
 
 
+class ProviderContextOverflowError(ProviderError):
+    """The provider rejected the request as larger than the model's context."""
+
+
+# Error-body classification (hermes-agent's error_classifier idea). Only these
+# fixed codes and phrases are looked for; the body itself is never logged,
+# returned or shown.
+_QUOTA_CODES = frozenset({"insufficient_quota", "billing_hard_limit_reached", "billing_not_active",
+                          "credit_balance_too_low", "quota_exceeded"})
+_OVERFLOW_CODES = frozenset({"context_length_exceeded", "string_above_max_length", "request_too_large"})
+_OVERFLOW_PHRASES = ("context length", "context_length", "maximum context", "context window", "prompt is too long",
+                     "too many tokens", "exceeds the context", "exceed context", "n_ctx", "input is too long",
+                     "maximum input length", "reduce the length")
+_QUOTA_PHRASES = ("insufficient_quota", "credit balance is too low", "exceeded your current quota", "billing")
+ERROR_BODY_PEEK_BYTES = 4096
+
+
+def classify_error_body(status: int, body: bytes) -> str:
+    """Return 'quota', 'context_overflow', or '' from a bounded error body."""
+    text = body[:ERROR_BODY_PEEK_BYTES].decode("utf-8", "replace").lower()
+    codes = set()
+    try:
+        value = json.loads(text)
+    except (ValueError, RecursionError):
+        value = None
+    if isinstance(value, dict):
+        error = value.get("error")
+        for item in (error if isinstance(error, dict) else {}, value):
+            for key in ("code", "type"):
+                if isinstance(item.get(key), str):
+                    codes.add(item[key])
+    if status in {402, 429} and (codes & _QUOTA_CODES or any(phrase in text for phrase in _QUOTA_PHRASES)):
+        return "quota"
+    if status in {400, 413, 422, 500} and (codes & _OVERFLOW_CODES or any(phrase in text for phrase in _OVERFLOW_PHRASES)):
+        return "context_overflow"
+    return ""
+
+
+_STATUS_HINTS = {
+    401: "authentication failed; check the API key",
+    403: "access denied; check the API key permissions or organization access",
+    404: "not found; check the model name and base URL",
+}
+
+
 class ProviderTimeoutError(ProviderError):
     """The provider HTTP deadline expired; never automatically replay it."""
 
@@ -170,6 +215,14 @@ def _native_call(call_id, name, arguments, seen: set[str]) -> dict:
     try:
         return {"id": call_id, "name": name, "arguments": _arguments(arguments)}
     except ProviderError:
+        if isinstance(arguments, str) and arguments.lstrip().startswith(("{", "[")) \
+                and not arguments.rstrip().endswith(("}", "]")):
+            # Unterminated JSON is a reply cut off by the output limit, even when
+            # a server or router reports finish_reason "tool_calls" instead of
+            # "length". Use the output-limit path (one larger retry, then the
+            # existing recovery) rather than asking the model to re-type it.
+            raise ProviderOutputLimitError("Tool call arguments were cut off by the output limit; "
+                                           "no tools were executed") from None
         return {"id": call_id, "name": name, "arguments": {},
                 "error": "Tool arguments were not one valid JSON object, so this tool was not executed. "
                          "Call it again with a single JSON object that matches the tool schema."}
@@ -867,7 +920,19 @@ class ProviderClient:
             async with aiohttp.ClientSession(trust_env=False, timeout=limits) as session:
                 async with session.post(endpoint, json=payload, headers=headers, proxy=proxy, allow_redirects=False) as response:
                     if response.status != 200:
-                        raise ProviderError(f"Provider returned HTTP {response.status}; response body withheld",
+                        message = f"Provider returned HTTP {response.status}; response body withheld"
+                        try:
+                            kind = classify_error_body(response.status, await response.content.read(ERROR_BODY_PEEK_BYTES))
+                        except (aiohttp.ClientError, asyncio.TimeoutError, UnicodeError):
+                            kind = ""
+                        if kind == "quota":
+                            raise ProviderError(message + "; the account quota or billing limit is exhausted, so this "
+                                                "is not retried. Add credit or switch the profile.", status=response.status)
+                        if kind == "context_overflow":
+                            raise ProviderContextOverflowError(message + "; the request exceeds the model context",
+                                                               status=response.status)
+                        hint = _STATUS_HINTS.get(response.status)
+                        raise ProviderError(message + (f"; {hint}" if hint else ""),
                                             status=response.status, retryable=response.status in RETRYABLE_STATUSES,
                                             retry_after=retry_after_seconds(response.headers))
                     if wire is not None and response.content_type == "text/event-stream":
