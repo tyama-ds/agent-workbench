@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .context import (MEMORY_POLICY, SUMMARY_POLICY, SummaryRejected, encoded, groups, parse_summary, plan_compaction,
-                      plan_excerpts, pressure, redacted_json, source_record)
+                      plan_excerpts, pressure, prune_tool_results, redacted_json, source_record)
 from .config import (Settings, ROOT, DEFAULT, number, text, validate_settings, effective_profiles,
                      effective_config, COPILOT_PROFILE_ID, SEARCH_KEY_UNSUPPORTED, ORCHESTRATION_DEFAULTS)
 from .copilot_bridge import CopilotBridgeManager
@@ -1788,6 +1788,16 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         for attempt in range(4):
             self._dependency_require(agent)
             ratio, agent.context_chars, agent.context_token_estimate = pressure(profile, agent.conversation, tools, system, limits)
+            if limits['auto_compact'] and ratio >= limits['context_trigger_percent'] / 100:
+                pruned, count = prune_tool_results(agent.conversation, limits)
+                if count:
+                    # Cheap first: shrink older large tool outputs without a model call.
+                    agent.conversation = pruned
+                    self.log(agent, 'notice', f'古い大きなツール結果 {count} 件を短い目印に置き換えました（モデル呼び出しなし）。'
+                                              '原本は read_context_history で読めます（保存上限あり）。')
+                    ratio, agent.context_chars, agent.context_token_estimate = pressure(profile, agent.conversation, tools, system, limits)
+                    if ratio < limits['context_trigger_percent'] / 100:
+                        return
             plan = plan_compaction(profile, agent.conversation, tools, system, limits) if attempt < 3 else None
             if plan is None:
                 if self._use_context_excerpts(run, agent, profile, tools, system, limits, 'summary_input_unavailable'):
