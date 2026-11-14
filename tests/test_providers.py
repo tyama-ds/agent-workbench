@@ -82,9 +82,10 @@ async def test_anthropic_preserves_signatures_redacted_thinking_and_parallel_res
         second = await client.complete(profile, messages, TOOLS, 'policy', {})
     assert first.thinking == 'Inspecting' and second.text == 'Finished'
     assert requests[1]['messages'][1]['content'] == blocks
+    # The latest persisted block carries the prompt-cache breakpoint.
     assert requests[1]['messages'][2] == {'role': 'user', 'content': [
         {'type': 'tool_result', 'tool_use_id': 'a', 'content': 'A'},
-        {'type': 'tool_result', 'tool_use_id': 'b', 'content': 'B'}]}
+        {'type': 'tool_result', 'tool_use_id': 'b', 'content': 'B', 'cache_control': {'type': 'ephemeral'}}]}
 
 
 @pytest.mark.asyncio
@@ -280,13 +281,14 @@ async def test_timeout_is_not_retried_and_output_limit_is_global_cap():
         try:
             await asyncio.wait_for(entered.wait(), 4)
             with pytest.raises(ProviderError, match='timed out'):
-                await asyncio.wait_for(pending, 8)
+                await asyncio.wait_for(pending, 14)
         finally:
             release.set()
             if not pending.done():
                 pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
-    assert len(requests) == 1 and requests[0]['max_tokens'] == 100
+    # A timed-out streamed request is re-sent once (closing it cancels generation).
+    assert len(requests) == 2 and [body['max_tokens'] for body in requests] == [100, 100]
 
 
 def test_thinking_unclosed_or_quoted_and_prose_never_creates_tools():

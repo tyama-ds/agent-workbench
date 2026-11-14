@@ -4,6 +4,33 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev50 — Prompt cache, local runtime and cheaper context (2026-11-14)
+
+Phase 5 of the hermes-agent comparison.
+
+- Prompt cache: the system prompt no longer contains live values. The identity
+  JSON keeps static budget limits; live used/remaining counts and the
+  automatic-collaboration count travel in a per-request note added on the wire
+  after the history (OpenAI: own user item; Anthropic: a text block after the
+  last user turn's blocks; Local: a separate user message after tool results,
+  or appended to a trailing user message so strict chat templates never see
+  two user turns). The note is never persisted and is part of every size
+  check. Anthropic requests mark the latest persisted block with
+  `cache_control`, caching tools, system prompt and history. Copilot JSON mode
+  keeps the note in its system text (it is not cached).
+- Local runtime: the wait for response headers and the first chunk scales with
+  the request size for Local streams (`max(t, min(1800, t*(1+tokens/32000)))`);
+  later gaps keep the idle timeout. A timed-out streamed request is re-sent once
+  (closing the stream stops generation); JSON replies and the Copilot bridge
+  never replay. When a Local profile has no context window, llama.cpp `/props`
+  or Ollama `/api/show` is probed once (loopback/LAN only, 3 s, 64 KB, no proxy)
+  and the result applies to that dispatch's measurement only.
+- Context: before a summary call, older tool outputs over 2,000 characters
+  (outside the recent groups; skill and history reads excluded) become a stub
+  with the record id, without inference; if that suffices, no summary call is
+  made. Summary markers keep the summarized human messages verbatim (newest
+  first, 4,000 characters) and name skills to reload.
+
 ## 0.1.1.dev49 — Guards adapted from hermes-agent (2026-11-14)
 
 Phase 4: small, schema-neutral guards modelled on NousResearch/hermes-agent

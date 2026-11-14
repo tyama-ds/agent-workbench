@@ -32,7 +32,7 @@ class CapturedDispatchClient:
     async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
         self.calls.append({'system': system, 'messages': copy.deepcopy(messages),
                           'pressure': pressure(profile, messages, tools, system, limits),
-                          'conversation_id': conversation_id})
+                          'note': profile.get('_live_note'), 'conversation_id': conversation_id})
         return self.responses.pop(0)
 
 
@@ -48,6 +48,8 @@ async def test_final_dispatch_measures_exact_dynamic_policy_at_hard_cap(tmp_path
         agent.pending.clear()
         engine._append_context(agent, {'role': 'user', 'content': agent.assignment}, human=True)
         profile, tools, limits = call_args(engine, run, agent)
+        # Dispatch measures the live budget note too (same counters as now).
+        profile['_live_note'] = engine._live_budget_note(run)
         text = 'Keep this exact human constraint: '
         candidate = [*agent.conversation, {'role': 'user', 'content': text}]
         _, chars, _ = pressure(profile, candidate, tools, engine._policy(run, agent), limits)
@@ -75,7 +77,7 @@ async def test_final_dispatch_measures_exact_dynamic_policy_at_hard_cap(tmp_path
         assert run['tool_calls'] == 0 and not agent.output_receipts
         if change == 'counter_digits':
             assert len(client.calls) == 1 and run['model_calls'] == 10 and agent.status == 'done'
-            observed = json.loads(client.calls[0]['system'].split('Verified runtime identity and user-selected scope:\n')[1])
+            observed = json.loads(client.calls[0]['note'].split('] ', 1)[1])
             assert observed['budget']['model_calls']['used'] == 9  # Explicit pre-dispatch observation.
             assert client.calls[0]['pressure'][1] == agent.context_chars == 50000
         else:
@@ -119,9 +121,9 @@ async def test_post_summary_dispatch_remeasures_updated_policy_and_reuses_its_ex
         work = client.calls[1]
         assert work['conversation_id'] == f'{run["id"]}/{agent.id}'
         assert (work['system'], work['pressure']) == work['measurement_at_dispatch']
-        identity = json.loads(work['system'].split('Verified runtime identity and user-selected scope:\n')[1])
-        assert identity['budget']['model_calls']['used'] == 1  # Summary charged; work not yet charged.
-        assert identity['budget']['observed_at'] == clock[0]
+        live = json.loads(work['note'].split('] ', 1)[1])
+        assert live['budget']['model_calls']['used'] == 1  # Summary charged; work not yet charged.
+        assert live['budget']['observed_at'] == clock[0]
         assert work['pressure'][0] <= 1 and work['pressure'][1] == agent.context_chars
         assert any(row.get('_summary') for row in work['messages'])
         assert work['messages'][0]['content'] == agent.assignment
@@ -205,7 +207,9 @@ async def test_live_budget_is_shared_original_config_and_readonly_in_both_projec
         assert budget['time'] == {'used_seconds': 17.5, 'limit_seconds': 60, 'remaining_seconds': 42.5}
         for member in (agent, child):
             identity = json.loads(engine._policy(run, member).split('Verified runtime identity and user-selected scope:\n')[1])
-            assert identity['budget'] == budget
+            assert identity['budget'] == {'shared': True, 'started_at': run['created_at'],
+                                          'limits': {'model_calls': 8, 'tool_calls': 12, 'time_seconds': 60}}
+        assert json.loads(engine._live_budget_note(run).split('] ', 1)[1])['budget'] == budget
         assert (await engine.execute_tool(run, agent, 'list_team', {}))['budget'] == budget
         assert engine.sequence == sequence and calls == (run['model_calls'], run['tool_calls'])
         full['budget']['model_calls']['used'] = 777
@@ -424,9 +428,11 @@ async def test_http_timeout_is_typed_at_transport_and_never_replayed(monkeypatch
     with pytest.raises(ProviderTimeoutError, match='no automatic retry') as caught:
         await ProviderClient().complete({'kind': 'openai', 'model': 'fixture', 'api_key': 'synthetic',
             'request_timeout_seconds': 12, 'max_retries': 3}, [], [], '', {})
-    assert caught.value.retryable is False and len(sessions) == 1
-    # The request timeout bounds silence between bytes, not total generation.
-    assert sessions[0]['timeout'].total is None and sessions[0]['timeout'].sock_read == 12
+    # A streamed request is re-sent once after a timeout; never more.
+    assert caught.value.retryable is False and len(sessions) == 2
+    # The request timeout bounds silence between bytes (explicit asyncio
+    # deadlines in _post), not total generation.
+    assert sessions[0]['timeout'].total is None and sessions[0]['timeout'].sock_read is None
 
 
 async def test_summary_counts_against_same_budget_and_reserves_no_extra_calls(tmp_path):

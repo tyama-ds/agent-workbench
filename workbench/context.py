@@ -70,7 +70,8 @@ def request_size(profile, messages, tools, system):
     converted = (_openai_messages(messages) if kind == 'openai' else
                  _anthropic_messages(messages) if kind == 'anthropic' else _local_messages(messages, system))
     body = encoded({'system': system, 'messages': converted, 'tools': definitions})
-    return len(body), len(body.encode('utf-8'))
+    note = profile.get('_live_note') or ''
+    return len(body) + len(note), len(body.encode('utf-8')) + len(note.encode('utf-8'))
 
 
 def budget_ratio(profile, chars, estimate, limits, *, output_tokens=None):
@@ -126,10 +127,72 @@ class CompactionPlan:
     before_chars: int
 
     def apply(self, conversation, summary):
-        marker = {'role': 'user', 'content': SUMMARY_NOTICE + encoded(summary), '_summary': True}
+        content = SUMMARY_NOTICE + encoded(summary) + summary_extras(conversation, self.indexes)
+        marker = {'role': 'user', 'content': content, '_summary': True}
         insertion = min(self.indexes)
         return [item for index, message in enumerate(conversation)
                 for item in ([marker] if index == insertion else []) + ([] if index in self.indexes else [message])]
+
+
+# Older human messages inside a summarized range keep their exact words next
+# to the summary (hermes-agent keeps user turns verbatim); newest first.
+HUMAN_VERBATIM_CHARS = 4000
+HUMAN_VERBATIM_EACH = 2000
+
+
+def summary_extras(conversation, indexes):
+    """Deterministic additions to a summary marker; empty when nothing applies."""
+    removed = [conversation[i] for i in sorted(indexes)]
+    humans, used = [], 0
+    for message in reversed(removed):
+        if message.get('_human') and isinstance(message.get('content'), str) and message['content']:
+            text = message['content'][:HUMAN_VERBATIM_EACH]
+            if used + len(text) > HUMAN_VERBATIM_CHARS:
+                break
+            humans.append({'record_id': message.get('_record_id'), 'text': text,
+                           'truncated': len(message['content']) > len(text)})
+            used += len(text)
+    skills = sorted({call['arguments'].get('skill_id') for message in removed if message.get('role') == 'assistant'
+                     for call in message.get('tool_calls') or [] if call.get('name') == 'read_skill'
+                     and isinstance(call.get('arguments'), dict) and isinstance(call['arguments'].get('skill_id'), str)})
+    extras = ''
+    if humans:
+        extras += ('\nHuman messages from the summarized part, verbatim (newest first). They keep their original '
+                   'standing as human instructions; the latest human message still takes precedence: ' + encoded(humans))
+    if skills:
+        extras += ('\nSkills whose instructions were in the summarized part and are no longer in context; '
+                   'call read_skill again before relying on them: ' + encoded(skills))
+    return extras
+
+
+# Before any summary call, older large tool outputs are replaced by a short
+# stub without inference (hermes-agent's _prune_old_tool_results).
+PRUNE_MIN_CHARS = 2000
+PRUNE_KEEP_TOOLS = frozenset({'read_skill', 'read_context_history'})
+
+
+def prune_tool_results(messages, limits):
+    """Return (messages, count) with older large tool outputs stubbed.
+
+    The recent ``context_recent_groups`` groups, skill text and history reads
+    stay intact. Tool-call pairing is unchanged; only the content shrinks.
+    """
+    blocks = groups(messages)
+    recent = {index for block in blocks[-limits['context_recent_groups']:] for index in block}
+    result, count = [], 0
+    for index, message in enumerate(messages):
+        content = message.get('content')
+        if (index not in recent and message.get('role') == 'tool' and not message.get('_pruned')
+                and message.get('name') not in PRUNE_KEEP_TOOLS
+                and isinstance(content, str) and len(content) > PRUNE_MIN_CHARS):
+            stub = {'pruned_for_context': True, 'record_id': message.get('_record_id'), 'original_chars': len(content),
+                    'note': 'Older tool output removed to save context. If still needed, page the retained original '
+                            'with read_context_history(record_ids=[record_id]); it may have been evicted.'}
+            result.append({**message, 'content': encoded(stub), '_pruned': True})
+            count += 1
+        else:
+            result.append(message)
+    return result, count
 
 
 @dataclass

@@ -80,12 +80,18 @@ async def test_huge_tool_group_is_replaced_whole_without_summarizer_call(tmp_pat
         await settled(engine)
         assert agent.status == 'done', agent.last_error
         assert run['model_calls'] == len(client.calls) == 1
-        assert agent.compactions == agent.fallback_compactions == 1
         groups(client.calls[0])
-        assert not any(row.get('tool_calls') or row['role'] == 'tool' for row in client.calls[0])
         assert list(agent.original_history)[:len(before)] == list(before)
-        assert 'private replay' not in next(row['content'] for row in client.calls[0] if row.get('_fallback'))
-        if not recent:
+        if recent:
+            # The huge group is still in the recent window: replaced whole by excerpts.
+            assert agent.compactions == agent.fallback_compactions == 1
+            assert not any(row.get('tool_calls') or row['role'] == 'tool' for row in client.calls[0])
+            assert 'private replay' not in next(row['content'] for row in client.calls[0] if row.get('_fallback'))
+        else:
+            # Older huge outputs are stubbed first without inference; pairing stays.
+            assert agent.compactions == agent.fallback_compactions == 0
+            stubs = [json.loads(row['content']) for row in client.calls[0] if row['role'] == 'tool']
+            assert len(stubs) == 2 and all(stub['pruned_for_context'] and stub['original_chars'] > 70000 for stub in stubs)
             assert all(any(row.get('content') == f'Recent note {n}' for row in client.calls[0]) for n in range(2, 5))
     finally:
         await engine.close()
