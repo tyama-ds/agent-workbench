@@ -871,6 +871,15 @@ class ProviderClient:
         # Its configured limit admits HTTP requests, not additional browser windows.
         self.copilot_resource_gate = copilot_gate if copilot_gate is not None else ResourceGate()
 
+    async def local_context_window(self, profile: dict, limits: dict) -> int | None:
+        """Probe a Local server's context window (see local_probe); never raises.
+
+        A method of the real HTTP client, so engines running an injected or
+        synthetic client never contact the configured URL directly.
+        """
+        from .local_probe import local_context_window
+        return await local_context_window(profile, limits)
+
     def copilot_resource_snapshot(self) -> dict:
         return self.copilot_resource_gate.snapshot()
 

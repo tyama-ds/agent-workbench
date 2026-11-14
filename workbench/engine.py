@@ -38,7 +38,6 @@ from .ordered_engine import OrderedCollaborationMixin, ORDERED_NAMES
 from .ordered_reference import ReferenceCatalog, OrderedReferenceError
 from .coordination_view import coordination_projection, projection_summary
 from .provider_monitor import complete_observed, provider_display
-from .local_probe import local_context_window
 from .ordered_audit import (REFERENCE_AUDIT_SCHEMA, ReferenceAuditError, audit_event,
     reference_mode, report_proof, validate_reference_audit, current_reference_report_approval, completion_evidence)
 from .formation import AdaptiveTeamMixin, FORMATION_TOOLS, FORMATION_NAMES, FormationError
@@ -1942,8 +1941,11 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                             self._append_context(agent, {'role': 'user', 'content': WRAP_UP_NOTICE}, human=False)
                     # Phase 5: a Local profile without a context window uses the
                     # server's (cached probe), on this dispatch copy only.
-                    if profile.get('kind') == 'local' and not profile.get('context_window_tokens'):
-                        if window := await local_context_window(profile, limits):
+                    # Asked through the provider client, so an injected client
+                    # without this capability never triggers direct HTTP.
+                    probe_window = getattr(self.client, 'local_context_window', None)
+                    if probe_window and profile.get('kind') == 'local' and not profile.get('context_window_tokens'):
+                        if window := await probe_window(profile, limits):
                             profile['context_window_tokens'] = window
                     call_limits = {**limits, 'local': run['_config']['local']}
                     await self._ensure_context(run, agent, profile, tools, call_limits)

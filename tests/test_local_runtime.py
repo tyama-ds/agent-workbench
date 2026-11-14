@@ -296,14 +296,14 @@ class ProfileCapture:
         return reply('Done')
 
 
-async def test_engine_applies_probed_window_to_the_dispatch_copy_only(tmp_path, monkeypatch):
+async def test_engine_applies_probed_window_to_the_dispatch_copy_only(tmp_path):
     seen = []
 
     async def probed(profile, limits):
         seen.append(profile.get('context_window_tokens'))
         return 50000
-    monkeypatch.setattr('workbench.engine.local_context_window', probed)
     client = ProfileCapture()
+    client.local_context_window = probed
     engine, _ = configured(tmp_path, client)
     engine.kick = lambda agent: None
     try:
@@ -314,5 +314,20 @@ async def test_engine_applies_probed_window_to_the_dispatch_copy_only(tmp_path, 
         configured_profile = next(p for p in run['_config']['providers'] if p['id'] == agent.profile_id)
         assert not configured_profile.get('context_window_tokens')
         assert not any(p.get('context_window_tokens') for p in engine.settings.value['providers'])
+    finally:
+        await engine.close()
+
+
+async def test_injected_client_without_probe_never_triggers_direct_http(tmp_path, monkeypatch):
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('direct probe must not run for an injected client')
+    monkeypatch.setattr('workbench.local_probe.probe_context_window', forbidden)
+    client = ProfileCapture()
+    engine, _ = configured(tmp_path, client)
+    engine.kick = lambda agent: None
+    try:
+        run, agent = await start(engine, delegation_level=0)
+        await engine._agent_loop(agent)
+        assert client.profiles and not client.profiles[0].get('context_window_tokens')
     finally:
         await engine.close()
