@@ -4,6 +4,35 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev49 — Guards adapted from hermes-agent (2026-11-14)
+
+Phase 4: small, schema-neutral guards modelled on NousResearch/hermes-agent
+(`agent/error_classifier.py`, `tool_guardrails.py`, `turn_empty_response.py`,
+`turn_tool_validation.py`, `turn_finalizer.py`, `scripts/ci/prompt_surface.py`).
+
+- Provider error bodies are classified from at most 4 KB, by fixed error codes
+  and phrases only; the body itself is never logged, returned or shown. Quota
+  or billing exhaustion (402/429) is not retried and says so; a context-length
+  rejection raises `ProviderContextOverflowError`, which shortens the context
+  once with deterministic excerpts (no model call) and re-sends; 401/403/404
+  carry a key / model / URL hint.
+- An empty or thinking-only reply is nudged once instead of ending the turn.
+- Unterminated tool-call arguments (`{...` without a closing brace) are treated
+  as an output-limit cut-off, even when the server reports `tool_calls`: no call
+  from the batch runs, one larger retry, then the existing recovery.
+- The same tool with the same arguments and the same result three times in a
+  row adds a notice to the result; five times stops the turn with a message.
+  Waiting and team-status tools are exempt.
+- Each agent gets one notice in a tool result once any shared budget (model
+  calls, tool calls, time) passes 80%.
+- With a budget of at least 20 model calls, the last call per PM is reserved:
+  workers stop at the reserve, and a PM with workers is told to write its final
+  report without tools on that last call.
+- `tests/test_prompt_surface.py` snapshots the PM and worker tool schemas and
+  system prompts (run-specific values masked) so any change to what the model
+  receives is a reviewable diff.
+- Tool schemas and system prompts are unchanged.
+
 ## 0.1.1.dev48 — Long runs keep saving and survive outages (2026-11-13)
 
 Phase 3 of the agent-persistence work: robustness for long, multi-agent runs.

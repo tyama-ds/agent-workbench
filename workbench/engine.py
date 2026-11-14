@@ -25,7 +25,8 @@ from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
 from .hierarchy import AgentHierarchyMixin, UnitChanged
 from .questions import QuestionFallbackMixin
-from .providers import ProviderClient, ProviderError, ProviderOutputLimitError, ProviderTimeoutError
+from .providers import (ProviderClient, ProviderContextOverflowError, ProviderError, ProviderOutputLimitError,
+                        ProviderTimeoutError)
 from .python_runner import execute_python
 from .selenium_runner import execute_selenium
 from .resources import ResourceGate
@@ -75,6 +76,23 @@ def schema(name, description, properties=None, required=()):
 
 STRING = {'type': 'string'}
 CONTINUATION_NUDGES = 1
+EMPTY_REPLY_NUDGE = ('[application notice] Your last reply was empty: no text and no tool call. Continue the task '
+                     'with the next tool call, or give your result (workers: finish_work).')
+# Same tool, same arguments, same result in a row: notice at the first count,
+# stop the turn at the second (after hermes-agent's tool_guardrails).
+REPEAT_NOTICE_AT, REPEAT_HALT_AT = 3, 5
+REPEAT_EXEMPT_TOOLS = frozenset({'wait_for_workers', 'wait_for_message', 'list_team', 'read_work_board'})
+REPEAT_NOTICE = ('This exact call (same tool, arguments and result) has now run {count} times in a row. '
+                 'Do not repeat it: use the result you have, change the approach, or report what blocks you.')
+BUDGET_NOTICE_RATIO = 0.8
+BUDGET_NOTICE = ('About {percent}% of the shared {what} budget is used. Prioritize finishing: integrate verified '
+                 'results and report; avoid new broad exploration.')
+# A PM keeps the last model call of the shared budget for a tool-free final
+# report (hermes-agent's grace call). Only for realistic budgets.
+WRAP_UP_MIN_BUDGET = 20
+WRAP_UP_NOTICE = ('[application notice] Only one model call remains in the shared budget. Do not call tools: '
+                  'write the final report now as plain text from the verified results, and list anything '
+                  'unfinished or unverified.')
 # Waits before re-sending a model call after the provider's own retries were
 # exhausted by a transient failure (seconds; one entry per extra attempt).
 TRANSIENT_OUTAGE_DELAYS = (30, 90)
@@ -738,6 +756,20 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                           if self.agents[ident].status == 'error' and self.agents[ident].stop_reason})
         return {'budget': self._budget_snapshot(run), 'stop_reasons': reasons,
                 'stop_reason': reasons[0] if len(reasons) == 1 else 'multiple' if reasons else ''}
+
+    def _budget_notice(self, run, agent):
+        """One-time notice per agent once any shared budget passes 80%."""
+        if getattr(agent, '_budget_notice_sent', False):
+            return ''
+        limits = run['_config']['limits']
+        what, ratio = max((('model call', run['model_calls'] / limits['max_model_calls']),
+                           ('tool call', run['tool_calls'] / limits['max_tool_calls']),
+                           ('time', (time.time() - run['created_at']) / limits['max_run_seconds'])),
+                          key=lambda item: item[1])
+        if ratio < BUDGET_NOTICE_RATIO:
+            return ''
+        agent._budget_notice_sent = True
+        return BUDGET_NOTICE.format(percent=min(100, int(ratio * 100)), what=what)
 
     def _check_run_budget(self, run, *, tools=False):
         limits = run['_config']['limits']
@@ -1855,7 +1887,10 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 ordered_report_sent = False
                 protocol_repairs = 0
                 continuation_nudges = 0
+                empty_nudges = 0
+                overflow_retried = False
                 invalid_batches = 0
+                repeat_key, repeat_count = None, 0
                 turn_tool_calls = 0
                 turn_revision = agent.result_revision
                 agent._turn_revision = turn_revision
@@ -1866,6 +1901,16 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     profile['api_key'] = self.settings.key(profile)
                     self._redaction.remember([*self._secret_values(), profile['api_key']])
                     tools = self._model_tools(run, agent)
+                    if limits['max_model_calls'] >= WRAP_UP_MIN_BUDGET and not self._ordered_for(run, agent):
+                        remaining_calls = limits['max_model_calls'] - run['model_calls']
+                        if agent.parent_id and remaining_calls <= len(run['pm_agent_ids']):
+                            # The last calls are kept for each PM's final report.
+                            raise RuntimeBudgetError('model_limit')
+                        if (not agent.parent_id and remaining_calls == 1 and self._owned_workers(run, agent)
+                                and not getattr(agent, '_wrap_up_notified', False)):
+                            agent._wrap_up_notified = True
+                            self.log(agent, 'notice', '共有予算のモデル呼び出しが残り1回です。最終報告をまとめるよう指示しました。')
+                            self._append_context(agent, {'role': 'user', 'content': WRAP_UP_NOTICE}, human=False)
                     call_limits = {**limits, 'local': run['_config']['local']}
                     await self._ensure_context(run, agent, profile, tools, call_limits)
                     if agent.closing or self.closed:
@@ -1890,12 +1935,23 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     run['model_calls'] += 1
                     self.event(run['id'], agent.id, 'inference', f'{agent.name}: 推論を待機・実行中')
                     self._ordered_capture_dispatch(agent)
+                    redispatch = False
                     for outage in range(len(TRANSIENT_OUTAGE_DELAYS) + 1):
                         try:
                             async with self._run_deadline(run):
                                 self._formation_before_dispatch(run, agent, messages, system)
                                 reply = await complete_observed(agent, self.client, profile, messages, tools, system, call_limits,
                                                                    conversation_id=f'{run["id"]}/{agent.id}')
+                            break
+                        except ProviderContextOverflowError:
+                            # The provider counted more tokens than our estimate.
+                            # Shorten the context once (no model call) and re-send.
+                            forced = {**limits, 'max_context_chars': max(4000, int(agent.context_chars * 0.6))}
+                            if (overflow_retried or self._ordered_for(run, agent) or agent.closing
+                                    or not self._use_context_excerpts(run, agent, profile, tools, system, forced,
+                                                                      'provider_context_overflow')):
+                                raise
+                            overflow_retried = redispatch = True
                             break
                         except ProviderError as exc:
                             # The provider already retried this request. A longer
@@ -1916,8 +1972,8 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                             self._dependency_require(agent)
                     if agent.closing:
                         break
-                    if agent.closing:
-                        break
+                    if redispatch:
+                        continue
                     self._dependency_require(agent)
                     self.log(agent, 'assistant', reply.text, reply.thinking)
                     self._append_context(agent, {'role': 'assistant', 'content': reply.text,
@@ -1937,6 +1993,14 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                                        'submit_work_stepを実ツールとして呼び、手番通知がなければwait_for_messageを呼んでください。')
                             self.log(agent, 'notice', message)
                             self._append_context(agent, {'role': 'user', 'content': message}, human=False)
+                            continue
+                        if (not reply.text.strip() and empty_nudges < 1
+                                and run['model_calls'] + 1 < limits['max_model_calls']):
+                            # Empty (or thinking-only) reply: ask once to continue
+                            # instead of treating silence as a completed turn.
+                            empty_nudges += 1
+                            self.log(agent, 'notice', EMPTY_REPLY_NUDGE)
+                            self._append_context(agent, {'role': 'user', 'content': EMPTY_REPLY_NUDGE}, human=False)
                             continue
                         issue = self._delegation_issue(run, agent, finishing=True)
                         if (not issue and agent.parent_id and turn_tool_calls
@@ -1982,6 +2046,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     stop = False
                     exhausted = None
                     unexpected_error = None
+                    repeat_halt = False
                     for call in reply.tool_calls:
                         review_evidence = None
                         if agent.closing:
@@ -2040,6 +2105,18 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                             if not isinstance(result, dict):
                                 raise TypeError('Tool result must be an object')
                             result, review_evidence = self._formation_native_result(run, agent, name, args, result, call)
+                            if name not in REPEAT_EXEMPT_TOOLS:
+                                key = (name, json.dumps(args, sort_keys=True, ensure_ascii=False, default=str),
+                                       json.dumps(result, sort_keys=True, ensure_ascii=False, default=str))
+                                repeat_count = repeat_count + 1 if key == repeat_key else 1
+                                repeat_key = key
+                                if repeat_count >= REPEAT_NOTICE_AT:
+                                    result = {**result, 'repeat_notice': REPEAT_NOTICE.format(count=repeat_count)}
+                                if repeat_count >= REPEAT_HALT_AT:
+                                    repeat_halt = stop = True
+                            budget_notice = self._budget_notice(run, agent)
+                            if budget_notice:
+                                result = {**result, 'budget_notice': budget_notice}
                             encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
                             finished = result.get('ok') is not False and name in {'finish_work', 'ask_user'}
                             if name == 'submit_work_step' and result.get('ok') is True:
@@ -2093,6 +2170,9 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                             summary = args.get('summary', summary)
                     if exhausted:
                         raise exhausted
+                    if repeat_halt:
+                        raise ValueError(f'同じツール呼び出し（同じ引数・同じ結果）が{REPEAT_HALT_AT}回続いたため、このターンを停止しました。'
+                                         '指示を見直してから、メッセージで再開してください')
                     if unexpected_error is not None:
                         raise RuntimeError('ツール処理で予期しないエラーが発生したため、このターンを停止しました。'
                                            '処理の完了は確認できません。保存記録とファイルの現状を確認し、追加指示を送ってください。'
