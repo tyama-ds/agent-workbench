@@ -63,7 +63,7 @@ def test_resource_summary_distinguishes_slots_from_workers_and_gpu_admission():
 console.log(JSON.stringify({empty:resourceLabel({}),state:resourceLabel({active:1,queued:2,gpu_readings:[{index:0,used_mb:7168,utilization_percent:35}]})}));
 """)
     assert result["empty"] == "リソース情報なし"
-    assert result["state"] == "Local 実行 1 · 待機 2 · VRAM 7168 MB · GPU 35%"
+    assert result["state"] == "ローカルモデル 実行中 1 · 待ち 2 · VRAM 7168 MB · GPU 35%"
     assert "強制的に制限する機能ではありません" in HTML
     assert 'id="maxWorkers" type="number" min="0"' in HTML
 

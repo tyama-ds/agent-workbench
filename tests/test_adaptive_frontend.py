@@ -115,7 +115,7 @@ assert.equal(requests.length,2);assert($('adaptiveTeam').checked);
 def test_reviewer_has_distinct_root_display_and_is_not_selected_as_pm():
     display_check(r'''
 const {run,pm,reviewer}=adaptiveFixture();const node=ui.networkNodes.get(reviewer.id);
-assert.equal(node.button.dataset.networkRole,'reviewer');assert.equal(node.monogram.textContent,'R');assert.equal(node.role.textContent,'REVIEWER');
+assert.equal(node.button.dataset.networkRole,'reviewer');assert.equal(node.monogram.textContent,'R');assert.equal(node.role.textContent,'レビュー');
 assert.match(node.button.getAttribute('aria-label'),/独立レビュワー/);assert.equal(agentHierarchy(reviewer),null);
 assert.match(agentHierarchyLabel(reviewer),/作成者とは別の系統/);assert.equal(agentRoleLabel(reviewer),'独立レビュワー');
 node.button.listeners.pointerenter();assert.match($('networkPreviewRole').textContent,/独立レビュワー/);assert.doesNotMatch($('networkPreviewRole').textContent,/^PM/);
@@ -185,7 +185,7 @@ assert(details.open);assert.equal(content.scrollTop,17);assert.equal($('messageI
 
 def test_archive_and_disconnect_label_saved_evidence_without_restarting_review():
     display_check(r'''
-const {run,reviewer}=adaptiveFixture();setConnection(false,'offline');assert.match($('formationSummary').textContent,/最後に取得した状態/);
+const {run,reviewer}=adaptiveFixture();setConnection(false,'offline');assert.match($('formationSummary').textContent,/最後に取得した内容/);
 run.archived=true;run.read_only=true;reviewer.archived=true;renderRun();assert.match($('formationSummary').textContent,/保存時点/);
 assert.match(agentHierarchyLabel(reviewer),/保存時点/);assert.equal(run.formation.phase,'reviewing');assert.equal(requests.length,0);
 ''')

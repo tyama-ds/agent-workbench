@@ -40,6 +40,10 @@ Phase 6 of the hermes-agent comparison (files and operations).
   can itself be undone. Archived runs keep no restore points.
 - The cockpit shows a stop button for workers, a read-only badge and a
   restore button on restorable receipts.
+- Plain labels: the English eyebrow headings and vague secondary labels
+  (e.g. TEAM OPERATIONS / 協働の進行, MISSION NETWORK, AGENT INSPECTOR, CREW,
+  LEAD · D1, CTX/TURNS, 再委任: 可能との表示) are replaced with short Japanese
+  labels; see the table in `docs/GUI_REDESIGN.md`.
 
 ## 0.1.1.dev50 — Prompt cache, local runtime and cheaper context (2026-11-14)
 

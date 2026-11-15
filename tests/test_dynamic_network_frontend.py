@@ -85,7 +85,7 @@ node.listeners.pointerleave({relatedTarget:null});ui.networkNodes.get('agent-a')
 assert.equal($('networkPreviewTitle').textContent,'Worker B');assert.equal(ui.selectedAgent,selected);assert.equal(requests.length,0);
 ui.state.agents=ui.state.agents.map(agent=>agent.id==='agent-b'?{...agent,name:'Fresh worker name',assignment:'Fresh assignment',status:'working',status_reason:'working',last_error:'Exact error record',activity:{latest_log:{at:3,text:'Fresh observed activity'},pending_count:2,result_count:4,output_receipt_count:1}}:agent);
 renderRun();assert.equal($('networkPreviewTitle').textContent,'Fresh worker name');assert.equal($('networkPreviewAssignment').textContent,'Fresh assignment');
-assert.match($('networkPreviewLatest').textContent,/Fresh observed activity/);assert.match($('networkPreviewCounts').textContent,/待機入力 2 · 結果 4 · 保存記録 1/);
+assert.match($('networkPreviewLatest').textContent,/Fresh observed activity/);assert.match($('networkPreviewCounts').textContent,/未処理の入力 2 · 結果 4 · 保存記録 1/);
 assert.equal($('networkPreviewError').textContent,'Exact error record');assert(!$('networkPreviewError').hidden);
 assert.equal(ui.selectedAgent,selected);assert.equal(requests.length,0);assert.equal(networkViewState().pinnedAgent,'agent-b');
 assert(!JSON.stringify([...ui.networkViews]).includes('Fresh assignment'));node.listeners.click({detail:1});assert.equal(networkViewState().pinnedAgent,null);assert($('networkPreview').hidden);
