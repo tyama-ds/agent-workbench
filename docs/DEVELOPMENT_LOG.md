@@ -4,6 +4,60 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev53 — Mandatory plan and application-run turns (2026-11-15)
+
+Phase 8. Goal: a request such as 「5人でしりとりを10回」 runs to the end on a real
+machine, with the application (not a model) granting and checking each move.
+
+- `plan_work` is mandatory for every root PM in a non-adaptive run. Until a
+  plan is accepted the PM is offered only `plan_work`, `ask_user` and read-only
+  tools, and every other tool is refused. Shapes: `solo` (PM works alone;
+  worker tools removed), `parallel` / `sequence` (two or more assignments with
+  key, role, goal, deliverable, acceptance; a single assignment, a goal equal
+  to the request, placeholders, unknown or cyclic `depends_on` are rejected),
+  and `turns`. A PM that answers in prose before planning is asked for the
+  plan (twice at most). A しりとり request must use `turns`.
+- `turns{participants, rounds, rule, topic, first_word?, save_as?, profile_id?}`:
+  the application validates capacity (worker cap, turn and model budgets),
+  creates the participants itself (`参加者1..N`), and runs the game
+  (`workbench/turns.py`, `workbench/turn_engine.py`). The legacy
+  `start_ordered_work` path and its `participant_key` / `initial_wait`
+  arguments are not offered in plan mode, so they no longer clash with
+  `depends_on`.
+- Each participant is offered only `submit_turn` and gets a short system
+  prompt without the original request. One turn = one move. `shiritori`
+  checks one hiragana/katakana word, the link to the previous word (long mark
+  skipped, small kana as large), no ん ending and no repeats. A rejected move
+  returns the reason; three in a row record a pass. A plain-text reply is
+  checked the same way. A participant that errors or is stopped is passed, so
+  the chain never waits; a whole round of passes ends the game.
+- The PM waits without model calls while turns run and cannot write files or
+  moves. When all turns finish, the application optionally saves the record
+  (`save_as`; xlsx/csv/md/txt, never overwriting) and notifies the PM, who
+  reports with `finish_work`; the result ends with the application's counts.
+  `export_turn_history` saves the same record on request. Turns spend no
+  automatic-collaboration budget and need no worker reports or reviews.
+- Also fixed: a probed Local context window is used only when the bare
+  request fits with a 2 bytes-per-token allowance (a server reporting 16k–32k
+  no longer stops the PM before its first call); an ordinary rate-limit body
+  that mentions a billing URL is no longer treated as quota exhaustion; a new
+  workbook's automatic empty `Sheet` is removed when other sheets are
+  requested; a worker waiting for approval counts as progressing for
+  `wait_for_workers`.
+- Tests and scripted fixtures run without the plan gate unless marked `plan`
+  (`tests/conftest.py`, `tools/*fixture.py`).
+- After the first real-machine runs (gpt-5.4-mini): a sent-back move now lists
+  the words tried in this turn, the used words starting with the required
+  kana, and every word refused for ending in ん (kept for the whole game and
+  shown in each later turn message). A participant gets four attempts, the
+  last with an explicit prompt, before a pass. After two passes in a row the
+  next participant restarts with any unused word (recorded as 受理（再開）), so
+  one dead-end kana cannot end the game.
+- The new-task worker cap starts at the saved cap instead of the HTML default
+  3, and a request naming more people than the cap (「5人」) shows a
+  non-blocking note before the run starts. `save_as` defaults to the example
+  name `turn_history.xlsx` in the tool description.
+
 ## 0.1.1.dev52 — Approvals, team memo, past-work search and fallback models (2026-11-15)
 
 Phase 7 of the hermes-agent comparison, with the design choices made by the

@@ -906,6 +906,10 @@ class ToolExecutor:
                 if isinstance(cell, MergedCell):
                     raise HarnessError("Cannot write to a non-anchor merged cell; explicitly target the merged range's top-left cell")
                 cell.value = value
+            if (fresh and "Sheet" in workbook.sheetnames and len(workbook.sheetnames) > 1 and "Sheet" not in sheets
+                    and all(item["sheet"] != "Sheet" for item in cells)):
+                # A new workbook's automatic empty sheet is not part of the request.
+                workbook.remove(workbook["Sheet"])
             return self._save(workbook, args, ".xlsx")
         finally:
             workbook.close()

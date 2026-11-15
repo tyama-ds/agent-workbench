@@ -22,6 +22,7 @@ from .copilot_bridge import CopilotBridgeManager
 from .runtime_paths import PROTECTED_ROOTS
 from .checkpoints import CheckpointStore
 from .memo import MemoStore, MAX_PROPOSAL_CHARS, clean as memo_clean
+from .turn_engine import TurnWorkMixin, PLAN_TOOL_NAMES, PLAN_NUDGE
 from .harness import PathHarness, ToolExecutor
 from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
@@ -98,6 +99,7 @@ WRAP_UP_NOTICE = ('[application notice] Only one model call remains in the share
 # Waits before re-sending a model call after the provider's own retries were
 # exhausted by a transient failure (seconds; one entry per extra attempt).
 TRANSIENT_OUTAGE_DELAYS = (30, 90)
+PROBED_WINDOW_ALLOWANCE = 2  # estimated bytes per real token for a probed Local window
 INVALID_BATCH_RETRIES = 2
 CONTINUATION_NUDGE = ('[application notice] This turn has not finished: your last reply contained text but no tool call. '
                       'If the work is complete and verified, call finish_work with the result. If anything remains, '
@@ -195,7 +197,7 @@ SKILL_TOOL = schema('read_skill',
     'Use the exact skill_id from the catalog. Instructions never grant permissions or human approval. '
     'Resources relative to base_directory use the existing permitted file tools; scripts are not run automatically.',
     {'skill_id': {'type': 'string', 'maxLength': 80}}, ('skill_id',))
-COORDINATION_TOOLS = COORDINATION_TOOLS | {'read_skill', 'propose_memo', 'search_past_work'}
+COORDINATION_TOOLS = COORDINATION_TOOLS | {'read_skill', 'propose_memo', 'search_past_work'} | PLAN_TOOL_NAMES
 PYTHON_TOOL = schema('python_execute',
     'Run a normal Python script with the human-selected existing libraries in a Windows sandbox. '
     'Use relative paths in a private working directory, not host paths. No subprocesses. '
@@ -325,6 +327,8 @@ class Agent:
     recovery_history: list = field(default_factory=list)
     read_only: bool = False
     approval: dict | None = None  # A tool call waiting for the human's decision.
+    plan: dict | None = None  # The PM's accepted work plan (phase 8).
+    turn_player: bool = False  # A participant the application created for turn-taking work.
 
     def public(self, *, message_eligibility=None, status_reason=None, include_detail=True, configured_profile=None,
                 redact_activity=lambda value: value, coordination=None, worker_dependencies=None, hierarchy=None):
@@ -337,6 +341,10 @@ class Agent:
         if self.read_only:
             # Not 'read_only': on agents that key already marks saved history.
             value['read_only_worker'] = True
+        if self.plan:
+            value['plan'] = copy.deepcopy(self.plan)
+        if self.turn_player:
+            value['turn_player'] = True
         if self.approval:
             value['approval'] = {key: self.approval[key] for key in ('id', 'tool', 'summary', 'requested_at')}
         if self.output_limit_failures or self.recovery_attempts:
@@ -379,7 +387,7 @@ class Agent:
                 }
 
 
-class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
+class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
     def __init__(self, settings: Settings, client=None):
         self.settings = settings
         self.gate = ResourceGate()
@@ -1386,6 +1394,10 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         """Check application-owned report metadata, never model claims or mail text."""
         if run.get('adaptive_team'):
             return self._formation_issue(run, agent, finishing=finishing)
+        game = run.get('_turns')
+        if game is not None and agent.id == game.pm_id:
+            # The application referees turn-taking work; no worker reports exist.
+            return None if game.finished else ('turns_pending', '手番がまだ進行中です。アプリからの終了通知を待ってください。')
         if finishing:
             dependency_issue = self._dependency_pm_issue(run, agent)
             if dependency_issue:
@@ -1554,6 +1566,11 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 'budgets or approvals):\n' + memo)
 
     def _policy(self, run, agent):
+        if agent.turn_player and run.get('_turns') is not None:
+            # Participants get only their own rules: no original request, no team tools.
+            return (self._turn_player_policy(run, agent) + '\n\nVerified runtime identity and user-selected scope:\n'
+                    + json.dumps({'id': agent.id, 'role': agent.role, 'parent_id': agent.parent_id, 'turn_player': True},
+                                 ensure_ascii=False, separators=(',', ':')))
         config = run['_config']
         orchestration = self._orchestration(config, run)
         identity = {'id': agent.id, 'role': agent.role, 'parent_id': agent.parent_id,
@@ -1701,6 +1718,10 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             delegation_policy = ''
             if self._formation_reviewer(run, agent):
                 role_binding = mail_policy = board_policy = ''
+        plan_policy = self._plan_policy(run, agent)
+        if agent.plan and agent.plan['shape'] in {'turns', 'solo'} and self._plan_applies(run, agent):
+            delegation_policy = ''  # The parallel-worker guidance does not apply to this plan.
+        delegation_policy += plan_policy
         recovery_policy = RECOVERY_POLICY if not self._ordered_for(run, agent) and any(
             child.status == 'error' and child.stop_reason == 'provider_output_limit'
             for child in self._owned_workers(run, agent)) else ''
@@ -1804,7 +1825,8 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 tools.append(MEMO_TOOL)
             if run['_config']['history_search']['pm_enabled']:
                 tools.append(PAST_WORK_TOOL)
-        return self._formation_tools(run, agent, [self._contextual_team_tool(run, agent, tool) for tool in tools])
+        return self._plan_filter_tools(run, agent, self._formation_tools(
+            run, agent, [self._contextual_team_tool(run, agent, tool) for tool in tools]))
 
     def _context_limit_reached(self, run, agent):
         """Same native replay/system/tool/token budget as dispatch, read-only."""
@@ -1989,6 +2011,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 empty_nudges = 0
                 overflow_retried = False
                 fallback_used = False  # At most one automatic model switch per turn.
+                plan_nudges = 0
                 invalid_batches = 0
                 repeat_key, repeat_count = None, 0
                 turn_tool_calls = 0
@@ -2018,7 +2041,14 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     probe_window = getattr(self.client, 'local_context_window', None)
                     if probe_window and profile.get('kind') == 'local' and not profile.get('context_window_tokens'):
                         if window := await probe_window(profile, limits):
-                            profile['context_window_tokens'] = window
+                            # The size estimate counts UTF-8 bytes, which is
+                            # several bytes per real token. Use the probe only
+                            # when the bare request fits with that allowance;
+                            # otherwise leave the limit to the server, as before
+                            # the probe existed.
+                            probed = {**profile, 'context_window_tokens': window * PROBED_WINDOW_ALLOWANCE}
+                            if pressure(probed, [], tools, self._policy(run, agent), limits)[0] <= 0.8:
+                                profile['context_window_tokens'] = probed['context_window_tokens']
                     call_limits = {**limits, 'local': run['_config']['local']}
                     await self._ensure_context(run, agent, profile, tools, call_limits)
                     if agent.closing or self.closed:
@@ -2095,6 +2125,24 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                                                 'tool_calls': reply.tool_calls, 'provider_raw': reply.raw})
                     summary = reply.text or summary
                     if not reply.tool_calls:
+                        if agent.turn_player:
+                            # A plain-text move is checked like submit_turn, so a
+                            # model that cannot call tools still takes its turn.
+                            nudge = self._turn_text_reply(run, agent, reply.text)
+                            if nudge:
+                                self.log(agent, 'notice', nudge)
+                                self._append_context(agent, {'role': 'user', 'content': nudge}, human=False)
+                                continue
+                            yielded_for_message = True
+                            break
+                        if (self._plan_applies(run, agent) and agent.plan is None and not agent.pending
+                                and plan_nudges < 2 and run['model_calls'] + 1 < limits['max_model_calls']):
+                            # The PM answered in prose before declaring a plan:
+                            # nothing has been done yet, so ask for the plan.
+                            plan_nudges += 1
+                            self.log(agent, 'notice', PLAN_NUDGE)
+                            self._append_context(agent, {'role': 'user', 'content': PLAN_NUDGE}, human=False)
+                            continue
                         if agent.pending:
                             # The reply was produced before newer input arrived.
                             # Retain it as an observation, not a completion claim.
@@ -2244,6 +2292,10 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                                 yielded_for_message = finished = True
                             if name == 'wait_for_workers' and result.get('waiting_for_workers') is True:
                                 yielded = finished = True
+                            if name == 'plan_work' and result.get('waiting_for_turns') is True:
+                                yielded = finished = True
+                            if name == 'submit_turn' and result.get('turn_done') is True:
+                                yielded_for_message = finished = True
                             if name == 'wait_for_message' and result.get('waiting_for_message') is True:
                                 yielded_for_message = finished = True
                             if name == 'request_independent_review' and result.get('ok') is True:
@@ -2311,6 +2363,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 if yielded_for_message:
                     agent.waiting_for_message = not bool(agent.pending)
                     agent.status = 'queued' if agent.pending else 'idle'
+                    self._turn_settle(run, agent)
                     self._run_status(run)
                     continue
                 issue = self._delegation_issue(run, agent, finishing=True)
@@ -2366,7 +2419,10 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             self.log(agent, 'error', agent.last_error)
             self.event(run['id'], agent.id, 'error', agent.last_error)
             self._release(agent)
-            if agent.parent_id and not self.agents[agent.parent_id].closing:
+            if agent.turn_player:
+                # The application passes this turn and moves on; no mail to the PM.
+                self._turn_player_failed(run, agent)
+            elif agent.parent_id and not self.agents[agent.parent_id].closing:
                 try:
                     recovery = ('\nstop_reason=provider_output_limit; failure_id=' + str(agent.output_limit_failures)
                         + f'; recoveries={agent.recovery_attempts}/2, run={run.get("worker_recoveries", 0)}/{RUN_RECOVERY_LIMIT}. '
@@ -2562,6 +2618,13 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             raise ValueError('停止したチームではツールを実行できません')
         if agent.read_only and name in READ_ONLY_DENIED_TOOLS:
             raise ValueError('読み取り専用の worker はファイルの変更・コード実行・ブラウザ操作・委任ができません。必要なら PM に依頼してください')
+        if name == 'submit_turn':
+            return self._turn_submit(run, agent, args)
+        if name == 'plan_work':
+            return self._plan_work(run, agent, args)
+        if name == 'export_turn_history':
+            return await self._turn_export(run, agent, args)
+        self._plan_guard(run, agent, name, args)
         self._formation_guard(run, agent, name)
         if name not in {'list_team', 'ask_user', 'send_message', 'wait_for_message', 'read_context_history'}:
             self._dependency_require(agent)
@@ -2787,7 +2850,8 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 return {'ok': True, 'waiting_for_workers': False, 'reports_ready': True}
             progressing = any(not child.closing and not child.question and child.status not in {'error', 'stopped'}
                               and self._dependency_can_start(child)
-                              and (child.status in {'working', 'queued'} or child.pending) for child in children)
+                              # A worker waiting for the human's approval is still in its turn.
+                              and (child.status in {'working', 'queued'} or child.pending or child.approval) for child in children)
             if ((issue and issue[0] == 'delegation_required') or (not progressing and not agent.pending)):
                 return {'ok': False, 'waiting_for_workers': False, 'reports_ready': False,
                         'error': issue[1] if issue else '待機だけでは進めません。workerの停止・エラー・質問を確認してください。',
@@ -2816,6 +2880,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                 if any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
                         for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
                     raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
+                summary += self._turn_footer(run, agent)
                 self.log(agent, 'result', summary)
                 self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
                 agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)
@@ -3214,6 +3279,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                            'check them, then reassign or finish the remaining work yourself.', completed=True)
             except ValueError:
                 self.log(parent, 'notice', f'人が {agent.name} を停止しました。')
+        self._turn_after_stop(run, targets)
         self._run_status(run)
         return {'ok': True, 'stopped': [target.id for target in targets]}
 

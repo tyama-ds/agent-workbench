@@ -731,3 +731,21 @@ outputs may contain data from folders the current run cannot read.
 A fallback switch reuses the PM handoff rule: native provider envelopes are
 dropped from the agent's conversation so the new provider rebuilds its own
 request, and the switch is logged as a `model_fallback` event.
+
+## Mandatory plan and application-run turns (0.1.1.dev53)
+
+`Engine.plan_required` (class attribute, always true in the shipped app) makes
+`plan_work` the first call of every root PM in a non-adaptive run.
+`_plan_filter_tools` narrows the offered tools by plan state and `_plan_guard`
+enforces the same rule at execution. The plan is stored on the PM agent
+(`agent.plan`) and published with it.
+
+For `shape="turns"` the engine creates the participants and a `TurnGame`
+(`run['_turns']`, published as `run['turn_work']`). `_turn_grant` enqueues the
+current participant's turn directly (not as team mail), `submit_turn` or a
+plain-text reply goes through `TurnGame.submit`, and the participant's turn
+ends as soon as its move is accepted or passed. Errors, stops and three
+rejected attempts become passes, so no state waits on a model. The PM's
+`_delegation_issue` is only "turns still running"; worker-report gates do not
+apply. `_turn_finish` settles the participants, saves the record when the plan
+asked for it and wakes the PM with the application's history.

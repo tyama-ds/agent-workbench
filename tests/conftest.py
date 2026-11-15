@@ -11,6 +11,7 @@ import workbench.config as workbench_config
 
 def pytest_configure(config):
     config.addinivalue_line('markers', 'approvals: keep the default approval mode (ask)')
+    config.addinivalue_line('markers', 'plan: keep the mandatory plan_work gate for root PMs')
 
 
 @pytest.fixture(autouse=True)
@@ -23,3 +24,15 @@ def _approvals_off_unless_marked(request):
         settings['mode'] = 'always_allow'
     yield
     settings['mode'] = previous
+
+
+@pytest.fixture(autouse=True)
+def _plan_not_required_unless_marked(request):
+    """Phase 8 makes plan_work mandatory for root PMs. Existing tests script
+    PMs that call tools directly, so they run without the gate; tests marked
+    `plan` keep the shipped behaviour."""
+    from workbench.engine import Engine
+    previous = Engine.plan_required
+    Engine.plan_required = request.node.get_closest_marker('plan') is not None
+    yield
+    Engine.plan_required = previous

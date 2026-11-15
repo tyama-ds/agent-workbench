@@ -24,9 +24,12 @@ from aiohttp import web
 
 from tools.browser_fixture import synthetic_native
 from workbench.config import DEFAULT, validate_settings
+from workbench.engine import Engine
 from workbench.providers import ModelReply
 from workbench.runtime_paths import RESOURCE_ROOT
 from workbench.server import APP_KEY, BrowserAuth, create_app
+
+Engine.plan_required = False  # scripted models call team tools directly (adaptive runs are exempt anyway)
 
 
 MANUAL = '[SYNTHETIC-ADAPTIVE-UI] Manual compatibility.'

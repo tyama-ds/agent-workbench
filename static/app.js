@@ -756,7 +756,8 @@ function renderProfileChoices(preserveDraft=false,preferDefault=false) {
   syncAdditionalPMControls();
   const choices=[...profiles,...(preserveDraft?[...checked].filter(id=>!profiles.some(profile=>profile.id===id)).map(id=>({id,label:`${id}（保存済み設定では利用不可）` })):[])];
   choices.forEach(profile=>{const label=element('label','choice'),input=element('input');input.type='checkbox';input.value=profile.id;input.dataset.focusKey=`task-worker:${profile.id}`;input.checked=preserveDraft||checked.size?checked.has(profile.id):profile.id===$('pmProfile').value;label.append(input,element('span','',profile.label||profile.id));$('workerProfiles').appendChild(label);});
-  const limit=Number(ui.config.limits?.max_workers??3);$('maxWorkers').max=String(limit);if(!preserveDraft)$('maxWorkers').value=String(Math.min(Number($('maxWorkers').value),limit));
+  // The field starts at the saved cap ("5人雇って" should not silently shrink to 3). A value the user typed is kept.
+  const limit=Number(ui.config.limits?.max_workers??3),untouched=$('maxWorkers').value===(ui.maxWorkersAuto??'3');$('maxWorkers').max=String(limit);if(!preserveDraft){$('maxWorkers').value=String(untouched?limit:Math.min(Number($('maxWorkers').value),limit));if(untouched)ui.maxWorkersAuto=$('maxWorkers').value;}
   $('policyPreview').textContent=ui.config.system_policy||'設定された共通方針はありません。';trackTaskDraft();syncStartControl();
 }
 function fillAdditionalPMChoice(select,previous) {
@@ -823,6 +824,14 @@ function applyTaskOrchestrationDefaults() {
   $('delegationLevel').value=String(defaults.delegation_level);$('workersPerPM').value=String(defaults.workers_per_pm);
   $('maxDelegationDepth').max=String(savedDelegationDepth()??3);$('maxDelegationDepth').value=String(savedDelegationDepth()??'');
 }
+function requestedPeopleHint() {
+  // Non-blocking: the request names more people than this run may create.
+  const text=String($('taskInput')?.value||'').normalize('NFKC'),total=Number($('maxWorkers').value),kanji='二三四五六七八九十';
+  const counts=[...[...text.matchAll(/(\d{1,2})\s*人/g)].map(match=>Number(match[1])),...[...text.matchAll(/([二三四五六七八九十])人/g)].map(match=>kanji.indexOf(match[1])+2)].filter(count=>count>=2&&count<=16);
+  const wanted=Math.max(0,...counts),limit=Number(ui.config?.limits?.max_workers??3);
+  if(!Number.isInteger(total)||wanted<=total)return '';
+  return `依頼文に「${wanted}人」とあります。この作業の作業者の上限は ${total} 人です。${wanted}人で進めるには上限を ${wanted} 以上にしてください`+(wanted>limit?`（設定の「作業の上限」は ${limit} 人です。先に設定を変更してください）。`:'。');
+}
 function taskOrchestrationIssue() {
   const level=Number($('delegationLevel').value),count=Number($('workersPerPM').value),total=Number($('maxWorkers').value);
   if($('delegationLevel').value===''||!Number.isInteger(level)||level<0||level>2||$('workersPerPM').value===''||!Number.isInteger(count)||count<1||count>16)return 'PMの分担方針と委任人数を確認してください。';
@@ -846,7 +855,7 @@ function renderTaskOrchestration() {
   // Updating a range's max can silently clamp a live draft in the browser. This
   // number input retains an out-of-range draft for explicit correction instead.
   depth.max=String(savedDelegationDepth()??3);$('maxDelegationDepthValue').textContent=delegationDepthLabel(Number(depth.value));depth.setAttribute('aria-valuetext',$('maxDelegationDepthValue').textContent);
-  const issue=taskOrchestrationIssue();inlineStatus($('delegationStatus'),issue|| (adaptive?'PMが難易度と理由を申告し、低1人・中2人・高3人の作業者と独立レビュワー1人を編成します。計画に必要な枠が足りなければ編成できず、自動で人数を減らしません。':level===0?'PM中心では、この委任人数を使用しません。':level===1?'目標人数です。PMが必要に応じて委任し、全体の作業者上限と予算を守ります。':'各PMの委任手順が必須です。成果の品質・成功を保証する設定ではなく、全体の権限・予算も増えません。'),Boolean(issue));
+  const issue=taskOrchestrationIssue(),people=requestedPeopleHint();inlineStatus($('delegationStatus'),issue||(people?people+' ':'')+(adaptive?'PMが難易度と理由を申告し、低1人・中2人・高3人の作業者と独立レビュワー1人を編成します。計画に必要な枠が足りなければ編成できず、自動で人数を減らしません。':level===0?'PM中心では、この委任人数を使用しません。':level===1?'目標人数です。PMが必要に応じて委任し、全体の作業者上限と予算を守ります。':'各PMの委任手順が必須です。成果の品質・成功を保証する設定ではなく、全体の権限・予算も増えません。'),Boolean(issue));
   return issue;
 }
 function syncStartControl() { const issue=renderTaskOrchestration();$('startRun').disabled=Boolean(ui.startingRun||ui.taskReuseCandidate||issue)||!$('pmProfile').value||[...($('additionalPMs')?.querySelectorAll('select')||[])].some(select=>!select.value);syncTaskReuseControl(); }
@@ -2765,7 +2774,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }
