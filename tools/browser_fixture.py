@@ -12,7 +12,7 @@ from pathlib import Path
 
 from aiohttp import web
 from workbench.context import SUMMARY_KEYS, SUMMARY_POLICY
-from workbench.engine import Agent
+from workbench.engine import Agent, Engine
 from workbench.providers import ModelReply, ProviderError
 from workbench.server import BrowserAuth, create_app
 
@@ -61,6 +61,11 @@ def synthetic_native(profile, text, calls=(), *, private=''):
     else:
         raise AssertionError('Unsupported synthetic provider kind')
     return raw
+
+
+# This scripted model calls team tools directly; the shipped plan_work gate
+# (phase 8) is exercised by tests/test_phase8_turns.py instead.
+Engine.plan_required = False
 
 
 class SyntheticClient:

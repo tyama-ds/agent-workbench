@@ -114,7 +114,10 @@ _OVERFLOW_CODES = frozenset({"context_length_exceeded", "string_above_max_length
 _OVERFLOW_PHRASES = ("context length", "context_length", "maximum context", "context window", "prompt is too long",
                      "too many tokens", "exceeds the context", "exceed context", "n_ctx", "input is too long",
                      "maximum input length", "reduce the length")
-_QUOTA_PHRASES = ("insufficient_quota", "credit balance is too low", "exceeded your current quota", "billing")
+# Not the bare word "billing": ordinary rate-limit messages link to a billing page.
+_QUOTA_PHRASES = ("insufficient_quota", "credit balance is too low", "exceeded your current quota",
+                  "billing hard limit", "billing_not_active")
+_RATE_LIMIT_CODES = frozenset({"rate_limit_exceeded", "rate_limit_error", "requests", "tokens"})
 ERROR_BODY_PEEK_BYTES = 4096
 
 
@@ -132,7 +135,8 @@ def classify_error_body(status: int, body: bytes) -> str:
             for key in ("code", "type"):
                 if isinstance(item.get(key), str):
                     codes.add(item[key])
-    if status in {402, 429} and (codes & _QUOTA_CODES or any(phrase in text for phrase in _QUOTA_PHRASES)):
+    if status in {402, 429} and (codes & _QUOTA_CODES or (
+            not codes & _RATE_LIMIT_CODES and any(phrase in text for phrase in _QUOTA_PHRASES))):
         return "quota"
     if status in {400, 413, 422, 500} and (codes & _OVERFLOW_CODES or any(phrase in text for phrase in _OVERFLOW_PHRASES)):
         return "context_overflow"

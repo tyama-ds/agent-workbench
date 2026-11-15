@@ -310,7 +310,7 @@ async def test_engine_applies_probed_window_to_the_dispatch_copy_only(tmp_path):
         run, agent = await start(engine, delegation_level=0)
         await engine._agent_loop(agent)
         assert seen and seen[0] in (0, None)
-        assert client.profiles and client.profiles[0]['context_window_tokens'] == 50000
+        assert client.profiles and client.profiles[0]['context_window_tokens'] == 100000  # probed 50000 tokens x 2 bytes per token
         configured_profile = next(p for p in run['_config']['providers'] if p['id'] == agent.profile_id)
         assert not configured_profile.get('context_window_tokens')
         assert not any(p.get('context_window_tokens') for p in engine.settings.value['providers'])
