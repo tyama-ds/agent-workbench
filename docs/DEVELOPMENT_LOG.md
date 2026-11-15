@@ -46,6 +46,17 @@ machine, with the application (not a model) granting and checking each move.
   `wait_for_workers`.
 - Tests and scripted fixtures run without the plan gate unless marked `plan`
   (`tests/conftest.py`, `tools/*fixture.py`).
+- After the first real-machine runs (gpt-5.4-mini): a sent-back move now lists
+  the words tried in this turn, the used words starting with the required
+  kana, and every word refused for ending in ん (kept for the whole game and
+  shown in each later turn message). A participant gets four attempts, the
+  last with an explicit prompt, before a pass. After two passes in a row the
+  next participant restarts with any unused word (recorded as 受理（再開）), so
+  one dead-end kana cannot end the game.
+- The new-task worker cap starts at the saved cap instead of the HTML default
+  3, and a request naming more people than the cap (「5人」) shows a
+  non-blocking note before the run starts. `save_as` defaults to the example
+  name `turn_history.xlsx` in the tool description.
 
 ## 0.1.1.dev52 — Approvals, team memo, past-work search and fallback models (2026-11-15)
 

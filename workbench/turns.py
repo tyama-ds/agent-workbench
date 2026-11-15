@@ -23,7 +23,8 @@ RULES = ('shiritori', 'free')
 RULE_LABELS = {'shiritori': 'しりとり', 'free': '順番に1つずつ発言'}
 MAX_PARTICIPANTS = 16
 MAX_TOTAL_TURNS = 200
-MAX_STRIKES = 3
+MAX_STRIKES = 4  # three ordinary attempts and one last, explicitly prompted attempt
+RESTART_AFTER_PASSES = 2
 MAX_WORD = 24
 MAX_FREE = 2000
 MAX_NOTE = 200
@@ -78,6 +79,7 @@ class TurnGame:
         self.rejected = []  # attempts the application sent back
         self.strikes = 0
         self.failures = {}  # agent_id -> times this participant failed outright
+        self.banned = set()  # readings refused for ending in ん: never valid, shown to every participant
         self.seed = None
         self.started_at, self.finished_at = time.time(), None
         self.ended_early = False
@@ -110,9 +112,30 @@ class TurnGame:
     def used(self):
         return {row['reading'] for row in self.accepted()} | ({self.seed['reading']} if self.seed else set())
 
+    def restarting(self):
+        """Two participants in a row could not continue: the next one starts a new chain."""
+        return len(self.history) >= RESTART_AFTER_PASSES and all(
+            row['status'] == 'pass' for row in self.history[-RESTART_AFTER_PASSES:])
+
     def expected_head(self):
         previous = self.previous()
-        return tail_kana(previous['reading']) if previous and self.rule == 'shiritori' else ''
+        if not previous or self.rule != 'shiritori' or self.restarting():
+            return ''
+        return tail_kana(previous['reading'])
+
+    def tried_this_turn(self):
+        current = self.current()
+        return [row['word'] for row in self.rejected if current and row['turn'] == current['turn']]
+
+    def unusable(self):
+        """Words a participant must not offer now, most relevant first."""
+        head = self.expected_head()
+        used, banned = sorted(self.used()), sorted(self.banned)
+        return {'head': head,
+                'used_with_head': [word for word in used if head and head_kana(word) == head],
+                'banned_with_head': [word for word in banned if head and head_kana(word) == head],
+                'used_other': [word for word in used if not head or head_kana(word) != head],
+                'banned_other': [word for word in banned if not head or head_kana(word) != head]}
 
     # --- moves -------------------------------------------------------------
     def _record(self, status, **fields):
@@ -157,13 +180,17 @@ class TurnGame:
                     raise TurnRejected('length', f'1〜{MAX_FREE}文字で発言してください')
         except TurnRejected as exc:
             self.strikes += 1
+            if exc.code == 'n_ending':
+                self.banned.add(to_reading(raw))
             self.rejected.append({'turn': current['turn'], 'key': current['key'], 'name': current['name'],
                                   'word': raw.strip()[:80], 'code': exc.code, 'message': str(exc), 'at': time.time()})
             if self.strikes >= MAX_STRIKES:
                 entry = self._record('pass', note=f'{MAX_STRIKES}回続けて無効（最後の理由: {exc}）'[:MAX_NOTE])
                 return {'outcome': 'passed', 'code': exc.code, 'message': str(exc), 'entry': entry}
             return {'outcome': 'rejected', 'code': exc.code, 'message': str(exc), 'attempts_left': MAX_STRIKES - self.strikes}
-        entry = self._record('ok', word=word, reading=reading, note=str(note or '').strip()[:MAX_NOTE])
+        restart = self.rule == 'shiritori' and self.restarting()
+        entry = self._record('ok', word=word, reading=reading, restart=restart,
+                             note=('（直前の2人がパスしたため、新しい語から再開）' if restart else '') + str(note or '').strip()[:MAX_NOTE])
         return {'outcome': 'accepted', 'entry': entry}
 
     # --- projections -------------------------------------------------------
@@ -196,7 +223,8 @@ class TurnGame:
         header = ['手番', '周', '参加者', '語', 'よみ', '判定', '補足']
         body = [[0, 0, '（最初の語）', self.seed['word'], self.seed['reading'], '開始', '']] if self.seed else []
         body += [[row['turn'], row['round'], row['name'], row['word'], row['reading'],
-                  '受理' if row['status'] == 'ok' else 'パス', row['note']] for row in self.history]
+                  ('受理（再開）' if row.get('restart') else '受理') if row['status'] == 'ok' else 'パス', row['note']]
+                 for row in self.history]
         return header, body
 
     def rejected_rows(self):

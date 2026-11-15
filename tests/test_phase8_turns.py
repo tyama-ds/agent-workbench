@@ -115,10 +115,10 @@ async def test_five_participants_play_ten_rounds_and_the_file_matches_the_record
 
 @pytest.mark.plan
 @pytest.mark.asyncio
-async def test_invalid_moves_are_sent_back_and_three_in_a_row_become_a_pass(tmp_path):
+async def test_invalid_moves_are_sent_back_and_four_in_a_row_become_a_pass(tmp_path):
     moves = {
         1: [{'word': 'りんご'}],
-        2: [{'word': 'ごはん'}, {'word': 'らっぱ'}, {'word': 'りす'}],     # ん ending, wrong head twice -> pass
+        2: [{'word': 'ごはん'}, {'word': 'らっぱ'}, {'word': 'りす'}, {'word': 'ごはん'}],  # four invalid moves -> pass
         3: [{'word': '胡麻'}, {'word': 'ごま めだか'}, {'word': 'ゴリラ'}],  # kanji, two words, then katakana accepted
         4: ['らっぱ'],                                                       # plain text is checked the same way
         5: ['次はパンダにします！', {'word': 'パイナップル'}],               # prose is refused, then the tool
@@ -130,11 +130,20 @@ async def test_invalid_moves_are_sent_back_and_three_in_a_row_become_a_pass(tmp_
         assert [(row['name'], row['status'], row['reading']) for row in game.history] == [
             ('参加者1', 'ok', 'りんご'), ('参加者2', 'pass', ''), ('参加者3', 'ok', 'ごりら'),
             ('参加者4', 'ok', 'らっぱ'), ('参加者5', 'ok', 'ぱいなっぷる')]
-        assert [row['code'] for row in game.rejected] == ['n_ending', 'chain', 'chain', 'characters', 'characters', 'characters']
+        assert [row['code'] for row in game.rejected] == ['n_ending', 'chain', 'chain', 'n_ending', 'characters', 'characters', 'characters']
         assert game.history[2]['word'] == 'ゴリラ', 'the written form is kept; the reading is used for the chain'
         assert run['status'] == 'done'
         kinds = [row['kind'] for row in engine.events if row['run_id'] == run['id']]
-        assert kinds.count('turn') == 4 and kinds.count('turn_pass') == 1 and kinds.count('turn_rejected') == 5
+        assert kinds.count('turn') == 4 and kinds.count('turn_pass') == 1 and kinds.count('turn_rejected') == 6
+        # A sent-back move lists what cannot be offered, so the same word is not tried again.
+        second = engine.agents[game.participants[1]['agent_id']]
+        retries = [row['content'] for row in second.conversation if row['role'] == 'tool']
+        assert 'この手番であなたが出して無効だった語' in retries[0] and 'ごはん' in retries[0]
+        assert '「ご」で始まり' in retries[0] and 'これが最後の機会です' in retries[2] and 'これが最後の機会です' not in retries[1]
+        # A word refused for ending in ん is shown to every later participant.
+        third = engine.agents[game.participants[2]['agent_id']]
+        grant = next(row['content'] for row in third.conversation if row['role'] == 'user')
+        assert '「ご」で始まるが「ん」で終わるので使えない語: ごはん' in grant and 'そのほかの使用済みの語: りんご' in grant
     finally:
         await engine.close()
 
@@ -263,6 +272,25 @@ def test_shiritori_rules_for_long_marks_small_kana_and_katakana():
                                                       {'key': 'b', 'agent_id': '2', 'name': 'B'}], rounds=1)
     assert repeat.submit('1', 'ああ')['outcome'] == 'accepted'
     assert repeat.submit('2', 'アア')['code'] == 'duplicate', 'katakana and hiragana are the same word'
+
+
+def test_two_passes_in_a_row_let_the_next_participant_restart_the_chain():
+    people = [{'key': key, 'agent_id': key, 'name': key.upper()} for key in 'abc']
+    game = TurnGame(rule='shiritori', participants=people, rounds=2)
+    assert game.submit('a', 'ごりら')['outcome'] == 'accepted'
+    for player in 'bc':
+        for word in ('らいおん', 'らいおん', 'ごりら', 'らいおん'):
+            last = game.submit(player, word)
+        assert last['outcome'] == 'passed'
+    assert game.banned == {'らいおん'} and game.restarting() and game.expected_head() == ''
+    assert game.submit('a', 'ごりら')['code'] == 'duplicate', 'a restart still may not repeat a word'
+    restarted = game.submit('a', 'みかん')
+    assert restarted['code'] == 'n_ending'
+    assert game.submit('a', 'うみ')['entry']['restart'] is True
+    assert game.expected_head() == 'み' and not game.finished
+    header, rows = game.rows()
+    assert [row[5] for row in rows] == ['受理', 'パス', 'パス', '受理（再開）']
+    assert game.unusable()['banned_with_head'] == ['みかん'] and game.unusable()['banned_other'] == ['らいおん']
 
 
 def test_a_whole_round_of_passes_ends_the_game_early():
