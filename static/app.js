@@ -65,6 +65,14 @@ const FIELD_GROUPS = {
     ['gpu_wait_timeout_seconds','GPU の待機上限（秒）','number',0],
     ['gpu_poll_interval_seconds','GPU の確認間隔（秒）','number',0.1,'any'],
   ],
+  approvals: [
+    ['mode','確認するかどうか','radio',[['ask','実行前に確認する'],['always_allow','確認せずに実行する（常に許可）']]],
+    ['python','Python の実行','checkbox'],
+    ['selenium','ブラウザ操作','checkbox'],
+    ['overwrite','既存ファイルの上書き・編集','checkbox'],
+  ],
+  memo: [['proposals_enabled','PM がメモへの追加を提案できる','checkbox']],
+  history_search: [['pm_enabled','PM が過去の作業を検索できる','checkbox']],
   limits: [
     ['max_workers','作業者数の最大値','number',0],
     ['max_auto_collaborations','自動連携回数の上限','number',0,'1','初期値24回。委任・メール・完了通知の合計。0 は自動連携なし。',1000],
@@ -92,6 +100,7 @@ const PROFILE_FIELDS = [
   ['proxy_url','クラウド用プロキシ URL（任意）','url'],
   ['request_timeout_seconds','リクエスト上限（秒）','number',1,'1','Local は共通設定の上限も適用されます'],
   ['context_window_tokens','モデル文脈予算（推定 token、0 は無効）','number',0,'1','モデルに合わせて指定。UTF-8 byte 数を保守的な推定に使用し、出力上限と追加余白も確保します。正確な token 数・収容の保証ではありません。'],
+  ['fallback_profile_id','障害時の代替モデル','select',[['','なし']],undefined,'このモデルが応答しないときに、代わりに使うモデルです。'],
 ];
 const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機',interrupted:'中断'};
 const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],context_trigger_percent:[50,90],context_recent_groups:[2,32],context_summary_chars:[512,16000],context_reserve_tokens:[256,65536],max_history_chars:[4000,4000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
@@ -125,6 +134,10 @@ Object.assign(ui,{effectiveProviders:null,copilotAgentStatus:null,copilotDefault
 const COPILOT_AGENT_DEFAULTS={enabled:false,bridge_directory:'',python_executable:'',base_url:'http://127.0.0.1:8800/v1',model:'copilot',startup_timeout_seconds:600,max_concurrent_requests:1};
 const ORCHESTRATION_DEFAULTS={delegation_level:1,workers_per_pm:2,max_delegation_depth:3};
 const DELEGATION_LABELS=['PM中心','委任優先','委任必須'];
+const APPROVAL_DEFAULTS={mode:'ask',python:true,selenium:true,overwrite:true},MEMO_DEFAULTS={proposals_enabled:true},HISTORY_SEARCH_DEFAULTS={pm_enabled:false};
+const GROUP_DEFAULTS={copilot_agent:COPILOT_AGENT_DEFAULTS,orchestration:ORCHESTRATION_DEFAULTS,work_board:WORK_BOARD_DEFAULTS,approvals:APPROVAL_DEFAULTS,memo:MEMO_DEFAULTS,history_search:HISTORY_SEARCH_DEFAULTS};
+const SETTINGS_CONTAINERS={work_board:'workBoardFields',copilot_agent:'copilotAgentFields',orchestration:'orchestrationFields',approvals:'approvalFields',memo:'memoFields',history_search:'historySearchFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
+Object.assign(ui,{approvalOperation:null,approvalContext:'',approvalChoiceTouched:false,memoOperation:null,memoLoaded:false,memoBaseline:'',memoProposalOperation:null,memoProposalSignature:'',historySearchOperation:null});
 NUMBER_BOUNDS.copilot_agent={startup_timeout_seconds:[5,1200],max_concurrent_requests:[1,16]};
 NUMBER_BOUNDS.orchestration={delegation_level:[0,2],workers_per_pm:[1,16],max_delegation_depth:[1,3]};
 NUMBER_BOUNDS.python={timeout_seconds:[1,600],max_memory_mb:[128,8192],max_output_bytes:[1024,1048576]};
@@ -296,6 +309,12 @@ function savedDelegationDepth() { const policy=ui.config?.orchestration,value=po
 function rangeLabel(key,value) { return key==='delegation_level'?delegationLabel(Number(value)):key==='workers_per_pm'?`${value} 人`:key==='max_delegation_depth'?delegationDepthLabel(Number(value)):`${value} リクエスト`; }
 function makeField(spec,value,prefix) {
   const [key,label,type,extra,step,help,max]=spec,id=`${prefix}-${key}`;
+  if(type==='radio'){
+    const group=element('fieldset','field radio-field');group.appendChild(element('legend','',label));
+    for(const [choice,text] of extra){const row=element('label','choice'),input=element('input');input.type='radio';input.name=id;input.value=choice;input.id=`${id}-${choice}`;input.dataset.key=key;input.checked=value===choice;row.htmlFor=input.id;row.append(input,element('span','',text));group.appendChild(row);}
+    if(help)group.appendChild(element('small','',help));
+    return group;
+  }
   const wrap=element('div','field'+(type==='checkbox'?' checkbox-field':''));
   const name=element('label','',label);name.htmlFor=id;
   let input;
@@ -446,9 +465,9 @@ function validSavedSettings(response,revision) {
   const config=response.config,status=response.secret_status;
   if(!record(config)||config.version!==1||typeof config.system_policy!=='string'||!record(status)||typeof status.search!=='boolean')return false;
   if(!Array.isArray(config.providers)||!config.providers.length||new Set(config.providers.map(p=>p?.id)).size!==config.providers.length)return false;
-  if(!config.providers.every(p=>record(p)&&PROFILE_FIELDS.every(([key,,type])=>type==='number'?Number.isFinite(p[key]):typeof p[key]==='string')&&
+  if(!config.providers.every(p=>record(p)&&PROFILE_FIELDS.every(([key,,type])=>type==='number'?Number.isFinite(p[key]):typeof p[key]==='string'||key==='fallback_profile_id'&&p[key]===undefined)&&
     p.id&&Object.hasOwn(PROFILE_KINDS,p.kind)&&typeof p.enabled==='boolean'&&typeof status[p.id]==='boolean'))return false;
-  return Object.entries(FIELD_GROUPS).every(([group,specs])=>['copilot_agent','orchestration'].includes(group)&&config[group]===undefined||record(config[group])&&specs.every(([key,,type])=>{
+  return Object.entries(FIELD_GROUPS).every(([group,specs])=>['copilot_agent','orchestration','approvals','memo','history_search'].includes(group)&&config[group]===undefined||record(config[group])&&specs.every(([key,,type])=>{
     const value=config[group][key];
     if(group==='orchestration'&&key==='max_delegation_depth')return !Object.hasOwn(config[group],key)||(Number.isInteger(value)&&value>=1&&value<=3);
     if(type==='paths')return Array.isArray(value)&&value.every(path=>typeof path==='string');
@@ -545,7 +564,10 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   card.querySelector('[data-key="id"]').required=true;card.querySelector('[data-key="id"]').pattern='[A-Za-z][A-Za-z0-9_\\-]{0,63}';
   card.querySelector('[data-key="id"]').title='英字で始まる64文字以内の半角英数字・ハイフン・アンダースコア';
   card.querySelector('[data-key="base_url"]').required=true;
-  card.querySelector('[data-key="label"]').addEventListener('input',event=>{title.textContent=event.target.value||'新しいプロファイル';});
+  card.querySelector('[data-key="label"]').addEventListener('input',event=>{title.textContent=event.target.value||'新しいプロファイル';refreshFallbackChoices();});
+  card.querySelector('[data-key="id"]').addEventListener('input',()=>refreshFallbackChoices());
+  const fallback=card.querySelector('[data-key="fallback_profile_id"]');fallback.dataset.value=String(profile.fallback_profile_id||'');
+  fallback.addEventListener('change',()=>{fallback.dataset.value=fallback.value;});
   const secretRow=element('div','profile-secret'),secretField=element('div','field'),secretLabel=element('label','', 'API キー（任意）');
   const storageField=element('div','field credential-storage-field'),storageLabel=element('label','','キーの保存方法'),storage=element('select'),modeHelp=element('small');
   storage.id=`profile-${index}-secret-storage`;storageLabel.htmlFor=storage.id;storage.dataset.credential='true';
@@ -565,7 +587,7 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   const kind=card.querySelector('[data-key="kind"]'),proxy=card.querySelector('[data-key="proxy_url"]');
   const updateKind=()=>{proxy.disabled=ui.settingsLocked||kind.value==='local';proxy.title=kind.value==='local'?'Local はプロキシを使わず直接接続します':'';};
   kind.addEventListener('change',()=>{if(kind.value==='local')proxy.value='';updateKind();});updateKind();
-  remove.addEventListener('click',()=>{card.remove();markSettingsDirty();});
+  remove.addEventListener('click',()=>{card.remove();refreshFallbackChoices();markSettingsDirty();});
   probe.addEventListener('click',async()=>{
     if(ui.settingsDirty||ui.configStale){inlineStatus(result,ui.configStale?'モデル一覧の確認前に、保存済み設定を読み直してください。':'モデル一覧の確認前に、設定を保存してください。',true);return;}
     const revision=ui.settingsRevision,profileId=card.querySelector('[data-key="id"]').value;
@@ -585,6 +607,19 @@ function appendProfile(profile,index,expanded=true,saved=true) {
   saveSecret.addEventListener('click',()=>setCredential(card._credential));
   secret.addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229)return;if(event.key==='Enter'){event.preventDefault();setCredential(card._credential);}});
   $('profilesEditor').appendChild(card);
+}
+// Each profile may name another profile as its fallback. Choices follow the
+// current (unsaved) profile list; a missing saved choice stays visible, not reset.
+function refreshFallbackChoices() {
+  const cards=[...$('profilesEditor').querySelectorAll('.profile-editor')];
+  const profiles=cards.map(card=>({id:card.querySelector('[data-key="id"]').value.trim(),label:card.querySelector('[data-key="label"]').value.trim()}));
+  cards.forEach((card,index)=>{
+    const select=card.querySelector('[data-key="fallback_profile_id"]');if(!select)return;
+    const wanted=select.dataset.value??select.value,none=element('option','','なし');none.value='';select.replaceChildren(none);
+    for(const profile of profiles)if(profile.id&&profile.id!==profiles[index].id){const option=element('option','',profile.label&&profile.label!==profile.id?`${profile.label}（${profile.id}）`:profile.id);option.value=profile.id;select.appendChild(option);}
+    if(wanted&&!profiles.some((profile,other)=>other!==index&&profile.id===wanted)){const option=element('option','',`${wanted}（見つかりません）`);option.value=wanted;select.appendChild(option);}
+    select.value=wanted;
+  });
 }
 function configureSearchFields(search) {
   const container=$('searchFields'),provider=container.querySelector('[data-key="provider"]'),endpoint=container.querySelector('[data-key="endpoint"]');
@@ -609,9 +644,8 @@ function renderSettings(config=ui.config) {
   ui.settingsDraftGeneration++;
   ui.credentialGeneration++;
   $('profilesEditor').replaceChildren();(config.providers||[]).forEach((profile,index)=>appendProfile(profile,index,index===0));
-  const containers={work_board:'workBoardFields',copilot_agent:'copilotAgentFields',orchestration:'orchestrationFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
-  for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(containers[group]),defaults=group==='copilot_agent'?COPILOT_AGENT_DEFAULTS:group==='orchestration'?ORCHESTRATION_DEFAULTS:group==='work_board'?WORK_BOARD_DEFAULTS:{};container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,({...defaults,...config[group]})[spec[0]],group)));}
-  configureSearchFields(config.search);
+  for(const [group,specs] of Object.entries(FIELD_GROUPS)){const container=$(SETTINGS_CONTAINERS[group]),defaults=GROUP_DEFAULTS[group]||{};container.replaceChildren();specs.forEach(spec=>container.appendChild(makeField(spec,({...defaults,...config[group]})[spec[0]],group)));}
+  configureSearchFields(config.search);refreshFallbackChoices();
   $('workBoardFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','workBoardSettingsHelp');
   $('copilotAgentFields').querySelector('[data-key="enabled"]').setAttribute('aria-describedby','copilotAgentHelp');renderCopilotStatus();
   $('pythonFields').querySelector('[data-key="network_enabled"]').setAttribute('aria-describedby','pythonNetworkHelp');
@@ -682,8 +716,8 @@ function collectConfig() {
   const ids=config.providers.map(profile=>profile.id);
   if(new Set(ids).size!==ids.length)throw new Error('プロファイル ID が重複しています。別の ID を指定してください。');
   if(!config.providers.length)throw new Error('プロファイルを1つ以上追加してください。');
-  const containers={work_board:'workBoardFields',copilot_agent:'copilotAgentFields',orchestration:'orchestrationFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
-  for(const [group,id] of Object.entries(containers)){config[group]={...config[group]};$(id).querySelectorAll('[data-key]').forEach(input=>{config[group][input.dataset.key]=inputValue(input);});}
+  for(const [group,id] of Object.entries(SETTINGS_CONTAINERS)){config[group]={...config[group]};$(id).querySelectorAll('[data-key]').forEach(input=>{if(input.type!=='radio'||input.checked)config[group][input.dataset.key]=inputValue(input);});}
+  for(const group of ['approvals','memo','history_search'])if(ui.config[group]===undefined&&JSON.stringify(config[group])===JSON.stringify(GROUP_DEFAULTS[group]))delete config[group];
   config.search.api_key_env='';
   if(config.search.provider==='duckduckgo')config.search.endpoint=DUCKDUCKGO_SEARCH_ENDPOINT;
   if(ui.config.copilot_agent===undefined&&JSON.stringify(config.copilot_agent)===JSON.stringify(COPILOT_AGENT_DEFAULTS))delete config.copilot_agent;
@@ -695,7 +729,7 @@ function collectConfig() {
 function setSettingsLock(force=false) {
   const locked=ui.state.runs.some(run=>!archivedRun(run)&&ACTIVE_STATUSES.has(run.status));ui.settingsLocked=locked;
   const disabled=locked||ui.settingsSaving===true||ui.settingsReloading||ui.credentialOperations.size>0;
-  $('settingsForm').querySelectorAll('input,textarea,select,button').forEach(node=>{if(node.dataset.credential!=='true')node.disabled=disabled&&node.dataset.readonly!=='true'||ui.configStale&&(node.type==='submit'||node.dataset.probe==='true');});$('saveSettings').disabled=disabled||ui.configStale;
+  $('settingsForm').querySelectorAll('input,textarea,select,button').forEach(node=>{if(node.dataset.credential!=='true'&&node.dataset.memo!=='true')node.disabled=disabled&&node.dataset.readonly!=='true'||ui.configStale&&(node.type==='submit'||node.dataset.probe==='true');});$('saveSettings').disabled=disabled||ui.configStale;
   if(!disabled)$('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card.querySelector('[data-key="proxy_url"]').disabled=card.querySelector('[data-key="kind"]').value==='local';});
   refreshCredentialControls();$('discardSettings').disabled=Boolean(ui.settingsSaving||ui.settingsReloading||ui.credentialOperations.size);
   for(const id of ['exportSettings','importSettings','settingsImportFile'])$(id).disabled=Boolean(disabled||ui.configStale);
@@ -706,6 +740,7 @@ function setSettingsLock(force=false) {
 }
 function renderProfileChoices(preserveDraft=false,preferDefault=false) {
   if(!ui.taskOrchestrationInitialized){applyTaskOrchestrationDefaults();ui.taskOrchestrationInitialized=true;}
+  if(!ui.approvalChoiceTouched&&$('approvalAlwaysAllow'))$('approvalAlwaysAllow').checked=ui.config?.approvals?.mode==='always_allow';
   let previous=$('pmProfile').value,checked=new Set([...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value));
   const profiles=availableProfiles();
   if((!preserveDraft||preferDefault)&&ui.copilotDefaultsPending&&!ui.modelChoicesTouched&&!$('taskInput').value.trim()&&!$('additionalPMs').children.length&&profiles.some(profile=>profile.id==='copilot-agent')){
@@ -765,10 +800,14 @@ function runPayload() {
   const extra=[...($('additionalPMs')?.querySelectorAll('select')||[])].map(select=>select.value);
   if(extra.length)payload.pm_profiles=[payload.pm_profile,...extra];
   if($('adaptiveTeam')?.checked===true)payload.adaptive_team=true;
+  // Sent only when this run differs from the saved setting (the server's default).
+  const approvalMode=$('approvalAlwaysAllow')?.checked===true?'always_allow':'ask';
+  if(approvalMode!==(ui.config?.approvals?.mode==='always_allow'?'always_allow':'ask'))payload.approval_mode=approvalMode;
   return payload;
 }
 function trackTaskDraft(event) {
   if(['input','change'].includes(event?.type)&&[ $('delegationLevel'),$('workersPerPM'),$('maxDelegationDepth') ].includes(event.target))ui.taskOrchestrationInitialized=true;
+  if(['input','change'].includes(event?.type)&&event.target===$('approvalAlwaysAllow'))ui.approvalChoiceTouched=true;
   if(['input','change'].includes(event?.type)&&(event.target===$('pmProfile')||event.target?.dataset?.focusKey?.startsWith('task-worker:')||event.target?.id?.startsWith('additional-pm-')))ui.modelChoicesTouched=true;
   // An actual edit also invalidates a choice when numeric parsing would hide
   // it (0 → blank, 1 → 01), or when the user re-enters the same value.
@@ -1959,13 +1998,14 @@ function selectRun(id) { if(!ui.state.runs.some(run=>run.id===id))return;ui.navi
 function renderRunList() {
   const counts=new Map();for(const {run} of questionEntries())counts.set(run.id,(counts.get(run.id)||0)+1);
   const inputs=new Map();for(const {run} of messageInputEntries())inputs.set(run.id,(inputs.get(run.id)||0)+1);
-  const signature=JSON.stringify([ui.selectedRun,ui.state.runs.map(run=>[run.id,run.task,run.status,run.status_reason,run.archived,run.read_only,run.created_at,counts.get(run.id)||0,inputs.get(run.id)||0])]);if(signature===ui.runsSignature)return;ui.runsSignature=signature;
+  const approvals=new Map();for(const {run} of approvalEntries())approvals.set(run.id,(approvals.get(run.id)||0)+1);
+  const signature=JSON.stringify([ui.selectedRun,ui.state.runs.map(run=>[run.id,run.task,run.status,run.status_reason,run.archived,run.read_only,run.created_at,counts.get(run.id)||0,inputs.get(run.id)||0,approvals.get(run.id)||0])]);if(signature===ui.runsSignature)return;ui.runsSignature=signature;
   const live=ui.state.runs.filter(run=>!archivedRun(run)).length,archived=ui.state.runs.length-live;
   $('runCount').textContent=`${live} / 20${archived?` · 保存 ${archived}`:''}`;$('runCount').setAttribute('aria-label',`この起動中の作業 ${live}件・上限20件、保存履歴 ${archived}件`);$('runList').replaceChildren();
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
-  [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
+  [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${approvals.get(run.id)?` · 承認待ち ${approvals.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
-const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
+const REASON_LABELS = {approval:'承認待ち',peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
 function stateLabel(item) { const human=item?.stop_reason==='human_stop'?'人が停止':'';return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${human||statusLabel(displayStatus(item))}`:human||(item?.status==='error'&&item?.stop_reason==='provider_output_limit'?'モデル出力上限':item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status)); }
 function badge(status,reason,agent=null) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),agent?stateLabel(agent):REASON_LABELS[reason]||statusLabel(status)); }
 // Crew state vocabulary: icon + label + motion, never color alone. The label stays stateLabel().
@@ -2199,6 +2239,162 @@ async function stopSelectedAgent() {
   catch(error){actionNotice(action,`担当 ${name} の停止要求: ${errorText(error)}`,true);}
   finally{if(ui.stoppingAgents.get(key)===action)ui.stoppingAgents.delete(key);renderAgentControls(getAgent());}
 }
+// Phase 7: tool-call approval, the team memo and its proposals, and history search.
+// Every model/state string below is untrusted and is placed with textContent only.
+const APPROVAL_MODE_LABELS={ask:'毎回確認',always_allow:'常に許可'};
+const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',selenium_browse:'ブラウザ操作'};
+const APPROVAL_FILE_TOOLS=new Set(['write_text','patch_text','docx_edit','docx_write','xlsx_write','pptx_edit','pptx_write']);
+const HISTORY_MATCH_LABELS={task:'依頼',result:'報告',log:'ログ'};
+function approvalToolLabel(tool) { return APPROVAL_TOOL_LABELS[tool]||(APPROVAL_FILE_TOOLS.has(tool)?'既存ファイルの変更':'ツールの実行'); }
+function pendingApproval(agent) {
+  const approval=agent?.approval;
+  return approval&&typeof approval==='object'&&!Array.isArray(approval)&&typeof approval.id==='string'&&approval.id&&!archivedAgent(agent)?approval:null;
+}
+function approvalEntries() {
+  return [...ui.state.runs].sort((a,b)=>(Number(a.created_at)||0)-(Number(b.created_at)||0)).flatMap(run=>
+    archivedRun(run)||['stopping','stopped'].includes(run.status)?[]:ui.state.agents.filter(agent=>agent.run_id===run.id&&pendingApproval(agent)).map(agent=>({run,agent})));
+}
+function renderApprovalSummary() {
+  const count=approvalEntries().length;$('approvalQueue').hidden=!count;setVisibleText($('approvalCount'),String(count));
+}
+function openNextApproval() {
+  if($('taskDialog').open||$('settingsDialog').open)return;
+  const entries=approvalEntries();if(!entries.length){renderState();return;}
+  const index=entries.findIndex(({run,agent})=>run.id===ui.selectedRun&&agent.id===ui.selectedAgent),{run,agent}=entries[(index+1)%entries.length];
+  ui.navigationGeneration++;const changed=changeSelection(run.id,agent.id);revealInspector();renderState();
+  $('approvalCard').focus();if(changed)void pollState();
+}
+function renderApproval(agent) {
+  const approval=pendingApproval(agent),card=$('approvalCard'),key=approval?JSON.stringify([agent.run_id,agent.id,approval.id]):'';
+  if(!approval&&card.contains(document.activeElement))$('conversationHeading').focus({preventScroll:true});
+  card.hidden=!approval;
+  if(ui.approvalContext!==key){ui.approvalContext=key;$('approvalNote').value='';inlineStatus($('approvalStatus'),'');$('approvalSummary').scrollTop=0;}
+  setVisibleText($('approvalTool'),approval?`操作: ${approvalToolLabel(approval.tool)}`:'');
+  setVisibleText($('approvalSummary'),approval?String(approval.summary??''):'');
+  const run=agent&&ui.state.runs.find(item=>item.id===agent.run_id),blocked=!approval||Boolean(ui.approvalOperation)||['stopping','stopped'].includes(run?.status);
+  $('approveAction').disabled=blocked;$('rejectAction').disabled=blocked;
+}
+async function decideApproval(decision) {
+  const agent=getAgent(),approval=pendingApproval(agent);
+  if(!approval||ui.approvalOperation||$('approveAction').disabled)return;
+  const note=$('approvalNote').value.trim().slice(0,1000),name=agent.name||agent.id;
+  notice('');const action={noticeGeneration:ui.noticeGeneration,key:ui.approvalContext};ui.approvalOperation=action;renderApproval(agent);
+  inlineStatus($('approvalStatus'),'送信しています…');
+  try{
+    const body={approval_id:approval.id,decision};if(note)body.note=note;
+    await api(`/api/agents/${encodeURIComponent(agent.id)}/approval`,{method:'POST',body});
+    actionNotice(action,decision==='approve'?`${name} の操作を承認しました。`:`${name} の操作を却下しました。`);
+    if(ui.approvalContext===action.key)inlineStatus($('approvalStatus'),'');
+    await pollState(true);
+  }catch(error){
+    if(ui.approvalContext===action.key)inlineStatus($('approvalStatus'),`送信できませんでした: ${errorText(error)}`,true);
+    else actionNotice(action,`${name} の操作の承認: ${errorText(error)}`,true);
+  }finally{if(ui.approvalOperation===action)ui.approvalOperation=null;renderApproval(getAgent());}
+}
+function openSettings() { const opening=!$('settingsDialog').open;showView('settings');if(opening)void loadMemo(); }
+function renderMemoControls() {
+  const busy=Boolean(ui.memoOperation);$('teamMemo').disabled=!ui.memoLoaded||busy;
+  $('saveMemo').disabled=!ui.memoLoaded||busy||$('teamMemo').value===ui.memoBaseline;
+}
+function acceptMemo(memo) {
+  if(!memo||typeof memo!=='object'||typeof memo.text!=='string')throw new Error('メモの応答を確認できませんでした。');
+  ui.memoBaseline=memo.text;ui.memoLoaded=true;$('teamMemo').value=memo.text;
+  $('teamMemo').maxLength=Number.isInteger(memo.max_chars)&&memo.max_chars>0?memo.max_chars:4000;
+}
+function acceptMemoProposals(response) {
+  if(Array.isArray(response?.proposals)){ui.state.memo_proposals=response.proposals;renderMemoProposals();}
+}
+async function loadMemo() {
+  if(!ui.authenticated||ui.memoOperation)return;
+  const action={workspace:ui.workspaceGeneration};ui.memoOperation=action;ui.memoLoaded=false;renderMemoControls();
+  inlineStatus($('memoStatus'),'メモを読み込んでいます…');
+  try{
+    const response=await api('/api/memo');
+    if(action.workspace!==ui.workspaceGeneration||!$('settingsDialog').open)return;
+    acceptMemo(response.memo);inlineStatus($('memoStatus'),'');
+  }catch(error){if(action.workspace===ui.workspaceGeneration)inlineStatus($('memoStatus'),`メモを読み込めませんでした: ${errorText(error)}`,true);}
+  finally{if(ui.memoOperation===action)ui.memoOperation=null;renderMemoControls();}
+}
+async function saveMemo() {
+  if(!ui.memoLoaded||ui.memoOperation)return;
+  const text=$('teamMemo').value,action={workspace:ui.workspaceGeneration};ui.memoOperation=action;renderMemoControls();
+  inlineStatus($('memoStatus'),'保存しています…');
+  try{
+    const response=await api('/api/memo',{method:'POST',body:{text}});
+    acceptMemoProposals(response);
+    if(action.workspace!==ui.workspaceGeneration)return;
+    // Keep any edit typed while the save was in flight.
+    if($('teamMemo').value===text)acceptMemo(response.memo);else ui.memoBaseline=String(response.memo?.text??text);
+    inlineStatus($('memoStatus'),'メモを保存しました。');
+  }catch(error){if(action.workspace===ui.workspaceGeneration)inlineStatus($('memoStatus'),`保存できませんでした: ${errorText(error)}`,true);}
+  finally{if(ui.memoOperation===action)ui.memoOperation=null;renderMemoControls();}
+}
+function memoProposals() { return Array.isArray(ui.state.memo_proposals)?ui.state.memo_proposals.filter(item=>item&&typeof item.id==='string'&&item.id):[]; }
+function openMemoProposals() {
+  if($('taskDialog').open||$('settingsDialog').open)return;
+  inlineStatus($('memoProposalStatus'),'');ui.memoProposalSignature='';renderMemoProposals();
+  if(!$('memoProposalDialog').open)$('memoProposalDialog').showModal();
+}
+function renderMemoProposals() {
+  const proposals=memoProposals(),busy=ui.memoProposalOperation;
+  $('memoProposalNotice').hidden=!proposals.length;setVisibleText($('memoProposalCount'),String(proposals.length));
+  const signature=JSON.stringify([proposals,busy?.id||'']);if(signature===ui.memoProposalSignature)return;ui.memoProposalSignature=signature;
+  preserveControlFocus(()=>{
+    const list=$('memoProposalList');list.replaceChildren();
+    if(!proposals.length){list.appendChild(element('p','empty-small','確認を待っている提案はありません。'));return;}
+    for(const proposal of proposals){
+      const item=element('article','memo-proposal'),actions=element('div','memo-proposal-actions');
+      item.append(element('p','memo-proposal-from',`${proposal.agent_name||proposal.agent_id||'担当'} からの提案${proposal.run_id?` · チーム ${String(proposal.run_id).slice(-8)}`:''}`),
+        element('pre','memo-proposal-text',String(proposal.text??'')));
+      if(proposal.reason)item.appendChild(element('p','memo-proposal-reason',`理由: ${proposal.reason}`));
+      for(const [decision,label,style] of [['approve','メモに追加','button primary'],['reject','却下','button minor']]){
+        const button=element('button',style,label);button.type='button';button.disabled=Boolean(busy);button.dataset.focusKey=`memo-proposal:${proposal.id}:${decision}`;
+        button.addEventListener('click',()=>decideMemoProposal(proposal.id,decision));actions.appendChild(button);
+      }
+      item.appendChild(actions);list.appendChild(item);
+    }
+  },()=>$('closeMemoProposals'));
+}
+async function decideMemoProposal(id,decision) {
+  if(ui.memoProposalOperation||!memoProposals().some(item=>item.id===id))return;
+  const action={id};ui.memoProposalOperation=action;renderMemoProposals();inlineStatus($('memoProposalStatus'),'送信しています…');
+  try{
+    const response=await api(`/api/memo/proposals/${encodeURIComponent(id)}`,{method:'POST',body:{decision}});
+    if($('settingsDialog').open&&ui.memoLoaded&&$('teamMemo').value===ui.memoBaseline&&typeof response.memo?.text==='string')acceptMemo(response.memo);
+    ui.memoProposalOperation=null;acceptMemoProposals(response);
+    inlineStatus($('memoProposalStatus'),decision==='approve'?'メモに追加しました。':'提案を却下しました。');
+    await pollState(true);
+  }catch(error){inlineStatus($('memoProposalStatus'),`送信できませんでした: ${errorText(error)}`,true);}
+  finally{if(ui.memoProposalOperation===action)ui.memoProposalOperation=null;renderMemoProposals();}
+}
+function localDate(value) {
+  const date=new Date(typeof value==='number'?(value<1e12?value*1000:value):value);
+  return value&&!Number.isNaN(date.getTime())?date.toLocaleDateString('ja-JP'):'';
+}
+async function searchHistory(event) {
+  event?.preventDefault();if(ui.historySearchOperation)return;
+  const query=$('historySearchInput').value.trim(),status=$('historySearchStatus'),results=$('historySearchResults');
+  if(!query||query.length>200){inlineStatus(status,query?'検索する言葉は200文字以内にしてください。':'検索する言葉を入力してください。',true);return;}
+  const action={};ui.historySearchOperation=action;$('historySearchButton').disabled=true;inlineStatus(status,'検索しています…');
+  try{
+    const response=await api(`/api/history/search?q=${encodeURIComponent(query)}`);
+    const runs=Array.isArray(response.runs)?response.runs.filter(run=>run&&typeof run.run_id==='string'):[];
+    results.replaceChildren();
+    for(const run of runs){
+      const button=element('button','run-link history-result');button.type='button';button.dataset.focusKey=`history-result:${run.run_id}`;
+      button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',[localDate(run.saved_at),run.status?statusLabel(run.status):'',shortRunId({id:run.run_id})].filter(Boolean).join(' · ')));
+      for(const match of (Array.isArray(run.matches)?run.matches:[]).slice(0,2))
+        button.appendChild(element('span','history-match',`${HISTORY_MATCH_LABELS[match?.source]||'記録'}${match?.agent?` · ${match.agent}`:''}: ${String(match?.text??'')}`));
+      button.addEventListener('click',()=>openHistoryResult(run.run_id));results.appendChild(button);
+    }
+    inlineStatus(status,runs.length?`${runs.length}件見つかりました。`:'見つかりませんでした');
+  }catch(error){inlineStatus(status,`検索できませんでした: ${errorText(error)}`,true);}
+  finally{if(ui.historySearchOperation===action)ui.historySearchOperation=null;$('historySearchButton').disabled=false;}
+}
+function openHistoryResult(id) {
+  if(ui.state.runs.some(run=>run.id===id)){inlineStatus($('historySearchStatus'),'');selectRun(id);return;}
+  inlineStatus($('historySearchStatus'),'この作業は今の作業履歴にありません。少し待ってから、もう一度お試しください。',true);
+}
 function setVisibleText(node,text) { const value=String(text??'');if(node.textContent!==value)node.textContent=value; }
 function renderWorkerRecovery(agent) {
   const recovery=agent?.recovery,limited=agent?.stop_reason==='provider_output_limit';
@@ -2233,7 +2429,7 @@ function renderInspector(agent) {
   $('inspectAgentMail').disabled=!agent;
 }
 function renderConversation(agent) {
-  renderInspector(agent);
+  renderInspector(agent);renderApproval(agent);
   renderResults(agent);renderRestoreControl(agent);renderAgentControls(agent);
   $('conversationReadOnly').hidden=!(agent?.read_only_worker===true&&!archivedAgent(agent));
   const available=Boolean(agent),run=getRun();$('messageForm').hidden=!available;
@@ -2555,7 +2751,7 @@ function renderCoordinationMonitor(run,agents) {
 function renderRunContent() {
   reconcileTaskReuse();syncTaskReuseControl();
   const run=getRun();renderArchiveNotice(run);$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;$('networkWorkspace').hidden=!run;renderWorkBoard(run);
-  const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderMessageInputSummary();renderCoordinationMonitor(run,agents);renderFormation(run);
+  const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderApprovalSummary();renderMessageInputSummary();renderCoordinationMonitor(run,agents);renderFormation(run);
   $('rosterHeading').textContent=ui.needsOnly?'質問':'担当';
   $('rosterScope').textContent=ui.needsOnly?'全チーム · チームの開始順。開くだけでは回答・再開しません。':run?`表示中のチーム · ${shortRunId(run)}`:'選択したチームの担当者';
   $('agentSearchLabel').textContent=ui.needsOnly?'全チームの質問・依頼・担当者を検索':'エージェントを検索';
@@ -2569,7 +2765,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録']],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }
@@ -2591,7 +2787,7 @@ function renderState() {
   const agentId=agents.some(agent=>agent.id===ui.selectedAgent)?ui.selectedAgent:agents.find(rootPMAgent)?.id||agents[0]?.id||null;
   changeSelection(runId,agentId);
   const popoutLink=$('networkOpenTab');if(popoutLink)popoutLink.href=networkPopoutHref(runId);
-  preserveControlFocus(()=>{renderRunList();renderRun();});setSettingsLock();$('resourceSummary').textContent=resourceLabel(ui.state.resources,ui.config?.local?.gpu_index||0);
+  preserveControlFocus(()=>{renderRunList();renderRun();renderMemoProposals();});setSettingsLock();$('resourceSummary').textContent=resourceLabel(ui.state.resources,ui.config?.local?.gpu_index||0);
 }
 function selectedStatePath(selection) {
   const query=new URLSearchParams({view:'selected'});
@@ -2666,7 +2862,7 @@ async function initialize() {
   $('inspectAgentMail').addEventListener('click',()=>{ui.activityFilter='selected';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});});
   $('resultSelection').addEventListener('change',()=>{ui.outputSelections.set(outputOwner(),$('resultSelection').value);renderResults(getAgent());$('resultText').scrollTop=0;});
   $('copyResult').addEventListener('click',copySelectedOutput);$('restoreReceipt').addEventListener('click',restoreSelectedReceipt);$('stopAgent').addEventListener('click',stopSelectedAgent);$('exportResult').addEventListener('click',exportSelectedOutput);
-  $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',()=>showView('settings'));
+  $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',openSettings);
   $('startRun').addEventListener('pointerdown',event=>{if(event.isPrimary)ui.startPointerActive=true;});
   window.addEventListener('pointerup',releaseStartPointer);
   window.addEventListener('pointercancel',releaseStartPointer);
@@ -2680,28 +2876,33 @@ async function initialize() {
   $('reloadSkills').addEventListener('click',reloadSkills);
   $('discardSettings').addEventListener('click',discardSettings);
   $('reconnectCopilotAgent').addEventListener('click',reconnectCopilotAgent);
-  $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);showView('settings');});
+  $('preflightSettings').addEventListener('click',()=>{setBriefOpen(false);openSettings();});
   $('toggleBrief').addEventListener('click',()=>setBriefOpen(false));
   $('reuseTask').addEventListener('click',beginTaskReuse);
   $('replaceTaskDraft').addEventListener('click',replaceTaskDraft);
   $('keepTaskDraft').addEventListener('click',keepTaskDraft);
   $('taskReusePreview').addEventListener('keydown',scrollTaskReusePreview);
   for(const id of ['newRun','launchTask','emptyNewRun'])$(id).addEventListener('click',()=>setBriefOpen(true));
-  $('emptySettings').addEventListener('click',()=>showView('settings'));
+  $('emptySettings').addEventListener('click',openSettings);
   $('closeSettings').addEventListener('click',()=>showView('work'));
   $('agentSearch').addEventListener('input',()=>renderRun());
   $('needsYou').addEventListener('click',toggleQuestionView);
   $('nextMessageInput').addEventListener('click',openNextMessageInput);
   document.addEventListener('keydown',revealAgentCardAfterTab);
-  for(const id of ['taskDialog','settingsDialog']) { const dialog=$(id);dialog.addEventListener('click',event=>{if(event.target!==dialog)return;const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();}); }
+  for(const id of ['taskDialog','settingsDialog','memoProposalDialog']) { const dialog=$(id);dialog.addEventListener('click',event=>{if(event.target!==dialog)return;const rect=dialog.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();}); }
   window.addEventListener('popstate',()=>{setBriefOpen(false);showView('work');});
   $('exportSettings').addEventListener('click',exportSettings);
   $('importSettings').addEventListener('click',()=>{if(!settingsTransferBlocked())$('settingsImportFile').click();});
   $('settingsImportFile').addEventListener('change',event=>{const file=event.target.files?.[0];event.target.value='';return importSettingsFile(file);});
-  $('settingsForm').addEventListener('input',event=>{if(event.target.type!=='password'&&event.target.dataset.credential!=='true'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
-  $('settingsForm').addEventListener('change',event=>{if(event.target.type!=='password'&&event.target.dataset.credential!=='true'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
+  $('settingsForm').addEventListener('input',event=>{if(event.target.dataset.memo==='true'){renderMemoControls();return;}if(event.target.type!=='password'&&event.target.dataset.credential!=='true'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
+  $('settingsForm').addEventListener('change',event=>{if(event.target.dataset.memo==='true')return;if(event.target.type!=='password'&&event.target.dataset.credential!=='true'&&event.target.id!=='settingsImportFile')markSettingsDirty();});
+  $('saveMemo').addEventListener('click',saveMemo);
+  $('approveAction').addEventListener('click',()=>decideApproval('approve'));$('rejectAction').addEventListener('click',()=>decideApproval('reject'));
+  $('approvalQueue').addEventListener('click',openNextApproval);
+  $('memoProposalNotice').addEventListener('click',openMemoProposals);$('closeMemoProposals').addEventListener('click',()=>$('memoProposalDialog').close());
+  $('historySearchForm').addEventListener('submit',searchHistory);
   $('settingsForm').addEventListener('invalid',event=>{const card=event.target.closest('.profile-editor');if(card&&card.querySelector('.profile-content').hidden)card.querySelector('[data-readonly]').click();},true);
-  $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180,context_window_tokens:0},index,true,false);markSettingsDirty();});
+  $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180,context_window_tokens:0},index,true,false);refreshFallbackChoices();markSettingsDirty();});
   $('settingsForm').addEventListener('submit',saveSettings);
   $('runForm').addEventListener('submit',async event=>{
     event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun||ui.taskReuseCandidate)return;

@@ -293,6 +293,22 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     async def restore(request):
         return web.json_response(await engine.restore_output(request.match_info['id'], await body(request)))
 
+    async def memo(request):
+        if request.method == 'GET':
+            return web.json_response(engine.memo_state())
+        return web.json_response(engine.save_memo(await body(request)))
+
+    async def memo_proposal(request):
+        return web.json_response(engine.resolve_memo_proposal(request.match_info['id'], await body(request)))
+
+    async def history_search(request):
+        if set(request.query) != {'q'} or len(request.query.getall('q')) != 1:
+            raise ValueError('検索語を q で1つ指定してください')
+        return web.json_response(engine.search_history(request.query['q']))
+
+    async def approval(request):
+        return web.json_response(engine.resolve_approval(request.match_info['id'], await body(request)))
+
     async def stop_agent(request):
         await body(request)
         return web.json_response(await engine.stop_agent(request.match_info['id']))
@@ -362,6 +378,11 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_post('/api/runs/{id}/restore', restore)
     app.router.add_post('/api/agents/{id}/message', message)
     app.router.add_post('/api/agents/{id}/stop', stop_agent)
+    app.router.add_post('/api/agents/{id}/approval', approval)
+    app.router.add_get('/api/memo', memo)
+    app.router.add_post('/api/memo', memo)
+    app.router.add_post('/api/memo/proposals/{id}', memo_proposal)
+    app.router.add_get('/api/history/search', history_search)
     app.router.add_get('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/provider-test', provider_test)

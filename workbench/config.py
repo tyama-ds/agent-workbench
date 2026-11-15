@@ -147,6 +147,12 @@ def validate_settings(raw, *, check_paths=True):
             raise ValueError('enabled は bool です')
         number(profile.setdefault('request_timeout_seconds', 180), 'API timeout', 5, 1800)
         number(profile.setdefault('context_window_tokens', 0), 'context_window_tokens', 0, 2000000, integer=True)
+        if not isinstance(profile.setdefault('fallback_profile_id', ''), str):
+            raise ValueError('fallback_profile_id が不正です')
+    for profile in profiles:
+        fallback = profile['fallback_profile_id']
+        if fallback and (fallback == profile['id'] or fallback not in seen):
+            raise ValueError(f"{profile['id']}: 代替モデルには自分以外の登録済みプロファイルを指定してください")
     bridge = value['copilot_agent']
     if type(bridge['enabled']) is not bool:
         raise ValueError('copilot_agent.enabled: bool が必要です')
@@ -296,6 +302,16 @@ def validate_settings(raw, *, check_paths=True):
     number(orchestration.setdefault('max_delegation_depth', 3), 'orchestration.max_delegation_depth', 1, 3, integer=True)
     if type(value['work_board']['enabled']) is not bool:
         raise ValueError('work_board.enabled: bool が必要です')
+    approvals = value['approvals']
+    if approvals['mode'] not in {'ask', 'always_allow'}:
+        raise ValueError('approvals.mode: ask または always_allow を指定してください')
+    for key in ('python', 'selenium', 'overwrite'):
+        if type(approvals[key]) is not bool:
+            raise ValueError(f'approvals.{key}: bool が必要です')
+    if type(value['memo']['proposals_enabled']) is not bool:
+        raise ValueError('memo.proposals_enabled: bool が必要です')
+    if type(value['history_search']['pm_enabled']) is not bool:
+        raise ValueError('history_search.pm_enabled: bool が必要です')
     return value
 
 

@@ -51,7 +51,7 @@ async def populated(tmp_path):
 def test_full_and_selected_field_parity_and_no_mutation(populated):
     engine, run, pm, worker, other_run, other_pm = populated
     before = engine.snapshot()
-    assert set(before) == {'runs', 'agents', 'events', 'resources', 'copilot_resources', 'copilot_agent_status', 'redaction_revision', 'instance_id', 'history_storage', 'credential_storage'}
+    assert set(before) == {'runs', 'agents', 'events', 'resources', 'copilot_resources', 'copilot_agent_status', 'redaction_revision', 'instance_id', 'history_storage', 'credential_storage', 'memo_proposals'}
     selected = engine.selected_snapshot(run_id=run['id'], agent_id=worker.id)
     assert set(selected) == set(before) | {'selection'}
     assert selected['selection'] == {'run_id': run['id'], 'agent_id': worker.id, 'detail_loaded': True}

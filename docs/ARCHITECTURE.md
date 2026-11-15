@@ -709,3 +709,25 @@ content through the same harness with the write's own hash as the expected
 hash, so a file changed afterwards is never overwritten, and only while no agent
 is working. Each process deletes its folder on close; archived runs have no
 restore points. Model-visible write results do not include the previous hash.
+
+## Approvals, team memo, past-work search and fallback models (0.1.1.dev52)
+
+Approval is checked in `Engine.execute_tool` after the usual admission and
+before any file lock or executor call, so a pending approval holds no lock and
+nothing has run. The waiting call keeps its place in the tool batch; the agent's
+task awaits a future that only `POST /api/agents/{id}/approval` resolves.
+Cancellation (team or worker stop) clears the request without running it.
+
+The memo lives in `memo.json`, not in settings: settings edits make running
+teams "settings changed", which the memo must not do. Each run snapshots the
+memo (masked) when it starts. PM proposals are process memory only and are
+appended to the memo only on a human approval.
+
+History search reads the existing archive table and matches literal,
+case-insensitive text after the payload is decoded and masked. The PM tool
+reads only tasks and recorded results of other runs, because logs and tool
+outputs may contain data from folders the current run cannot read.
+
+A fallback switch reuses the PM handoff rule: native provider envelopes are
+dropped from the agent's conversation so the new provider rebuilds its own
+request, and the switch is logged as a `model_fallback` event.

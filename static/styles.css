@@ -385,3 +385,26 @@ body{background:var(--cp-bg)}
 .readonly-chip{display:inline-block;font:9.5px/1.35 var(--mono);letter-spacing:.06em;padding:2px 6px;border:1px solid #3f5566;border-radius:4px;color:#a3c3da;background:#10181f;white-space:nowrap}
 .conversation-panel .readonly-chip{margin:4px 0 2px}
 .agent-controls{display:flex;justify-content:flex-end;margin-top:8px;padding:0 16px}
+/* Phase 7: approval card, memo proposals, history search */
+.approval-queue{background:#2a1f12;border-color:#a9773a;color:#f6c784}.approval-queue span{font:600 10px var(--mono);margin-left:3px}
+.approval-card{flex:none;margin:12px 12px 0;padding:10px 12px;border:1px solid #b9853f;border-left:3px solid var(--cp-amber,#efb45c);border-radius:6px;background:#241d14;display:grid;gap:7px;min-width:0}
+.approval-card:focus-visible{outline:2px solid #e3bc79;outline-offset:2px}.approval-card h4{margin:0;font-size:13px;color:#f6d39b}
+.approval-tool{font-size:11px;color:#e9dcc3}.approval-card label{font-size:10px;color:#c9bda5}
+.approval-summary{margin:0;max-height:min(22dvh,180px);overflow:auto;padding:8px;border:1px solid #4d4130;border-radius:4px;background:#14110d;color:#ece5d6;font:11px/1.6 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.approval-card input{width:100%;min-width:0;background:#0f1115;border:1px solid var(--cp-line-strong,#3c414a);border-radius:4px;color:var(--cp-ink,#ece5d6);padding:6px 8px}
+.approval-actions{display:flex;flex-wrap:wrap;gap:6px}.approval-actions .button{white-space:normal}
+.memo-proposal-notice{flex:none;margin:8px 10px 0;padding:8px 10px;text-align:left;border:1px solid #a98243;border-radius:5px;background:#302719;color:#f3d49b;font-size:11px}
+.memo-proposal-notice:hover{border-color:#d0a463}
+.memo-proposal-dialog{width:620px}.memo-proposal-dialog>.panel{padding:16px;display:grid;gap:10px}
+.memo-proposal-list{display:grid;gap:10px;max-height:60dvh;overflow:auto}
+.memo-proposal{border:1px solid var(--cp-line-strong,#3c414a);border-radius:6px;padding:10px;display:grid;gap:6px;min-width:0}
+.memo-proposal-from{font-size:11px;color:#c9bda5}.memo-proposal-reason{font-size:11px;color:#b7bcc4;overflow-wrap:anywhere}
+.memo-proposal-text{margin:0;max-height:200px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.6 var(--mono);background:#0f1115;border-radius:4px;padding:8px}
+.memo-proposal-actions,.memo-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.memo-actions{margin:8px 0}
+#teamMemo{width:100%}
+.radio-field{border:0;padding:0;margin:0;display:grid;gap:6px;min-width:0}.radio-field legend{font-size:11px;margin-bottom:4px}.approval-fields .radio-field{grid-column:1/-1}
+.history-search{display:flex;gap:5px;padding:0 12px 6px;flex:none}.history-search input{flex:1;min-width:0;background:#0f1115;border:1px solid var(--cp-line-strong,#3c414a);border-radius:6px;color:var(--cp-ink,#ece5d6);padding:6px 8px}
+.history-search-status{padding:0 14px;font-size:10px}.history-search-status:empty{display:none}
+.history-search-results{display:grid;gap:4px;padding:0 9px 6px;max-height:180px;overflow:auto;flex:none}.history-search-results:empty{display:none}
+.history-result{width:100%;min-width:0;border-color:var(--cp-line,#2a2e35)}.history-match{font-size:10px;line-height:1.5;color:#b7bcc4;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.radio-field .choice{display:flex;align-items:center;gap:8px;padding:8px 10px;text-align:left}.radio-field .choice input{width:auto;flex:none;margin:0}
