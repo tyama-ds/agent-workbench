@@ -27,7 +27,7 @@ RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids
     'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind', 'recovery', 'read_only'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind', 'recovery', 'read_only_worker'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))
@@ -106,8 +106,8 @@ def redact_document(document, redact):
         restore(before, after, ('id', 'run_id', 'parent_id'))
         restore(before, after, ('hierarchy',))
         enum(before, after, 'kind', {'author', 'independent_reviewer'})
-        if before.get('read_only') is True:
-            after['read_only'] = True
+        if before.get('read_only_worker') is True:
+            after['read_only_worker'] = True
         enum(before, after, 'status', statuses)
         restore(before, after, ('stop_reason',))
         if 'recovery' in before:

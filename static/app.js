@@ -97,7 +97,7 @@ const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行
 const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],context_trigger_percent:[50,90],context_recent_groups:[2,32],context_summary_chars:[512,16000],context_reserve_tokens:[256,65536],max_history_chars:[4000,4000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
 const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,selectionGeneration:0,compactState:false,loadedDetail:null,loadedEventsRun:null,detailError:false,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,pollAgain:false,drafts:new Map(),conversationViews:new Map(),logContext:'',logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
-Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map()});
+Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map(),stoppingAgents:new Map(),restoringReceipt:null});
 Object.assign(ui,{configRevision:null,configStale:false,settingsReloading:false,credentialGeneration:0,credentialOperations:new Map(),secretSources:{},credentialStorage:null,credentialRecoveryControls:[]});
 Object.assign(ui,{settingsDraftGeneration:0,settingsSaveOperation:null});
 Object.assign(ui,{skillsOperation:null,skillsCatalog:null,skillsGeneration:0});
@@ -199,7 +199,7 @@ function acceptServerInstance(response,configuration=false) {
   invalidateWorkBoardContent();ui.workBoards.clear();ui.boardOwner=null;ui.boardComposingRun=null;ui.boardRedactionRevision=null;
   stopNetworkMotion();clearNetworkPreview();ui.networkNodes.clear();ui.networkViews.clear();ui.networkGesture=null;ui.networkSuppressClick=null;ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
   $('teamMap').classList.remove('is-dragging');
-  ui.logSignature='';ui.outputSignature='';ui.taskReuseCandidate=null;ui.startOperation=null;ui.startingRun=false;ui.stoppingRuns.clear();ui.busyMessage=false;ui.messageOperation=null;
+  ui.logSignature='';ui.outputSignature='';ui.taskReuseCandidate=null;ui.startOperation=null;ui.startingRun=false;ui.stoppingRuns.clear();ui.stoppingAgents.clear();ui.restoringReceipt=null;ui.busyMessage=false;ui.messageOperation=null;
   ui.credentialOperations.clear();ui.secretSources={};ui.credentialStorage=null;ui.credentialRecoveryControls=[];renderCredentialStorage();ui.copilotAgentStatus=null;ui.copilotReconnectOperation=null;ui.historyStorage=null;
   ui.configStale=!configuration;clearCredentialInputs();
   invalidateSkillsCatalog('サーバーが変わりました。保存済み設定を確認してから一覧を再読込してください。');
@@ -1961,7 +1961,7 @@ function renderRunList() {
   [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
 const REASON_LABELS = {peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
-function stateLabel(item) { return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${statusLabel(displayStatus(item))}`:item?.status==='error'&&item?.stop_reason==='provider_output_limit'?'モデル出力上限':item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status); }
+function stateLabel(item) { const human=item?.stop_reason==='human_stop'?'人が停止':'';return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${human||statusLabel(displayStatus(item))}`:human||(item?.status==='error'&&item?.stop_reason==='provider_output_limit'?'モデル出力上限':item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status)); }
 function badge(status,reason,agent=null) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),agent?stateLabel(agent):REASON_LABELS[reason]||statusLabel(status)); }
 // Crew state vocabulary: icon + label + motion, never color alone. The label stays stateLabel().
 const CREW_STATES={working:{glyph:'▶',label:'作業中'},human:{glyph:'⏎',label:'回答待ち'},queued:{glyph:'⋯',label:'順番待ち'},waiting:{glyph:'Ⅱ',label:'待機'},
@@ -2017,7 +2017,7 @@ function renderCrewSummary(agents) {
   panel.append(total,bar,chips);
 }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.read_only_worker,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   crewOrder(filteredAgents(agents)).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
@@ -2030,7 +2030,7 @@ function renderAgents(agents) {
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
     const chips=element('span','agent-chips'),role=element('span','agent-role-chip',independentReviewer(agent)?'REVIEWER':!agent.parent_id?'PM':agentHierarchy(agent)?.direct_children.length?`LEAD · D${depth}`:`WORKER · D${depth}`);
-    chips.append(role,model);
+    chips.append(role,model);if(agent.read_only_worker===true&&!archivedAgent(agent))chips.append(readOnlyChip());
     const focus=needsHuman(agent)&&agent.question?agent.question:crew==='error'&&agent.last_error?agent.last_error:'';
     const task=element('span','agent-task',agent.assignment||agent.question||agent.last_error||(independentReviewer(agent)?'独立した成果レビューを担当':!agent.parent_id?'チームの作業を管理':'割り当てられた作業を担当'));
     card.append(top,element('span','agent-name',agent.name||agent.id),chips,task);
@@ -2045,6 +2045,9 @@ function outputRecords(agent) {
   const reports=Array.isArray(agent?.results)?agent.results:[],receipts=Array.isArray(agent?.output_receipts)?agent.output_receipts:[];
   return [...reports.slice().reverse().map(record=>({key:`result:${record.id}`,kind:'result',record})),...receipts.slice().reverse().map(record=>({key:`receipt:${record.id}`,kind:'receipt',record}))];
 }
+const READ_ONLY_HELP='読み取りだけを許可された担当です。ファイルの書き込み・コード実行・ブラウザー操作はできません。';
+function readOnlyChip() { const chip=element('span','readonly-chip','読み取り専用');chip.title=READ_ONLY_HELP;return chip; }
+function receiptToolLabel(receipt) { return receipt?.tool==='human_restore'?'人が元に戻した':String(receipt?.tool??''); }
 function agentDetailLoaded(agent) {
   return Boolean(agent)&&(!ui.compactState||(ui.loadedDetail?.generation===ui.selectionGeneration&&ui.loadedDetail.run===ui.selectedRun&&ui.loadedDetail.agent===agent.id));
 }
@@ -2061,7 +2064,7 @@ function outputTimestamp(value) {
   return value===undefined||value===null||Number.isNaN(date.getTime())?'時刻なし':date.toISOString();
 }
 function receiptText(receipt) {
-  return [`パス: ${receipt.path??''}`,`保存操作: ${receipt.operation==='updated'?'更新':'新規作成'}`,`ツール: ${receipt.tool??''}`,`保存時のサイズ: ${receipt.bytes??'不明'} bytes`,`保存時の SHA-256: ${receipt.sha256??'不明'}`].join('\n');
+  return [`パス: ${receipt.path??''}`,`保存操作: ${receipt.operation==='updated'?'更新':'新規作成'}`,`ツール: ${receiptToolLabel(receipt)}`,`保存時のサイズ: ${receipt.bytes??'不明'} bytes`,`保存時の SHA-256: ${receipt.sha256??'不明'}`].join('\n');
 }
 function exportOutputText(agent,item) {
   const record=item.record,heading=item.kind==='result'?'モデルの報告':'ファイル保存記録',profile=configuredProfile(agent);
@@ -2102,7 +2105,7 @@ function renderResults(agent) {
   for(const [label,items] of [['モデルの報告（新しい順）',results],['ファイル保存記録（新しい順）',receipts]]) {
     if(!items.length)continue;
     const group=element('optgroup');group.label=label;
-    for(const item of items){const record=item.record,title=item.kind==='result'?`${resultPosition(agent,record)} · ${resultSource(record)}${record.truncated?' · 本文省略あり':''}`:`保存時の記録 · ${record.path??''}`;const option=element('option','',`${title} · turn ${record.turn??'?'}${localTime(record.at)?' · '+localTime(record.at):''}`);option.value=item.key;group.appendChild(option);}
+    for(const item of items){const record=item.record,title=item.kind==='result'?`${resultPosition(agent,record)} · ${resultSource(record)}${record.truncated?' · 本文省略あり':''}`:`${record.tool==='human_restore'?'人が元に戻した':'保存時の記録'} · ${record.path??''}${record.restorable===true?' · 元に戻せる':''}`;const option=element('option','',`${title} · turn ${record.turn??'?'}${localTime(record.at)?' · '+localTime(record.at):''}`);option.value=item.key;group.appendChild(option);}
     select.appendChild(group);
   }
   if(!selected){const option=element('option','','まだ報告・保存記録はありません');option.value='';select.appendChild(option);}
@@ -2151,6 +2154,46 @@ function exportSelectedOutput() {
   try {downloadPlainText(exportOutputText(agent,item),item.kind==='receipt'?'workbench-save-receipt.txt':'workbench-result.txt');outputFeedback(action,'選択した記録の .txt ダウンロードを開始しました（UTF-8）。');}
   catch(_){outputFeedback(action,'.txt ダウンロードを開始できませんでした。表示されたテキストを選択してコピーしてください。',true);}
 }
+// Restore is a human action on a live run between turns; the server re-checks every condition.
+function receiptRestoreState(agent,item) {
+  const run=agent&&ui.state.runs.find(entry=>entry.id===agent.run_id);
+  if(item?.kind!=='receipt'||item.record?.restorable!==true||!run||archivedRun(run)||archivedAgent(agent))return 'hidden';
+  return ['running','stopping'].includes(run.status)?'running':'ready';
+}
+function renderRestoreControl(agent) {
+  const button=$('restoreReceipt'),state=agentDetailLoaded(agent)?receiptRestoreState(agent,selectedOutput()):'hidden';
+  button.hidden=state==='hidden';button.disabled=state!=='ready'||ui.restoringReceipt!==null;
+  const title=state==='running'?'実行中は戻せません。待機・完了・停止後に使えます':'';if(button.title!==title)button.title=title;
+}
+async function restoreSelectedReceipt() {
+  const agent=getAgent(),item=selectedOutput();if(!agent||ui.restoringReceipt||receiptRestoreState(agent,item)!=='ready')return;
+  const record=item.record,path=String(record.path??'');
+  if(!window.confirm(`${path} をこの保存の前の内容に戻しますか？この保存の後に変更されている場合は戻せません。`))return;
+  const action={...beginOutputAction(item),noticeGeneration:ui.noticeGeneration};
+  const report=(text,error=false)=>outputActionCurrent(action)?inlineStatus($('resultActionStatus'),text,error):actionNotice(action,text,error);
+  ui.restoringReceipt=action;renderRestoreControl(agent);report('元に戻しています…');
+  try{const response=await api(`/api/runs/${encodeURIComponent(agent.run_id)}/restore`,{method:'POST',body:{receipt_id:record.id}});await pollState(true);report(`${typeof response?.path==='string'?response.path:path} を保存前の内容に戻しました。`);}
+  catch(error){report(`元に戻せませんでした: ${errorText(error)}${error.outcomeUnknown?' 結果は未確認です。保存記録を確認してから再実行してください。':''}`,true);}
+  finally{if(ui.restoringReceipt===action)ui.restoringReceipt=null;renderRestoreControl(getAgent());}
+}
+const STOPPABLE_AGENT_STATUSES=new Set(['idle','queued','working','waiting']);
+function agentStopKey(agent) { return JSON.stringify([agent?.run_id,agent?.id]); }
+function canStopAgent(agent) {
+  const run=agent&&ui.state.runs.find(entry=>entry.id===agent.run_id);
+  return Boolean(agent?.parent_id)&&Boolean(run)&&!archivedRun(run)&&!archivedAgent(agent)&&!['stopping','stopped'].includes(run.status)&&run.adaptive_team!==true&&!independentReviewer(agent)&&STOPPABLE_AGENT_STATUSES.has(agent.status);
+}
+function renderAgentControls(agent) {
+  const allowed=canStopAgent(agent);$('agentControls').hidden=!allowed;$('stopAgent').disabled=!allowed||ui.stoppingAgents.has(agentStopKey(agent));
+}
+async function stopSelectedAgent() {
+  const agent=getAgent();if(!canStopAgent(agent)||ui.stoppingAgents.has(agentStopKey(agent)))return;
+  if(!window.confirm('この担当を停止しますか？保存済みのファイルは残ります。PM に停止が伝わります。'))return;
+  notice('');const action={noticeGeneration:ui.noticeGeneration},key=agentStopKey(agent),name=agent.name||agent.id;
+  ui.stoppingAgents.set(key,action);renderAgentControls(agent);
+  try{const response=await api(`/api/agents/${encodeURIComponent(agent.id)}/stop`,{method:'POST',body:{}});await pollState(true);const count=Array.isArray(response?.stopped)?response.stopped.length:0;actionNotice(action,`担当 ${name} の停止を受け付けました${count>1?`（配下を含む ${count} 人）`:''}。保存済みのファイルは残ります。`);}
+  catch(error){actionNotice(action,`担当 ${name} の停止要求: ${errorText(error)}`,true);}
+  finally{if(ui.stoppingAgents.get(key)===action)ui.stoppingAgents.delete(key);renderAgentControls(getAgent());}
+}
 function setVisibleText(node,text) { const value=String(text??'');if(node.textContent!==value)node.textContent=value; }
 function renderWorkerRecovery(agent) {
   const recovery=agent?.recovery,limited=agent?.stop_reason==='provider_output_limit';
@@ -2186,7 +2229,8 @@ function renderInspector(agent) {
 }
 function renderConversation(agent) {
   renderInspector(agent);
-  renderResults(agent);
+  renderResults(agent);renderRestoreControl(agent);renderAgentControls(agent);
+  $('conversationReadOnly').hidden=!(agent?.read_only_worker===true&&!archivedAgent(agent));
   const available=Boolean(agent),run=getRun();$('messageForm').hidden=!available;
   const loaded=agentDetailLoaded(agent),loading=available&&!loaded,detailStatus=$('detailStatus');
   detailStatus.hidden=!loading;
@@ -2400,7 +2444,7 @@ function sharedBudgetMetrics(run) {
   return rows;
 }
 function runtimeStopMetrics(run) {
-  const labels={time_limit:'実行時間の上限',model_limit:'モデル呼び出し回数の上限',tool_limit:'ツール実行回数の上限',turn_limit:'担当のターン数上限',provider_timeout:'モデルAPIの応答待ちタイムアウト（自動再試行なし）',provider_output_limit:'モデル出力上限（未完了）'};
+  const labels={human_stop:'人が停止',time_limit:'実行時間の上限',model_limit:'モデル呼び出し回数の上限',tool_limit:'ツール実行回数の上限',turn_limit:'担当のターン数上限',provider_timeout:'モデルAPIの応答待ちタイムアウト（自動再試行なし）',provider_output_limit:'モデル出力上限（未完了）'};
   const reasons=Array.isArray(run.stop_reasons)?run.stop_reasons:[run.stop_reason];
   const values=[...new Set(reasons.filter(reason=>typeof reason==='string'&&Object.hasOwn(labels,reason)))].map(reason=>labels[reason]);
   return values.length?[['担当の停止理由',values.join(' / ')]]:[];
@@ -2616,7 +2660,7 @@ async function initialize() {
   for(const [id,filter] of [['activityAll','all'],['activityMail','mail'],['activitySelected','selected']])$(id).addEventListener('click',()=>{ui.activityFilter=filter;renderActivity(getRun());});
   $('inspectAgentMail').addEventListener('click',()=>{ui.activityFilter='selected';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});});
   $('resultSelection').addEventListener('change',()=>{ui.outputSelections.set(outputOwner(),$('resultSelection').value);renderResults(getAgent());$('resultText').scrollTop=0;});
-  $('copyResult').addEventListener('click',copySelectedOutput);$('exportResult').addEventListener('click',exportSelectedOutput);
+  $('copyResult').addEventListener('click',copySelectedOutput);$('restoreReceipt').addEventListener('click',restoreSelectedReceipt);$('stopAgent').addEventListener('click',stopSelectedAgent);$('exportResult').addEventListener('click',exportSelectedOutput);
   $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',()=>showView('settings'));
   $('startRun').addEventListener('pointerdown',event=>{if(event.isPrimary)ui.startPointerActive=true;});
   window.addEventListener('pointerup',releaseStartPointer);

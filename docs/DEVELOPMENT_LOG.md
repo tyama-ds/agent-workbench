@@ -21,7 +21,7 @@ Phase 6 of the hermes-agent comparison (files and operations).
 - Read-only workers: `spawn_worker(read_only=true)` creates a worker that may
   read but is neither offered nor allowed write, directory, reservation,
   Python, browser or spawn tools. The identity says `read_only`, and the flag
-  is kept in history.
+  is kept in history (agent field `read_only_worker`; `read_only` on agents already marks saved history).
 - A PM with `max_workers` 0 is no longer offered worker tools (`spawn_worker`,
   `start_ordered_work`, `wait_for_workers`, `review_worker_report`), which could
   only fail; this keeps the request smaller in solo runs.

@@ -146,9 +146,9 @@ async def test_read_only_worker_can_read_but_not_change_files(tmp_path):
             await engine.execute_tool(run, pm, 'spawn_worker', {
                 'role': 'r', 'task': 't', 'profile_id': 'local', 'read_only': 'yes'})
         public = worker.public()
-        assert public['read_only'] is True and 'read_only' not in pm.public()
+        assert public['read_only_worker'] is True and 'read_only_worker' not in pm.public()
         saved = public_document(run, [worker.public(), pm.public()], [], [])
-        assert saved['agents'][0]['read_only'] is True
+        assert saved['agents'][0]['read_only_worker'] is True
     finally:
         await engine.close()
 

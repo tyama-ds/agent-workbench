@@ -381,3 +381,7 @@ body{background:var(--cp-bg)}
 :root[data-layout=network-popout] .network-workspace{grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(0,1fr);height:100%;min-height:0;overflow:hidden}
 :root[data-layout=network-popout] .network-panel{height:100%}
 :root[data-layout=network-popout] .team-map{min-height:0}
+/* Worker controls: read-only badge, per-worker stop, receipt restore. */
+.readonly-chip{display:inline-block;font:9.5px/1.35 var(--mono);letter-spacing:.06em;padding:2px 6px;border:1px solid #3f5566;border-radius:4px;color:#a3c3da;background:#10181f;white-space:nowrap}
+.conversation-panel .readonly-chip{margin:4px 0 2px}
+.agent-controls{display:flex;justify-content:flex-end;margin-top:8px;padding:0 16px}

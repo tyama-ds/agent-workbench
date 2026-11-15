@@ -326,7 +326,8 @@ class Agent:
         if self.kind:
             value['kind'] = self.kind
         if self.read_only:
-            value['read_only'] = True
+            # Not 'read_only': on agents that key already marks saved history.
+            value['read_only_worker'] = True
         if self.output_limit_failures or self.recovery_attempts:
             value['recovery'] = recovery_view(self)
         if hierarchy is not None and self.kind != 'independent_reviewer':
