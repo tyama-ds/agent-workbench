@@ -4,6 +4,40 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev52 — Approvals, team memo, past-work search and fallback models (2026-11-15)
+
+Phase 7 of the hermes-agent comparison, with the design choices made by the
+human.
+
+- Approvals: `approvals.mode` is `ask` (default) or `always_allow`. In `ask`
+  mode, `python_execute`, `selenium_browse` and writes to an existing file
+  (a write tool with `expected_sha256` other than `missing`) each pause before
+  running; the agent shows `approval` and status reason `approval`, and the
+  run waits. `POST /api/agents/{id}/approval {approval_id, decision, note?}`
+  approves (the call then runs) or rejects (nothing runs; the model gets a
+  tool error with the note). Each kind can be switched off in settings, and a
+  run can start with `approval_mode: always_allow`. Creating new files and
+  reading never ask. Stopping the team while an approval waits runs nothing.
+- Team memo: a human-written memo (`memo.json` in the state folder, 4,000
+  characters, outside settings so editing it never marks running teams as
+  changed) is snapshotted at run start and added to every agent's system
+  prompt as guidance that grants nothing. With `memo.proposals_enabled`
+  (default on), root PMs get `propose_memo({text, reason})`; proposals wait in
+  `state.memo_proposals` until `POST /api/memo/proposals/{id}` approves
+  (appends) or rejects them. They never change a running team.
+- Past work: `GET /api/history/search?q=` searches saved runs' tasks, results
+  and logs. With `history_search.pm_enabled` (default off), root PMs get
+  `search_past_work({query})`, which returns other runs' tasks and recorded
+  results only (no logs or tool outputs), marked as untrusted past data.
+- Fallback models: `providers[].fallback_profile_id` names another profile.
+  After the provider's retries and the outage waits fail with a retryable
+  error or a timeout, the agent switches once per turn to that profile when
+  the run allows it, drops native replay envelopes (as in a PM handoff) and
+  re-sends. Quota, authentication and request errors never switch.
+- Tests run with approvals off unless marked `approvals` (`tests/conftest.py`).
+- The cockpit shows approval cards, an approvals-waiting indicator, the memo
+  and its proposals, history search, and the new settings.
+
 ## 0.1.1.dev51 — Partial reads, batched edits, read-only workers, single stop and restore (2026-11-15)
 
 Phase 6 of the hermes-agent comparison (files and operations).

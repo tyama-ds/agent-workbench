@@ -24,7 +24,7 @@ MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
     'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
     'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
-    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries'))
+    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries', 'approval_mode'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
     'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind', 'recovery', 'read_only_worker'))
@@ -89,6 +89,7 @@ def redact_document(document, redact):
     statuses = {'idle', 'queued', 'working', 'running', 'waiting', 'stopping', 'stopped', 'done', 'error', 'interrupted'}
     restore(document['run'], result['run'], ('id', 'agent_ids', 'pm_agent_ids'))
     enum(document['run'], result['run'], 'status', statuses)
+    enum(document['run'], result['run'], 'approval_mode', {'ask', 'always_allow'})
     # Validated diagnostics are fixed application metadata, never credential text.
     restore(document['run'], result['run'], ('budget', 'stop_reason', 'stop_reasons'))
     if document['run'].get('adaptive_team') is True:
@@ -125,7 +126,7 @@ def redact_document(document, redact):
         restore(before, after, ('run_id', 'agent_id', 'from_agent_id', 'to_agent_id'))
         if isinstance(before.get('mail_id'), str) and re.fullmatch(r'm-[0-9a-f]{32}', before['mail_id']):
             after['mail_id'] = before['mail_id']
-        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped', 'restored'})
+        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped', 'restored', 'approval', 'approval_resolved', 'memo_proposal', 'model_fallback'})
         enum(before, after, 'message_type', {'worker_report', 'worker_error', 'worker_notice', 'peer_message'})
         enum(before, after, 'delivery_state', {'queued', 'context_consumed'})
     for before, after in zip(document['board'], result['board']):
@@ -746,6 +747,47 @@ class HistoryStore:
                         raise HistoryError('履歴の作業IDが一致しません。')
                     result[ident] = (summary(document), saved_at)
                 return result
+        except (OSError, sqlite3.Error, HistoryError) as exc:
+            self._failed(exc)
+
+    def search(self, query, redact=lambda value: value, *, exclude=(), limit=20, include_logs=True):
+        """Find saved runs whose task, results (or logs) contain the query.
+
+        Case-insensitive literal match; no regex. Returns newest first:
+        [{run_id, saved_at, task, status, matches:[{source, agent, text}]}].
+        """
+        if not self._readable:
+            raise HistoryError(self.error)
+        needle = query.casefold()
+
+        def snippet(value):
+            index = value.casefold().find(needle)
+            start = max(0, index - 80)
+            return ('…' if start else '') + value[start:index + len(query) + 160] + ('…' if index + len(query) + 160 < len(value) else '')
+        found = []
+        try:
+            with closing(self._connect(readonly=True)) as connection:
+                self._schema(connection)
+                for ident, saved_at, value in connection.execute('SELECT run_id,saved_at,payload FROM archives ORDER BY saved_at DESC'):
+                    if ident in exclude or needle not in value.casefold():
+                        continue
+                    document = redact_document(decode(value), redact)
+                    run, matches = document['run'], []
+                    if needle in str(run.get('task', '')).casefold():
+                        matches.append({'source': 'task', 'agent': '', 'text': snippet(str(run['task']))})
+                    for agent in document['agents']:
+                        rows = [('result', row.get('text', '')) for row in agent.get('results', [])]
+                        if include_logs:
+                            rows += [('log', row.get('text', '')) for row in agent.get('logs', [])]
+                        for source, value_text in rows:
+                            if isinstance(value_text, str) and needle in value_text.casefold() and len(matches) < 5:
+                                matches.append({'source': source, 'agent': str(agent.get('name', '')), 'text': snippet(value_text)})
+                    if matches:
+                        found.append({'run_id': ident, 'saved_at': saved_at, 'task': str(run.get('task', ''))[:300],
+                                      'status': run.get('status', ''), 'matches': matches})
+                    if len(found) >= limit:
+                        break
+                return found
         except (OSError, sqlite3.Error, HistoryError) as exc:
             self._failed(exc)
 
