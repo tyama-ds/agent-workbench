@@ -63,7 +63,7 @@ async function messageReceiptAcceptance({context,origin,providerRequests,report}
     for(const [agent,present] of [[source,sourcePresent],[other,true]]){
       const marker=page.locator(`#agentCards [data-agent-id="${agent.id}"] .input-presence-badge`);
       assert.equal(await marker.count(),present?1:0,'Input presence belongs to its exact composer owner');
-      if(present)assert.equal(await marker.textContent(),'入力あり');
+      if(present)assert.equal(await marker.textContent(),'入力中');
     }
     const count=sourcePresent?2:1;
     assert.equal(await page.locator('#messageInputCount').textContent(),String(count));
