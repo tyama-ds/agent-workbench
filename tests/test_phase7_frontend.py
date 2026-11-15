@@ -142,7 +142,7 @@ assert.equal($('approvalQueue').hidden,true);assert.equal($('approvalCount').tex
 def test_new_task_sends_approval_mode_and_run_metrics_show_it():
     check(r"""
 await wire();
-assert.ok(!$('approvalAlwaysAllow').checked);assert.equal(runPayload().approval_mode,'ask');
+assert.ok(!$('approvalAlwaysAllow').checked);assert.equal(Object.hasOwn(runPayload(),'approval_mode'),false,'the saved default is not repeated');
 $('approvalAlwaysAllow').checked=true;trackTaskDraft({type:'change',target:$('approvalAlwaysAllow')});
 assert.equal(ui.approvalChoiceTouched,true);
 const pending=submit();assert.equal(requests[0].path,'/api/runs');
@@ -159,7 +159,7 @@ def test_new_task_checkbox_follows_saved_mode_until_touched():
     check_settings(r'''
 await setup();assert.equal($('approvalAlwaysAllow').checked,false);
 ui.config.approvals.mode='always_allow';renderProfileChoices(true);assert.equal($('approvalAlwaysAllow').checked,true);
-assert.equal(runPayload().approval_mode,'always_allow');
+assert.equal(Object.hasOwn(runPayload(),'approval_mode'),false);
 $('approvalAlwaysAllow').checked=false;trackTaskDraft({type:'change',target:$('approvalAlwaysAllow')});
 renderProfileChoices(true);assert.equal($('approvalAlwaysAllow').checked,false);assert.equal(runPayload().approval_mode,'ask');
 ''')

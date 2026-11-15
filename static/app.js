@@ -800,7 +800,9 @@ function runPayload() {
   const extra=[...($('additionalPMs')?.querySelectorAll('select')||[])].map(select=>select.value);
   if(extra.length)payload.pm_profiles=[payload.pm_profile,...extra];
   if($('adaptiveTeam')?.checked===true)payload.adaptive_team=true;
-  payload.approval_mode=$('approvalAlwaysAllow')?.checked===true?'always_allow':'ask';
+  // Sent only when this run differs from the saved setting (the server's default).
+  const approvalMode=$('approvalAlwaysAllow')?.checked===true?'always_allow':'ask';
+  if(approvalMode!==(ui.config?.approvals?.mode==='always_allow'?'always_allow':'ask'))payload.approval_mode=approvalMode;
   return payload;
 }
 function trackTaskDraft(event) {
