@@ -1697,7 +1697,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             contextual['parameters']['properties']['read_only'] = {'type': 'boolean'}
             contextual['description'] = ('Create a direct child within shared worker/depth caps. Give exact instructions, deliverable and checks. '
                 'Optional depends_on: existing siblings; starts after your current formal-report acceptance. '
-                'read_only=true: may read but not write, run code or browse (research/review). Reuse via send_message.')
+                'read_only=true: reads only, no writes/code/browser. Reuse via send_message.')
             return contextual
         if agent.parent_id and not self._ordered_for(run, agent) and tool['name'] in {'wait_for_workers', 'review_worker_report'}:
             contextual = copy.deepcopy(tool)
