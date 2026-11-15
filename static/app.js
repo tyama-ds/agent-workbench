@@ -66,7 +66,7 @@ const FIELD_GROUPS = {
     ['gpu_poll_interval_seconds','GPU の確認間隔（秒）','number',0.1,'any'],
   ],
   approvals: [
-    ['mode','操作の承認','radio',[['ask','実行前に確認する'],['always_allow','確認せずに実行する（常に許可）']]],
+    ['mode','確認するかどうか','radio',[['ask','実行前に確認する'],['always_allow','確認せずに実行する（常に許可）']]],
     ['python','Python の実行','checkbox'],
     ['selenium','ブラウザ操作','checkbox'],
     ['overwrite','既存ファイルの上書き・編集','checkbox'],
@@ -2237,6 +2237,162 @@ async function stopSelectedAgent() {
   catch(error){actionNotice(action,`担当 ${name} の停止要求: ${errorText(error)}`,true);}
   finally{if(ui.stoppingAgents.get(key)===action)ui.stoppingAgents.delete(key);renderAgentControls(getAgent());}
 }
+// Phase 7: tool-call approval, the team memo and its proposals, and history search.
+// Every model/state string below is untrusted and is placed with textContent only.
+const APPROVAL_MODE_LABELS={ask:'毎回確認',always_allow:'常に許可'};
+const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',selenium_browse:'ブラウザ操作'};
+const APPROVAL_FILE_TOOLS=new Set(['write_text','patch_text','docx_edit','docx_write','xlsx_write','pptx_edit','pptx_write']);
+const HISTORY_MATCH_LABELS={task:'依頼',result:'報告',log:'ログ'};
+function approvalToolLabel(tool) { return APPROVAL_TOOL_LABELS[tool]||(APPROVAL_FILE_TOOLS.has(tool)?'既存ファイルの変更':'ツールの実行'); }
+function pendingApproval(agent) {
+  const approval=agent?.approval;
+  return approval&&typeof approval==='object'&&!Array.isArray(approval)&&typeof approval.id==='string'&&approval.id&&!archivedAgent(agent)?approval:null;
+}
+function approvalEntries() {
+  return [...ui.state.runs].sort((a,b)=>(Number(a.created_at)||0)-(Number(b.created_at)||0)).flatMap(run=>
+    archivedRun(run)||['stopping','stopped'].includes(run.status)?[]:ui.state.agents.filter(agent=>agent.run_id===run.id&&pendingApproval(agent)).map(agent=>({run,agent})));
+}
+function renderApprovalSummary() {
+  const count=approvalEntries().length;$('approvalQueue').hidden=!count;setVisibleText($('approvalCount'),String(count));
+}
+function openNextApproval() {
+  if($('taskDialog').open||$('settingsDialog').open)return;
+  const entries=approvalEntries();if(!entries.length){renderState();return;}
+  const index=entries.findIndex(({run,agent})=>run.id===ui.selectedRun&&agent.id===ui.selectedAgent),{run,agent}=entries[(index+1)%entries.length];
+  ui.navigationGeneration++;const changed=changeSelection(run.id,agent.id);revealInspector();renderState();
+  $('approvalCard').focus();if(changed)void pollState();
+}
+function renderApproval(agent) {
+  const approval=pendingApproval(agent),card=$('approvalCard'),key=approval?JSON.stringify([agent.run_id,agent.id,approval.id]):'';
+  if(!approval&&card.contains(document.activeElement))$('conversationHeading').focus({preventScroll:true});
+  card.hidden=!approval;
+  if(ui.approvalContext!==key){ui.approvalContext=key;$('approvalNote').value='';inlineStatus($('approvalStatus'),'');$('approvalSummary').scrollTop=0;}
+  setVisibleText($('approvalTool'),approval?`操作: ${approvalToolLabel(approval.tool)}`:'');
+  setVisibleText($('approvalSummary'),approval?String(approval.summary??''):'');
+  const run=agent&&ui.state.runs.find(item=>item.id===agent.run_id),blocked=!approval||Boolean(ui.approvalOperation)||['stopping','stopped'].includes(run?.status);
+  $('approveAction').disabled=blocked;$('rejectAction').disabled=blocked;
+}
+async function decideApproval(decision) {
+  const agent=getAgent(),approval=pendingApproval(agent);
+  if(!approval||ui.approvalOperation||$('approveAction').disabled)return;
+  const note=$('approvalNote').value.trim().slice(0,1000),name=agent.name||agent.id;
+  notice('');const action={noticeGeneration:ui.noticeGeneration,key:ui.approvalContext};ui.approvalOperation=action;renderApproval(agent);
+  inlineStatus($('approvalStatus'),'送信しています…');
+  try{
+    const body={approval_id:approval.id,decision};if(note)body.note=note;
+    await api(`/api/agents/${encodeURIComponent(agent.id)}/approval`,{method:'POST',body});
+    actionNotice(action,decision==='approve'?`${name} の操作を承認しました。`:`${name} の操作を却下しました。`);
+    if(ui.approvalContext===action.key)inlineStatus($('approvalStatus'),'');
+    await pollState(true);
+  }catch(error){
+    if(ui.approvalContext===action.key)inlineStatus($('approvalStatus'),`送信できませんでした: ${errorText(error)}`,true);
+    else actionNotice(action,`${name} の操作の承認: ${errorText(error)}`,true);
+  }finally{if(ui.approvalOperation===action)ui.approvalOperation=null;renderApproval(getAgent());}
+}
+function openSettings() { const opening=!$('settingsDialog').open;showView('settings');if(opening)void loadMemo(); }
+function renderMemoControls() {
+  const busy=Boolean(ui.memoOperation);$('teamMemo').disabled=!ui.memoLoaded||busy;
+  $('saveMemo').disabled=!ui.memoLoaded||busy||$('teamMemo').value===ui.memoBaseline;
+}
+function acceptMemo(memo) {
+  if(!memo||typeof memo!=='object'||typeof memo.text!=='string')throw new Error('メモの応答を確認できませんでした。');
+  ui.memoBaseline=memo.text;ui.memoLoaded=true;$('teamMemo').value=memo.text;
+  $('teamMemo').maxLength=Number.isInteger(memo.max_chars)&&memo.max_chars>0?memo.max_chars:4000;
+}
+function acceptMemoProposals(response) {
+  if(Array.isArray(response?.proposals)){ui.state.memo_proposals=response.proposals;renderMemoProposals();}
+}
+async function loadMemo() {
+  if(!ui.authenticated||ui.memoOperation)return;
+  const action={workspace:ui.workspaceGeneration};ui.memoOperation=action;ui.memoLoaded=false;renderMemoControls();
+  inlineStatus($('memoStatus'),'メモを読み込んでいます…');
+  try{
+    const response=await api('/api/memo');
+    if(action.workspace!==ui.workspaceGeneration||!$('settingsDialog').open)return;
+    acceptMemo(response.memo);inlineStatus($('memoStatus'),'');
+  }catch(error){if(action.workspace===ui.workspaceGeneration)inlineStatus($('memoStatus'),`メモを読み込めませんでした: ${errorText(error)}`,true);}
+  finally{if(ui.memoOperation===action)ui.memoOperation=null;renderMemoControls();}
+}
+async function saveMemo() {
+  if(!ui.memoLoaded||ui.memoOperation)return;
+  const text=$('teamMemo').value,action={workspace:ui.workspaceGeneration};ui.memoOperation=action;renderMemoControls();
+  inlineStatus($('memoStatus'),'保存しています…');
+  try{
+    const response=await api('/api/memo',{method:'POST',body:{text}});
+    acceptMemoProposals(response);
+    if(action.workspace!==ui.workspaceGeneration)return;
+    // Keep any edit typed while the save was in flight.
+    if($('teamMemo').value===text)acceptMemo(response.memo);else ui.memoBaseline=String(response.memo?.text??text);
+    inlineStatus($('memoStatus'),'メモを保存しました。');
+  }catch(error){if(action.workspace===ui.workspaceGeneration)inlineStatus($('memoStatus'),`保存できませんでした: ${errorText(error)}`,true);}
+  finally{if(ui.memoOperation===action)ui.memoOperation=null;renderMemoControls();}
+}
+function memoProposals() { return Array.isArray(ui.state.memo_proposals)?ui.state.memo_proposals.filter(item=>item&&typeof item.id==='string'&&item.id):[]; }
+function openMemoProposals() {
+  if($('taskDialog').open||$('settingsDialog').open)return;
+  inlineStatus($('memoProposalStatus'),'');ui.memoProposalSignature='';renderMemoProposals();
+  if(!$('memoProposalDialog').open)$('memoProposalDialog').showModal();
+}
+function renderMemoProposals() {
+  const proposals=memoProposals(),busy=ui.memoProposalOperation;
+  $('memoProposalNotice').hidden=!proposals.length;setVisibleText($('memoProposalCount'),String(proposals.length));
+  const signature=JSON.stringify([proposals,busy?.id||'']);if(signature===ui.memoProposalSignature)return;ui.memoProposalSignature=signature;
+  preserveControlFocus(()=>{
+    const list=$('memoProposalList');list.replaceChildren();
+    if(!proposals.length){list.appendChild(element('p','empty-small','確認を待っている提案はありません。'));return;}
+    for(const proposal of proposals){
+      const item=element('article','memo-proposal'),actions=element('div','memo-proposal-actions');
+      item.append(element('p','memo-proposal-from',`${proposal.agent_name||proposal.agent_id||'担当'} からの提案${proposal.run_id?` · チーム ${String(proposal.run_id).slice(-8)}`:''}`),
+        element('pre','memo-proposal-text',String(proposal.text??'')));
+      if(proposal.reason)item.appendChild(element('p','memo-proposal-reason',`理由: ${proposal.reason}`));
+      for(const [decision,label,style] of [['approve','メモに追加','button primary'],['reject','却下','button minor']]){
+        const button=element('button',style,label);button.type='button';button.disabled=Boolean(busy);button.dataset.focusKey=`memo-proposal:${proposal.id}:${decision}`;
+        button.addEventListener('click',()=>decideMemoProposal(proposal.id,decision));actions.appendChild(button);
+      }
+      item.appendChild(actions);list.appendChild(item);
+    }
+  },()=>$('closeMemoProposals'));
+}
+async function decideMemoProposal(id,decision) {
+  if(ui.memoProposalOperation||!memoProposals().some(item=>item.id===id))return;
+  const action={id};ui.memoProposalOperation=action;renderMemoProposals();inlineStatus($('memoProposalStatus'),'送信しています…');
+  try{
+    const response=await api(`/api/memo/proposals/${encodeURIComponent(id)}`,{method:'POST',body:{decision}});
+    if($('settingsDialog').open&&ui.memoLoaded&&$('teamMemo').value===ui.memoBaseline&&typeof response.memo?.text==='string')acceptMemo(response.memo);
+    ui.memoProposalOperation=null;acceptMemoProposals(response);
+    inlineStatus($('memoProposalStatus'),decision==='approve'?'メモに追加しました。':'提案を却下しました。');
+    await pollState(true);
+  }catch(error){inlineStatus($('memoProposalStatus'),`送信できませんでした: ${errorText(error)}`,true);}
+  finally{if(ui.memoProposalOperation===action)ui.memoProposalOperation=null;renderMemoProposals();}
+}
+function localDate(value) {
+  const date=new Date(typeof value==='number'?(value<1e12?value*1000:value):value);
+  return value&&!Number.isNaN(date.getTime())?date.toLocaleDateString('ja-JP'):'';
+}
+async function searchHistory(event) {
+  event?.preventDefault();if(ui.historySearchOperation)return;
+  const query=$('historySearchInput').value.trim(),status=$('historySearchStatus'),results=$('historySearchResults');
+  if(!query||query.length>200){inlineStatus(status,query?'検索する言葉は200文字以内にしてください。':'検索する言葉を入力してください。',true);return;}
+  const action={};ui.historySearchOperation=action;$('historySearchButton').disabled=true;inlineStatus(status,'検索しています…');
+  try{
+    const response=await api(`/api/history/search?q=${encodeURIComponent(query)}`);
+    const runs=Array.isArray(response.runs)?response.runs.filter(run=>run&&typeof run.run_id==='string'):[];
+    results.replaceChildren();
+    for(const run of runs){
+      const button=element('button','run-link history-result');button.type='button';button.dataset.focusKey=`history-result:${run.run_id}`;
+      button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',[localDate(run.saved_at),run.status?statusLabel(run.status):'',shortRunId({id:run.run_id})].filter(Boolean).join(' · ')));
+      for(const match of (Array.isArray(run.matches)?run.matches:[]).slice(0,2))
+        button.appendChild(element('span','history-match',`${HISTORY_MATCH_LABELS[match?.source]||'記録'}${match?.agent?` · ${match.agent}`:''}: ${String(match?.text??'')}`));
+      button.addEventListener('click',()=>openHistoryResult(run.run_id));results.appendChild(button);
+    }
+    inlineStatus(status,runs.length?`${runs.length}件見つかりました。`:'見つかりませんでした');
+  }catch(error){inlineStatus(status,`検索できませんでした: ${errorText(error)}`,true);}
+  finally{if(ui.historySearchOperation===action)ui.historySearchOperation=null;$('historySearchButton').disabled=false;}
+}
+function openHistoryResult(id) {
+  if(ui.state.runs.some(run=>run.id===id)){inlineStatus($('historySearchStatus'),'');selectRun(id);return;}
+  inlineStatus($('historySearchStatus'),'この作業は今の作業履歴にありません。少し待ってから、もう一度お試しください。',true);
+}
 function setVisibleText(node,text) { const value=String(text??'');if(node.textContent!==value)node.textContent=value; }
 function renderWorkerRecovery(agent) {
   const recovery=agent?.recovery,limited=agent?.stop_reason==='provider_output_limit';
@@ -2744,7 +2900,7 @@ async function initialize() {
   $('memoProposalNotice').addEventListener('click',openMemoProposals);$('closeMemoProposals').addEventListener('click',()=>$('memoProposalDialog').close());
   $('historySearchForm').addEventListener('submit',searchHistory);
   $('settingsForm').addEventListener('invalid',event=>{const card=event.target.closest('.profile-editor');if(card&&card.querySelector('.profile-content').hidden)card.querySelector('[data-readonly]').click();},true);
-  $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180,context_window_tokens:0,fallback_profile_id:''},index,true,false);refreshFallbackChoices();markSettingsDirty();});
+  $('addProfile').addEventListener('click',()=>{const indexes=[...$('profilesEditor').children].map(node=>Number(node.dataset.index));const index=Math.max(-1,...indexes)+1;appendProfile({id:`profile-${index+1}`,label:'新しいプロファイル',kind:'local',base_url:'http://127.0.0.1:11434/v1',model:'',api_key_env:'',proxy_url:'',enabled:true,request_timeout_seconds:180,context_window_tokens:0},index,true,false);refreshFallbackChoices();markSettingsDirty();});
   $('settingsForm').addEventListener('submit',saveSettings);
   $('runForm').addEventListener('submit',async event=>{
     event.preventDefault();const task=$('taskInput').value;if(!task.trim()||ui.startingRun||ui.taskReuseCandidate)return;

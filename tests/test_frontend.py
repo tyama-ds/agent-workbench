@@ -46,7 +46,7 @@ def test_settings_ui_covers_every_interface_field_without_persisting_raw_keys():
     prefix = APP[:APP.index("const STATUS_LABELS")]
     result = run_javascript(prefix + "console.log(JSON.stringify({groups:FIELD_GROUPS,profiles:PROFILE_FIELDS}));")
     config = json.loads((ROOT / "docs/interface.json").read_text(encoding="utf-8"))["config"]
-    for section in ("work_board", "orchestration", "paths", "python", "selenium", "local", "search", "limits"):
+    for section in ("work_board", "orchestration", "approvals", "memo", "history_search", "paths", "python", "selenium", "local", "search", "limits"):
         hidden = {"api_key_env"} if section == "search" else set()
         assert {field[0] for field in result["groups"][section]} == set(config[section]) - hidden
     assert config["search"]["api_key_env"] == ""
