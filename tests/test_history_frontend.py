@@ -74,7 +74,7 @@ assert.match($('runCount').getAttribute('aria-label'),/保存履歴 1件/);
 assert.match(renderedText($('runList')),/保存履歴/);
 assert(!$('archiveNotice').hidden);assert.match($('archiveNotice').textContent,/閲覧専用/);
 assert.match($('archiveNotice').textContent,/自動再開はしません/);
-assert.equal($('workspaceMode').textContent,'SAVED HISTORY');assert($('stopRun').disabled);
+assert.equal($('workspaceMode').textContent,'保存履歴（閲覧のみ）');assert($('stopRun').disabled);
 assert.equal(requests.length,0);
 """)
 

@@ -298,6 +298,8 @@ async def test_archive_mutations_are_rejected_over_existing_http_endpoints(tmp_p
         headers = {'Origin': auth.origin}
         for url, body in [(f'/api/agents/{pm.id}/message', {'text': 'No'}),
                           (f'/api/runs/{run["id"]}/stop', {}),
+                          (f'/api/agents/{pm.id}/stop', {}),
+                          (f'/api/runs/{run["id"]}/restore', {'receipt_id': 1}),
                           (f'/api/runs/{run["id"]}/work-board', {'body': 'No', 'client_post_id': 'test-history-post-0002'})]:
             response = await client.post(auth.origin + url, json=body, headers=headers)
             assert response.status == 409

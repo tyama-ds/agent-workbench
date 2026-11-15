@@ -4,6 +4,47 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev51 — Partial reads, batched edits, read-only workers, single stop and restore (2026-11-15)
+
+Phase 6 of the hermes-agent comparison (files and operations).
+
+- `read_text` takes optional 1-based `start_line` and `line_count` and then
+  returns `start_line`, `end_line` and `total_lines`; the hash is still of the
+  whole file. A whole-file read cut at the output limit also reports
+  `total_lines`. Only whole-file reads count as independent-review evidence.
+- `patch_text` keeps the single `find`/`replace` form and adds `edits`: up to
+  50 changes, each `{find, replace}` (exactly one match) or
+  `{start_line, end_line, replace}` (inclusive). All edits are located in the
+  same file version, may not overlap and are applied together, so line numbers
+  never shift between edits; any invalid edit rejects the whole patch. Line
+  edits keep CRLF and a UTF-8 BOM.
+- Read-only workers: `spawn_worker(read_only=true)` creates a worker that may
+  read but is neither offered nor allowed write, directory, reservation,
+  Python, browser or spawn tools. The identity says `read_only`, and the flag
+  is kept in history (agent field `read_only_worker`; `read_only` on agents already marks saved history).
+- A PM with `max_workers` 0 is no longer offered worker tools (`spawn_worker`,
+  `start_ordered_work`, `wait_for_workers`, `review_worker_report`), which could
+  only fail; this keeps the request smaller in solo runs.
+- Stop one worker: `POST /api/agents/{id}/stop` stops that worker and its own
+  sub-workers (not a PM; not in adaptive or ordered-work runs). Its status
+  becomes `stopped` with `stop_reason` `human_stop`, saved files stay, and its
+  parent is told by mail so it can reassign. Human-stopped workers no longer
+  count toward mandatory-delegation and `wait_for_workers` checks.
+- Restore: every overwrite through the file harness (text, Office, Python and
+  browser outputs) first keeps the replaced bytes in the app's state folder
+  (`checkpoints/`, never readable by agent tools; 256 MB per run, 1 GB total;
+  removed when the app closes). A receipt for such a write is `restorable`.
+  `POST /api/runs/{id}/restore {"receipt_id"}` puts the earlier content back
+  only when no agent is working and the file still has exactly the content
+  that write produced. The restore is recorded as a `human_restore` receipt and
+  can itself be undone. Archived runs keep no restore points.
+- The cockpit shows a stop button for workers, a read-only badge and a
+  restore button on restorable receipts.
+- Plain labels: the English eyebrow headings and vague secondary labels
+  (e.g. TEAM OPERATIONS / 協働の進行, MISSION NETWORK, AGENT INSPECTOR, CREW,
+  LEAD · D1, CTX/TURNS, 再委任: 可能との表示) are replaced with short Japanese
+  labels; see the table in `docs/GUI_REDESIGN.md`.
+
 ## 0.1.1.dev50 — Prompt cache, local runtime and cheaper context (2026-11-14)
 
 Phase 5 of the hermes-agent comparison.

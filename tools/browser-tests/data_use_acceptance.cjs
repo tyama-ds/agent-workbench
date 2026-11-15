@@ -14,7 +14,7 @@ async function dataUseAcceptance({page,stateDir,providerRequests,artifacts,repor
   const providerBefore=structuredClone(providerRequests),mutations=[];
   const observe=request=>{const pathname=new URL(request.url()).pathname;if(!['GET','HEAD','OPTIONS'].includes(request.method())&&pathname!=='/api/run-preflight')mutations.push({method:request.method(),pathname});};
   page.on('request',observe);
-  const note=page.locator('#preflightDetails > p').filter({hasText:/^LOCAL APP は/});
+  const note=page.locator('#preflightDetails > p').filter({hasText:/^「この PC で実行」は/});
   const checkCopy=async()=>{
     assert.equal(await note.count(),1,'Exactly one data-use note after each preview');
     assert.equal(await note.locator('a,button,input,textarea,select,[tabindex]').count(),0,'Copy adds no focus target');

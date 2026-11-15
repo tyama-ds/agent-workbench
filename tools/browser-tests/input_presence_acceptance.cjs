@@ -96,7 +96,7 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
     assert.match(await next.getAttribute('aria-label'),new RegExp(`${total}人`),'The action’s accessible name exposes the same owner count');
   };
   const assertMarker=async(agent,present=true)=>{
-    assert.equal(await card(agent.id).getByText('入力あり',{exact:true}).count(),present?1:0,
+    assert.equal(await card(agent.id).getByText('入力中',{exact:true}).count(),present?1:0,
       'Existing card exposes one neutral presence marker: '+agent.id);
   };
   const assertNeutral=async()=>{
@@ -105,7 +105,7 @@ async function inputPresenceAcceptance({page,fixture,compactFixture,providerRequ
     const copy=await page.locator('#nextMessageInput, .input-presence-badge').allTextContents();
     assert.doesNotMatch(copy.join('\n'),/未送信|保存済み|送信済み|送信失敗|下書き一覧|unsent|saved|failed|sent/i,
       'Per-owner markers and navigation never label input as a send or persistence state');
-    assert.match(await page.locator('#messageInputHelp').textContent(),/入力の有無/,'Help explicitly limits the marker to presence');
+    assert.match(await page.locator('#messageInputHelp').textContent(),/入力欄に文がある/,'Help explicitly limits the marker to presence');
   };
   const assertOnlySelectedLoads=(start,agent,previous={run:agent.run_id,agent:agent.id})=>{
     const target={run:agent.run_id,agent:agent.id};let targetRequested=false;

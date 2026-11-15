@@ -34,7 +34,7 @@ const initial=JSON.stringify(request),observed=[];
     request.max_workers=mixed?1:0;
     response={can_start:true,destinations:mixed?[local,cloud]:[local],scope:{read_roots:['/synthetic/input'],write_roots:['/synthetic/output'],deny_roots:['/synthetic/private']},web:{enabled:mixed,search_configured:mixed,fetch_enabled:mixed,search_endpoint:'https://search.example',proxy:'https://web-proxy.example'}};
     await refreshPreflight(++ui.preflightRequest);
-    const target=nodes.preflightDetails,notes=target.children.filter(node=>node.textContent.startsWith('LOCAL APP は'));
+    const target=nodes.preflightDetails,notes=target.children.filter(node=>node.textContent.startsWith('「この PC で実行」は'));
     assert.equal(notes.length,1);assert.equal(notes[0].tag,'p');assert.equal(notes[0].className,'small');
     assert.equal(notes[0].children.length,0,'Guidance is text, not a new control');
     const text=target.children.map(node=>node.textContent).join('\n');

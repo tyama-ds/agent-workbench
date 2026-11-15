@@ -20,6 +20,7 @@ from .config import (Settings, ROOT, DEFAULT, number, text, validate_settings, e
                      effective_config, COPILOT_PROFILE_ID, SEARCH_KEY_UNSUPPORTED, ORCHESTRATION_DEFAULTS)
 from .copilot_bridge import CopilotBridgeManager
 from .runtime_paths import PROTECTED_ROOTS
+from .checkpoints import CheckpointStore
 from .harness import PathHarness, ToolExecutor
 from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
@@ -217,6 +218,11 @@ READ_ONLY_FILE_TOOLS = frozenset({'read_text', 'list_directory', 'search_text', 
                                   'docx_read', 'xlsx_read', 'pptx_read'})
 WRITE_TOOLS = frozenset({'write_text', 'patch_text', 'docx_write', 'docx_edit', 'xlsx_write', 'pptx_write', 'pptx_edit'})
 DIRECTORY_TOOLS = frozenset({'create_directory'})
+WORKER_ONLY_TOOLS = frozenset({'spawn_worker', 'start_ordered_work', 'wait_for_workers', 'review_worker_report'})
+# A read-only worker (chosen by its PM at spawn) can inspect but never change
+# files, run code or a browser, reserve paths, or delegate to writers.
+READ_ONLY_DENIED_TOOLS = WRITE_TOOLS | DIRECTORY_TOOLS | frozenset({
+    'reserve_paths', 'python_execute', 'selenium_browse', 'spawn_worker'})
 # Include this workflow at dispatch, so existing saved policies receive it too.
 FILE_OPERATION_POLICY = '''
 
@@ -309,6 +315,7 @@ class Agent:
     output_limit_failures: int = 0
     recovery_attempts: int = 0
     recovery_history: list = field(default_factory=list)
+    read_only: bool = False
 
     def public(self, *, message_eligibility=None, status_reason=None, include_detail=True, configured_profile=None,
                 redact_activity=lambda value: value, coordination=None, worker_dependencies=None, hierarchy=None):
@@ -318,6 +325,9 @@ class Agent:
             value['coordination'] = copy.deepcopy(coordination)
         if self.kind:
             value['kind'] = self.kind
+        if self.read_only:
+            # Not 'read_only': on agents that key already marks saved history.
+            value['read_only_worker'] = True
         if self.output_limit_failures or self.recovery_attempts:
             value['recovery'] = recovery_view(self)
         if hierarchy is not None and self.kind != 'independent_reviewer':
@@ -390,6 +400,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         self._copilot_error = ''
         self.instance_id = secrets.token_hex(16)
         self.history = HistoryStore(settings.directory)
+        self.checkpoints = CheckpointStore(settings.directory)
         self.credentials = CredentialStore(settings.directory, settings.value['providers'], lease=self.history._lease)
         settings.credential_store = self.credentials
         self._history_busy = False
@@ -725,9 +736,17 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         self._formation_receipt(agent, result)
         self.sequence += 1
         agent.receipts_omitted += int(len(agent.output_receipts) == RECEIPT_LIMIT)
-        agent.output_receipts.append({'id': self.sequence, 'tool': tool, 'at': time.time(),
-                                     'turn': agent.turns, **self._redact_tree({key: result[key] for key in
-                                     ('path', 'bytes', 'sha256', 'operation')})})
+        receipt = {'id': self.sequence, 'tool': tool, 'at': time.time(),
+                   'turn': agent.turns, **self._redact_tree({key: result[key] for key in
+                   ('path', 'bytes', 'sha256', 'operation')})}
+        previous = result.get('previous_sha256')
+        if previous and previous != 'missing' and self.checkpoints.has(agent.run_id, previous):
+            # The real path and hashes stay private; the public receipt only
+            # says that a human can put the earlier content back.
+            receipt.update(previous_sha256=previous, restorable=True)
+            self.runs[agent.run_id].setdefault('_restore_points', {})[self.sequence] = {
+                'agent_id': agent.id, 'path': result['path'], 'sha256': result['sha256'], 'previous_sha256': previous}
+        agent.output_receipts.append(receipt)
         agent.output_receipt_count += 1
         self._persist_run(agent.run_id)
 
@@ -1021,6 +1040,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         # history and concurrent run capacity before publishing any agent.
         self._prepare_run(payload)
         run_id = 'r-' + secrets.token_hex(8)
+        harness.on_replace = lambda path, data: self.checkpoints.save(run_id, data)
         # Capture a small public descriptor while original secret references are
         # still available. Later profile/environment removal must not unredact it.
         # No URLs, proxies, key references, policy or file scopes enter this map.
@@ -1261,6 +1281,8 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             reason, message = 'independent_reviewer', '独立reviewerには専用の監査依頼だけを配送できます。PMへ連絡してください。'
         elif run['status'] == 'stopping':
             reason, message = 'stopping', '停止処理中です。実行中の処理の終了を待っています。完了後、新しい仕事を開始してください'
+        elif agent.stop_reason == 'human_stop' and not self.closed and run['status'] != 'stopped':
+            reason, message = 'agent_stopped', '停止した担当は再開できません。続きは PM に依頼してください'
         elif self.closed or agent.closing or run['status'] == 'stopped':
             reason, message = 'stopped', '停止したチームは再開できません。新しい仕事を開始してください'
         elif run['_config'] != effective_config(self.settings.value):
@@ -1334,6 +1356,10 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
     def _owned_workers(self, run, agent):
         return [self.agents[ident] for ident in run['agent_ids'] if self.agents[ident].parent_id == agent.id]
 
+    def _active_workers(self, run, agent):
+        """Owned workers minus those a human stopped; those no longer report."""
+        return [child for child in self._owned_workers(run, agent) if child.stop_reason != 'human_stop']
+
     def _delegation_issue(self, run, agent, *, finishing=False):
         """Check application-owned report metadata, never model claims or mail text."""
         if run.get('adaptive_team'):
@@ -1351,7 +1377,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             return None
         if unit and not finishing and (agent.parent_id is not None or policy['delegation_level'] != 2):
             return None  # Unit coordinators may work; current child approval gates their report.
-        children = self._owned_workers(run, agent)
+        children = self._active_workers(run, agent)
         if agent.parent_id is None and policy['delegation_level'] == 2 and not ordered and len(children) < policy['workers_per_pm']:
             return ('delegation_required', '必要な人数のworkerへ担当を分けて委任してください。同じAPIを複数回選べます。')
         if any(child.status != 'done' or child.pending or child.question for child in children):
@@ -1511,6 +1537,8 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     'deny_roots': config['paths']['deny_roots']}
         unit = self._hierarchy_view(agent)
         identity.update(depth=unit['depth'], direct_children=unit['direct_children'])
+        if agent.read_only:
+            identity['read_only'] = True
         if agent.parent_id is not None:
             identity['root_pm_id'] = unit['root_pm_id']
         if run.get('adaptive_team'):
@@ -1667,8 +1695,10 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             contextual = copy.deepcopy(tool)
             contextual['parameters']['properties']['depends_on'] = {
                 'type': 'array', 'items': STRING, 'maxItems': 16, 'uniqueItems': True}
+            contextual['parameters']['properties']['read_only'] = {'type': 'boolean'}
             contextual['description'] = ('Create a direct child within shared worker/depth caps. Give exact instructions, deliverable and checks. '
-                'Optional depends_on: existing siblings; starts after your current formal-report acceptance. Reuse via send_message.')
+                'Optional depends_on: existing siblings; starts after your current formal-report acceptance. '
+                'read_only=true: reads only, no writes/code/browser. Reuse via send_message.')
             return contextual
         if agent.parent_id and not self._ordered_for(run, agent) and tool['name'] in {'wait_for_workers', 'review_worker_report'}:
             contextual = copy.deepcopy(tool)
@@ -1719,6 +1749,12 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             tools = [tool for tool in tools if tool['name'] not in excluded]
         elif self._delegation_issue(run, agent):
             tools = [tool for tool in tools if tool['name'] in COORDINATION_TOOLS]
+        if agent.read_only:
+            tools = [tool for tool in tools if tool['name'] not in READ_ONLY_DENIED_TOOLS]
+        if not agent.parent_id and run['max_workers'] == 0:
+            # A run without workers cannot use worker tools; do not spend
+            # context on calls that can only fail.
+            tools = [tool for tool in tools if tool['name'] not in WORKER_ONLY_TOOLS]
         ordered = self._ordered_for(run, agent)
         if ordered:
             names = ({'submit_work_step', 'wait_for_message', 'list_team', 'ask_user', 'read_context_history', 'send_message', 'read_ordered_reference'} if agent.parent_id
@@ -2482,6 +2518,8 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
     async def execute_tool(self, run, agent, name, args):
         if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
             raise ValueError('停止したチームではツールを実行できません')
+        if agent.read_only and name in READ_ONLY_DENIED_TOOLS:
+            raise ValueError('読み取り専用の worker はファイルの変更・コード実行・ブラウザ操作・委任ができません。必要なら PM に依頼してください')
         self._formation_guard(run, agent, name)
         if name not in {'list_team', 'ask_user', 'send_message', 'wait_for_message', 'read_context_history'}:
             self._dependency_require(agent)
@@ -2642,6 +2680,9 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             task = text(args['task'], 'worker task', 16000, False)
             role = text(args['role'], 'role', 80, False)
             key, initial_wait = args.get('participant_key', ''), args.get('initial_wait', False)
+            read_only = args.get('read_only', False)
+            if type(read_only) is not bool:
+                raise ValueError('read_only は真偽値です')
             if (agent.parent_id and (key or initial_wait)) or ((key or initial_wait) and self._hierarchy_nested(run)):
                 raise ValueError('階層委任と順番のある仕事は併用できません')
             dependencies = self._dependency_ids(run, agent, args.get('depends_on', []))
@@ -2660,6 +2701,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             child = self._new_agent(run, profile, role, agent.id, assignment=task)
             child.depends_on = dependencies
             child.participant_key = key
+            child.read_only = read_only
             if key:
                 child.name = key + ' · ' + child.name
             child._ordered_initial_wait = initial_wait
@@ -2673,6 +2715,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             return {'ok': True, 'agent_id': child.id, 'name': child.name,
                     'hierarchy': self._hierarchy_view(child),
                     **({'worker_dependencies': self._dependency_view(child)} if dependencies else {}),
+                    **({'read_only': True} if read_only else {}),
                     **({'participant_key': key, 'initial_wait': initial_wait} if key else {})}
         if name == 'send_message':
             return self._send_messages(agent, args)
@@ -2697,7 +2740,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
             if not children:
                 raise ValueError('待機するworkerがいません。必要な担当へ委任してから待機してください。')
             issue = self._delegation_issue(run, agent)
-            unfinished = any(child.status != 'done' or child.pending for child in children)
+            unfinished = any(child.status != 'done' or child.pending for child in self._active_workers(run, agent))
             if not issue and not unfinished:
                 return {'ok': True, 'waiting_for_workers': False, 'reports_ready': True}
             progressing = any(not child.closing and not child.question and child.status not in {'error', 'stopped'}
@@ -2820,7 +2863,9 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                     candidate = run['_harness'].resolve(args['path'], write=name in WRITE_TOOLS, must_exist=False)
                     self._check_reservation(agent, candidate)
             if name in WRITE_TOOLS:
-                return await run['_executor'].execute(name, args, on_complete=lambda result: self.record_receipt(agent, name, result))
+                result = await run['_executor'].execute(name, args, on_complete=lambda result: self.record_receipt(agent, name, result))
+                # The replaced content's hash is for the human restore record only.
+                return {key: value for key, value in result.items() if key != 'previous_sha256'}
             result = await run['_executor'].execute(name, args)
             if self._formation_reviewer(run, agent):
                 self._formation_guard(run, agent, name)
@@ -2877,6 +2922,104 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
         run['_stop_task'] = asyncio.create_task(self._stop_agents(run))
         await asyncio.shield(run['_stop_task'])
         return {'ok': True}
+
+    async def restore_output(self, run_id, payload):
+        """A human puts a file back to its content before one saved write.
+
+        Only for a live run with no agent working, and only while the file
+        still has exactly the content that write produced; later changes are
+        never overwritten. The restore is itself recorded and restorable.
+        """
+        if isinstance(run_id, str) and run_id in self._archives:
+            raise ArchivedReadOnly()
+        run = self.runs.get(run_id)
+        if run is None:
+            raise ValueError('実行が見つかりません')
+        if not isinstance(payload, dict) or set(payload) != {'receipt_id'} or type(payload['receipt_id']) is not int:
+            raise ValueError('戻す保存記録を指定してください')
+        point = run.get('_restore_points', {}).get(payload['receipt_id'])
+        if point is None:
+            raise ValueError('この保存は元に戻せません（新規作成、上限超過、または既に戻した保存です）')
+        if self.closed or run['status'] in {'running', 'stopping'} or any(
+                self.agents[ident].task and not self.agents[ident].task.done() for ident in run['agent_ids']):
+            raise ValueError('実行中は戻せません。待機・完了・停止後に使えます')
+        agent = self.agents[point['agent_id']]
+        async with self.lock:
+            await self._file_readers_idle.wait()
+            if any(owner != agent.id and (Path(point['path']).is_relative_to(Path(reserved)) or Path(reserved).is_relative_to(Path(point['path'])))
+                   for reserved, owner in self.reservations.items()):
+                raise ValueError('別の担当がこの範囲を予約中です')
+            data = await asyncio.to_thread(self.checkpoints.load, run_id, point['previous_sha256'])
+            try:
+                result = await asyncio.to_thread(run['_harness'].write_bytes, point['path'], data, point['sha256'])
+            except ValueError as exc:
+                if 'expected_sha256' in str(exc):
+                    raise ValueError('この保存の後にファイルが変更されているため戻せません') from exc
+                raise
+        del run['_restore_points'][payload['receipt_id']]
+        for receipt in agent.output_receipts:
+            if receipt['id'] == payload['receipt_id']:
+                receipt['restorable'] = False
+        self.record_receipt(agent, 'human_restore', result)
+        self.event(run_id, agent.id, 'restored', f'人が保存前の内容に戻しました: {result["path"]}')
+        self._persist_run(run_id)
+        return {'ok': True, 'path': self.redact(result['path']), 'sha256': result['sha256']}
+
+    async def stop_agent(self, ident):
+        """A human stops one worker (and its own sub-workers); the team continues.
+
+        Earlier saved outputs stay. The worker's parent is told, so it can
+        reassign the work. The PM itself is stopped only with the whole team.
+        """
+        if self._archive_for_agent(ident) is not None:
+            raise ArchivedReadOnly()
+        agent = self.agents.get(ident)
+        if agent is None:
+            raise ValueError('エージェントが見つかりません')
+        run = self.runs[agent.run_id]
+        if agent.parent_id is None:
+            raise ValueError('PM は個別に停止できません。チーム全体を停止してください')
+        if run.get('adaptive_team') or run.get('_ordered_work') or self._formation_reviewer(run, agent):
+            raise ValueError('自動編成や順番のある仕事では個別に停止できません。チーム全体を停止してください')
+        if self.closed or run['status'] in {'stopping', 'stopped'}:
+            raise ValueError('チームは停止しています')
+        if agent.closing:
+            return {'ok': True, 'stopped': []}
+        targets, frontier = [], [agent]
+        while frontier:
+            current = frontier.pop()
+            if not current.closing:
+                targets.append(current)
+            frontier.extend(self._owned_workers(run, current))
+        pending = []
+        for target in targets:
+            target.closing = True
+            target.status = 'stopping'
+            target.pending.clear()
+            target.pending_mail_metadata.clear()
+            target.pending_worker_reports.clear()
+            target.waiting_for_message = target.waiting_for_workers = False
+            for record in tuple(self._questions.values()):
+                if record['agent'] is target:
+                    self._question_resolve(target, record, 'cancelled', 'stopped')
+            if target.task and target.task is not asyncio.current_task() and not target.task.done():
+                target.task.cancel()
+                pending.append(target.task)
+        await asyncio.gather(*pending, return_exceptions=True)
+        for target in targets:
+            target.status, target.stop_reason = 'stopped', 'human_stop'
+            self._release(target)
+            self.log(target, 'notice', '人がこの担当を停止しました。保存済みの成果は残っています。')
+        self.event(run['id'], agent.id, 'stopped', f'人が {agent.name} を停止しました')
+        parent = self.agents.get(agent.parent_id)
+        if parent is not None and not parent.closing:
+            try:
+                self._mail(agent, parent, 'Worker stopped by the human. It will not report. Files it already saved remain; '
+                           'check them, then reassign or finish the remaining work yourself.', completed=True)
+            except ValueError:
+                self.log(parent, 'notice', f'人が {agent.name} を停止しました。')
+        self._run_status(run)
+        return {'ok': True, 'stopped': [target.id for target in targets]}
 
     async def _stop_agents(self, run):
         run['status'] = 'stopping'
@@ -2936,4 +3079,7 @@ class Engine(WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, Agen
                         try:
                             self.credentials.close()
                         finally:
-                            self.history.close()
+                            try:
+                                self.history.close()
+                            finally:
+                                self.checkpoints.close()

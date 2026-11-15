@@ -33,15 +33,15 @@ def check(source):
 def test_roles_units_and_direct_reporting_are_visible_without_promoting_workers_to_pm():
     check(r'''
 const {root,child,grand,great}=prepareHierarchy(),before=JSON.stringify(ui.state);
-assert.equal(agentRoleLabel(root),'PM');assert.equal(agentRoleLabel(child),'作業者・単位まとめ役');
-assert.equal(agentRoleLabel(grand),'作業者・単位まとめ役');assert.equal(agentRoleLabel(great),'作業者');
-assert.match(monitorText(hierarchyCard('grand')),/深さ 2（孫）/);
-assert.match(agentHierarchyLabel(grand),/所属単位: Worker B \[agent-b\]/);
-assert.match(agentHierarchyLabel(grand),/管理する子単位: 孫のまとめ役 \[grand\]/);
+assert.equal(agentRoleLabel(root),'PM');assert.equal(agentRoleLabel(child),'作業者（配下あり）');
+assert.equal(agentRoleLabel(grand),'作業者（配下あり）');assert.equal(agentRoleLabel(great),'作業者');
+assert.match(monitorText(hierarchyCard('grand')),/PM から 2 層目/);
+assert.match(agentHierarchyLabel(grand),/報告先: Worker B \[agent-b\]/);
+assert.match(agentHierarchyLabel(grand),/配下: 1 人/);
 assert.match(agentHierarchyLabel(great),/報告先: 孫のまとめ役 \[grand\]/);
 assert.equal(ui.networkNodes.get('grand').button.dataset.networkRole,'worker');
-assert.equal(ui.networkNodes.get('grand').role.textContent,'LEAD · D2');
-assert.equal(ui.networkNodes.get('great').role.textContent,'WORKER · D3');
+assert.equal(ui.networkNodes.get('grand').role.textContent,'まとめ役 · 2層目');
+assert.equal(ui.networkNodes.get('great').role.textContent,'作業者 · 3層目');
 assert.equal(JSON.stringify(ui.state),before);assert.equal(requests.length,0);
 ''')
 
@@ -53,8 +53,8 @@ const label=agentHierarchyLabel(grand);
 assert($('networkPreviewMonitor').textContent.includes(label));assert($('inspectorMonitor').textContent.includes(label));
 assert(monitorText(hierarchyCard('grand')).includes(label));
 grand.hierarchy.can_delegate=false;renderRun();renderInspector(grand);
-assert.match($('networkPreviewMonitor').textContent,/不可との表示/);
-assert.match($('inspectorMonitor').textContent,/実行時にサーバーが再確認/);
+assert.match($('networkPreviewMonitor').textContent,/さらに委任: できない/);
+assert.match($('inspectorMonitor').textContent,/さらに委任: できない/);
 assert.equal(requests.length,0);assert.equal(grand.parent_id,'agent-b');
 ''')
 
@@ -149,7 +149,7 @@ def test_malformed_or_cross_run_hierarchy_is_unconfirmed_and_has_no_unit_control
     check('const {grand}=prepareHierarchy();' + change + r'''
 changeSelection('run-a','grand');renderRun();
 assert.equal(agentHierarchy(grand),null);assert.match(agentHierarchyLabel(grand),/詳細を確認できません/);
-assert.equal($('hierarchyRelations').hidden,true);assert.doesNotMatch(agentHierarchyLabel(grand),/可能との表示/);
+assert.equal($('hierarchyRelations').hidden,true);assert.doesNotMatch(agentHierarchyLabel(grand),/さらに委任/);
 assert.equal(requests.length,0);
 ''')
 

@@ -240,7 +240,7 @@ def test_inspector_reports_records_without_claiming_current_work_or_file_existen
 seedSelection();const agent=getAgent();agent.assignment='<img src=x onerror=alert(1)> literal';agent.last_error='saved error';
 agent.activity={latest_log:{kind:'tool',text:'actual earlier read',at:3},pending_count:2,result_count:5,output_receipt_count:4};
 renderConversation(agent);assert.equal($('inspectorAssignment').textContent,agent.assignment);
-assert.equal($('inspectorAssignment').children.length,0);assert.match($('inspectorCounts').textContent,/待機入力 2 · 報告 5 · 保存 4/);
+assert.equal($('inspectorAssignment').children.length,0);assert.match($('inspectorCounts').textContent,/未処理の入力 2 · 報告 5 · 保存 4/);
 assert.match($('inspectorLatest').textContent,/actual earlier read/);assert.equal($('inspectorError').hidden,false);
 delete agent.activity;renderConversation(agent);assert.match($('inspectorCounts').textContent,/未取得/);
 assert.match($('inspectorLatest').textContent,/まだありません/);

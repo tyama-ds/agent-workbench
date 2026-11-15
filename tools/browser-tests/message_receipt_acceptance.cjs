@@ -63,13 +63,13 @@ async function messageReceiptAcceptance({context,origin,providerRequests,report}
     for(const [agent,present] of [[source,sourcePresent],[other,true]]){
       const marker=page.locator(`#agentCards [data-agent-id="${agent.id}"] .input-presence-badge`);
       assert.equal(await marker.count(),present?1:0,'Input presence belongs to its exact composer owner');
-      if(present)assert.equal(await marker.textContent(),'入力あり');
+      if(present)assert.equal(await marker.textContent(),'入力中');
     }
     const count=sourcePresent?2:1;
     assert.equal(await page.locator('#messageInputCount').textContent(),String(count));
     assert.match(await page.locator(`#runList [data-focus-key="run:${runId}"] .run-link-meta`).textContent(),
       new RegExp('入力 '+count+'人'));
-    assert.match(await page.locator('#messageInputNavigationStatus').textContent(),/入力の有無のみで、送信状態を示すものではありません/);
+    assert.match(await page.locator('#messageInputNavigationStatus').textContent(),/送信済みの文の場合もあります/);
     const markers=await page.locator('#nextMessageInput, .input-presence-badge').allTextContents();
     assert.doesNotMatch(markers.join('\n'),/未送信|保存済み|送信済み|送信失敗|unsent|saved|failed|sent/i,
       'Receipt ambiguity cannot turn presence markers into delivery or persistence claims');

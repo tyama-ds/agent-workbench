@@ -15,7 +15,7 @@ assert.deepEqual(messageInputEntries().map(({agent})=>agent.id),['agent-a','agen
 assert.equal($('messageInputCount').textContent,'2');assert.equal($('nextMessageInput').disabled,false);
 assert.match(renderedText($('runList')),/入力 2人/);
 assert.equal($('messageInput').value,' \n\t ');assert.equal(ui.drafts.get('agent-b'),'  日本語 😀\nexact  ');
-assert.equal($('agentCards').children.filter(card=>renderedText(card).includes('入力あり')).length,2);
+assert.equal($('agentCards').children.filter(card=>renderedText(card).includes('入力中')).length,2);
 assert(!renderedText($('agentCards')).includes('日本語 😀'));assert.equal(requests.length,0);
 ''')
 
@@ -27,7 +27,7 @@ ui.drafts.set('agent-b','Member');ui.state.runs[0].agent_ids=['agent-a','agent-a
 renderState();assert.deepEqual(messageInputEntries().map(({agent})=>agent.id),['agent-c']);
 assert.equal($('messageInputCount').textContent,'1');
 assert.equal(ui.drafts.get('orphan'),'Do not delete');assert.equal(ui.drafts.get('agent-b'),'Member');
-assert(!renderedText($('agentCards').children[1]).includes('入力あり'));
+assert(!renderedText($('agentCards').children[1]).includes('入力中'));
 ui.state.runs=ui.state.runs.filter(run=>run.id!=='run-b');renderState();
 assert.equal($('messageInputCount').textContent,'0');assert.equal(ui.drafts.get('agent-c'),'Other team');
 ui.state=fullState();renderState();assert.equal($('messageInputCount').textContent,'2');
@@ -179,7 +179,7 @@ await flush();await drainStates();await pending;
 assert.equal($('messageInput').value,current);assert.equal($('messageInputCount').textContent,'1');
 assert.equal($('messageStatus').textContent,'Current feedback');
 const marker=$('agentCards').children[0].querySelectorAll('*').find(node=>node.className==='input-presence-badge');
-assert.equal(marker.textContent,'入力あり');assert.equal(requests.filter(request=>request.path.endsWith('/message')).length,1);
+assert.equal(marker.textContent,'入力中');assert.equal(requests.filter(request=>request.path.endsWith('/message')).length,1);
 '''.replace('EDIT', editing).replace('FINISH', finish))
 
 
@@ -190,8 +190,8 @@ selectAgent('agent-b');await drainStates();editReply('  Current B\n ');inlineSta
 assert.equal($('messageInputCount').textContent,'2');resolve(0,{ok:true});await flush();await drainStates();await pending;
 assert.equal($('messageInputCount').textContent,'1');assert.equal(ui.drafts.has('agent-a'),false);
 assert.equal($('messageInput').value,'  Current B\n ');assert.equal($('messageStatus').textContent,'B feedback');
-assert(!renderedText($('agentCards').children[0]).includes('入力あり'));
-assert(renderedText($('agentCards').children[1]).includes('入力あり'));
+assert(!renderedText($('agentCards').children[0]).includes('入力中'));
+assert(renderedText($('agentCards').children[1]).includes('入力中'));
 ''')
 
 
@@ -200,7 +200,7 @@ def test_successful_clear_refreshes_presence_before_the_following_state_response
 await wire();setBriefOpen(false);editReply('Submitted');const pending=send();
 resolve(0,{ok:true});await flush();
 assert.equal($('messageInput').value,'');assert.equal($('messageInputCount').textContent,'0');
-assert.equal($('nextMessageInput').disabled,true);assert(!renderedText($('agentCards')).includes('入力あり'));
+assert.equal($('nextMessageInput').disabled,true);assert(!renderedText($('agentCards')).includes('入力中'));
 assert.equal(requests.length,2);assert(requests[1].path.startsWith('/api/state'));assert.equal(requests[1].done,undefined);
 await drainStates();await pending;
 ''')
@@ -223,7 +223,7 @@ assert.equal(maxInFlight,1);
 def test_question_badge_keeps_plain_text_identity_and_does_not_index_input_content():
     check(r'''
 seedQuestions();ui.drafts.set('agent-c','<script>private-input-token</script>');renderState();
-const first=cards()[0];assert.match(renderedText(first),/入力あり/);assert(!renderedText(first).includes('private-input-token'));
+const first=cards()[0];assert.match(renderedText(first),/入力中/);assert(!renderedText(first).includes('private-input-token'));
 assert.equal(first.querySelectorAll('*').filter(node=>node.className==='question-run-id').length,1);
 $('agentSearch').value='private-input-token';renderRun();assert.deepEqual(ids(),[]);
 assert.equal($('messageInputCount').textContent,'1');assert.equal($('questionCount').textContent,'3');
@@ -235,7 +235,7 @@ def test_native_presence_controls_do_not_add_storage_send_state_or_endpoints():
     assert 'aria-describedby="messageInputHelp"' in HTML
     assert 'id="messageInputCount" aria-hidden="true"' in HTML
     assert 'id="messageInputNavigationStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"' in HTML
-    assert '送信済みの文が残っている場合もあります' in HTML
+    assert '送信済みの文の場合もあります' in HTML
     assert '.question-run-line' in (STATIC / 'styles.css').read_text()
     assert '/api/drafts' not in APP and 'localStorage' not in APP and 'sessionStorage' not in APP
 

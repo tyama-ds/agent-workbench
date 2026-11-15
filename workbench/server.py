@@ -290,6 +290,13 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         await body(request)
         return web.json_response(await engine.stop_run(request.match_info['id']))
 
+    async def restore(request):
+        return web.json_response(await engine.restore_output(request.match_info['id'], await body(request)))
+
+    async def stop_agent(request):
+        await body(request)
+        return web.json_response(await engine.stop_agent(request.match_info['id']))
+
     async def message(request):
         value = await body(request)
         return web.json_response(await engine.human_message(request.match_info['id'], value.get('text'),
@@ -352,7 +359,9 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_post('/api/runs', start)
     app.router.add_post('/api/run-preflight', preflight)
     app.router.add_post('/api/runs/{id}/stop', stop)
+    app.router.add_post('/api/runs/{id}/restore', restore)
     app.router.add_post('/api/agents/{id}/message', message)
+    app.router.add_post('/api/agents/{id}/stop', stop_agent)
     app.router.add_get('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/provider-test', provider_test)

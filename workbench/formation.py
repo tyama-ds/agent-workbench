@@ -268,7 +268,9 @@ class AdaptiveTeamMixin:
         box = run['_formation']
         candidate = box['candidate']
         evidence = None
-        if name in CONTENT_READS and isinstance(result, dict) and result.get('ok') is not False and candidate:
+        # Only a whole-file read counts as review evidence, not a line range.
+        partial = name == 'read_text' and ('start_line' in args or 'line_count' in args)
+        if name in CONTENT_READS and not partial and isinstance(result, dict) and result.get('ok') is not False and candidate:
             path = str(run['_harness'].resolve(args['path']))
             expected = next((item['sha256'] for item in candidate['manifest'] if item['path'] == path), None)
             if expected and result.get('sha256') == expected and box['phase'] == 'reviewing':
