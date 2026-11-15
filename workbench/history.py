@@ -27,7 +27,7 @@ RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids
     'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
-    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind', 'recovery'))
+    'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind', 'recovery', 'read_only'))
 LOG_FIELDS = frozenset(('id', 'kind', 'text', 'thinking', 'at'))
 RESULT_FIELDS = frozenset(('id', 'source', 'text', 'truncated', 'at', 'turn', 'revision'))
 RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256', 'operation'))
@@ -36,6 +36,8 @@ EVENT_FIELDS = frozenset(('id', 'run_id', 'agent_id', 'kind', 'text', 'at', 'mai
 POST_FIELDS = frozenset(('seq', 'run_id', 'author_kind', 'author_id', 'author_name', 'body', 'reply_to', 'created_at'))
 TERMINAL = frozenset(('done', 'stopped', 'error', 'interrupted'))
 STOP_REASONS = frozenset(('time_limit', 'model_limit', 'tool_limit', 'turn_limit', 'provider_timeout', 'provider_output_limit'))
+# Agent-only: a human stopped this worker. Never a run-level budget reason.
+AGENT_STOP_REASONS = STOP_REASONS | {'human_stop'}
 
 
 class HistoryError(ValueError):
@@ -104,6 +106,8 @@ def redact_document(document, redact):
         restore(before, after, ('id', 'run_id', 'parent_id'))
         restore(before, after, ('hierarchy',))
         enum(before, after, 'kind', {'author', 'independent_reviewer'})
+        if before.get('read_only') is True:
+            after['read_only'] = True
         enum(before, after, 'status', statuses)
         restore(before, after, ('stop_reason',))
         if 'recovery' in before:
@@ -121,7 +125,7 @@ def redact_document(document, redact):
         restore(before, after, ('run_id', 'agent_id', 'from_agent_id', 'to_agent_id'))
         if isinstance(before.get('mail_id'), str) and re.fullmatch(r'm-[0-9a-f]{32}', before['mail_id']):
             after['mail_id'] = before['mail_id']
-        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped'})
+        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped', 'restored'})
         enum(before, after, 'message_type', {'worker_report', 'worker_error', 'worker_notice', 'peer_message'})
         enum(before, after, 'delivery_state', {'queued', 'context_consumed'})
     for before, after in zip(document['board'], result['board']):
@@ -430,7 +434,7 @@ def validate(document):
     for agent in document['agents']:
         if 'question_state' in agent:
             _question_state(agent['question_state'])
-        if 'stop_reason' in agent and (not isinstance(agent['stop_reason'], str) or agent['stop_reason'] not in STOP_REASONS | {''}):
+        if 'stop_reason' in agent and (not isinstance(agent['stop_reason'], str) or agent['stop_reason'] not in AGENT_STOP_REASONS | {''}):
             raise HistoryError('履歴の担当者の停止理由が不正です。')
         _text_fields(agent, ('id', 'run_id', 'name', 'role', 'profile_id', 'status', 'question', 'last_error', 'assignment'))
         if (agent['run_id'] != run['id'] or re.fullmatch(r'a-[0-9a-f]{16}', agent['id']) is None or

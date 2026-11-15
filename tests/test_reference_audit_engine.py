@@ -389,8 +389,13 @@ async def test_normal_pm_synthetic_requests_keep_dev44_schema_and_one_compaction
         ordinary = [request for request in client.requests if request['tools']]
         assert ordinary
         for request in ordinary:
-            assert_legacy_review_tools(request['tools'], ['review_worker_report'])
+            # A run without workers is not offered worker tools at all.
+            assert_legacy_review_tools(request['tools'], [])
+            assert not {'spawn_worker', 'review_worker_report', 'wait_for_workers'} & {row['name'] for row in request['tools']}
         assert schema_digest(TEAM_TOOLS) == LEGACY_TEAM_TOOLS_SHA256
+        engine.kick = lambda agent: None
+        team_run, team_pm = await start_regular(engine, task='Synthetic team PM', max_workers=1)
+        assert_legacy_review_tools(engine._model_tools(team_run, team_pm), ['review_worker_report'])
         # The execution validator also keeps the legacy argument contract.
         with pytest.raises(ValueError, match='ツール引数'):
             await engine.execute_tool(run, pm, 'review_worker_report', {
@@ -429,7 +434,7 @@ async def test_reference_pm_native_requests_and_validation_are_scoped_without_wo
         assert schema_digest(TEAM_TOOLS) == LEGACY_TEAM_TOOLS_SHA256
 
         started = await engine.start_run({'task': 'Synthetic unrelated PM request', 'pm_profile': 'local',
-            'worker_profiles': ['local'], 'max_workers': 0, 'delegation_level': 0})
+            'worker_profiles': ['local'], 'max_workers': 1, 'delegation_level': 0})
         other_run = engine.runs[started['run']['id']]
         other_pm = engine.agents[other_run['pm_agent_ids'][0]]
         other_pm._test_engine = engine

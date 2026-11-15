@@ -684,3 +684,28 @@ fields and warnings remain. The final system/messages/tools sent are measured
 together before charging inference. No summary call or retry is added, and protected
 content that still exceeds the normal limit fails closed. General context recovery
 outside ordered mode is unchanged.
+
+## Stop one worker, read-only workers and restore (0.1.1.dev51)
+
+`POST /api/agents/{id}/stop` (human only, same session/instance checks as other
+mutations) stops one worker and its own sub-workers. A PM is stopped only with
+the whole team, and adaptive or ordered-work runs refuse a single stop because
+their protocols assume every participant reports. Stopped workers keep their
+saved files, get `stop_reason=human_stop`, cannot be messaged again, and their
+parent receives an ordinary worker notice (never a formal report) so it can
+reassign. Mandatory-delegation and `wait_for_workers` checks ignore them.
+
+`spawn_worker(read_only=true)` is a PM choice recorded on the agent. The engine
+removes write, directory, reservation, Python, browser and spawn tools from the
+worker's request and rejects them at execution, so the flag is enforced even if
+a model calls an unlisted tool.
+
+Before `PathHarness.write_bytes` replaces an existing file it hands the
+replaced bytes to `CheckpointStore` (`<state>/checkpoints/<process>/<run>/<sha256>`,
+inside the app state folder that agent tools always deny). The receipt of that
+write is then `restorable`; the real path stays in engine memory, not in the
+public receipt. `POST /api/runs/{id}/restore {"receipt_id"}` rewrites the earlier
+content through the same harness with the write's own hash as the expected
+hash, so a file changed afterwards is never overwritten, and only while no agent
+is working. Each process deletes its folder on close; archived runs have no
+restore points. Model-visible write results do not include the previous hash.

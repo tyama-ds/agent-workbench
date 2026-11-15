@@ -279,6 +279,10 @@
     "POST /api/agents/{id}/message": {
       "text": "人の回答"
     },
+    "POST /api/agents/{id}/stop": {},
+    "POST /api/runs/{id}/restore": {
+      "receipt_id": 42
+    },
     "POST /api/secrets": {
       "id": "openai",
       "key": "API key value (never returned); empty string clears both direct stores",
