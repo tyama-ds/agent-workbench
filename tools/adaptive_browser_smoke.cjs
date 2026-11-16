@@ -281,6 +281,11 @@ async function main(){
     }catch(error){report.errors.push(clean(error.stack||error));}
     report.ok=report.errors.length===0;report.finished_at=new Date().toISOString();save('result.json',report);
   }
+  // The report file is only reachable as a build artifact, so a failure also says why in the log.
+  if(!report.ok)console.error(JSON.stringify({errors:report.errors,checks:report.checks,pageErrors:report.pageErrors,
+    consoleErrors:report.consoleErrors,externalRequests:report.externalRequests,lifecycle:report.lifecycle,
+    censusChildren:report.censusChildren,lastSnapshot:report.snapshots.at(-1)?.label??null,
+    frames:frames.map(row=>({kind:row.kind,phase:row.phase,ok:row.ok,error:row.error}))},null,2));
   console.log(JSON.stringify({ok:report.ok,result:path.join(OUT,'result.json'),realModelInference:false}));process.exitCode=report.ok?0:1;
 }
 main().catch(error=>{console.error(clean(error.stack||error));process.exitCode=1;});
