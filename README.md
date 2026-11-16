@@ -178,9 +178,10 @@ LAN 上の Local サーバーでは、この PC の GPU 値を代用できない
 
 ## Web 検索とプロキシ
 
-既定では無効です。検索方式の標準は API キー不要の DuckDuckGo です。明示的に設定した SearXNG JSON API も使用できます。検索方式を変更しても、Web 検索・ページ取得は自動で有効になりません。
+既定では無効です。検索方式の標準は API キー不要の DuckDuckGo です。自分の API キーを使う Brave Search と、明示的に設定した SearXNG JSON API も使用できます。検索方式を変更しても、Web 検索・ページ取得は自動で有効になりません。
 
 - SearXNG: 使用するサーバーの `/search` URL。JSON 出力が有効なサーバーが必要です。LAN 内でも HTTPS が必要です。HTTP の例外は `localhost` / `127.0.0.1` / `[::1]` のみです。
+- Brave Search: 接続先は `https://api.search.brave.com/res/v1/web/search` に固定です。検索エンジンに Brave Search を選んで設定を保存すると、キーの入力欄が表示されます。キーは「この起動中のみ」または「この Windows ユーザーに暗号化保存」を選べます。設定ファイル・履歴・環境変数には保存しません。DuckDuckGo に検索を止められる場合の代替です。
 - DuckDuckGo: 接続先は `https://html.duckduckgo.com/html/` に固定です。公開 HTML の検索結果を取得します。API キーや検索用の環境変数設定は不要です。アクセス制限や確認画面が表示された場合は、結果を取得できないことがあります。
 - 検索用プロキシ例: `http://127.0.0.1:8080`。**検索と検索後のページ取得の両方**に適用されます。失敗時に直接接続へ切り替えません。
 - OpenAI / Anthropic にもプロファイルごとの明示プロキシがあります。検索の設定とは独立しています。

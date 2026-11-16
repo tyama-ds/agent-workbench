@@ -263,7 +263,7 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
         storage = value.get('storage', 'session')
         if any(ord(c) < 32 or ord(c) == 127 for c in key):
             raise ValueError('API キーに制御文字は使用できません')
-        if key and ident == 'search':
+        if key and ident == 'search' and settings.value['search']['provider'] != 'brave':
             raise ValueError(SEARCH_KEY_UNSUPPORTED)
         # No await between saved-target validation and the atomic mutation.
         # Clearing an old value also requires the same revision precondition.

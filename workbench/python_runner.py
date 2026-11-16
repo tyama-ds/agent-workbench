@@ -76,11 +76,11 @@ def _name(value):
     return path
 
 
-def _mappings(items, *, outputs=False):
+def _mappings(items, *, outputs=False, limit=_MAX_FILES):
     if items is None:
         return []
-    if not isinstance(items, list) or len(items) > _MAX_FILES:
-        raise HarnessError('Python inputs and outputs must each contain at most 16 files')
+    if not isinstance(items, list) or len(items) > limit:
+        raise HarnessError(f'Python inputs and outputs must each contain at most {limit} files')
     result, seen = [], set()
     keys = {'path', 'name', 'expected_sha256'} if outputs else {'path', 'name'}
     for item in items:
@@ -317,13 +317,13 @@ def failure_hint(exit_code, termination_reason, stderr, *, timeout=None, network
     return (text if len(text) <= _HINT_LENGTH else text[:_HINT_LENGTH - 3] + '...') or None
 
 
-def _execute(config, harness, code, inputs, outputs, on_complete, cancel):
+def _execute(config, harness, code, inputs, outputs, on_complete, cancel, input_limit=_MAX_FILES):
     if not config.get('enabled', False):
         raise HarnessError('Python execution is disabled in settings')
     if os.name != 'nt':
         raise HarnessError('Python execution requires Windows LPAC; no unrestricted fallback is available')
     code = _string(code, 'Python code', 200000)
-    inputs, outputs = _mappings(inputs), _mappings(outputs, outputs=True)
+    inputs, outputs = _mappings(inputs, limit=input_limit), _mappings(outputs, outputs=True)
     timeout = _integer(config, 'timeout_seconds', 60, 1, 600)
     memory = _integer(config, 'max_memory_mb', 512, 128, 8192)
     output_limit = _integer(config, 'max_output_bytes', 65536, 1024, 1048576)
@@ -405,7 +405,87 @@ def _execute(config, harness, code, inputs, outputs, on_complete, cancel):
             return result
 
 
-async def execute_python(config, harness, code, inputs=None, outputs=None, *, on_complete=None):
+# run_tests: what the app copies into the sandbox for a test run, and the script it runs there.
+_TEST_SUFFIXES = frozenset(('.py', '.pyi', '.json', '.csv', '.tsv', '.txt', '.md', '.toml', '.ini', '.cfg', '.yaml', '.yml'))
+_TEST_SKIPPED_FOLDERS = frozenset(('__pycache__', 'node_modules', 'venv', 'env', 'build', 'dist', 'site-packages'))
+MAX_TEST_PATHS, MAX_TEST_FILES, _MAX_TEST_FILE_BYTES, _MAX_TEST_DEPTH = 16, 200, 2 * 1024 * 1024, 8
+TEST_CODE = ('import os, sys\n'
+             '# A src/ folder next to the tests is importable, as in the usual project layout.\n'
+             'if os.path.isdir("src"):\n'
+             '    sys.path.insert(1, os.path.abspath("src"))\n'
+             'import awb_pytest\n'
+             'raise SystemExit(awb_pytest.run())\n')
+
+
+def collect_test_inputs(harness, paths):
+    """Expand host files and folders into python inputs for a test run.
+
+    Returns (inputs, skipped). Sandbox names keep the layout below the folder
+    all paths share, so `tests/` still finds `src/` or the package beside it.
+    A folder contributes its source and small data files, not caches or
+    virtual environments. Every read still goes through the harness.
+    """
+    if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_TEST_PATHS or not all(isinstance(item, str) for item in paths):
+        raise HarnessError(f'paths must list 1 to {MAX_TEST_PATHS} files or folders')
+    resolved = [harness.resolve(_string(item, 'path', 4096)) for item in paths]
+    folders = [path if path.is_dir() else path.parent for path in resolved]
+    try:
+        base = Path(os.path.commonpath([str(folder) for folder in folders]))
+    except ValueError as exc:
+        raise HarnessError('All test paths must be on one drive') from exc
+    files, seen, skipped = [], set(), 0
+
+    def add(path):
+        nonlocal skipped
+        key = str(path).casefold()
+        if key in seen:
+            return
+        relative = path.relative_to(base)
+        try:
+            _name(relative.as_posix())
+        except HarnessError:
+            skipped += 1
+            return
+        if len(files) >= MAX_TEST_FILES:
+            raise HarnessError(f'More than {MAX_TEST_FILES} files; name the folder that holds only the code and its tests')
+        seen.add(key)
+        files.append({'path': str(path), 'name': relative.as_posix()})
+
+    for path in resolved:
+        if not path.is_dir():
+            add(path)
+            continue
+        pending = [(path, 0)]
+        while pending:
+            directory, depth = pending.pop()
+            for entry in harness.list_directory(str(directory))['entries']:
+                name, child = entry['name'], Path(entry['path'])
+                if entry['kind'] == 'directory':
+                    if (depth < _MAX_TEST_DEPTH and not name.startswith('.') and name.casefold() not in _TEST_SKIPPED_FOLDERS
+                            and not name.casefold().endswith('.egg-info')):
+                        pending.append((child, depth + 1))
+                elif (child.suffix.lower() in _TEST_SUFFIXES and not name.startswith('.')
+                        and entry['bytes'] <= _MAX_TEST_FILE_BYTES):
+                    add(child)
+                else:
+                    skipped += 1
+    if not any(item['name'].lower().endswith('.py') for item in files):
+        raise HarnessError('No Python files found in the given paths')
+    return sorted(files, key=lambda item: item['name'].casefold()), skipped
+
+
+async def execute_tests(config, harness, paths):
+    """run_tests: copy the given host files into the sandbox and run their tests there.
+
+    Nothing is written back to the host. The result is execute_python's, plus
+    the sandbox names that were copied.
+    """
+    inputs, skipped = await asyncio.to_thread(collect_test_inputs, harness, paths)
+    result = await execute_python(config, harness, TEST_CODE, inputs, None, input_limit=MAX_TEST_FILES)
+    return {**result, 'files': [item['name'] for item in inputs], 'files_skipped': skipped}
+
+
+async def execute_python(config, harness, code, inputs=None, outputs=None, *, on_complete=None, input_limit=_MAX_FILES):
     """Execute with a python-settings dict. Callback receives each saved receipt.
 
     Cancellation kills and waits for the OS job and cleanup before propagating.
@@ -424,7 +504,8 @@ async def execute_python(config, harness, code, inputs=None, outputs=None, *, on
                 pass
     def dispatch(receipt):
         loop.call_soon_threadsafe(complete, receipt)
-    task = asyncio.create_task(asyncio.to_thread(_execute, config, harness, code, inputs, outputs, dispatch, cancel))
+    task = asyncio.create_task(asyncio.to_thread(_execute, config, harness, code, inputs, outputs, dispatch, cancel,
+                                                 input_limit))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

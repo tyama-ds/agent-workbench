@@ -195,3 +195,27 @@ assert.equal(requests[0].options.body.id,''' + json.dumps(ident) + r''');
 accepted(0,''' + json.dumps(ident) + r''');await flush();assert.equal(ui.credentialOperations.size,0);
 assert.equal(requests.length,1);assert.equal(c.input.value,'');
 ''')
+
+
+def test_brave_search_gets_the_shared_key_control_only_while_it_is_the_saved_engine():
+    check(r'''
+await wire();assert.equal(control('search'),undefined);assert.equal($('searchFields')._credential,undefined);
+Object.assign(ui.config.search,{provider:'brave',endpoint:BRAVE_SEARCH_ENDPOINT});refreshCredentialControls();
+const c=control('search');assert(c&&c.id==='search');assert.equal($('searchFields').children.at(-1),c.row);
+assert.deepEqual(savedCredentialTarget('search'),{id:'search',kind:'Brave Search',endpoint:'https://api.search.brave.com/res/v1/web/search',proxy:''});
+assert(c.target.textContent.includes('api.search.brave.com'));assert(c.status.textContent.includes('キー未設定'));
+assert(!c.input.disabled&&!c.button.disabled);assert.equal(c.input.type,'password');
+// The control is not a settings field: the saved configuration is unchanged by it.
+assert.deepEqual(Object.keys(collectConfig().search).sort(),Object.keys(CONFIG.search).sort());
+c.input.value='SYNTHETIC-brave';const pending=press('search');assert.equal(c.input.value,'');
+assert.equal(requests.length,1);assert.equal(requests[0].path,'/api/secrets');
+assert.deepEqual(requests[0].options.body,{id:'search',key:'SYNTHETIC-brave',storage:'session',config_revision:4});
+accepted(0,'search');await pending;
+assert.equal(ui.secretStatus.search,true);assert(c.status.textContent.includes('今回の起動中のキー'));
+assert(!c.result.textContent.includes('SYNTHETIC-brave'));assert.equal(requests.length,1);
+// An unsaved change (for example choosing another engine) locks the key input like a model key.
+markSettingsDirty();assert(c.input.disabled&&c.button.disabled);c.input.value='SYNTHETIC-never-sent';await press('search');assert.equal(requests.length,1);
+// Once another engine is the saved one, the control is gone.
+ui.settingsDirty=false;Object.assign(ui.config.search,{provider:'duckduckgo',endpoint:DUCKDUCKGO_SEARCH_ENDPOINT});refreshCredentialControls();
+assert.equal(control('search'),undefined);assert.equal($('searchFields')._credential,null);assert(!canSetCredential('search'));
+''')

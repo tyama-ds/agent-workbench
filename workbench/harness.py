@@ -15,6 +15,7 @@ import re
 import stat
 import tempfile
 import threading
+import unicodedata
 import zipfile
 from pathlib import Path, PureWindowsPath
 from typing import Any
@@ -577,6 +578,38 @@ def _office_kind(path: str, extension: str) -> None:
         raise HarnessError(f"Only {extension} files are supported; legacy and macro formats are disabled")
 
 
+_GROUPED_NUMBER = re.compile(r"-?(?:[1-9][0-9]{0,2}(?:,[0-9]{3})+|0|[1-9][0-9]*)(?:\.[0-9]+)?")
+
+
+def _numeric_text(value: str):
+    """(number, Excel format) for a string that is plainly a number, else (None, None).
+
+    Identifiers are left alone: leading zeros, more than 15 digits (Excel would
+    round them) and anything with other characters stay text.
+    """
+    text = unicodedata.normalize("NFKC", value).strip()
+    percent = text.endswith("%")
+    body = text[:-1].strip() if percent else text
+    if not body or len(body) > 40 or _GROUPED_NUMBER.fullmatch(body) is None:
+        return None, None
+    digits = body.replace(",", "")
+    whole, _, fraction = digits.partition(".")
+    if len(whole.lstrip("-")) + len(fraction) > 15:
+        return None, None
+    number = float(digits) if fraction else int(whole)
+    decimals = "." + "0" * min(len(fraction), 10) if fraction else ""
+    if percent:
+        return number / 100, "0" + decimals + "%"
+    if "," in body:
+        return number, "#,##0" + decimals
+    return number, None
+
+
+def _kept_text(value: str) -> bool:
+    """An apostrophe before a number keeps it text, as when typing in Excel."""
+    return value.startswith("'") and _numeric_text(value[1:])[0] is not None
+
+
 def _safe_formula(value: str) -> None:
     if re.search(r"[\[\]|]|https?:|file:|\\\\", value, re.I):
         raise HarnessError("External or executable formulas are disabled")
@@ -684,7 +717,7 @@ class ToolExecutor:
             ("docx_write", "Create or explicitly replace a DOCX from paragraphs and tables.", {**common, "paragraphs": {"type": "array", "items": text}, "tables": {"type": "array", "items": rows}}, ("path", "expected_sha256")),
             ("docx_edit", "Edit DOCX with operations: append_paragraph(text), replace_paragraph(index,text), replace_cell(table,row,column,text), append_table(rows). Zero-based indices; edited paragraphs retain first-run formatting.", {**common, "operations": {"type": "array", "items": docx_operation}}, ("path", "operations", "expected_sha256")),
             ("xlsx_read", "Read bounded cells from XLSX; formulas are returned as text and never evaluated.", {"path": path, "sheet": text, "range": text}, ("path",)),
-            ("xlsx_write", "Set explicit XLSX cells [{sheet,cell,value}]. Creates a workbook when missing; create_sheets explicitly adds sheets. Formula-like strings are rejected unless allow_formulas is true; external-data formulas remain disabled.", {**common, "cells": {"type": "array", "items": cell}, "create_sheets": {"type": "array", "items": text}, "allow_formulas": {"type": "boolean"}}, ("path", "cells", "expected_sha256")),
+            ("xlsx_write", "Set explicit XLSX cells [{sheet,cell,value}]. Creates a workbook when missing; create_sheets explicitly adds sheets. Pass numbers as JSON numbers; a numeric string such as '1,234' or '12.5%' is stored as a number (prefix an apostrophe to keep it text). Formula-like strings are rejected unless allow_formulas is true; external-data formulas remain disabled.", {**common, "cells": {"type": "array", "items": cell}, "create_sheets": {"type": "array", "items": text}, "allow_formulas": {"type": "boolean"}}, ("path", "cells", "expected_sha256")),
             ("pptx_read", "Read slide text from a safe PPTX without launching PowerPoint.", {"path": path}, ("path",)),
             ("pptx_write", "Create or explicitly replace a PPTX from slides [{title,body:[text]}].", {**common, "slides": {"type": "array", "items": slide}}, ("path", "slides", "expected_sha256")),
             ("pptx_edit", "Replace exact paragraph text using operations [{slide,shape,paragraph,text}] with zero-based indices, retaining first-run formatting.", {**common, "operations": {"type": "array", "items": pptx_operation}}, ("path", "operations", "expected_sha256")),
@@ -886,6 +919,7 @@ class ToolExecutor:
                     raise HarnessError("Invalid worksheet title")
                 if title not in workbook.sheetnames:
                     workbook.create_sheet(title)
+            converted = 0
             for item in cells:
                 if not isinstance(item, dict) or set(item) != {"sheet", "cell", "value"} or item["sheet"] not in workbook.sheetnames:
                     raise HarnessError("Each cell requires an existing sheet, cell and value")
@@ -900,19 +934,28 @@ class ToolExecutor:
                     raise HarnessError("Cells accept JSON scalar values only")
                 if isinstance(value, str):
                     _string(value, "cell value", 32767, empty=True)
-                    if value.lstrip().startswith(("=", "+", "-", "@")):
+                    if value.lstrip().startswith(("=", "+", "-", "@")) and _numeric_text(value)[0] is None:
                         if not allow or not value.startswith("="):
                             raise HarnessError("Formula-like values require explicit allow_formulas")
                         _safe_formula(value)
                 cell = workbook[item["sheet"]][ref]
                 if isinstance(cell, MergedCell):
                     raise HarnessError("Cannot write to a non-anchor merged cell; explicitly target the merged range's top-left cell")
-                cell.value = value
+                number, number_format = _numeric_text(value) if isinstance(value, str) else (None, None)
+                if number is not None:
+                    # A number typed as text cannot be summed or charted in Excel.
+                    cell.value = number
+                    if number_format:
+                        cell.number_format = number_format
+                    converted += 1
+                else:
+                    cell.value = value[1:] if isinstance(value, str) and _kept_text(value) else value
             if (fresh and "Sheet" in workbook.sheetnames and len(workbook.sheetnames) > 1 and "Sheet" not in sheets
                     and all(item["sheet"] != "Sheet" for item in cells)):
                 # A new workbook's automatic empty sheet is not part of the request.
                 workbook.remove(workbook["Sheet"])
-            return self._save(workbook, args, ".xlsx")
+            result = self._save(workbook, args, ".xlsx")
+            return {**result, "numeric_strings_converted": converted} if converted else result
         finally:
             workbook.close()
 

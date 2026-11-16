@@ -68,9 +68,13 @@ def _no_stall_recovery_unless_marked(request):
 def _fresh_search_guard():
     """The DuckDuckGo pacing and block memory is process-wide; tests start
     unblocked and without the two-second spacing."""
-    from workbench.webtools import SEARCH_GUARD
+    from workbench.webtools import BRAVE_PACE, SEARCH_GUARD
     SEARCH_GUARD.reset()
     SEARCH_GUARD.min_interval = 0.0
+    BRAVE_PACE.reset()
+    BRAVE_PACE.min_interval = 0.0
     yield
     SEARCH_GUARD.reset()
     SEARCH_GUARD.min_interval = 2.0
+    BRAVE_PACE.reset()
+    BRAVE_PACE.min_interval = 1.1

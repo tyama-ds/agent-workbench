@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import hashlib
+import html
 import ipaddress
 import json
 import re
@@ -197,6 +198,16 @@ def _clean_text(value: str, limit: int = 200000) -> str:
 
 
 DUCKDUCKGO_ENDPOINT = "https://html.duckduckgo.com/html/"
+# Brave Search API: the optional engine that uses the human's own key. The
+# endpoint is fixed, so the key is only ever sent to this origin.
+BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+BRAVE_KEY_MISSING = ("Brave Search needs an API key and none is set. Do not repeat the search; use web_fetch with known URLs "
+                     "or report that web search is unavailable until the human sets the key in the settings")
+
+
+def _plain(value) -> str:
+    """Result text without highlight markup or HTML entities."""
+    return html.unescape(re.sub(r"</?(?:strong|b|em|mark)>", "", str(value)))
 
 
 def _duckduckgo_result_url(href: str) -> str:
@@ -367,21 +378,32 @@ class SearchGuard:
 
 
 SEARCH_GUARD = SearchGuard()
+# The Brave free plan allows one request per second; it does not block an address.
+BRAVE_PACE = SearchGuard()
+BRAVE_PACE.min_interval = 1.1
 
 
 class WebTools:
-    def __init__(self, settings: dict):
+    def __init__(self, settings: dict, *, search_key=None):
+        """search_key: a callable returning the current Brave Search key ('' when unset).
+
+        The key is read when a search is sent and is never part of the settings.
+        """
         if not isinstance(settings, dict) or not isinstance(settings.get("search", {}), dict):
             raise WebToolError("Search configuration must be an object")
         config = settings.get("search", {})
         self.enabled = config.get("enabled", False) is True
         self.provider = config.get("provider", "duckduckgo")
-        # Settings normally migrates old Brave configurations. Also protect
-        # callers that construct WebTools directly from a saved legacy object.
-        if self.provider == "brave":
+        # Settings normally migrates retired Brave configurations (a custom
+        # endpoint with a key from the environment). Also protect callers that
+        # construct WebTools directly from a saved legacy object.
+        if self.provider == "brave" and str(config.get("endpoint", "")).rstrip("/") != BRAVE_ENDPOINT:
             self.provider = "duckduckgo"
-        self.endpoint = DUCKDUCKGO_ENDPOINT if self.provider == "duckduckgo" else config.get("endpoint", "")
-        self.api_key = ""  # Search never receives runtime or environment secrets.
+        self.endpoint = (DUCKDUCKGO_ENDPOINT if self.provider == "duckduckgo" else
+                         BRAVE_ENDPOINT if self.provider == "brave" else config.get("endpoint", ""))
+        self.api_key = ""  # Never holds a key: the Brave key is read from search_key when a search is sent.
+        self._search_key = None
+        self.use_search_key(search_key)
         self.proxy = config.get("proxy_url") or None
         self.timeout = config.get("timeout_seconds", 20)
         self.max_bytes = config.get("max_response_bytes", 1024 * 1024)
@@ -395,8 +417,8 @@ class WebTools:
             proxy = _url(self.proxy)
             if proxy.path not in {"", "/"} or proxy.query:
                 raise WebToolError("Proxy must be an HTTP(S) server origin")
-        if self.enabled and self.provider not in {"searxng", "duckduckgo"}:
-            raise WebToolError("Search provider must be duckduckgo or searxng")
+        if self.enabled and self.provider not in {"searxng", "duckduckgo", "brave"}:
+            raise WebToolError("Search provider must be duckduckgo, searxng or brave")
         if self.enabled and self.endpoint:
             _url(self.endpoint)
 
@@ -594,6 +616,8 @@ class WebTools:
             if len(self._search_cache) < 50:
                 self._search_cache[(query, limit)] = result
             return result
+        if self.provider == "brave":
+            return await self._brave_search(query, limit)
         parameters += [("q", query), ("format", "json")]
         request_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(parameters), ""))
         data, content_type, _ = await self._request(request_url, headers={"Accept": "application/json"}, trusted_search=self.provider == "searxng")
@@ -618,3 +642,69 @@ class WebTools:
             if len(rows) >= limit:
                 break
         return {"query": query, "results": rows, "untrusted": True}
+
+    def use_search_key(self, source) -> None:
+        """Brave Search only: where to read the key from when a search is sent.
+
+        Never the settings object or the environment; other engines get no key.
+        """
+        self._search_key = source if callable(source) and self.provider == "brave" else None
+
+    def search_key_set(self) -> bool:
+        """Brave Search only: whether a key is available right now."""
+        try:
+            return bool(self._search_key and self._search_key())
+        except ValueError:
+            return False
+
+    async def _brave_search(self, query: str, limit: int) -> dict:
+        cached = self._search_cache.get((query, limit))
+        if cached is not None:
+            return cached  # the same query in the same run does not spend quota twice
+        try:
+            key = self._search_key() if self._search_key else ""
+        except ValueError:
+            key = ""  # the encrypted store is unavailable; its own status explains why
+        if not isinstance(key, str) or not key:
+            raise WebToolError(BRAVE_KEY_MISSING)
+        if any(ord(c) < 33 or ord(c) > 126 for c in key):
+            raise WebToolError("The saved Brave Search key contains characters an API key cannot have; set it again in the settings")
+        await BRAVE_PACE.pace()
+        request_url = self.endpoint + "?" + urllib.parse.urlencode(
+            [("q", query), ("count", str(limit)), ("text_decorations", "false")])
+        try:
+            # Pinned to public addresses and kept on this origin: the key has one destination.
+            data, content_type, _ = await self._request(
+                request_url, headers={"Accept": "application/json", "X-Subscription-Token": key})
+        except _HTTPStatusError as exc:
+            if exc.status in {401, 403, 422}:
+                raise WebToolError(f"Brave Search did not accept the API key or the request (HTTP {exc.status}). Do not repeat "
+                                   "the search; report that the human must check the Brave Search key in the settings") from None
+            if exc.status == 429:
+                raise WebToolError("Brave Search refused the search (HTTP 429): the plan's rate or monthly limit was reached. "
+                                   "Do not repeat the search now; use web_fetch with known URLs or report it") from None
+            raise
+        try:
+            payload = json.loads(data)
+            source = (payload.get("web") or {}).get("results", [])
+            if not isinstance(source, list):
+                raise ValueError()
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise WebToolError("Brave Search did not return the expected JSON results") from exc
+        rows = []
+        for entry in source[:100]:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                address = entry.get("url", "")
+                _url(address)
+            except WebToolError:
+                continue
+            rows.append({"title": _clean_text(_plain(entry.get("title", "")), 500), "url": address,
+                         "snippet": _clean_text(_plain(entry.get("description", "")), 3000)})
+            if len(rows) >= limit:
+                break
+        result = {"query": query, "results": rows, "untrusted": True}
+        if len(self._search_cache) < 50:
+            self._search_cache[(query, limit)] = result
+        return result

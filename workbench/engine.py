@@ -23,6 +23,7 @@ from .runtime_paths import PROTECTED_ROOTS
 from .checkpoints import CheckpointStore
 from .memo import MemoStore, MAX_PROPOSAL_CHARS, clean as memo_clean
 from .turn_engine import TurnWorkMixin, PLAN_TOOL_NAMES, PLAN_NUDGE
+from .verification import VerificationMixin, RUN_TESTS_TOOL
 from . import sources
 from .harness import PathHarness, ToolExecutor
 from .skills import SkillCatalog
@@ -37,7 +38,7 @@ from .resources import ResourceGate
 from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .webtools import WebTools
 from .history import HistoryStore, HistoryError, ArchivedReadOnly, public_document, archived_view, redact_tree as redact_history_tree
-from .securestore import CredentialStore, CredentialStorageError
+from .securestore import CredentialStore, CredentialStorageError, SEARCH_BINDING
 from .ordered_engine import OrderedCollaborationMixin, ORDERED_NAMES
 from .ordered_reference import ReferenceCatalog, OrderedReferenceError
 from .coordination_view import coordination_projection, projection_summary
@@ -203,8 +204,8 @@ PYTHON_TOOL = schema('python_execute',
     'Run a normal Python script with the human-selected existing libraries in a Windows sandbox. '
     'The script runs in a private working directory and cannot open host paths: declare each file to read in inputs '
     '(path = host path, name = relative name) and open it by that name; write results to relative names declared in outputs. '
-    'No subprocesses or pip. To run tests, have test_*.py files in the working directory (inputs or written by the script) '
-    'and call `import awb_pytest; raise SystemExit(awb_pytest.run())`. '
+    'No subprocesses or pip. To run existing tests use run_tests instead (it copies the files for you). Inside a script, '
+    'tests in the working directory run with `import awb_pytest; raise SystemExit(awb_pytest.run())`. '
     'Keep helper code inside `code`; do not save temporary scripts into the human\'s folders. '
     'Reserve output paths first; create host output folders with create_directory. '
     'Files are published only after successful execution; only outputs with successful save receipts were saved. '
@@ -235,7 +236,9 @@ WRITE_TOOLS = frozenset({'write_text', 'patch_text', 'docx_write', 'docx_edit', 
 DIRECTORY_TOOLS = frozenset({'create_directory'})
 WORKER_ONLY_TOOLS = frozenset({'spawn_worker', 'start_ordered_work', 'wait_for_workers', 'review_worker_report'})
 # A read-only worker (chosen by its PM at spawn) can inspect but never change
-# files, run code or a browser, reserve paths, or delegate to writers.
+# files, run its own code or a browser, reserve paths, or delegate to writers.
+# run_tests stays available to it: the application runs the existing tests in
+# the sandbox and writes nothing back, which is what a verifier needs.
 READ_ONLY_DENIED_TOOLS = WRITE_TOOLS | DIRECTORY_TOOLS | frozenset({
     'reserve_paths', 'python_execute', 'selenium_browse', 'spawn_worker'})
 # Include this workflow at dispatch, so existing saved policies receive it too.
@@ -392,7 +395,7 @@ class Agent:
                 }
 
 
-class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
+class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
     def __init__(self, settings: Settings, client=None):
         self.settings = settings
         self.gate = ResourceGate()
@@ -676,6 +679,8 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
         allowed = {profile['id'] for profile in config['providers']
                    if profile['id'] in old_profiles and all(profile.get(key) == old_profiles[profile['id']].get(key)
                                                             for key in identity)}
+        if config['search']['provider'] == 'brave':
+            allowed.add('search')  # the session's Brave key survives saves while Brave stays selected
         secrets = {ident: key for ident, key in self.settings.secrets.items() if ident in allowed}
         retired_env = raw.get('search', {}).get('api_key_env', '')
         prepared = self._redaction.prepare([*self._secret_values(), *self._secret_values(config=config, secrets=secrets),
@@ -694,7 +699,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
         self.history.require_writable()
         if not isinstance(storage, str) or storage not in {'session', 'saved'}:
             raise ValueError('API キーの保存方法が不正です')
-        if ident == 'search' and key:
+        if ident == 'search' and key and self.settings.value['search']['provider'] != 'brave':
             raise ValueError(SEARCH_KEY_UNSUPPORTED)
         profiles = {p['id']: p for p in self.settings.value['providers']}
         if ident not in profiles and ident != 'search' and not (not key and self.credentials.contains(ident)):
@@ -711,7 +716,8 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
         self._history_prepare_masks(prepared)
         # No awaits: durable ciphertext/remove first, then active source and masks.
         try:
-            self.credentials.replace(ident, key if storage == 'saved' else '', profiles.get(ident))
+            self.credentials.replace(ident, key if storage == 'saved' else '',
+                                     SEARCH_BINDING if ident == 'search' else profiles.get(ident))
         except CredentialStorageError:
             # Submitted secrets remain output masks even when encryption fails.
             self._redaction.commit(prepared)
@@ -1020,7 +1026,9 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
         # App implementation, settings, and secret storage cannot become agent
         # workspaces even if a broad user-selected ancestor contains them.
         harness = self._file_harness(config)
+        # The Brave key is read when a search is sent, never copied into the run's configuration.
         web_tools = WebTools({'search': copy.deepcopy(config['search'])})
+        web_tools.use_search_key(self.settings.search_key)
         return task, config, pms, workers, count, harness, web_tools
 
     def _file_harness(self, config):
@@ -1102,6 +1110,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
         self.runs[run_id] = run
         run['_known_urls'] = sources.extract(task)
         run['_unverified_urls'] = {}
+        self._tests_note_request(run, task)
         # Create every PM before scheduling any inference so each dispatch has
         # the complete, verified set of peers. Repeated profiles are intentional:
         # every PM still has its own identity, history and conversation header.
@@ -1297,6 +1306,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
             raise ValueError(eligibility['message'])
         self.enqueue(agent, content, human=True)
         run.setdefault('_known_urls', set()).update(sources.extract(content))
+        self._tests_note_request(run, content)
         run['status'] = 'running'
         # A human may continue an individual agent, but cannot silently refill
         # the team's automatic handoff budget.
@@ -1869,7 +1879,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
         recovery_policy = RECOVERY_POLICY if not self._ordered_for(run, agent) and any(
             child.status == 'error' and child.stop_reason == 'provider_output_limit'
             for child in self._owned_workers(run, agent)) else ''
-        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + self._memo_policy(run) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy
+        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + self._memo_policy(run) + self._tests_policy(run) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy
 
     def _contextual_team_tool(self, run, agent, tool):
         """One provider/validation contract without enlarging unrelated requests."""
@@ -1899,7 +1909,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
             contextual['parameters']['properties']['read_only'] = {'type': 'boolean'}
             contextual['description'] = ('Create a direct child within shared worker/depth caps. Give exact instructions, deliverable and checks. '
                 'Optional depends_on: existing siblings; starts after your current formal-report acceptance. '
-                'read_only=true: reads only, no writes/code/browser. Reuse via send_message.')
+                'read_only=true: reads and run_tests only, no writes/code/browser. Reuse via send_message.')
             return contextual
         if agent.parent_id and not self._ordered_for(run, agent) and tool['name'] in {'wait_for_workers', 'review_worker_report'}:
             contextual = copy.deepcopy(tool)
@@ -1931,12 +1941,13 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
         file_tools = run['_executor'].schemas() if paths['read_roots'] or paths['write_roots'] else []
         tools = [*[tool for tool in team_tools if run.get('work_board', {}).get('enabled') is True
                    or tool['name'] not in {'post_work_board', 'read_work_board'}], *file_tools]
-        if run['_config']['python']['enabled'] and os.name == 'nt':
+        if self._python_ready(run):
             network = ('Network access is enabled by the human for this run; scripts connect directly, '
                        'without the Web tool proxy or destination restrictions. Windows loopback/firewall restrictions still apply. '
                        if run['_config']['python']['network_enabled'] else
                        'Network access is disabled for this run. ')
             tools.append({**PYTHON_TOOL, 'description': PYTHON_TOOL['description'] + ' ' + network})
+            tools.append(RUN_TESTS_TOOL)
         if run['_config']['selenium']['enabled'] and run['_config']['python']['network_enabled'] and os.name == 'nt':
             tools.append(SELENIUM_TOOL)
         if run['_config']['search']['enabled']:
@@ -2294,6 +2305,13 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                             self.log(agent, 'notice', PLAN_NUDGE)
                             self._append_context(agent, {'role': 'user', 'content': PLAN_NUDGE}, human=False)
                             continue
+                        tests_notice = (None if agent.pending or run['model_calls'] + 1 >= limits['max_model_calls']
+                                        else self._tests_gate(run, agent))
+                        if tests_notice:
+                            # The human asked for a test run that never passed or happened.
+                            self.log(agent, 'notice', tests_notice)
+                            self._append_context(agent, {'role': 'user', 'content': tests_notice}, human=False)
+                            continue
                         if agent.pending:
                             # The reply was produced before newer input arrived.
                             # Retain it as an observation, not a completion claim.
@@ -2533,7 +2551,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                 agent.status = 'idle' if children and any(a.status not in {'done', 'stopped'} for a in children) else 'done'
                 if terminal_response:
                     if agent.parent_id is None:
-                        terminal_response += self._source_footer(run)
+                        terminal_response += self._tests_footer(run) + self._source_footer(run)
                     self.record_result(agent, 'assistant_response', terminal_response, revision=turn_revision)
                 if agent.parent_id and not ordered_report_sent:
                     parent = self.agents[agent.parent_id]
@@ -3046,10 +3064,13 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                 if any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
                         for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
                     raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
+                tests_notice = self._tests_gate(run, agent)
+                if tests_notice:
+                    return {'ok': False, 'code': 'tests_not_passed', 'error': tests_notice}
                 agent._revise_pending = False
                 summary += self._turn_footer(run, agent)
                 if agent.parent_id is None:
-                    summary += self._source_footer(run)
+                    summary += self._tests_footer(run) + self._source_footer(run)
                 self.log(agent, 'result', summary)
                 self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
                 agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)
@@ -3076,7 +3097,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
             if not run['_config']['search']['enabled']:
                 raise ValueError('Web 検索は無効です')
             if name == 'web_search':
-                # Preserve masks for retired keys without sending search credentials.
+                # Mask the current and retired search keys before any result is recorded.
                 self._redaction.remember(self._secret_values())
             async with self._run_deadline(run):
                 return self._urls_seen(run, await run['_web'].execute(name, args), args)
@@ -3119,8 +3140,11 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                 async with self._run_deadline(run):
                     return await execute_selenium(run['_config']['selenium'], run['_config']['python'], run['_harness'], **args,
                         on_complete=lambda result: self.record_receipt(agent, name, result))
+            if name == 'run_tests':
+                async with self._run_deadline(run):
+                    return await self._run_tests(run, agent, args)
             if name == 'python_execute':
-                if not run['_config']['python']['enabled'] or os.name != 'nt':
+                if not self._python_ready(run):
                     raise ValueError('Python実行は無効、またはWindowsの隔離実行に未対応です')
                 if set(args) - {'code', 'inputs', 'outputs'} or 'code' not in args:
                     raise ValueError('Pythonツール引数が不正です')
@@ -3137,6 +3161,8 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                     if isinstance(result, dict) and result.get('exit_code') == 0:
                         # What a script that ran fetched or printed counts as seen.
                         self._urls_seen(run, {key: result.get(key) for key in ('stdout', 'stderr')}, args.get('code', ''))
+                    # Tests run through awb_pytest in a script count as a test run too.
+                    self._tests_record(run, agent, name, result)
                     return result
             if isinstance(args.get('path'), str):
                 if name in DIRECTORY_TOOLS:
@@ -3340,16 +3366,23 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
         return ('\n\n【アプリの確認】次のファイルには、この作業で検索・取得・読み取りのどれでも確認していない URL が含まれています。'
                 '内容の裏づけとして使う前に確認してください。\n' + '\n'.join(lines))
 
+    def _python_ready(self, run):
+        """Python can run in this run: enabled by the human, and on Windows (LPAC)."""
+        return bool(run['_config']['python']['enabled'] and os.name == 'nt')
+
     def _approval_needed(self, run, name, args):
         """Phase 7: operations the human chose to approve one by one."""
         settings = run['_config']['approvals']
         if run.get('approval_mode') != 'ask':
             return False
-        return ((name == 'python_execute' and settings['python'])
+        return ((name in {'python_execute', 'run_tests'} and settings['python'])
                 or (name == 'selenium_browse' and settings['selenium'])
                 or (name in WRITE_TOOLS and settings['overwrite'] and args.get('expected_sha256') != 'missing'))
 
     def _approval_summary(self, run, name, args):
+        if name == 'run_tests':
+            paths = args.get('paths') if isinstance(args.get('paths'), list) else []
+            return 'テストを実行します（Python の隔離実行。ファイルは書き換えません）\n対象: ' + ', '.join(str(path) for path in paths[:16])
         if name == 'python_execute':
             outputs = [item.get('path') for item in args.get('outputs', []) if isinstance(item, dict)]
             text_value = 'Python を実行します'

@@ -1,6 +1,7 @@
 'use strict';
 
 const DUCKDUCKGO_SEARCH_ENDPOINT='https://html.duckduckgo.com/html/';
+const BRAVE_SEARCH_ENDPOINT='https://api.search.brave.com/res/v1/web/search';
 const FIELD_GROUPS = {
   work_board: [['enabled','新しい作業で共有掲示板を使う','checkbox']],
   copilot_agent: [
@@ -44,8 +45,8 @@ const FIELD_GROUPS = {
   ],
   search: [
     ['enabled','Web 検索・ページ取得を使う','checkbox'],
-    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['searxng','SearXNG']],undefined,'DuckDuckGo は、短時間に検索が続くと、しばらく検索を受け付けなくなることがあります（ボット確認）。続く場合は、自分で用意した SearXNG（JSON 出力を有効にしたもの）を選び、その URL を接続先に入れてください。'],
-    ['endpoint','検索の接続先 URL（DuckDuckGo は固定）','url'],
+    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['brave','Brave Search（自分の API キーを使う）'],['searxng','SearXNG（自分の検索サーバー）']],undefined,'DuckDuckGo は、短時間に検索が続くと、しばらく検索を受け付けなくなることがあります（ボット確認）。続く場合は、Brave Search を選んで設定を保存し、下に表示される欄へ API キーを入れてください。自分で用意した SearXNG（JSON 出力を有効にしたもの）の URL も使えます。'],
+    ['endpoint','検索の接続先 URL（DuckDuckGo と Brave Search は固定）','url'],
     ['proxy_url','検索用プロキシ URL（任意）','url'],
     ['timeout_seconds','検索タイムアウト（秒）','number',1],
     ['max_response_bytes','検索応答の最大サイズ（byte）','number',1024],
@@ -370,10 +371,12 @@ function renderCredentialStorage() {
 function refreshSecretStatus(status) {
   ui.secretStatus=status||{};
   $('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{const id=card.querySelector('[data-key="id"]').value.trim();card.querySelector('.secret-status').textContent=secretStatusText(ui.secretStatus[id],ui.secretSources[id]);});
+  const search=$('searchFields')._credential;if(search)search.status.textContent=secretStatusText(ui.secretStatus.search,ui.secretSources.search);
 }
 
 function savedCredentialTarget(id) {
-  if(id==='search')return null;
+  // The search key exists only for Brave Search, and only for its fixed endpoint.
+  if(id==='search')return ui.config?.search?.provider==='brave'?{id,kind:'Brave Search',endpoint:BRAVE_SEARCH_ENDPOINT,proxy:ui.config.search.proxy_url||''}:null;
   const profile=ui.config?.providers?.find(item=>item.id===id);
   return profile?{id,kind:PROFILE_KINDS[profile.kind],endpoint:profile.base_url,proxy:profile.proxy_url||''}:null;
 }
@@ -383,7 +386,32 @@ function credentialTargetText(id) {
   return '新しいプロファイルは、接続先の設定を保存してからキーを入力してください。';
 }
 function credentialControls() {
-  return [...$('profilesEditor').querySelectorAll('.profile-editor')].flatMap(card=>card._credential?[card._credential]:[]);
+  const search=$('searchFields')._credential;
+  return [...[...$('profilesEditor').querySelectorAll('.profile-editor')].flatMap(card=>card._credential?[card._credential]:[]),...(search?[search]:[])];
+}
+// The Brave Search key uses the same set / encrypt / delete controls as a model
+// key. They exist only while the saved search engine is Brave Search.
+function syncSearchKeyControl() {
+  const container=$('searchFields'),wanted=ui.config?.search?.provider==='brave';
+  if(!wanted){if(container._credential){container._credential.row.remove();container._credential=null;}return;}
+  if(container._credential)return;
+  const row=element('div','field full search-key'),secretRow=element('div','profile-secret'),secretField=element('div','field'),secretLabel=element('label','','Brave Search の API キー');
+  const storageField=element('div','field credential-storage-field'),storageLabel=element('label','','キーの保存方法'),storage=element('select'),modeHelp=element('small');
+  storage.id='searchKeyStorage';storageLabel.htmlFor=storage.id;storage.dataset.credential='true';
+  const sessionOption=element('option','','この起動中のみ'),savedOption=element('option','','このWindowsユーザーに暗号化保存');sessionOption.value='session';savedOption.value='saved';
+  storage.append(sessionOption,savedOption);storage.value='session';storageField.append(storageLabel,storage,modeHelp);
+  const secret=element('input');secret.type='password';secret.autocomplete='new-password';secret.id='searchKeyInput';secretLabel.htmlFor=secret.id;secret.dataset.credential='true';
+  secret.placeholder='空欄では現在のキー設定を変更しません';secretField.append(secretLabel,secret);
+  const save=element('button','button secondary','キーをセット');save.type='button';save.id='searchKeySet';save.dataset.credential='true';save.dataset.credentialAction='set';save.dataset.credentialProfile='search';
+  const clear=element('button','button minor credential-clear','入力・保存したキーを削除');clear.type='button';clear.id='searchKeyClear';clear.dataset.credential='true';clear.dataset.credentialAction='clear';clear.dataset.credentialProfile='search';
+  const status=element('p','secret-status',secretStatusText(ui.secretStatus.search,ui.secretSources.search));
+  const target=element('p','credential-target muted small'),result=element('p','inline-status credential-result');result.setAttribute('role','status');
+  const help=element('p','muted small','キーは Brave Search の接続先（固定）にだけ送ります。設定ファイル・履歴・環境変数には保存しません。キーは Brave Search API のページで取得できます。');
+  secretRow.append(storageField,secretField,save,clear,status);row.append(secretRow,target,help,result);container.appendChild(row);
+  const control=container._credential={id:'search',row,input:secret,button:save,clear,storage,savedOption,modeHelp,status,result,target};
+  storage.addEventListener('change',()=>refreshCredentialControls());clear.addEventListener('click',()=>setCredential(control,true));
+  save.addEventListener('click',()=>setCredential(control));
+  secret.addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229)return;if(event.key==='Enter'){event.preventDefault();setCredential(control);}});
 }
 function clearCredentialInputs() { credentialControls().forEach(control=>{control.input.value='';}); }
 function canSetCredential(id) {
@@ -395,6 +423,7 @@ function canClearCredential(id) {
     !ui.credentialOperations.has(id)&&(Boolean(savedCredentialTarget(id))||affectedCredentialIds().includes(id));
 }
 function refreshCredentialControls() {
+  syncSearchKeyControl();
   for(const control of credentialControls()){
     const allowed=canSetCredential(control.id),mode=control.storage?.value||'session';
     control.input.disabled=!allowed;control.button.disabled=!allowed||(mode==='saved'&&!canSaveCredential());
@@ -626,8 +655,8 @@ function configureSearchFields(search) {
   let previous=provider.value,searxngEndpoint=search.provider==='searxng'?search.endpoint:'';
   const update=()=>{
     if(previous==='searxng')searxngEndpoint=endpoint.value;
-    endpoint.readOnly=provider.value==='duckduckgo';
-    endpoint.value=endpoint.readOnly?DUCKDUCKGO_SEARCH_ENDPOINT:searxngEndpoint;
+    endpoint.readOnly=provider.value!=='searxng';
+    endpoint.value=provider.value==='brave'?BRAVE_SEARCH_ENDPOINT:endpoint.readOnly?DUCKDUCKGO_SEARCH_ENDPOINT:searxngEndpoint;
     previous=provider.value;
   };
   container._syncSavedSearch=saved=>{
@@ -720,6 +749,7 @@ function collectConfig() {
   for(const group of ['approvals','memo','history_search'])if(ui.config[group]===undefined&&JSON.stringify(config[group])===JSON.stringify(GROUP_DEFAULTS[group]))delete config[group];
   config.search.api_key_env='';
   if(config.search.provider==='duckduckgo')config.search.endpoint=DUCKDUCKGO_SEARCH_ENDPOINT;
+  if(config.search.provider==='brave')config.search.endpoint=BRAVE_SEARCH_ENDPOINT;
   if(ui.config.copilot_agent===undefined&&JSON.stringify(config.copilot_agent)===JSON.stringify(COPILOT_AGENT_DEFAULTS))delete config.copilot_agent;
   if(ui.config.orchestration===undefined&&JSON.stringify(config.orchestration)===JSON.stringify(ORCHESTRATION_DEFAULTS))delete config.orchestration;
   if(ui.config.work_board===undefined&&JSON.stringify(config.work_board)===JSON.stringify(WORK_BOARD_DEFAULTS))delete config.work_board;
@@ -1002,7 +1032,7 @@ async function refreshPreflight(request) {
       details.append(element('p','small','拒否が優先されます。読み取りと書き込みは独立した権限です。各ファイルの操作時にも確認します。'));target.append(details);
       const web=response.web||{};
       target.append(element('p','small',`Web 検索: ${web.search_configured?'設定あり（未接続確認）':'使用不可'} · 公開ページ取得: ${web.fetch_enabled?'有効':'無効'}${web.enabled?' · 検索先: '+web.search_endpoint+' · ページ取得先: モデルが選ぶ公開 HTTP(S) サイト'+(web.proxy?' · proxy: '+web.proxy:''):''}`));
-      if(Number.isInteger(web.search_blocked_minutes))target.append(element('p','small warning-text',`検索サービス（DuckDuckGo）が、このPCからの検索を一時的に止めています（ボット確認）。あと約${web.search_blocked_minutes}分は検索できません。ページの取得（URL を指定した読み込み）は使えます。続く場合は、設定の「Web 検索」で SearXNG に切り替えてください。`));
+      if(Number.isInteger(web.search_blocked_minutes))target.append(element('p','small warning-text',`検索サービス（DuckDuckGo）が、このPCからの検索を一時的に止めています（ボット確認）。あと約${web.search_blocked_minutes}分は検索できません。ページの取得（URL を指定した読み込み）は使えます。すぐに検索を使いたいときは、設定の「Web 検索・ページ取得」で検索エンジンを「Brave Search（自分の API キーを使う）」に切り替えて保存し、キーを入れてください。自分の SearXNG の URL も使えます。`));
       target.append(element('p','small','依頼・会話・作業方針・許可パスと、必要に応じたファイル内容やツール結果は、選択したモデル接続先へ送られます。Web 有効時は検索語・取得 URL も各接続先へ送られます。'));
       target.append(element('p','small','「この PC で実行」はアプリの実行場所です。Local はこの PC またはプライベート LAN の API に接続し、別の PC の場合もあります。チーム内の連絡で内容が別のモデル接続先へ共有される場合があります。PM・作業者すべての接続先・プロキシと、保存・再転送・学習利用の条件が社内の承認範囲に収まるか確認してください。アプリは会社の承認状況や接続先でのデータの取り扱いを判定しません。'));
     }
@@ -2252,7 +2282,13 @@ async function stopSelectedAgent() {
 // Phase 7: tool-call approval, the team memo and its proposals, and history search.
 // Every model/state string below is untrusted and is placed with textContent only.
 const APPROVAL_MODE_LABELS={ask:'毎回確認',always_allow:'常に許可'};
-const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',selenium_browse:'ブラウザ操作'};
+const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',run_tests:'テストの実行',selenium_browse:'ブラウザ操作'};
+const TEST_CHECK_LABELS={passed:'成功',failed:'失敗あり',missing:'未実行'};
+function testCheckLabel(check){
+  if(!check||!Object.hasOwn(TEST_CHECK_LABELS,check.state))return '';
+  const summary=typeof check.summary==='string'&&check.summary?` · ${check.summary.slice(0,80)}`:'';
+  return check.state==='missing'?(check.requested===true?'未実行（依頼あり・成果物は未検証）':'未実行'):`${TEST_CHECK_LABELS[check.state]}${summary}`;
+}
 const APPROVAL_FILE_TOOLS=new Set(['write_text','patch_text','docx_edit','docx_write','xlsx_write','pptx_edit','pptx_write']);
 const HISTORY_MATCH_LABELS={task:'依頼',result:'報告',log:'ログ'};
 function approvalToolLabel(tool) { return APPROVAL_TOOL_LABELS[tool]||(APPROVAL_FILE_TOOLS.has(tool)?'既存ファイルの変更':'ツールの実行'); }
@@ -2775,7 +2811,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }

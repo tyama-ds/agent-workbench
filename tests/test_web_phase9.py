@@ -719,3 +719,95 @@ def test_searches_are_spaced_out(monkeypatch):
             await guard.pace()
     asyncio.run(run())
     assert waits == [2.0, 4.0], "the first search goes at once; later ones wait their turn"
+
+
+# --- 5. Brave Search: the optional engine that uses the human's own key ---------------------------
+
+
+def brave(port, key="BSA-test-key"):
+    tools = WebTools({"search": {"enabled": True, "provider": "brave", "endpoint": module.BRAVE_ENDPOINT}},
+                     search_key=lambda: key)
+    assert tools.endpoint == module.BRAVE_ENDPOINT and tools.api_key == ""
+    tools.endpoint = f"http://search.example:{port}/res/v1/web/search"  # same code path, loopback fixture
+    return tools
+
+
+def test_brave_search_sends_the_key_only_as_its_header_and_reads_json_results(monkeypatch):
+    async def run():
+        requests = []
+
+        async def handler(request):
+            requests.append(await record(request))
+            return web.json_response({"type": "search", "web": {"results": [
+                {"title": "生成AI <strong>規制</strong> &amp; 動向", "url": "https://example.com/a", "description": "<strong>要約</strong>"},
+                {"title": "bad", "url": "javascript:alert(1)"},
+                {"title": "B", "url": "https://example.com/b", "description": "二件目"}]}})
+
+        pin(monkeypatch)
+        async with http_server(handler) as port:
+            tools = brave(port)
+            result = await tools.execute("web_search", {"query": "生成AI 規制", "limit": 2})
+            again = await tools.execute("web_search", {"query": "生成AI 規制", "limit": 2})
+        assert result == again and len(requests) == 1  # the same query does not spend quota twice
+        assert result["results"] == [{"title": "生成AI 規制 & 動向", "url": "https://example.com/a", "snippet": "要約"},
+                                     {"title": "B", "url": "https://example.com/b", "snippet": "二件目"}]
+        sent = requests[0]
+        assert sent["method"] == "GET" and sent["body"] == ""
+        assert urllib.parse.parse_qs(urllib.parse.urlsplit(sent["path"]).query) == {
+            "q": ["生成AI 規制"], "count": ["2"], "text_decorations": ["false"]}
+        assert sent["headers"]["X-Subscription-Token"] == "BSA-test-key" and sent["headers"]["Accept"] == "application/json"
+        assert "BSA-test-key" not in sent["path"] and "Cookie" not in sent["headers"]
+        assert "BSA-test-key" not in json.dumps(result)
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("status,expected", [(401, "did not accept the API key"), (422, "did not accept the API key"),
+                                              (429, "rate or monthly limit")])
+def test_brave_refusals_are_named_and_never_echo_the_key(monkeypatch, status, expected):
+    async def run():
+        async def handler(request):
+            return web.json_response({"error": {"detail": request.headers.get("X-Subscription-Token")}}, status=status)
+
+        pin(monkeypatch)
+        async with http_server(handler) as port:
+            with pytest.raises(WebToolError, match=expected) as error:
+                await brave(port).execute("web_search", {"query": "q"})
+        assert "BSA-test-key" not in str(error.value)
+    asyncio.run(run())
+
+
+def test_brave_without_a_key_sends_nothing_and_a_retired_configuration_stays_keyless(monkeypatch):
+    async def run():
+        async def handler(request):
+            raise AssertionError("no request without a key")
+
+        pin(monkeypatch)
+        async with http_server(handler) as port:
+            for source in (None, lambda: ""):
+                tools = WebTools({"search": {"enabled": True, "provider": "brave", "endpoint": module.BRAVE_ENDPOINT}},
+                                 search_key=source)
+                tools.endpoint = f"http://search.example:{port}/res/v1/web/search"
+                assert not tools.search_key_set()
+                with pytest.raises(WebToolError, match="needs an API key"):
+                    await tools.execute("web_search", {"query": "q"})
+        # A retired Brave configuration (custom endpoint) is DuckDuckGo and never receives a key.
+        legacy = WebTools({"search": {"enabled": True, "provider": "brave", "endpoint": "https://old.example/search"}},
+                          search_key=lambda: "BSA-test-key")
+        assert legacy.provider == "duckduckgo" and legacy.endpoint == module.DUCKDUCKGO_ENDPOINT and legacy._search_key is None
+        keyless = WebTools({"search": {"enabled": True, "provider": "searxng", "endpoint": "https://s.example/search"}},
+                           search_key=lambda: "BSA-test-key")
+        assert keyless._search_key is None and not keyless.search_key_set()
+    asyncio.run(run())
+
+
+def test_the_brave_key_never_follows_a_redirect_to_another_origin(monkeypatch):
+    async def run():
+        async def handler(request):
+            raise web.HTTPFound("http://elsewhere.example:1/steal")
+
+        hosts = pin(monkeypatch)
+        async with http_server(handler) as port:
+            with pytest.raises(WebToolError, match="cross-origin redirect"):
+                await brave(port).execute("web_search", {"query": "q"})
+        assert hosts == ["search.example"]
+    asyncio.run(run())

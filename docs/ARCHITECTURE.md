@@ -749,3 +749,23 @@ rejected attempts become passes, so no state waits on a model. The PM's
 `_delegation_issue` is only "turns still running"; worker-report gates do not
 apply. `_turn_finish` settles the participants, saves the record when the plan
 asked for it and wakes the PM with the application's history.
+
+## Test runs and key-based search (0.1.1.dev54)
+
+`run_tests` (`workbench/verification.py`) is `python_execute` with the inputs
+chosen by the application: `python_runner.collect_test_inputs` expands the
+given host paths through the path harness (read roots and deny roots apply),
+keeps their layout below the common folder, and `execute_tests` runs a fixed
+script (`awb_pytest.run()`) in the same LPAC sandbox with no outputs. The
+engine records every `awb_pytest:` summary it sees, from this tool or from a
+`python_execute` result. The completion check uses only that record: the
+model's own claim about tests is never evidence.
+
+Brave Search is the only engine that uses a key. The key's binding in the
+credential store is the constant `SEARCH_BINDING` (id `search`, kind `brave`,
+the fixed endpoint), not a provider profile, so it cannot be re-pointed at
+another destination. `Settings.search_key` returns it only while the saved
+engine is `brave`; `WebTools` receives a callable and reads the key when a
+search is sent, so no run configuration, history document or public state
+holds it. The request is pinned to validated public addresses and may not
+follow a redirect to another origin.

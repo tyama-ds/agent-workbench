@@ -51,6 +51,30 @@ spreadsheet tasks (gpt-5.4-mini).
   and after a bot check no search is sent for ten minutes; the start check and
   the settings say so and point to SearXNG. Text tools name the right tool for
   .xlsx/.docx/.pptx.
+- Third real-machine round (8 of 8 runs ended `done`).
+  `run_tests({paths})`: the application copies the given files or folders into
+  the sandbox (layout kept below their common folder, `src/` importable, no
+  caches or virtual environments, at most 200 files) and runs `awb_pytest`
+  there; nothing is written back. Offered to the PM and every worker,
+  including read-only ones, wherever Python may run; it follows the Python
+  approval setting. Every test run (this tool, or `python_execute` output with
+  an `awb_pytest:` summary) is recorded (`tests_run` event, `run.test_check`).
+  When the request asks for tests to be run, the root PM's completion is sent
+  back once if no run passed, and the result always ends with the
+  application's own record (passed / last run failed / never run), also shown
+  as a run metric. Without Python the missing run is reported, not retried.
+  Brave Search returns as an optional engine that uses the human's own API
+  key; the default stays keyless DuckDuckGo and SearXNG is unchanged. Its
+  endpoint is fixed, the key is kept for the session or in the encrypted
+  store under a fixed binding (never in settings, history or the
+  environment), sent only as `X-Subscription-Token` to that origin, and
+  accepted only while Brave Search is the saved engine. A retired Brave
+  configuration (another endpoint) still becomes DuckDuckGo. The start check
+  points to this option while DuckDuckGo is blocking, and warns when Brave
+  is selected without a key. Not yet run against the real Brave API.
+  `xlsx_write` stores a numeric string (`'123,366,734'`, `'12.5%'`, `'42'`)
+  as a number with a matching format; leading zeros, 16+ digits and a leading
+  apostrophe stay text.
 - Questions that wait for a person (no recommendation, or `kind=permission`)
   are for the root PM only and limited to two per run; others become
   consultations when they carry a recommendation, or are refused with

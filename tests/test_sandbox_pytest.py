@@ -424,3 +424,23 @@ def test_when_pytest_cannot_collect_at_all_the_simple_runner_still_runs_the_test
 def test_a_broken_test_file_is_still_a_failure_after_the_fallback(tmp_path):
     result = sandbox(tmp_path, RUN, {'test_broken.py': 'import module_that_does_not_exist\n\ndef test_x():\n    pass\n'})
     assert result.returncode != 0, result.stdout + result.stderr
+
+
+def test_the_run_tests_script_finds_code_in_src_and_beside_the_tests(tmp_path):
+    """run_tests copies a project as it is laid out; its fixed script must run it."""
+    test = 'from calc import add\n\ndef test_add():\n    assert add(1, 2) == 3\n'
+    done = sandbox(tmp_path, runner.TEST_CODE, {'src/calc.py': CALC, 'tests/test_calc.py': test, 'tests/cases.json': '[]'})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert summary(done).startswith('awb_pytest: 1 passed, 0 failed, 0 not run')
+    from workbench.verification import test_outcome as outcome
+    assert outcome(done.stdout, done.returncode)['ok'] is True
+
+
+def test_the_run_tests_script_reports_failures_and_a_missing_module(tmp_path):
+    from workbench.verification import test_outcome as outcome
+    failing = sandbox(tmp_path, runner.TEST_CODE, {'calc.py': CALC, 'test_calc.py': FAILING})
+    assert failing.returncode == 1 and outcome(failing.stdout, failing.returncode)['ok'] is False
+    (tmp_path / 'second').mkdir()
+    missing = sandbox(tmp_path / 'second', runner.TEST_CODE, {'tests/test_calc.py': 'from calc import add\n\ndef test_add():\n    pass\n'})
+    assert missing.returncode != 0 and 'ModuleNotFoundError' in missing.stdout + missing.stderr
+    assert not outcome(missing.stdout, missing.returncode)['ok']
