@@ -4,6 +4,48 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev59 — Keyless browser search, one search queue, a cache that outlives a run (2026-11-16)
+
+After the Accept-Encoding fix the first three DuckDuckGo searches of a run
+succeeded and the fourth, 24 seconds in, was challenged; from then on the
+address was paused. Keyless HTTP search cannot carry workers that search in
+parallel (20 to 30 searches per task), and an API key is not an option for
+this user.
+
+- Browser search (`search.provider = browser`). `web_search` opens a search
+  engine's result page in the browser configured under Selenium, through the
+  existing Windows Job runner, and reads titles, URLs and snippets from the
+  page's HTML on the application's side. The model gets the usual
+  `{query, results}`; it cannot steer the browser. Engines are tried in
+  order (Bing, then DuckDuckGo's HTML page), each with its own pacing and its
+  own ten-minute pause after a bot check.
+- The browser runs as an ordinary window kept off the visible screen (not
+  headless) with a profile of its own that the application keeps under its
+  state folder, so cookies survive between searches. The human's own profile
+  is never used. Nothing hides that the browser is automated.
+- It needs the browser, driver and Python executables from the Selenium and
+  Python settings, but neither `selenium.enabled` (the page-operation tool for
+  agents) nor Python's network permission.
+- A bot check is never solved by the application. When every engine asks for
+  one, the tool call waits on an approval card: on approval a visible window
+  opens on the search page and the application waits up to five minutes for a
+  person to pass the check, then finishes the search. One check at a time for
+  the whole application; teammates that hit the same wall wait and then
+  search again. A human who declines is not asked again in that run.
+- All search methods: an answer already held is reused for the same query
+  and for rewordings of it (width, case,
+  spacing, punctuation and word order are ignored); answers are kept on disk
+  for six hours and reused across runs (keys are hashes of the normalised
+  query, so the file does not list what was asked); this PC sends at most 60
+  searches to search services per hour, counted across runs and restarts.
+  The keyless methods (browser, DuckDuckGo) also send one search at a time
+  per run; a SearXNG server of the human's own or a keyed API is not held
+  back.
+- Not verified here: the real Bing result page and its bot check, the
+  off-screen window on Windows, and the human-check flow in a real browser.
+  Automated use of a search engine's pages may be against that engine's
+  terms; the human decides whether to use this method.
+
 ## 0.1.1.dev58 — DuckDuckGo searches return results: no "gzip, deflate" beside a browser identity (2026-11-16)
 
 Every DuckDuckGo search on the real test machine had returned 0 results

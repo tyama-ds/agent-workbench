@@ -769,3 +769,24 @@ engine is `brave`; `WebTools` receives a callable and reads the key when a
 search is sent, so no run configuration, history document or public state
 holds it. The request is pinned to validated public addresses and may not
 follow a redirect to another origin.
+
+## Browser search and the shared search queue (0.1.1.dev59)
+
+`workbench/browser_search.py` holds what a search needs besides a browser:
+the engine list, the readers that turn a result page's HTML into rows (on the
+application's side, never in the page), one `SearchGuard` per engine, and the
+`SearchCache`. The browser is reached only through one callable,
+`page(url, ready, visible, wait_seconds)`, which the engine builds from
+`selenium_runner.execute_page`: the same Windows Job runner and private job
+folder as `selenium_browse`, a worker mode that opens one page and returns
+its HTML without clicking or typing, and `--user-data-dir` pointing at
+`browser-search-profile` under the state folder (already a denied root for
+agents' file tools).
+
+`WebTools._queued_search` is the single entry for every provider: a per-run
+lock, then the run's own answers, then the disk cache, then the hourly
+allowance, then the provider. `SearchChallenge` (every engine wants a person)
+is caught in `Engine.execute_tool`, which waits on the existing approval
+mechanism under an application-wide lock and, on approval, runs the same page
+callable with `visible=True`. The model sees either results or one plain
+statement that search is unavailable.

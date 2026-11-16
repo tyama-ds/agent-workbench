@@ -246,3 +246,92 @@ async def execute_selenium(config, python_config, harness, url, actions=None, sc
         if task.done() and not task.cancelled():
             task.exception()
         raise
+
+
+# --- browser search: one page, read-only, with the application's own profile --------
+
+_PAGE_KEYS = {'url', 'title', 'html', 'ready', 'closed', 'truncated'}
+
+
+def _execute_page(config, python_config, harness, url, ready, visible, wait_seconds, profile_dir, proxy_url, max_page_chars, cancel):
+    if os.name != 'nt':
+        raise HarnessError('Browser search currently requires Windows')
+    try:
+        url, proxy = validate_url(url), validate_proxy(proxy_url or '')
+    except (ValueError, UnicodeError) as exc:
+        raise HarnessError(str(exc)) from exc
+    wait_seconds = _integer(wait_seconds, 'page wait', 1, 600)
+    memory = _integer(config.get('max_memory_mb', 1024), 'Selenium max_memory_mb', 256, 8192)
+    with _execution_lock(cancel) as acquired:
+        if not acquired or cancel.is_set():
+            raise HarnessError('Browser search was cancelled')
+        executable, libraries, browser_path, driver_path = _runtime(config, python_config, harness)
+        profile = Path(profile_dir)
+        if not profile.is_absolute() or profile.is_symlink():
+            raise HarnessError('The browser search profile folder is not usable')
+        profile.mkdir(parents=True, exist_ok=True)
+        with _Workspace() as private:
+            workspace = private.path
+            job = {'mode': 'page', 'browser': config.get('browser', 'edge'), 'browser_executable': str(browser_path),
+                   'driver_executable': str(driver_path), 'library_paths': [str(path) for path in libraries],
+                   'proxy_url': proxy, 'url': url, 'ready_selector': ready, 'visible': visible is True,
+                   'wait_seconds': wait_seconds, 'profile_dir': str(profile), 'max_page_chars': max_page_chars}
+            job_path, worker = workspace / 'job.json', workspace / 'worker.py'
+            job_path.write_text(json.dumps(job, ensure_ascii=False), encoding='utf-8')
+            worker.write_bytes(Path(__file__).with_name('selenium_worker.py').read_bytes())
+            try:
+                # Start-up and page load come on top of the wait for results (or for a person).
+                result = run_browser_job([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8',
+                                          str(worker), str(job_path)], workspace,
+                                         timeout=wait_seconds + 60, memory_mb=memory, output_limit=16384,
+                                         workspace_limit=256 * 1024 * 1024, cancel=cancel)
+            except SandboxError as exc:
+                private.preserve = exc.preserve_private
+                suffix = f'; private storage retained at {workspace}' if exc.preserve_private else ''
+                raise HarnessError(str(exc) + suffix) from exc
+            except Exception as exc:
+                private.preserve = True
+                raise HarnessError(f'Browser process cleanup unconfirmed; private storage retained at {workspace}') from exc
+            if cancel.is_set():
+                raise HarnessError('Browser search was cancelled')
+            if result['exit_code'] != 0 or result['termination_reason']:
+                detail = (result.get('stderr') or '').strip().splitlines()[-1:] or [str(result['termination_reason'] or 'the browser worker failed')]
+                raise HarnessError('The browser could not open the search page: ' + detail[0][:300])
+            local = PathHarness([str(workspace)], [], max_file_bytes=32 * 1024 * 1024)
+            try:
+                page = json.loads(local.read_bytes(str(workspace / 'result.json')))
+                if (not isinstance(page, dict) or set(page) != _PAGE_KEYS
+                        or not all(isinstance(page[key], str) for key in ('url', 'title', 'html'))
+                        or not all(type(page[key]) is bool for key in ('ready', 'closed', 'truncated'))
+                        or len(page['html']) > max_page_chars):
+                    raise ValueError()
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise HarnessError('The browser returned an invalid page result') from exc
+        return page
+
+
+async def execute_page(config, python_config, harness, url, ready, *, visible=False, wait_seconds=8, profile_dir,
+                       proxy_url='', max_page_chars=1500000):
+    """Open one page in the application's browser profile and return {url, title, html, ready, closed, truncated}.
+
+    Used by browser search only. The model supplies none of these arguments
+    except the words of its query, which are already encoded into ``url``.
+    Cancellation waits for the browser Job to stop.
+    """
+    cancel = threading.Event()
+    task = asyncio.create_task(asyncio.to_thread(_execute_page, config, python_config, harness, url, ready, visible,
+                                                wait_seconds, profile_dir, proxy_url, max_page_chars, cancel))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        cancel.set()
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if task.done() and not task.cancelled():
+            task.exception()
+        raise

@@ -189,6 +189,87 @@ def _options(options, job, workspace):
     return options
 
 
+def _page_options(options, job, workspace):
+    """Browser search: an ordinary (not headless) window with the application's own lasting profile.
+
+    The profile keeps cookies between searches, which is what lets a search
+    engine recognise a browser that a person already verified. It is never the
+    human's own profile. The window is kept off the visible screen unless a
+    person has to act in it.
+    """
+    options.binary_location = job['browser_executable']
+    profile = _text(job['profile_dir'], 'profile folder', 4096)
+    for value in ('--disable-extensions', '--no-first-run', '--no-default-browser-check',
+                  '--disable-component-update', '--disable-sync', '--remote-debugging-pipe',
+                  '--disk-cache-size=52428800', '--window-size=1180,860', f'--user-data-dir={profile}'):
+        options.add_argument(value)
+    options.add_argument('--window-position=60,40' if job['visible'] is True else '--window-position=-2400,-2400')
+    proxy = validate_proxy(job.get('proxy_url', ''))
+    options.add_argument(f'--proxy-server={proxy}' if proxy else '--no-proxy-server')
+    options.add_experimental_option('prefs', {
+        'credentials_enable_service': False,
+        'profile.password_manager_enabled': False,
+        'autofill.profile_enabled': False,
+        'autofill.credit_card_enabled': False,
+        'download_restrictions': 3,
+        'profile.default_content_setting_values.automatic_downloads': 2,
+    })
+    return options
+
+
+def run_page_job(job, workspace, *, driver_factory=None):
+    """Open one page and return its HTML once ``ready_selector`` matches or the wait ends.
+
+    With ``visible`` the window is shown and the wait is long: a person may be
+    passing a verification. Nothing is clicked or typed by this function.
+    """
+    url = validate_url(job['url'])
+    ready = _text(job['ready_selector'], 'ready selector', 300)
+    visible, wait, maximum = job['visible'], job['wait_seconds'], job['max_page_chars']
+    if type(visible) is not bool or type(wait) is not int or not 1 <= wait <= 600:
+        raise ValueError('Invalid page wait')
+    if type(maximum) is not int or not 10000 <= maximum <= 4000000:
+        raise ValueError('Invalid page size limit')
+    driver = (driver_factory or create_driver)(job, workspace)
+    try:
+        driver.set_page_load_timeout(30)
+        driver.set_script_timeout(5)
+        driver.implicitly_wait(0)
+        driver.execute_cdp_cmd('Browser.setDownloadBehavior', {'behavior': 'deny'})
+        if not visible:
+            try:
+                driver.minimize_window()
+            except Exception:
+                pass  # the off-screen position already keeps it out of the way
+        driver.get(url)
+        deadline, found, closed = time.monotonic() + wait, False, False
+        while True:
+            try:
+                found = bool(driver.find_elements('css selector', ready))
+            except Exception:
+                closed = True  # the person closed the window
+                break
+            if found or time.monotonic() >= deadline:
+                break
+            time.sleep(.5 if visible else .2)
+        if closed:
+            return {'url': url, 'title': '', 'html': '', 'ready': False, 'closed': True, 'truncated': False}
+        # Page text is data for the host's parser: drop what JSON or UTF-8 cannot carry.
+        html = str(driver.page_source).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')
+        try:
+            final = validate_url(driver.current_url)
+        except ValueError:
+            final = url
+        title = str(driver.title).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')[:500]
+        return {'url': final, 'title': title, 'html': html[:maximum], 'ready': found,
+                'closed': False, 'truncated': len(html) > maximum}
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass  # the parent Job stops every descendant either way
+
+
 def create_driver(job, workspace):
     # Imports are deliberately delayed until main has installed the explicitly
     # selected library folders. Supplying Service and binary avoids Manager.
@@ -206,7 +287,8 @@ def create_driver(job, workspace):
     service = Service(executable_path=job['driver_executable'],
                       service_args=['--allowed-ips=127.0.0.1'], log_output=subprocess.DEVNULL,
                       popen_kw={'creation_flags': _DETACHED_PROCESS})
-    return factory(service=service, options=_options(options, job, workspace))
+    build = _page_options if job.get('mode') == 'page' else _options
+    return factory(service=service, options=build(options, job, workspace))
 
 
 def _visible(driver, selector, deadline):
@@ -341,7 +423,7 @@ def main():
     if not isinstance(libraries, list) or len(libraries) > 32 or not all(isinstance(x, str) for x in libraries):
         raise ValueError('Invalid Selenium library folders')
     sys.path.extend(libraries)
-    result = run_job(job, workspace)
+    result = run_page_job(job, workspace) if job.get('mode') == 'page' else run_job(job, workspace)
     (workspace / 'result.json').write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
 
 

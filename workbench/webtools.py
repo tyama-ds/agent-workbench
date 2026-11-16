@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import hashlib
 import html
@@ -208,6 +209,8 @@ DUCKDUCKGO_ENDPOINT = "https://html.duckduckgo.com/html/"
 # Brave Search API: the optional engine that uses the human's own key. The
 # endpoint is fixed, so the key is only ever sent to this origin.
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+# Browser search: the first engine's result page (shown in the start check; the model cannot change it).
+BROWSER_SEARCH_ENDPOINT = "https://www.bing.com/search"
 BRAVE_KEY_MISSING = ("Brave Search needs an API key and none is set. Do not repeat the search; use web_fetch with known URLs "
                      "or report that web search is unavailable until the human sets the key in the settings")
 
@@ -407,7 +410,9 @@ class WebTools:
         if self.provider == "brave" and str(config.get("endpoint", "")).rstrip("/") != BRAVE_ENDPOINT:
             self.provider = "duckduckgo"
         self.endpoint = (DUCKDUCKGO_ENDPOINT if self.provider == "duckduckgo" else
-                         BRAVE_ENDPOINT if self.provider == "brave" else config.get("endpoint", ""))
+                         BRAVE_ENDPOINT if self.provider == "brave" else
+                         BROWSER_SEARCH_ENDPOINT if self.provider == "browser" else config.get("endpoint", ""))
+        self._cache, self._browser, self._search_queue = None, None, asyncio.Lock()
         self.api_key = ""  # Never holds a key: the Brave key is read from search_key when a search is sent.
         self._search_key = None
         self.use_search_key(search_key)
@@ -424,8 +429,8 @@ class WebTools:
             proxy = _url(self.proxy)
             if proxy.path not in {"", "/"} or proxy.query:
                 raise WebToolError("Proxy must be an HTTP(S) server origin")
-        if self.enabled and self.provider not in {"searxng", "duckduckgo", "brave"}:
-            raise WebToolError("Search provider must be duckduckgo, searxng or brave")
+        if self.enabled and self.provider not in {"searxng", "duckduckgo", "brave", "browser"}:
+            raise WebToolError("Search provider must be duckduckgo, browser, searxng or brave")
         if self.enabled and self.endpoint:
             _url(self.endpoint)
 
@@ -577,6 +582,74 @@ class WebTools:
         if type(limit) is not int or limit < 1:
             raise WebToolError(f"Search limit must be an integer 1..10; got {received(limit)}")
         limit = min(limit, 10)  # a larger request is capped, not refused
+        return await self._queued_search(query, limit)
+
+    def use_search_cache(self, cache) -> None:
+        """A browser_search.SearchCache shared by every run of this application (or None)."""
+        self._cache = cache
+
+    def use_browser(self, page) -> None:
+        """Browser search only: the async callable that opens one page in the application's browser profile."""
+        from .browser_search import BrowserSearch
+        self._browser = BrowserSearch(page) if callable(page) and self.provider == "browser" else None
+
+    async def _queued_search(self, query: str, limit: int) -> dict:
+        """An answer already held (this run, or on disk) is reused; keyless methods search one at a time.
+
+        Several workers of a run often ask the same thing, or the same thing in
+        other words. Only a query nobody has answered recently goes to a search
+        service, and each one that does is counted against this PC's hourly
+        allowance. The keyless services (a browser, DuckDuckGo) pause an address
+        that asks too fast, so a run sends them one search at a time; a search
+        server of the human's own, or a keyed API, is not held back.
+        """
+        async with (self._search_queue if self.provider in {"browser", "duckduckgo"} else contextlib.nullcontext()):
+            held = self._search_cache.get((query, limit))
+            if held is not None:
+                return held
+            if self._cache is not None:
+                held = self._cache.get(query, limit)
+                if held is not None:
+                    self._remember(query, limit, held)
+                    return held
+                try:
+                    self._cache.spend()
+                except ValueError as exc:
+                    raise WebToolError(str(exc)) from None
+            # These methods read a whole result page anyway: keep all of it, so a
+            # later request for more rows is answered without another search.
+            wanted = 10 if self.provider in {"browser", "duckduckgo"} else limit
+            result = await self._provider_search(query, wanted)
+            if self._cache is not None:
+                self._cache.put(query, wanted, result)
+            if wanted != limit:
+                result = {**result, "results": result["results"][:limit]}
+            self._remember(query, limit, result)
+            return result
+
+    def _remember(self, query, limit, result):
+        if len(self._search_cache) < 50:
+            self._search_cache[(query, limit)] = result
+
+    async def human_check(self, query: str, limit: int, engines=None) -> dict:
+        """Browser search only: show the verification window, wait for a person, then return the results."""
+        if self._browser is None:
+            raise WebToolError("Browser search is not available in this run")
+        try:
+            result = await self._browser.human_check(query, limit, engines)
+        except ValueError as exc:
+            raise WebToolError(str(exc)) from None
+        if self._cache is not None:
+            self._cache.put(query, limit, result)
+        self._remember(query, limit, result)
+        return result
+
+    async def _provider_search(self, query: str, limit: int) -> dict:
+        if self.provider == "browser":
+            if self._browser is None:
+                raise WebToolError("Browser search is not available in this run (it needs Windows and the Selenium browser, "
+                                   "driver and Python settings); report that web search is unavailable")
+            return await self._browser.search(query, limit)
         endpoint = self.endpoint
         if not endpoint:
             raise WebToolError("A SearXNG JSON search endpoint must be configured")

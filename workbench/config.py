@@ -22,6 +22,7 @@ ORCHESTRATION_DEFAULTS = {'delegation_level': 1, 'workers_per_pm': 2, 'max_deleg
 DUCKDUCKGO_ENDPOINT = 'https://html.duckduckgo.com/html/'
 # Brave Search (optional, needs the human's own API key). The endpoint is fixed, so the key has one destination.
 BRAVE_ENDPOINT = SEARCH_BINDING['base_url']
+BROWSER_SEARCH_ENDPOINT = 'https://www.bing.com/search'
 SEARCH_KEY_UNSUPPORTED = ('DuckDuckGo と SearXNG は API キー不要です。検索キーを保存できるのは、'
                           '検索エンジンに Brave Search を選んで設定を保存したあとだけです。')
 
@@ -248,8 +249,16 @@ def validate_settings(raw, *, check_paths=True):
                             'max_output_chars': (1000, 100000)}.items():
         number(selenium[key], f'selenium.{key}', low, high, integer=True)
     search = value['search']
-    if type(search['enabled']) is not bool or search['provider'] not in {'duckduckgo', 'searxng', 'brave'}:
+    if type(search['enabled']) is not bool or search['provider'] not in {'duckduckgo', 'searxng', 'brave', 'browser'}:
         raise ValueError('検索設定が不正です')
+    if search['provider'] == 'browser':
+        # Browser search: the engines are fixed; it runs the browser, driver and
+        # Python chosen in the Selenium and Python settings. Selenium itself (the
+        # page-operation tool for agents) does not have to be switched on.
+        search['endpoint'] = BROWSER_SEARCH_ENDPOINT
+        if search['enabled'] and not (python['executable'] and selenium['browser_executable'] and selenium['driver_executable']):
+            raise ValueError('ブラウザ検索には、Python の実行ファイル（設定 → Python）と、ブラウザー・ドライバーの実行ファイル'
+                             '（設定 → Selenium）の指定が必要です。Selenium を有効にする必要はありません')
     # An old provider without an endpoint must not inherit the new DDG URL.
     if search['provider'] in {'searxng', 'brave'} and 'endpoint' not in raw.get('search', {}):
         search['endpoint'] = ''

@@ -45,6 +45,10 @@ def summarize(prepared, *, orchestration=None, adaptive_team=False):
         warnings.append({'code': 'search_key_missing', 'message':
             'Web 検索に Brave Search を選んでいますが、API キーが未設定です。このままでは検索できません（ページの取得は使えます）。'
             '設定 → Web 検索・ページ取得 でキーをセットしてください。'})
+    if web.enabled and web.provider == 'browser':
+        warnings.append({'code': 'browser_search', 'message':
+            'Web 検索は、設定した ブラウザー を通常の Windows ユーザー権限で起動して行います（アプリ専用のプロファイルを使い、'
+            '普段のプロファイルは使いません）。検索サービスが人による確認を求めたときは、承認の画面でお知らせします。'})
     return {'ok': True, 'can_start': True, 'blockers': [], 'warnings': warnings, **formation,
         'orchestration': orchestration or {**ORCHESTRATION_DEFAULTS, **config.get('orchestration', {})},
         'inference_tested': False, 'tools_tested': False, 'destinations': destinations,

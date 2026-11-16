@@ -25,7 +25,7 @@ from .memo import MemoStore, MAX_PROPOSAL_CHARS, clean as memo_clean
 from .turn_engine import TurnWorkMixin, PLAN_TOOL_NAMES, PLAN_NUDGE
 from .verification import VerificationMixin, RUN_TESTS_TOOL
 from . import sources
-from .harness import PathHarness, ToolExecutor
+from .harness import HarnessError, PathHarness, ToolExecutor
 from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
 from .hierarchy import AgentHierarchyMixin, UnitChanged
@@ -33,7 +33,8 @@ from .questions import QuestionFallbackMixin
 from .providers import (ProviderClient, ProviderContextOverflowError, ProviderError, ProviderOutputLimitError,
                         ProviderTimeoutError)
 from .python_runner import execute_python
-from .selenium_runner import execute_selenium
+from .selenium_runner import execute_page, execute_selenium
+from .browser_search import SearchCache, SearchChallenge
 from .resources import ResourceGate
 from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .webtools import WebTools
@@ -452,6 +453,9 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         self.history = HistoryStore(settings.directory)
         self.checkpoints = CheckpointStore(settings.directory)
         self.memo = MemoStore(settings.directory)
+        # Search results kept for a few hours across runs, and this PC's hourly search count.
+        self.search_cache = SearchCache(settings.directory / 'search-cache.json')
+        self._search_check_lock, self._search_check_passed_at = asyncio.Lock(), 0.0
         self.memo_proposals = {}  # id -> PM proposal waiting for the human
         self.credentials = CredentialStore(settings.directory, settings.value['providers'], lease=self.history._lease)
         settings.credential_store = self.credentials
@@ -1053,7 +1057,23 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         # The Brave key is read when a search is sent, never copied into the run's configuration.
         web_tools = WebTools({'search': copy.deepcopy(config['search'])})
         web_tools.use_search_key(self.settings.search_key)
+        web_tools.use_search_cache(self.search_cache)
+        if config['search']['provider'] == 'browser':
+            web_tools.use_browser(self._browser_page(config, harness))
         return task, config, pms, workers, count, harness, web_tools
+
+    def _browser_page(self, config, harness):
+        """Browser search opens pages only through this: the configured browser, the application's own profile."""
+        profile = str(self.settings.directory / 'browser-search-profile')
+
+        async def page(url, ready, visible, wait_seconds):
+            try:
+                return await execute_page(config['selenium'], config['python'], harness, url, ready, visible=visible,
+                                          wait_seconds=wait_seconds, profile_dir=profile,
+                                          proxy_url=config['search']['proxy_url'])
+            except HarnessError as exc:
+                raise ValueError(str(exc)) from None
+        return page
 
     def _file_harness(self, config):
         deny = [*config['paths']['deny_roots'], *(str(path) for path in PROTECTED_ROOTS), str(self.settings.directory)]
@@ -1928,7 +1948,9 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         if self._web_available(run):
             budget_policy += ('\nSources: cite only URLs that a tool in this run actually returned, fetched or read, or that the human '
                               'gave. Never invent, guess or pad a URL. If a source could not be retrieved, name it without a URL and '
-                              'mark it 未確認; the application refuses files that cite URLs it has not seen. Cite a page only '
+                              'mark it 未確認; the application refuses files that cite URLs it has not seen. Search sparingly: the '
+                              'whole team shares one search queue and an hourly allowance, and repeated or reworded queries return '
+                              'the answer already held; prefer one precise query and web_fetch of the URLs it gives. Cite a page only '
                               'for what its retrieved text states: a page that was fetched but does not cover the point is not '
                               'a source for it.\n')
         shared_request = ('\nShared original human request (copied by the application, not paraphrased by the PM):\n'
@@ -3204,7 +3226,13 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 # Mask the current and retired search keys before any result is recorded.
                 self._redaction.remember(self._secret_values())
             async with self._run_deadline(run):
-                result = self._urls_seen(run, await run['_web'].execute(name, args), args)
+                try:
+                    result = await run['_web'].execute(name, args)
+                except SearchChallenge as challenge:
+                    # Every engine wants a person. The application never solves a
+                    # bot check; it asks the human to pass it in a visible window.
+                    result = await self._search_human_check(run, agent, args, challenge)
+                result = self._urls_seen(run, result, args)
                 self._pages_note(run, name, args, result)
                 return result
         if name in {'propose_memo', 'search_past_work'}:
@@ -3487,7 +3515,47 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 or (name == 'selenium_browse' and settings['selenium'])
                 or (name in WRITE_TOOLS and settings['overwrite'] and args.get('expected_sha256') != 'missing'))
 
+    SEARCH_UNAVAILABLE = ('Web 検索は使えません: 検索サービスが人による確認（ボット確認）を求めており、確認が行われませんでした。'
+                          '検索を繰り返さず、分かっている URL の web_fetch で進めるか、検索できなかったことを報告してください')
+
+    async def _search_human_check(self, run, agent, args, challenge):
+        """Ask the human once to pass the search engine's verification, then finish this search.
+
+        One check at a time for the whole application: teammates that hit the
+        same wall wait for it and then simply search again. A human who declines
+        is not asked again in this run.
+        """
+        web, started = run['_web'], time.time()
+        query, limit = args['query'], min(args.get('limit', 5) if type(args.get('limit', 5)) is int else 5, 10)
+        async with self._search_check_lock:
+            if self._search_check_passed_at > started:
+                try:
+                    return await web.execute('web_search', args)  # a teammate's check just went through
+                except SearchChallenge:
+                    pass
+            if run.get('_search_check_declined'):
+                raise ValueError(self.SEARCH_UNAVAILABLE)
+            try:
+                await self._await_approval(run, agent, 'search_human_check', {'query': query, 'engines': challenge.engines})
+            except ValueError:
+                run['_search_check_declined'] = True
+                raise ValueError(self.SEARCH_UNAVAILABLE) from None
+            try:
+                result = await web.human_check(query, limit, challenge.engines)
+            except ValueError as exc:
+                self.log(agent, 'notice', '検索のボット確認は完了しませんでした')
+                raise ValueError(self.SEARCH_UNAVAILABLE + '（' + str(exc)[:200] + '）') from None
+            self._search_check_passed_at = time.time()
+            self.log(agent, 'notice', '検索のボット確認を人が通過しました。検索を続けます')
+            return result
+
     def _approval_summary(self, run, name, args):
+        if name == 'search_human_check':
+            return ('検索サービスが「人による確認」（ボット確認）を求めています。アプリは自動では解きません。\n'
+                    '「承認」を押すと、検索用のブラウザーのウィンドウが開きます。画面の確認（チェックや画像の選択）を済ませてください。'
+                    '検索結果が表示されるとウィンドウは自動で閉じ、作業が続きます（最長5分）。\n'
+                    '「却下」を押すと、この作業では Web 検索を使わずに続けます。\n'
+                    f'検索語: {str(args.get("query", ""))[:300]}')
         if name == 'run_tests':
             paths = args.get('paths') if isinstance(args.get('paths'), list) else []
             return 'テストを実行します（Python の隔離実行。ファイルは書き換えません）\n対象: ' + ', '.join(str(path) for path in paths[:16])
