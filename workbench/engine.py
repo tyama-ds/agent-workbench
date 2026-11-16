@@ -1443,6 +1443,10 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
             member.pending_worker_reports.clear()
             member.waiting_for_message = member.waiting_for_workers = False
             member.delegation_blocked = ''
+            # Closed by the application while it only waited or had never started:
+            # no report of theirs is left for the coordinator to receive or approve.
+            # A teammate that failed is different; its missing report still counts.
+            member._settled = member.status != 'error'
             member.status = 'done' if finished else 'stopped'
             self._release(member)
             self.log(member, 'notice', f'{agent.name} が作業を完了したため、この担当の待機を終了しました。'
@@ -1504,7 +1508,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         pms = [member for member in live if member.parent_id is None and member.status == 'idle'
                and not getattr(member, '_answered', False) and not self._formation_reviewer(run, member)]
         workers = [member for member in live if member.parent_id is not None]
-        if not pms or not workers:
+        if not pms or (not workers and not any(self._owned_workers(run, pm) for pm in pms)):
             return
         def state(member):
             if member.status == 'error':
@@ -1514,7 +1518,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
             if member.waiting_for_workers:
                 return '配下の報告待ち'
             return '未開始（前の担当の承認待ち）' if member.pending else '待機'
-        names = '、'.join(f'{member.name}（{state(member)}）' for member in workers[:8])
+        names = '、'.join(f'{member.name}（{state(member)}）' for member in workers[:8]) or '全員が終了しています'
         for pm in pms:
             count = getattr(pm, '_stall_notices', 0)
             if count >= self.STALL_NOTICES:
@@ -1529,14 +1533,54 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
             try:
                 self.enqueue(pm, 'アプリからの通知: チームの全員が待機していて、届いていない連絡もありません。このままでは何も進みません。\n'
                              f'作業者の状態: {names}\n'
-                             '次のどちらかを、いま行ってください。\n'
-                             '1. すでに受け取った結果で仕上げられるなら、成果物を保存して finish_work で報告する。\n'
-                             '2. 続きが必要なら、その担当に send_message で「何を、どの形で返すか」を具体的に依頼する。\n'
-                             'wait_for_message や wait_for_workers だけを呼ぶと、また同じ状態で止まります。'
+                             + self._stall_next_step(run, pm)
+                             + 'wait_for_message や wait_for_workers だけを呼ぶと、また同じ状態で止まります。'
                              + ('\nこれが最後の通知です。次も進まなければ、この作業は停止します。' if last else ''))
                 self.event(run['id'], pm.id, 'stall_notice', f'全員が待機していたため、{pm.name} に再開を促しました（{count + 1}/{self.STALL_NOTICES}）')
             except ValueError:
                 pass
+
+    def _stall_next_step(self, run, pm):
+        """What a coordinator that nobody can wake should do now, as concretely as the records allow."""
+        issue = self._delegation_issue(run, pm, finishing=True)
+        if issue and issue[0] in {'worker_review_pending', 'worker_dependency_pending', 'worker_reports_pending'}:
+            return ('完了の前に必要な操作が残っています: ' + issue[1] + '\n'
+                    'その操作を済ませてから、成果物を確認して finish_work で報告してください。\n')
+        if not any(member.status not in {'done', 'stopped'} for member in self._owned_workers(run, pm)):
+            return '作業者からこれ以上の連絡は届きません。受け取った結果で成果物を仕上げて保存し、finish_work で報告してください。\n'
+        return ('次のどちらかを、いま行ってください。\n'
+                '1. すでに受け取った結果で仕上げられるなら、成果物を保存して finish_work で報告する。\n'
+                '2. 続きが必要なら、その担当に send_message で「何を、どの形で返すか」を具体的に依頼する。\n')
+
+    def _nobody_else_can_act(self, run, agent):
+        """No other member of the run is working, startable or waiting for a human."""
+        current = asyncio.current_task()
+        for ident in run['agent_ids']:
+            member = self.agents[ident]
+            if member is agent or member.closing or member.status in {'done', 'stopped'}:
+                continue
+            if (member.status in {'working', 'queued', 'stopping'} or member.question or member.approval
+                    or (member.task and not member.task.done() and member.task is not current)
+                    or (member.pending and member.status != 'error' and self._dependency_can_start(member))):
+                return False
+        return True
+
+    def _review_gaps(self, agent, children):
+        """Names, ids and revisions of the reports a coordinator still has to approve."""
+        rows = []
+        for child in children:
+            revision = child.result_revision
+            if child.status in {'stopped', 'error'}:
+                rows.append(f'{child.name}（worker_id {child.id}）: 停止していて、報告は届きません（状態 {child.status}）。'
+                            'この担当の分が必要なら、新しい担当に依頼し直してください')
+            elif child.status != 'done' or child.pending or child.question or child.finished_revision != revision or revision < 1:
+                rows.append(f'{child.name}（worker_id {child.id}）: 正式な報告がまだありません（状態 {child.status}）')
+            elif agent.worker_report_reviews.get(child.id) != {'result_revision': revision, 'decision': 'accept'}:
+                rows.append(f'{child.name}（worker_id {child.id}, result_revision {revision}）: 未承認')
+        if not rows:
+            return ''
+        return (' 対象: ' + '、'.join(rows[:12]) + '。未承認の報告は review_worker_report に上の worker_id と result_revision を'
+                '指定して、accept か具体的な revise を記録してください。')
 
     def _active_workers(self, run, agent):
         """Owned workers minus those a human stopped; those no longer report."""
@@ -1566,6 +1610,8 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         children = self._active_workers(run, agent)
         if agent.parent_id is None and policy['delegation_level'] == 2 and not ordered and len(children) < policy['workers_per_pm']:
             return ('delegation_required', '必要な人数のworkerへ担当を分けて委任してください。同じAPIを複数回選べます。')
+        # A teammate the application closed at completion has no report to wait for or approve.
+        children = [child for child in children if not getattr(child, '_settled', False)]
         if any(child.status != 'done' or child.pending or child.question for child in children):
             return ('workers_pending', 'workerの作業が未完了です。wait_for_workersで待機し、エラーや質問には対処してください。')
         if any(child.finished_revision != child.result_revision
@@ -1579,7 +1625,8 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         if finishing and any(agent.worker_report_reviews.get(child.id) !=
                              {'result_revision': child.result_revision, 'decision': 'accept'}
                              or not current_reference_report_approval(ordered, child, agent, redact=self._redact_tree) for child in children):
-            return ('worker_review_pending', '現在のworker報告を確認し、review_worker_reportでacceptまたは具体的なreviseを記録してください。list_teamで現在のrevisionを確認できます。')
+            return ('worker_review_pending', '現在のworker報告を確認し、review_worker_reportでacceptまたは具体的なreviseを記録してください。list_teamで現在のrevisionを確認できます。'
+                    + self._review_gaps(agent, children))
         if finishing and reference_mode(ordered):
             try:
                 validate_reference_audit(ordered.get('reference_evidence'), ordered['flow'].reference_audit())
@@ -2159,6 +2206,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 agent.turns += 1
                 agent.status = 'working'
                 agent._answered = False
+                agent._wait_refused = False
                 agent.waiting_for_workers = False
                 agent.waiting_for_message = False
                 agent.delegation_blocked = ''
@@ -3022,6 +3070,16 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 agent._revise_wait_refused = True
                 raise ValueError('待機できません。PM から修正の依頼が届いています。依頼の内容を直して、finish_work で報告し直してください。'
                                  '自分では直せない場合は、その理由と必要なものを send_message で PM に伝えてから待ってください')
+            if (type(self).stall_recovery and agent.parent_id is None and not agent.pending
+                    and not getattr(agent, '_wait_refused', False)
+                    and not run.get('_ordered_work') and not run.get('adaptive_team')
+                    and (run.get('_turns') is None or run['_turns'].finished)
+                    and self._owned_workers(run, agent) and self._nobody_else_can_act(run, agent)):
+                # Nobody is left who could send anything: waiting would only stop the run.
+                # Said once per turn; a model that waits anyway is handled by the stall notices.
+                agent._wait_refused = True
+                raise ValueError('待機できません。チームに、これから連絡を送れる担当がいません（全員が終了、または待機中です）。'
+                                 '待っても何も届きません。\n' + self._stall_next_step(run, agent))
             agent.waiting_for_message = True
             self.event(run['id'], agent.id, 'message_wait', 'チーム連絡を待っています。完了や人への質問ではありません。')
             return {'ok': True, 'waiting_for_message': True, 'pending_count': len(agent.pending)}

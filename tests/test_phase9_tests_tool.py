@@ -285,3 +285,19 @@ async def test_numeric_strings_become_numbers_in_xlsx(tmp_path):
     with pytest.raises(HarnessError, match='Formula-like'):
         await tools.execute('xlsx_write', {'path': str(tmp_path / 'other.xlsx'), 'expected_sha256': 'missing',
                                            'cells': [{'sheet': 'Sheet', 'cell': 'A1', 'value': '-SUM(A1)'}]})
+
+
+@pytest.mark.asyncio
+async def test_a_column_that_mixes_percent_fractions_and_plain_numbers_is_reported(tmp_path):
+    """Real-machine case: Japan's growth was written as '0.9%' (stored 0.009), the others as 2.16 and 0.24."""
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    rows = [('A1', '国'), ('B1', '成長率'), ('A2', '日本'), ('B2', '0.9%'), ('A3', 'アメリカ'), ('B3', 2.16), ('A4', 'ドイツ'), ('B4', '0.24'),
+            ('C1', '人口'), ('C2', '123,366,734'), ('C3', 340110988)]
+    cells = [{'sheet': 'Sheet', 'cell': cell, 'value': value} for cell, value in rows]
+    result = await tools.execute('xlsx_write', {'path': str(tmp_path / 'mixed.xlsx'), 'cells': cells, 'expected_sha256': 'missing'})
+    assert result['operation'] == 'created'  # saved; the warning asks for a consistent rewrite
+    assert 'Sheet!B (B2 is a percentage stored as a fraction, B3 is a plain number)' in result['warning']
+    assert 'Sheet!C' not in result['warning'] and 'Sheet!A' not in result['warning']
+    same = [{'sheet': 'Sheet', 'cell': f'B{row}', 'value': value} for row, value in ((2, '0.9%'), (3, '2.16%'), (4, '0.24%'))]
+    clean = await tools.execute('xlsx_write', {'path': str(tmp_path / 'same.xlsx'), 'cells': same, 'expected_sha256': 'missing'})
+    assert 'warning' not in clean

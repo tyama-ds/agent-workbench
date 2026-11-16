@@ -166,6 +166,13 @@ class WorkerDependenciesMixin:
         children = self._owned_workers(run, pm)
         if not any(child.depends_on for child in children):
             return None
-        if not all(self._dependency_current_report(run, child) for child in children):
-            return ('worker_dependency_pending', '依存する工程があります。全workerの現在の正式報告を確認・承認してから完了してください。')
+        # A teammate the application closed when the coordinator completed (it only
+        # waited, or never started) has no report that could ever be approved.
+        children = [child for child in children if not getattr(child, '_settled', False)]
+        failing = [child for child in children if not self._dependency_current_report(run, child)]
+        if failing:
+            gaps = self._review_gaps(pm, failing) or (
+                ' 対象: ' + '、'.join(f'{child.name}（worker_id {child.id}）' for child in failing[:12])
+                + '。前の工程の報告が変わったため、この担当への再依頼か、報告の再確認が必要です。')
+            return ('worker_dependency_pending', '依存する工程があります。全workerの現在の正式報告を確認・承認してから完了してください。' + gaps)
         return None

@@ -122,17 +122,24 @@ def _named_stream_once(native, path, *, live):
         native.k.FindClose(handle)
 
 
+# Pauses between attempts; None marks the last attempt, whose error is final.
+_LIVE_RETRY_PAUSES = (.005, .005, .01, .01, .02, .02, .04, .04, .05, None)
+
+
 def _live_storage_call(operation, *, live):
     # Delete-pending/cache-sharing races can report ACCESS_DENIED, SHARING_
     # VIOLATION or DELETE_PENDING rather than FILE_NOT_FOUND. Retry the actual
     # inspection, never declare an access error safe merely because it is live.
-    for attempt in range(4):
+    # A cache that keeps recreating and deleting the same names can show the
+    # transient state several times in a row, so the wait grows (about 0.2 s
+    # in total) before the error is treated as real.
+    for attempt, pause in enumerate(_LIVE_RETRY_PAUSES):
         try:
             return operation()
         except OSError as exc:
-            if not live or getattr(exc, 'winerror', None) not in (5, 32, 303) or attempt == 3:
+            if not live or getattr(exc, 'winerror', None) not in (5, 32, 303) or pause is None:
                 raise
-            time.sleep(.005)
+            time.sleep(pause)
 
 
 def _named_stream(native, path, *, live):
