@@ -7,6 +7,12 @@ import pytest
 
 from test_engine import configured, reply, settled, start
 
+# The longest any single wait may take. It only tells a hang from progress: the
+# workflow takes under a second on an ordinary machine, but a shared Windows
+# runner that needed twice its usual time for the whole suite went past the
+# earlier three seconds here.
+GUARD = 20
+
 
 @pytest.mark.asyncio
 async def test_pm_accepted_dependency_handoff_runs_real_file_workflow(tmp_path, monkeypatch):
@@ -69,7 +75,7 @@ async def test_pm_accepted_dependency_handoff_runs_real_file_workflow(tmp_path, 
                                 'and save derived.txt, then report the result.'})])
                 if step == 2:
                     self.downstream_id = self.tool_result(messages, 'spawn_worker')['agent_id']
-                    await asyncio.wait_for(upstream_entered.wait(), 3)
+                    await asyncio.wait_for(upstream_entered.wait(), GUARD)
                     downstream = self.engine.agents[self.downstream_id]
                     self.blocked_observation = {
                         'status_reason': self.engine.agent_status_reason(downstream),
@@ -94,7 +100,7 @@ async def test_pm_accepted_dependency_handoff_runs_real_file_workflow(tmp_path, 
             if agent.role == 'upstream':
                 assert step == 0
                 upstream_entered.set()
-                await asyncio.wait_for(release_upstream.wait(), 3)
+                await asyncio.wait_for(release_upstream.wait(), GUARD)
                 return reply(calls=[('write_text', {'path': 'upstream.txt', 'text': source_text,
                                                    'expected_sha256': 'missing'}),
                                     ('finish_work', {'summary': 'Saved the supplied observation in upstream.txt.'})])
@@ -122,8 +128,8 @@ async def test_pm_accepted_dependency_handoff_runs_real_file_workflow(tmp_path, 
         run, pm = await asyncio.wait_for(start(engine, max_workers=2, delegation_level=1,
             task='Create upstream.txt containing Observed input: 42 and a newline. '
                  'A dependent worker must read that saved input and write derived.txt prefixed with VERIFIED: . '
-                 'The PM must accept both current formal reports and finish.'), 3)
-        await asyncio.wait_for(settled(engine), 3)
+                 'The PM must accept both current formal reports and finish.'), GUARD)
+        await asyncio.wait_for(settled(engine), GUARD)
 
         assert client.blocked_observation is not None and client.actual_read is not None
         upstream, downstream = engine.agents[client.upstream_id], engine.agents[client.downstream_id]
@@ -159,4 +165,4 @@ async def test_pm_accepted_dependency_handoff_runs_real_file_workflow(tmp_path, 
             assert len(consumed) == 1 and consumed[0] < accepted[worker.id]
     finally:
         release_upstream.set()
-        await asyncio.wait_for(engine.close(), 3)
+        await asyncio.wait_for(engine.close(), GUARD)

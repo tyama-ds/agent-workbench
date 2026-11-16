@@ -221,6 +221,14 @@ class VerificationMixin:
             for url in (result.get('url'), args.get('url') if isinstance(args, dict) else None):
                 if isinstance(url, str):
                     pages[sources.normalize(url)] = ('fetched', start)
+        elif name == 'stat_lookup':
+            # What the figures are and the latest one per country, beside the two addresses that may be cited.
+            latest = '; '.join(f"{row.get('country')} {row.get('latest', {}).get('year')}: {row.get('latest', {}).get('value')}"
+                               for row in (result.get('series') or [])[:6] if isinstance(row, dict))
+            start = _excerpt(f"World Bank Open Data — {(result.get('indicator') or {}).get('name', '')}. {latest}")
+            for url in (result.get('url'), result.get('page_url')):
+                if isinstance(url, str):
+                    pages[sources.normalize(url)] = ('fetched', start)
         elif name == 'web_search':
             for row in result.get('results') or []:
                 if isinstance(row, dict) and isinstance(row.get('url'), str):

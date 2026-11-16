@@ -274,6 +274,8 @@ def validate_settings(raw, *, check_paths=True):
     number(search['max_response_bytes'], 'search response limit', 1024, 4 * 1024 * 1024, integer=True)
     # Searches per hour for the chosen method; 0 uses that method's own number.
     number(search['hourly_limit'], '1時間あたりの検索回数の上限', 0, 5000, integer=True)
+    # Searches one piece of work is expected to need; the model is told, it is not a limit (0: no guide).
+    number(search['run_guide'], '1つの作業の検索回数の目安', 0, 1000, integer=True)
     # Browser search: Bing as a second engine only when the human turned it on.
     if type(search['browser_bing']) is not bool:
         raise ValueError('ブラウザー検索で Bing も使うかどうかは true / false で指定してください')

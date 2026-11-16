@@ -4,6 +4,47 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev62 — Statistics read directly, a search guide, and a human check that does not wait for ever (2026-11-16)
+
+From a real-machine load run at `2d07f9f` (information gathering and
+statistics three times each, about 50 minutes). The higher allowance and the
+per-run share worked (33/33, 58/58, 17/17, 56/56 searches answered). What it
+showed next: one statistics task sends 56 to 58 searches and one research
+task 17 to 33; duckduckgo.com in a browser asked for a human check after
+about 165 searches in 45 minutes, so the default of 200 an hour was out of
+reach; and with nobody at the machine the request to pass that check held
+the run until it was cut off at 901 seconds, with stats.xlsx already saved.
+
+- `stat_lookup` reads country statistics from World Bank Open Data
+  (`api.worldbank.org`, no key): one indicator, up to 12 countries, a range of
+  years, with the address to cite. Built-in names cover population, GDP, GDP
+  growth, GDP per capita, consumer prices, unemployment and a few more; any
+  World Bank indicator code is accepted. The policy tells the model to use it
+  before searching. **Not run against the real API**: this environment cannot
+  reach it, so the answer's shape is from the API's documentation.
+- `search.run_guide` (default 20, 0 none): the policy says how many searches
+  one piece of work is expected to need; from half of that each answer says so
+  and asks to go on with what is held, and past it asks to stop. A guide, not
+  a limit; the run's hard share stays half of the hourly allowance.
+- Browser search: 120 an hour by default (was 200), 4.5 s between searches on
+  duckduckgo.com (was 3).
+- A query practically equal to an earlier one of the same run (at least 65%
+  of the words shared, and the differing words neither numbers nor country
+  names) is answered once from the earlier result, marked `similar_to`.
+  Sending exactly the same query again searches. Before, only the same set of
+  words was shared; different wordings by several workers each cost a search.
+- `run.search_use` and the run's "Web の利用" line show searches sent, answers
+  reused, similar questions answered and statistics read directly, so the
+  effect can be measured on the real machine.
+- The request to pass a bot check expires after three minutes and then counts
+  as declined. `web_search` is refused for the rest of that run without
+  sending anything, the caller is told at once and every agent at its next
+  turn; `web_fetch` and `stat_lookup` keep working. The card shows the
+  deadline. Other approvals still wait.
+- Tests: `test_pm_accepted_dependency_handoff_runs_real_file_workflow` failed
+  on a Windows runner that took 41 minutes for the suite instead of about 20.
+  Its three-second waits only tell a hang from progress; they are 20 seconds.
+
 ## 0.1.1.dev61 — Bing is off unless the human turns it on; acceptance failures say why (2026-11-16)
 
 The human decided the terms question for browser search: DuckDuckGo is fine.

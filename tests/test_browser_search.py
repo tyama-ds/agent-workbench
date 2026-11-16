@@ -273,7 +273,7 @@ def test_each_method_has_its_own_allowance_which_the_human_can_change(tmp_path):
     """Real-machine finding: one research task sends about 35 searches and a browser was never
     stopped, yet 60 an hour for the whole PC made every later task fail."""
     cache = SearchCache(tmp_path / 'search-cache.json')
-    assert [cache.limit(method) for method in ('browser', 'duckduckgo', 'brave', 'searxng')] == [200, 60, 120, 0]
+    assert [cache.limit(method) for method in ('browser', 'duckduckgo', 'brave', 'searxng')] == [120, 60, 120, 0]
     assert cache.limit('browser', 500) == 500 and cache.limit('searxng', 30) == 30
     assert cache.remaining('searxng') is None  # the human's own server: no limit
     for _ in range(60):
@@ -281,7 +281,7 @@ def test_each_method_has_its_own_allowance_which_the_human_can_change(tmp_path):
     with pytest.raises(browser_search.SearchBudgetExceeded):
         cache.spend('duckduckgo')
     cache.spend('browser')  # the methods are counted apart
-    assert cache.remaining('browser') == 199 and cache.remaining('duckduckgo') == 0
+    assert cache.remaining('browser') == 119 and cache.remaining('duckduckgo') == 0
     for _ in range(1000):
         cache.spend('searxng')
 
@@ -289,14 +289,14 @@ def test_each_method_has_its_own_allowance_which_the_human_can_change(tmp_path):
 def test_after_a_bot_check_fewer_searches_are_allowed_for_an_hour(tmp_path):
     cache = SearchCache(tmp_path / 'search-cache.json')
     cache.note_block('browser')
-    assert cache.limit('browser') == 100 and cache.limit('duckduckgo') == 60
+    assert cache.limit('browser') == 60 and cache.limit('duckduckgo') == 60
     cache.note_block('browser')
-    assert cache.limit('browser') == 50
+    assert cache.limit('browser') == 30
     cache.note_block('browser')
-    assert cache.limit('browser') == 50  # not lower than a quarter
-    assert SearchCache(tmp_path / 'search-cache.json').limit('browser') == 50  # kept across a restart
+    assert cache.limit('browser') == 30  # not lower than a quarter
+    assert SearchCache(tmp_path / 'search-cache.json').limit('browser') == 30  # kept across a restart
     cache.blocks['browser'] = [time.time() - 3700] * 3
-    assert cache.limit('browser') == 200  # an hour later the full allowance is back
+    assert cache.limit('browser') == 120  # an hour later the full allowance is back
     assert cache.limit('browser', 12) == 12 and SearchCache(tmp_path / 'other.json').limit('browser', 4) == 4
 
 
@@ -368,7 +368,7 @@ def test_a_bot_check_lowers_the_allowance_and_a_server_of_ones_own_has_none(tmp_
         tools.use_search_cache(cache)
         with pytest.raises(SearchChallenge):
             await tools.execute('web_search', {'query': 'x'})
-        assert cache.limit('browser') == 100
+        assert cache.limit('browser') == 60
         own = WebTools({'search': {'enabled': True, 'provider': 'searxng', 'endpoint': 'https://search.example/search'}})
         own.use_search_cache(cache)
         assert own._run_share() is None and own._with_budget({'results': []}) == {'results': []}

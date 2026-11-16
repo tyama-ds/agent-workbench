@@ -33,9 +33,10 @@ CACHE_ENTRIES = 400
 # Searches this PC may send to a search service per hour, by method, unless
 # the human sets another number (search.hourly_limit). 0 means no limit: a
 # search server of the human's own decides for itself. The browser number
-# follows real use: one research task sends about 35 searches, and a browser
-# was never stopped at that rate.
-HOURLY_LIMITS = {'browser': 200, 'duckduckgo': 60, 'brave': 120, 'searxng': 0}
+# follows real use: duckduckgo.com in a browser asked for a human check after
+# about 165 searches in 45 minutes (some 220 an hour, three seconds apart), so
+# the default stays well under that rate and the searches are spaced wider.
+HOURLY_LIMITS = {'browser': 120, 'duckduckgo': 60, 'brave': 120, 'searxng': 0}
 HOURLY_REQUESTS = HOURLY_LIMITS['duckduckgo']
 HUMAN_CHECK_SECONDS = 300
 
@@ -297,7 +298,7 @@ def read_duckduckgo_web(html, limit):
 # DuckDuckGo only.
 ENGINES = (
     {'name': 'duckduckgo_web', 'label': 'DuckDuckGo', 'url': 'https://duckduckgo.com/?q={query}&ia=web',
-     'ready': 'a[data-testid="result-title-a"]', 'read': read_duckduckgo_web, 'interval': 3.0},
+     'ready': 'a[data-testid="result-title-a"]', 'read': read_duckduckgo_web, 'interval': 4.5},
     {'name': 'bing', 'label': 'Bing', 'url': 'https://www.bing.com/search?q={query}', 'ready': '#b_results li.b_algo, #b_results .b_no',
      'read': read_bing, 'interval': 5.0},
     {'name': 'duckduckgo_html', 'label': 'DuckDuckGo (HTML)', 'url': 'https://html.duckduckgo.com/html/?q={query}',
@@ -386,6 +387,16 @@ def query_key(query):
     text = unicodedata.normalize('NFKC', query).casefold()
     words = sorted(set(re.findall(r'[^\W_]+', text)))
     return hashlib.sha256(' '.join(words).encode('utf-8')).hexdigest() if words else ''
+
+
+# Words that say nothing about what is asked: search operators and parts of addresses.
+_GENERIC_WORDS = frozenset('site www com org net http https html the of in for and a an to on by is are'.split())
+
+
+def query_words(query):
+    """The words that carry a query's meaning, for telling when two queries ask practically the same."""
+    text = unicodedata.normalize('NFKC', query).casefold()
+    return frozenset(word for word in re.findall(r'[^\W_]+', text) if word not in _GENERIC_WORDS)
 
 
 class SearchCache:
