@@ -12,6 +12,7 @@ import workbench.config as workbench_config
 def pytest_configure(config):
     config.addinivalue_line('markers', 'approvals: keep the default approval mode (ask)')
     config.addinivalue_line('markers', 'plan: keep the mandatory plan_work gate for root PMs')
+    config.addinivalue_line('markers', 'question_limits: keep the limit on questions that wait for a person')
 
 
 @pytest.fixture(autouse=True)
@@ -36,3 +37,15 @@ def _plan_not_required_unless_marked(request):
     Engine.plan_required = request.node.get_closest_marker('plan') is not None
     yield
     Engine.plan_required = previous
+
+
+@pytest.fixture(autouse=True)
+def _unlimited_human_questions_unless_marked(request):
+    """Phase 9 limits questions that wait for a person (root PM only, twice per
+    run). Existing tests script workers that ask freely; tests marked
+    `question_limits` keep the shipped behaviour."""
+    from workbench.engine import Engine
+    previous = Engine.human_question_limit
+    Engine.human_question_limit = 2 if request.node.get_closest_marker('question_limits') is not None else None
+    yield
+    Engine.human_question_limit = previous

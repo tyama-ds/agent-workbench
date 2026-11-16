@@ -30,6 +30,7 @@ from workbench.runtime_paths import RESOURCE_ROOT
 from workbench.server import APP_KEY, BrowserAuth, create_app
 
 Engine.plan_required = False  # scripted models call team tools directly (adaptive runs are exempt anyway)
+Engine.human_question_limit = None
 
 
 MANUAL = '[SYNTHETIC-ADAPTIVE-UI] Manual compatibility.'

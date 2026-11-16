@@ -4,6 +4,31 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev54 — Runs that end, working web search, sandbox hints and tests (2026-11-16)
+
+Phase 9, from real-machine runs of coding, research, statistics, slides and
+spreadsheet tasks (gpt-5.4-mini).
+
+- A run ends when the work is done. When a coordinator gives its final answer
+  (`finish_work`, or plain text without it) and no teammate under it can still
+  act, teammates that only wait for a message, never started or failed are
+  closed (`team_settled`), so the run becomes `done` instead of `waiting`.
+  Teammates that are working, queued or waiting for a human still hold the
+  report back. A worker that starts waiting after the final answer closes the
+  team then. A PM that waits for reports while every worker only waits for a
+  message is told so (twice at most).
+- Cited URLs: the run remembers URLs from the request, human messages, web
+  tool results, files it read and scripts it ran. A document write (not source
+  code) citing other URLs is refused once when web tools are available, and a
+  visibly made-up URL (long zero runs, xxxx, template marks) is always refused;
+  what is saved anyway is listed for the human at the end of the PM's result.
+  The system prompt says to cite only URLs a tool returned (web runs only).
+- Questions that wait for a person (no recommendation, or `kind=permission`)
+  are for the root PM only and limited to two per run; others become
+  consultations when they carry a recommendation, or are refused with
+  guidance. The `ask_user` description says a failed tool is not a permission
+  matter.
+
 ## 0.1.1.dev53 — Mandatory plan and application-run turns (2026-11-15)
 
 Phase 8. Goal: a request such as 「5人でしりとりを10回」 runs to the end on a real

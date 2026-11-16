@@ -47,6 +47,10 @@ class QuestionFallbackMixin:
             # The resolution is already committed; never retry/resend a fallback.
             self.history.error = '質問の状態は更新済みですが通知を保存できません。現在の状態を確認してください。'
 
+    # How many questions that wait for a person (no automatic fallback) one run
+    # may ask. None keeps the earlier unlimited behaviour (scripted fixtures).
+    human_question_limit = 2
+
     def _ask_question(self, run, agent, args):
         if (self.runs.get(run['id']) is not run or self.agents.get(agent.id) is not agent
                 or agent.id not in run['agent_ids'] or agent.run_id != run['id']):
@@ -59,6 +63,25 @@ class QuestionFallbackMixin:
         if recommendation and not recommendation.strip():
             raise ValueError('recommendation は空白だけにできません')
         automatic = kind == 'consultation' and bool(recommendation)
+        note = ''
+        limit = type(self).human_question_limit
+        if limit is not None and not automatic:
+            # A question that waits for a person stops the whole team. Only the
+            # root PM may ask one, and only a few times per run; the rest become
+            # consultations that continue with the recommendation.
+            asked = run.get('_blocking_questions', 0)
+            if agent.parent_id is None and asked < limit:
+                run['_blocking_questions'] = asked + 1
+            elif recommendation:
+                kind, automatic = 'consultation', True
+                note = '人を待つ質問の上限のため、相談として扱います。90秒以内に回答がなければ、推奨案で続行します。'
+            else:
+                raise ValueError(
+                    '質問を受け付けませんでした。人の回答を待つ質問（kind=permission、または recommendation なし）は、'
+                    f'PM だけが1つの作業で{limit}回まで使えます。recommendation（推奨案）を付けて相談にするか、'
+                    '自分で妥当な判断をして進め、その判断と制約を報告に書いてください。'
+                    'ツールの失敗は許可の問題ではなく、権限やフォルダーの設定は実行中に変えられません。'
+                    + ('作業者は、判断が必要なら send_message で PM に相談してください。' if agent.parent_id else ''))
         asked_at = self._question_wall_time()
         state = {'question_id': 'q-' + secrets.token_hex(16), 'kind': kind,
                  'recommendation': recommendation, 'asked_at': asked_at,
@@ -85,7 +108,7 @@ class QuestionFallbackMixin:
             self._question_tasks[task] = run['id']
             task.add_done_callback(lambda finished: self._question_tasks.pop(finished, None))
         self.event(run['id'], agent.id, 'question', question)
-        return {'ok': True, 'waiting_for_human': True, 'question_state': visible}
+        return {'ok': True, 'waiting_for_human': True, 'question_state': visible, **({'note': note} if note else {})}
 
     async def _question_wait(self, record):
         try:
