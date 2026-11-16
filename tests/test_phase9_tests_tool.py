@@ -301,3 +301,25 @@ async def test_a_column_that_mixes_percent_fractions_and_plain_numbers_is_report
     same = [{'sheet': 'Sheet', 'cell': f'B{row}', 'value': value} for row, value in ((2, '0.9%'), (3, '2.16%'), (4, '0.24%'))]
     clean = await tools.execute('xlsx_write', {'path': str(tmp_path / 'same.xlsx'), 'cells': same, 'expected_sha256': 'missing'})
     assert 'warning' not in clean
+
+
+@pytest.mark.asyncio
+async def test_numbers_saved_as_text_with_a_unit_are_reported_but_labels_are_not(tmp_path):
+    """Real-machine case: a value column held '2.8 percent' and '1億2269万人' as text and nobody was told."""
+    from workbench.harness import _unit_text
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    rows = [('A1', '国'), ('B1', '成長率'), ('C1', '人口'), ('D1', '年'),
+            ('A2', '日本'), ('B2', '2.8 percent'), ('C2', '1億2269万人'), ('D2', '2025年'),
+            ('A3', 'ドイツ'), ('B3', 0.24), ('C3', 83491249), ('D3', '2025年')]
+    cells = [{'sheet': 'Sheet', 'cell': cell, 'value': value} for cell, value in rows]
+    result = await tools.execute('xlsx_write', {'path': str(tmp_path / 'stats.xlsx'), 'cells': cells, 'expected_sha256': 'missing'})
+    assert result['operation'] == 'created'
+    assert "Sheet!B2 ('2.8 percent')" in result['warning'] and "Sheet!C2 ('1億2269万人')" in result['warning']
+    assert 'bare number' in result['warning'] and 'Sheet!D' not in result['warning'] and 'Sheet!A' not in result['warning']
+    for value in ('¥1,200', '1,200円', '3.5 billion', '12.5 ％ポイント', '5.6兆円'):
+        assert _unit_text(value), value
+    for value in ('2024年度', '2025年3月', '2024-01-15', '1位', '3rd', 'Q1', '東京都', '10-20歳', '5回目', '100', 'A1'):
+        assert not _unit_text(value), value
+    clean = await tools.execute('xlsx_write', {'path': str(tmp_path / 'clean.xlsx'), 'expected_sha256': 'missing', 'cells': [
+        {'sheet': 'Sheet', 'cell': 'A1', 'value': '成長率（%）'}, {'sheet': 'Sheet', 'cell': 'A2', 'value': 2.8}]})
+    assert 'warning' not in clean

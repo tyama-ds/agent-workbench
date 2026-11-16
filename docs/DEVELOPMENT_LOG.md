@@ -4,6 +4,32 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev60 — Search allowance by method, a share per run, and a warning before it runs out (2026-11-16)
+
+Browser search worked on the real machine (35 of 35 searches in one research
+task, no bot check). The allowance of 60 searches an hour for the whole PC
+did not: one research task sends about 35 searches and a statistics task 23
+to 31, so every task after the first two failed within seconds, with values
+left unconfirmed and loosely related sources. Nothing had ever been stopped
+at that rate.
+
+- The allowance is per search method: browser 200 an hour, DuckDuckGo over
+  HTTP 60, Brave 120, a SearXNG server of the human's own none (dev59 had
+  wrongly capped it at 60 too). `search.hourly_limit` replaces the number for
+  the chosen method; 0 keeps the method's own.
+- After a bot check the method's allowance is halved for the next hour, and
+  quartered after two or more, never below 10.
+- One run may send half of the allowance, so a single task cannot use up
+  the hour for the others.
+- Every `web_search` answer that cost a request carries
+  `search_budget.searches_left`; in the last fifth (at least the last five)
+  it also carries a plain notice to keep the remaining searches for what
+  matters most. Before, the model learned of the limit only when it was hit.
+- Answers already held are still not counted.
+- `xlsx_write` also warns about a number saved as text because a unit is
+  attached ("2.8 percent", "1億2269万人", "¥1,200"); labels that only start
+  with digits (a year, a date, a rank) are left alone.
+
 ## 0.1.1.dev59 — Keyless browser search, one search queue, a cache that outlives a run (2026-11-16)
 
 After the Accept-Encoding fix the first three DuckDuckGo searches of a run

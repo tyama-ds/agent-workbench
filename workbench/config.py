@@ -272,6 +272,8 @@ def validate_settings(raw, *, check_paths=True):
         raise ValueError('検索 API endpoint を指定してください')
     number(search['timeout_seconds'], 'search timeout', 1, 60)
     number(search['max_response_bytes'], 'search response limit', 1024, 4 * 1024 * 1024, integer=True)
+    # Searches per hour for the chosen method; 0 uses that method's own number.
+    number(search['hourly_limit'], '1時間あたりの検索回数の上限', 0, 5000, integer=True)
     if search['provider'] == 'brave' and search['endpoint'].rstrip('/') == BRAVE_ENDPOINT:
         # The key-based option. Its key is never part of settings: it lives in
         # the session or the encrypted store, like a model provider's key.

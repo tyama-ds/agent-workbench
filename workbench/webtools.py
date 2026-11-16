@@ -413,6 +413,10 @@ class WebTools:
                          BRAVE_ENDPOINT if self.provider == "brave" else
                          BROWSER_SEARCH_ENDPOINT if self.provider == "browser" else config.get("endpoint", ""))
         self._cache, self._browser, self._search_queue = None, None, asyncio.Lock()
+        # The human's hourly search limit for the chosen method (0: the method's own), and what this run has sent.
+        self.hourly_limit, self._sent = config.get("hourly_limit", 0), 0
+        if type(self.hourly_limit) is not int or not 0 <= self.hourly_limit <= 5000:
+            raise WebToolError("Search hourly limit must be an integer 0..5000")
         self.api_key = ""  # Never holds a key: the Brave key is read from search_key when a search is sent.
         self._search_key = None
         self.use_search_key(search_key)
@@ -606,26 +610,61 @@ class WebTools:
         async with (self._search_queue if self.provider in {"browser", "duckduckgo"} else contextlib.nullcontext()):
             held = self._search_cache.get((query, limit))
             if held is not None:
-                return held
+                return held  # an answer already held costs nothing
             if self._cache is not None:
                 held = self._cache.get(query, limit)
                 if held is not None:
                     self._remember(query, limit, held)
                     return held
+                share = self._run_share()
+                if share is not None and self._sent >= share:
+                    raise WebToolError(
+                        f"This work has used its share of this PC's searches ({share} of the {self._cache.limit(self.provider, self.hourly_limit)} "
+                        "allowed per hour; the rest is kept for other work). Do not search again in this work: use the "
+                        "results already returned, web_fetch with known URLs, or report what could not be searched")
                 try:
-                    self._cache.spend()
+                    self._cache.spend(self.provider, self.hourly_limit)
                 except ValueError as exc:
                     raise WebToolError(str(exc)) from None
+                self._sent += 1
             # These methods read a whole result page anyway: keep all of it, so a
             # later request for more rows is answered without another search.
             wanted = 10 if self.provider in {"browser", "duckduckgo"} else limit
-            result = await self._provider_search(query, wanted)
+            blocked_before = SEARCH_GUARD.blocked_seconds()
+            try:
+                result = await self._provider_search(query, wanted)
+            except ValueError as exc:
+                from .browser_search import SearchChallenge
+                if self._cache is not None and (isinstance(exc, SearchChallenge) or (
+                        self.provider == "duckduckgo" and not blocked_before and SEARCH_GUARD.blocked_seconds())):
+                    self._cache.note_block(self.provider)  # stopped: allow fewer searches for the next hour
+                raise
             if self._cache is not None:
                 self._cache.put(query, wanted, result)
             if wanted != limit:
                 result = {**result, "results": result["results"][:limit]}
             self._remember(query, limit, result)
+            return self._with_budget(result)
+
+    def _run_share(self):
+        """Searches this run may send per hour: half of this PC's allowance, so one run cannot use it all."""
+        limit = self._cache.limit(self.provider, self.hourly_limit) if self._cache is not None else 0
+        return max(5, limit // 2) if limit else None
+
+    def _with_budget(self, result):
+        """Tell the model how many searches are left, and say so plainly while there are still some."""
+        if self._cache is None:
             return result
+        left = self._cache.remaining(self.provider, self.hourly_limit)
+        if left is None:
+            return result
+        share = self._run_share()
+        left = min(left, max(0, share - self._sent)) if share is not None else left
+        budget = {"searches_left": left}
+        if left <= max(5, (share or left) // 5):
+            budget["notice"] = (f"Only {left} more searches are possible in this work for now. Use them for what matters most; "
+                                "for the rest, use the results already returned and web_fetch with known URLs.")
+        return {**result, "search_budget": budget}
 
     def _remember(self, query, limit, result):
         if len(self._search_cache) < 50:

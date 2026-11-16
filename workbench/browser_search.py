@@ -30,7 +30,13 @@ MAX_RESULTS = 10
 MAX_PAGE_CHARS = 1_500_000
 CACHE_SECONDS = 6 * 3600
 CACHE_ENTRIES = 400
-HOURLY_REQUESTS = 60
+# Searches this PC may send to a search service per hour, by method, unless
+# the human sets another number (search.hourly_limit). 0 means no limit: a
+# search server of the human's own decides for itself. The browser number
+# follows real use: one research task sends about 35 searches, and a browser
+# was never stopped at that rate.
+HOURLY_LIMITS = {'browser': 200, 'duckduckgo': 60, 'brave': 120, 'searxng': 0}
+HOURLY_REQUESTS = HOURLY_LIMITS['duckduckgo']
 HUMAN_CHECK_SECONDS = 300
 
 
@@ -382,7 +388,8 @@ class SearchCache:
 
     def __init__(self, path, *, seconds=CACHE_SECONDS, hourly=HOURLY_REQUESTS):
         self.path, self.seconds, self.hourly = Path(path), seconds, hourly
-        self.entries, self.requests = {}, []
+        # Request and bot-check times of the last hour, by search method.
+        self.entries, self.requests, self.blocks = {}, {}, {}
         self._load()
 
     def _load(self):
@@ -390,8 +397,11 @@ class SearchCache:
             if self.path.is_symlink() or self.path.stat().st_size > 8 * 1024 * 1024:
                 return
             data = json.loads(self.path.read_text(encoding='utf-8'))
-            entries, requests = data.get('entries'), data.get('requests')
-            if data.get('version') != 1 or not isinstance(entries, dict) or not isinstance(requests, list):
+            entries, requests, blocks = data.get('entries'), data.get('requests'), data.get('blocks', {})
+            if isinstance(requests, list):  # written before the count was kept by method
+                requests = {'duckduckgo': requests}
+            if (data.get('version') != 1 or not isinstance(entries, dict) or not isinstance(requests, dict)
+                    or not isinstance(blocks, dict)):
                 return
         except (OSError, ValueError, AttributeError):
             return
@@ -404,7 +414,10 @@ class SearchCache:
                         for row in entry['rows'][:MAX_RESULTS] if isinstance(row, dict)]
                 self.entries[key] = {'at': float(entry['at']), 'limit': entry['limit'], 'rows': rows,
                                      'engine': str(entry.get('engine', ''))[:40]}
-        self.requests = [float(at) for at in requests if isinstance(at, (int, float)) and now - at < 3600][-1000:]
+        for target, source in ((self.requests, requests), (self.blocks, blocks)):
+            for method, times in source.items():
+                if isinstance(method, str) and method in HOURLY_LIMITS and isinstance(times, list):
+                    target[method] = [float(at) for at in times if isinstance(at, (int, float)) and now - at < 3600][-5000:]
 
     def _save(self):
         try:
@@ -412,7 +425,8 @@ class SearchCache:
             descriptor, name = tempfile.mkstemp(prefix='.search-cache-', suffix='.tmp', dir=self.path.parent)
             try:
                 with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
-                    json.dump({'version': 1, 'entries': self.entries, 'requests': self.requests}, stream, ensure_ascii=False)
+                    json.dump({'version': 1, 'entries': self.entries, 'requests': self.requests, 'blocks': self.blocks},
+                              stream, ensure_ascii=False)
                 os.replace(name, self.path)
             finally:
                 Path(name).unlink(missing_ok=True)
@@ -446,18 +460,44 @@ class SearchCache:
                 self.entries.pop(old, None)
         self._save()
 
-    def recent(self):
+    def recent(self, method='duckduckgo'):
         now = time.time()
-        self.requests = [at for at in self.requests if now - at < 3600]
-        return len(self.requests)
+        self.requests[method] = [at for at in self.requests.get(method, []) if now - at < 3600]
+        return len(self.requests[method])
 
-    def spend(self):
+    def limit(self, method='duckduckgo', configured=0):
+        """Searches allowed per hour for this method right now; 0 means no limit.
+
+        The human's number, or the method's own. After a bot check within the
+        last hour it is halved (quartered after two or more), never below 10:
+        being stopped is the one sign that the rate was too high.
+        """
+        base = configured if type(configured) is int and configured > 0 else (
+            self.hourly if method == 'duckduckgo' else HOURLY_LIMITS.get(method, HOURLY_REQUESTS))
+        if not base:
+            return 0
+        now = time.time()
+        self.blocks[method] = [at for at in self.blocks.get(method, []) if now - at < 3600]
+        return max(min(base, 10), base >> min(2, len(self.blocks[method])))
+
+    def remaining(self, method='duckduckgo', configured=0):
+        """Searches still possible this hour, or None when the method has no limit."""
+        limit = self.limit(method, configured)
+        return None if not limit else max(0, limit - self.recent(method))
+
+    def note_block(self, method):
+        """A search service asked for a bot check: allow fewer searches for the next hour."""
+        self.blocks.setdefault(method, []).append(time.time())
+        self._save()
+
+    def spend(self, method='duckduckgo', configured=0):
         """Count one request to a search service, or refuse when the hour's allowance is used up."""
-        if self.recent() >= self.hourly:
-            wait = int((3600 - (time.time() - self.requests[0])) // 60) + 1
+        limit = self.limit(method, configured)
+        if limit and self.recent(method) >= limit:
+            wait = int((3600 - (time.time() - self.requests[method][0])) // 60) + 1
             raise SearchBudgetExceeded(
-                f'This PC has sent {self.hourly} searches in the last hour, the most the application allows (so the search '
+                f'This PC has sent {limit} searches in the last hour, the most the application allows (so the search '
                 f'services do not block it). New searches are possible in about {wait} minutes. Do not repeat the search now: '
                 'use the results already returned, web_fetch with known URLs, or report that more searching is not possible')
-        self.requests.append(time.time())
+        self.requests.setdefault(method, []).append(time.time())
         self._save()
