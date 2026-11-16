@@ -72,6 +72,14 @@ _LINK = re.compile(r'https?://\S+', re.I)
 _MAX_OUTPUTS = 10
 
 
+_WRITER_TOOLS = {'.docx': 'docx_write', '.xlsx': 'xlsx_write', '.pptx': 'pptx_write'}
+
+
+def _writer_tool(name):
+    """The file tool that creates a file of this kind."""
+    return _WRITER_TOOLS.get(PureWindowsPath(name).suffix.lower(), 'write_text')
+
+
 def named_files(text):
     """File names a request mentions (base names, in order, without those inside URLs)."""
     if not isinstance(text, str):
@@ -339,8 +347,10 @@ class VerificationMixin:
             return None
         run['_outputs_gated'] = True
         return ('[application notice] The human asked for these files, but the application has no record that they were '
-                'saved in this work and they do not exist: ' + ', '.join(self.redact(name) for name in missing) + '. '
-                'Create and save them now with the file tools, using the results you already have; where a value could '
+                'saved in this work and they do not exist: '
+                + ', '.join(f'{self.redact(name)} (save with {_writer_tool(name)})' for name in missing) + '. '
+                'Use that tool directly with the file name as path and expected_sha256 "missing"; do not build Office files '
+                'through python_execute. Create and save them now, using the results you already have; where a value could '
                 'not be confirmed, write 未確認 in its place rather than leaving the file out. Finish only after the files '
                 'are saved. If a file truly cannot be produced, say so plainly in your result instead of reporting completion.')
 

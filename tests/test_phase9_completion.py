@@ -426,6 +426,7 @@ async def test_finishing_without_a_file_the_request_names_is_sent_back_once_then
         refused = await engine.execute_tool(run, pm, 'finish_work', {'summary': '統計をまとめました。'})
         assert refused['ok'] is False and refused['code'] == 'outputs_missing'
         assert 'stats.xlsx' in refused['error'] and 'summary.md' not in refused['error'] and '未確認' in refused['error']
+        assert 'stats.xlsx (save with xlsx_write)' in refused['error'] and 'python_execute' in refused['error']
         done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '統計をまとめました。'})
         assert done['ok'] and '依頼された成果物は作られていません' in done['summary'] and 'stats.xlsx' in done['summary']
         assert run['output_check']['missing'] == ['stats.xlsx']
@@ -536,6 +537,10 @@ async def test_a_pm_whose_finish_is_refused_is_told_what_to_approve_and_may_not_
         assert len(client.wait_refusals) == 1
         assert '連絡を送れる担当がいません' in client.wait_refusals[0] and first.id in client.wait_refusals[0]
         assert not client.notices and not any(row['kind'] == 'stall_notice' for row in engine.events)
+        # The activity log keeps what each tool was called with, not only its result.
+        assert any(log['kind'] == 'tool' and log['text'].startswith('spawn_worker\nargs: {"role": "ドイツ担当"') for log in pm.logs)
+        assert any(log['kind'] == 'tool' and log['text'].startswith('review_worker_report\nargs: {"worker_id": "' + first.id)
+                   for log in pm.logs)
     finally:
         await engine.close()
 
@@ -566,3 +571,56 @@ async def test_a_pm_that_keeps_waiting_after_every_worker_ended_gets_three_notic
         assert run['model_calls'] < 30
     finally:
         await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_worker_that_was_still_waiting_on_a_dependency_does_not_hold_the_run(tmp_path):
+    """Real-machine regression: the third worker depended on two others; the PM
+    approved one report and finished. The application closed the worker that
+    only waited and the one that never started, but the latter still counted
+    as "waiting for a dependency", so the run stayed waiting for 15 minutes."""
+    class Team:
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            last = str(messages[-1]['content'])
+            if '"assigned_role": "実装"' in system:
+                return reply(calls=[('wait_for_message', {})])  # never gives a formal report
+            if '"assigned_role": "テスト"' in system:
+                return reply(calls=[('finish_work', {'summary': 'run_tests: 6 passed'})])
+            workers = [agent for agent in engine.agents.values() if agent.parent_id]
+            if len(workers) < 2:
+                role = ('実装', 'テスト')[len(workers)]
+                return reply(calls=[('spawn_worker', {'role': role, 'task': f'{role}を担当する', 'profile_id': 'local'})])
+            if len(workers) == 2:
+                return reply(calls=[('spawn_worker', {'role': '実行', 'task': '最終確認', 'profile_id': 'local',
+                                                      'depends_on': [workers[0].id, workers[1].id]}), ('wait_for_workers', {})])
+            if 'worker_completed' in last:
+                tester = workers[1]
+                return reply(calls=[('review_worker_report', {'worker_id': tester.id, 'result_revision': tester.result_revision,
+                                                              'decision': 'accept', 'feedback': 'テスト結果を確認'})])
+            return reply(calls=[('finish_work', {'summary': '実装とテストを確認しました。'})])
+
+    engine, work = configured(tmp_path, Team())
+    try:
+        result = await engine.start_run({'task': 'Perform assigned work', 'pm_profile': 'local',
+                                         'worker_profiles': ['local'], 'max_workers': 3})
+        run = engine.runs[result['run']['id']]
+        pm = engine.agents[run['agent_ids'][0]]
+        await quiet(engine)
+        coder, tester, runner = [agent for agent in engine.agents.values() if agent.parent_id]
+        assert pm.status == 'done', (pm.status, pm.last_error)
+        assert (coder.status, tester.status, runner.status) == ('done', 'done', 'stopped') and runner.turns == 0
+        # The stopped worker's unmet dependency is still on record, but it no longer holds the run.
+        assert engine._dependency_blockers(runner)
+        assert run['status'] == 'done' and engine.run_status_reason(run) == 'done'
+        assert engine.agent_status_reason(runner) == 'stopped'
+    finally:
+        await engine.close()
+
+
+def test_tool_arguments_are_summarised_for_the_activity_log():
+    from workbench.engine import _args_summary
+    assert _args_summary({}) == '' and _args_summary(None) == ''
+    brief = _args_summary({'path': 'C:\\out\\report.docx', 'expected_sha256': 'missing', 'text': 'あ' * 5000})
+    assert '"path": "C:\\\\out\\\\report.docx"' in brief and '（全5000文字）' in brief and len(brief) < 400
+    nested = _args_summary({'code': 'print(1)', 'outputs': [{'path': 'out/a.docx', 'name': 'a.docx', 'expected_sha256': 'missing'}] * 12})
+    assert '"name": "a.docx"' in nested and 'ほか4件' in nested and len(nested) <= 701

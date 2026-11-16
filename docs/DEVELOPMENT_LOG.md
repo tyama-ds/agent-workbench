@@ -4,6 +4,24 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev57 — An ended worker's unmet dependency no longer holds the run (2026-11-16)
+
+- Regression from dev56, seen on a real machine: a worker that depended on
+  two others never started; the PM approved one report and finished, and the
+  application closed the remaining teammates. The stopped worker still had an
+  unmet dependency on record, and the run status counted it, so the run
+  stayed `waiting` although every agent was done or stopped. A stopped
+  teammate, or one the application closed at its coordinator's completion, no
+  longer counts as waiting for a dependency (run status and its reason).
+- When a named deliverable is missing, the notice names the tool for its kind
+  (`docx_write`, `xlsx_write`, `pptx_write`, otherwise `write_text`) and says
+  not to build Office files through `python_execute`.
+- `python_execute` file-mapping errors name the argument and the value
+  (`outputs[0].name '...'`, `inputs[1].path '...'`) with what that argument
+  must be; a missing destination folder says to create it first.
+- The activity log's tool lines keep a short summary of the arguments (paths
+  and names in full, long text as its start and length) before the result.
+
 ## 0.1.1.dev56 — A coordinator nobody can wake is told what to do, then stopped (2026-11-16)
 
 Real-machine case: the PM's `finish_work` was refused because worker reports

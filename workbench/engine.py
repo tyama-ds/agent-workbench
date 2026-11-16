@@ -80,6 +80,27 @@ def schema(name, description, properties=None, required=()):
 
 
 STRING = {'type': 'string'}
+
+
+def _args_summary(args, limit=700):
+    """Tool arguments for the activity log: short values in full, long ones as a start and a length."""
+    def brief(value, depth=0):
+        if isinstance(value, str):
+            return value if len(value) <= 160 else f'{value[:80]}…（全{len(value)}文字）'
+        if isinstance(value, list):
+            return [brief(item, depth + 1) for item in value[:8]] + ([f'…ほか{len(value) - 8}件'] if len(value) > 8 else [])
+        if isinstance(value, dict):
+            return {str(key)[:40]: brief(item, depth + 1) for key, item in list(value.items())[:12]} if depth < 3 else '{…}'
+        return value
+    if not isinstance(args, dict) or not args:
+        return ''
+    try:
+        text_value = json.dumps(brief(args), ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return ''
+    return text_value if len(text_value) <= limit else text_value[:limit] + '…'
+
+
 CONTINUATION_NUDGES = 1
 EMPTY_REPLY_NUDGE = ('[application notice] Your last reply was empty: no text and no tool call. Continue the task '
                      'with the next tool call, or give your result (workers: finish_work).')
@@ -1374,15 +1395,25 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 return 'delegation_incomplete'
         return agent.status
 
+    @staticmethod
+    def _dependency_open(agent):
+        """This agent's dependencies can still hold the run: it has some, and it has not ended.
+
+        A teammate that was stopped, or closed by the application when its
+        coordinator completed, will never start; what it was waiting for no
+        longer matters to the run.
+        """
+        return bool(agent.depends_on) and agent.status != 'stopped' and not getattr(agent, '_settled', False)
+
     def run_status_reason(self, run):
         if run['status'] != 'waiting':
             return run['status']
         agents = [self.agents[ident] for ident in run['agent_ids']]
         if any(self._hierarchy_stale(a) for a in agents):
             return 'unit_stale'
-        if any(a.depends_on and self._dependency_stale(a) for a in agents):
+        if any(self._dependency_open(a) and self._dependency_stale(a) for a in agents):
             return 'dependency_stale'
-        if any(a.depends_on and self._dependency_blockers(a) for a in agents):
+        if any(self._dependency_open(a) and self._dependency_blockers(a) for a in agents):
             return 'dependency_wait'
         reasons = [bool(run.get('_collaboration_blocked')), any(a.status == 'error' for a in agents),
                    any(a.question for a in agents)]
@@ -2524,7 +2555,9 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                                 yielded_for_message = finished = True
                             if name == 'submit_independent_review' and result.get('ok') is True:
                                 finished = True
-                            self.log(agent, 'tool', name + '\n' + encoded[:12000])
+                            # The arguments in brief (paths, names, sizes), then the result.
+                            summary_line = _args_summary(args)
+                            self.log(agent, 'tool', name + ('\nargs: ' + summary_line if summary_line else '') + '\n' + encoded[:12000])
                         except RedactionCapacityError:
                             # The outer fixed-text handler must remain fail-closed.
                             raise
@@ -2674,7 +2707,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
             run['status'] = 'running'
         elif run.get('_collaboration_blocked') or any(a.approval or a.question or a.status == 'error' or a.waiting_for_workers or a.waiting_for_message or a.delegation_blocked
                 or self._hierarchy_stale(a)
-                or (a.depends_on and (self._dependency_stale(a) or self._dependency_blockers(a))) for a in agents):
+                or (self._dependency_open(a) and (self._dependency_stale(a) or self._dependency_blockers(a))) for a in agents):
             run['status'] = 'waiting'
         else:
             run['status'] = 'done'

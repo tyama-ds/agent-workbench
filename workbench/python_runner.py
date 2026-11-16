@@ -76,6 +76,15 @@ def _name(value):
     return path
 
 
+def _located(label, value, operation, advice=''):
+    """Run a path check; a failure names the argument and the value it was given."""
+    try:
+        return operation()
+    except HarnessError as exc:
+        shown = value if isinstance(value, str) else type(value).__name__
+        raise HarnessError(f'{label} {shown[:200]!r}: {exc}' + (f' ({advice})' if advice else '')) from exc
+
+
 def _mappings(items, *, outputs=False, limit=_MAX_FILES):
     if items is None:
         return []
@@ -83,14 +92,17 @@ def _mappings(items, *, outputs=False, limit=_MAX_FILES):
         raise HarnessError(f'Python inputs and outputs must each contain at most {limit} files')
     result, seen = [], set()
     keys = {'path', 'name', 'expected_sha256'} if outputs else {'path', 'name'}
-    for item in items:
+    kind = 'outputs' if outputs else 'inputs'
+    for index, item in enumerate(items):
         if not isinstance(item, dict) or set(item) != keys:
-            raise HarnessError('Python file mappings have unsupported or missing fields')
-        name = _name(item['name'])
+            raise HarnessError(f'Python file mappings have unsupported or missing fields: {kind}[{index}] needs exactly '
+                               + ', '.join(sorted(keys)))
+        name = _located(f'{kind}[{index}].name', item['name'], lambda: _name(item['name']),
+                        'name is the relative file name inside the sandbox (for example "report.docx"), not a host path')
         if str(name).casefold() in seen:
-            raise HarnessError('Python file names must not be duplicated')
+            raise HarnessError(f'Python file names must not be duplicated: {kind}[{index}].name {str(item["name"])[:120]!r}')
         seen.add(str(name).casefold())
-        _string(item['path'], 'path', 4096)
+        _located(f'{kind}[{index}].path', item['path'], lambda: _string(item['path'], 'path', 4096))
         if outputs and item['expected_sha256'] != 'missing' and (
                 not isinstance(item['expected_sha256'], str) or
                 re.fullmatch('[0-9a-f]{64}', item['expected_sha256']) is None):
@@ -337,15 +349,19 @@ def _execute(config, harness, code, inputs, outputs, on_complete, cancel, input_
         # Validate every source/destination before launching. Output parents must
         # already exist, as with write_text; create_directory is a separate tool.
         staged, total, destinations = [], 0, set()
-        for item in inputs:
-            data = harness.read_bytes(item['path'])
+        for index, item in enumerate(inputs):
+            data = _located(f'inputs[{index}].path', item['path'], lambda: harness.read_bytes(item['path']),
+                            'path is the existing host file to copy in')
             total += len(data)
             if total > _MAX_TRANSFER:
                 raise HarnessError('Combined Python inputs exceed 32 MiB')
             staged.append((item['name'], data))
-        for item in outputs:
-            path = harness.resolve(item['path'], write=True, must_exist=False)
-            _inspect(path.parent, directory=True)
+        for index, item in enumerate(outputs):
+            path = _located(f'outputs[{index}].path', item['path'],
+                            lambda: harness.resolve(item['path'], write=True, must_exist=False),
+                            'path is the host file to save to, inside a folder the human allowed for writing')
+            _located(f'outputs[{index}].path', item['path'], lambda: _inspect(path.parent, directory=True),
+                     'the folder that should hold this file does not exist; create it with create_directory first')
             if str(path).casefold() in destinations:
                 raise HarnessError('Python output destinations must not be duplicated')
             destinations.add(str(path).casefold())
