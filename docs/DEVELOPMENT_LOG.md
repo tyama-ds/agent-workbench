@@ -4,6 +4,30 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev56 — A coordinator nobody can wake is told what to do, then stopped (2026-11-16)
+
+Real-machine case: the PM's `finish_work` was refused because worker reports
+were not approved; it then called `wait_for_message` although every worker
+had ended, and the run stayed `waiting` until it was cut off after 15
+minutes. Three causes, all fixed:
+
+- A worker the application closed when the PM first tried to finish (it had
+  only waited, or never started; not one that failed) could never have an approved report, so a
+  plan with `depends_on` could not be finished at all. Such teammates no
+  longer count towards the reports a coordinator must receive and approve.
+- The stall check returned early when no worker was left alive, so only the
+  first notice was ever sent. It now continues to 2/3 and 3/3 and then stops
+  the PM with a visible reason. The notice names the concrete next step taken
+  from the application's records.
+- A root PM's `wait_for_message` is refused (once per turn) when nobody is
+  left who could send anything, with that same next step. A model that waits
+  anyway is handled by the notices, never by an endless loop.
+- The `finish_work` refusal lists each report still to approve with the
+  worker's name, `worker_id` and `result_revision`.
+- `xlsx_write` returns a `warning` when one column of a call holds both a
+  percentage stored as a fraction (`'0.9%'` → 0.009) and a plain number
+  (2.16); the file is saved and the PM is asked to use one unit.
+
 ## 0.1.1.dev55 — Named deliverables and cited sources are checked at completion (2026-11-16)
 
 From a real-machine research run in which search returned nothing, one page

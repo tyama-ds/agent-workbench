@@ -920,7 +920,7 @@ class ToolExecutor:
                     raise HarnessError("Invalid worksheet title")
                 if title not in workbook.sheetnames:
                     workbook.create_sheet(title)
-            converted = 0
+            converted, kinds = 0, {}
             for item in cells:
                 if not isinstance(item, dict) or set(item) != {"sheet", "cell", "value"} or item["sheet"] not in workbook.sheetnames:
                     raise HarnessError("Each cell requires an existing sheet, cell and value")
@@ -951,11 +951,20 @@ class ToolExecutor:
                     converted += 1
                 else:
                     cell.value = value[1:] if isinstance(value, str) and _kept_text(value) else value
+                if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
+                    percent = bool(number_format and number_format.endswith("%"))
+                    kinds.setdefault((item["sheet"], re.match("[A-Z]+", ref).group()), {}).setdefault(percent, ref)
             if (fresh and "Sheet" in workbook.sheetnames and len(workbook.sheetnames) > 1 and "Sheet" not in sheets
                     and all(item["sheet"] != "Sheet" for item in cells)):
                 # A new workbook's automatic empty sheet is not part of the request.
                 workbook.remove(workbook["Sheet"])
             result = self._save(workbook, args, ".xlsx")
+            mixed = [f"{sheet}!{column} ({found[True]} is a percentage stored as a fraction, {found[False]} is a plain number)"
+                     for (sheet, column), found in kinds.items() if len(found) == 2]
+            if mixed:
+                # 0.9% becomes 0.009 while 2.16 stays 2.16: the same column then holds two units.
+                result = {**result, "warning": "Mixed units in one column: " + "; ".join(mixed[:5])
+                          + ". Write every value of a column the same way (all as 'x%' strings, or all as plain numbers) and save again."}
             return {**result, "numeric_strings_converted": converted} if converted else result
         finally:
             workbook.close()

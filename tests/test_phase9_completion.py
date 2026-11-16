@@ -471,3 +471,98 @@ async def test_a_plain_text_completion_without_the_named_file_is_sent_back_and_a
         assert '【アプリの確認】' not in pm.results[-1]['text']
     finally:
         await engine.close()
+
+
+# --- a coordinator nobody can wake ------------------------------------------------------
+
+def sequence_team(after_refusal):
+    """PM: two workers in sequence, never approves the first, and finishes early.
+    The second worker therefore never starts. `after_refusal(team, last)` scripts the rest."""
+    class Team:
+        refusals, wait_refusals, notices = [], [], []
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            last = str(messages[-1]['content'])
+            if '"assigned_role"' in system:
+                return reply(calls=[('finish_work', {'summary': 'ドイツ: 人口 83,491,249（2025年、世界銀行）'})])
+            workers = [agent for agent in self.engine.agents.values() if agent.parent_id]
+            if not workers:
+                return reply(calls=[('spawn_worker', {'role': 'ドイツ担当', 'task': 'ドイツの人口を調べる', 'profile_id': 'local'})])
+            if len(workers) == 1:
+                return reply(calls=[('spawn_worker', {'role': '集計担当', 'task': '表にまとめる', 'profile_id': 'local',
+                                                      'depends_on': [workers[0].id]}), ('wait_for_workers', {})])
+            if 'worker_dependency_pending' in last:
+                self.refusals.append(last)
+            if '待機できません' in last:
+                self.wait_refusals.append(last)
+            if 'チームの全員が待機していて' in last:
+                self.notices.append(last)
+            if 'worker_completed' in last:
+                return reply(calls=[('finish_work', {'summary': '自分で表を仕上げました。'})])  # nothing was approved
+            return after_refusal(self, last, workers)
+    return Team()
+
+
+@pytest.mark.stall
+@pytest.mark.asyncio
+async def test_a_pm_whose_finish_is_refused_is_told_what_to_approve_and_may_not_just_wait(tmp_path):
+    """Real-machine case: finish_work was refused (reports not approved), the PM
+    called wait_for_message although every worker had ended, and the run stayed
+    "waiting" until it was cut off after 15 minutes."""
+    def script(team, last, workers):
+        if 'worker_dependency_pending' in last:
+            return reply(calls=[('wait_for_message', {})])
+        if '待機できません' in last:
+            first = workers[0]
+            return reply(calls=[('review_worker_report', {'worker_id': first.id, 'result_revision': first.result_revision,
+                                                          'decision': 'accept', 'feedback': '世界銀行の値と一致'})])
+        return reply(calls=[('finish_work', {'summary': '報告を承認し、表を仕上げました。'})])
+
+    client = sequence_team(script)
+    engine, work = configured(tmp_path, client)
+    client.engine = engine
+    try:
+        run, pm = await start(engine)
+        await quiet(engine)
+        first, second = [agent for agent in engine.agents.values() if agent.parent_id]
+        assert run['status'] == 'done' and pm.status == 'done', (run['status'], pm.status, pm.last_error)
+        # The worker that never started was closed with the PM's completion and no longer blocks it.
+        assert second.status == 'stopped' and second.turns == 0
+        # (c) the refusal names the report to approve, with the values review_worker_report needs.
+        refusal = client.refusals[0]
+        assert first.id in refusal and 'result_revision 1' in refusal and 'review_worker_report' in refusal
+        assert second.id not in refusal
+        # (a) waiting when nobody is left to send anything is refused, with the same next step.
+        assert len(client.wait_refusals) == 1
+        assert '連絡を送れる担当がいません' in client.wait_refusals[0] and first.id in client.wait_refusals[0]
+        assert not client.notices and not any(row['kind'] == 'stall_notice' for row in engine.events)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.stall
+@pytest.mark.asyncio
+async def test_a_pm_that_keeps_waiting_after_every_worker_ended_gets_three_notices_and_a_clear_stop(tmp_path):
+    """(b) The notices used to stop after the first when no worker was left alive."""
+    client = sequence_team(lambda team, last, workers: reply(calls=[('wait_for_message', {})]))
+    engine, work = configured(tmp_path, client)
+    client.engine = engine
+    try:
+        run, pm = await start(engine)
+        for _ in range(400):  # each notice starts a new turn a moment after the previous one ended
+            await asyncio.sleep(.01)
+            if pm.status == 'error':
+                break
+        await quiet(engine)
+        notices = [row['text'] for row in engine.events if row['kind'] == 'stall_notice']
+        assert [text[-4:-1] for text in notices] == ['1/3', '2/3', '3/3'], notices
+        assert client.notices and '全員が終了しています' in client.notices[0]
+        assert '完了の前に必要な操作が残っています' in client.notices[0] and 'review_worker_report' in client.notices[0]
+        delivered = [str(row.get('content')) for row in pm.conversation if 'チームの全員が待機していて' in str(row.get('content'))]
+        assert len(delivered) == 3 and 'これが最後の通知です' in delivered[2] and 'これが最後の通知です' not in delivered[1]
+        assert pm.status == 'error' and '行き詰まり' in pm.last_error
+        assert any(row['kind'] == 'error' and '行き詰まり' in row['text'] for row in engine.events)
+        assert len(client.wait_refusals) >= 1  # said once per turn, never an endless loop
+        assert run['model_calls'] < 30
+    finally:
+        await engine.close()
