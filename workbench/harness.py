@@ -606,6 +606,21 @@ def _numeric_text(value: str):
     return number, None
 
 
+# A number followed by a unit, written as one string ("2.8 percent", "1億2269万人", "¥1,200").
+# Labels that merely start with digits (a year, a date, a rank, a count of times) are not values.
+_UNIT_TEXT = re.compile(r"[-+]?[¥$€£]\s*[0-9][0-9,]*(?:\.[0-9]+)?[^\n]{0,24}"
+                        r"|[-+]?[0-9][0-9,]*(?:\.[0-9]+)?\s*%?\s*[^\W\d_][^\n]{0,24}")
+_LABEL_TEXT = re.compile(
+    r"[0-9]{1,4}\s*(?:年度?|月|日|時|分|秒|世紀|位|番目?|回目?|章|節|階|号|期|版|代|歳|st|nd|rd|th)(?:[0-9]{1,2}\s*(?:月|日|時|分|秒))*(?:\s*[^\W\d_].*)?"
+    r"|[0-9]{4}[-/][0-9]{1,2}(?:[-/][0-9]{1,2})?.*|[0-9]+[a-z]?(?:[-–~〜][0-9]+.*)?|[0-9]+\s*[x×*:/][^\n]*", re.I)
+
+
+def _unit_text(value: str) -> bool:
+    """A string that is a number with its unit attached; Excel cannot calculate with it."""
+    text = unicodedata.normalize("NFKC", value).strip()
+    return bool(len(text) <= 40 and _UNIT_TEXT.fullmatch(text) and not _LABEL_TEXT.fullmatch(text))
+
+
 def _kept_text(value: str) -> bool:
     """An apostrophe before a number keeps it text, as when typing in Excel."""
     return value.startswith("'") and _numeric_text(value[1:])[0] is not None
@@ -920,7 +935,7 @@ class ToolExecutor:
                     raise HarnessError("Invalid worksheet title")
                 if title not in workbook.sheetnames:
                     workbook.create_sheet(title)
-            converted, kinds = 0, {}
+            converted, kinds, with_units = 0, {}, {}
             for item in cells:
                 if not isinstance(item, dict) or set(item) != {"sheet", "cell", "value"} or item["sheet"] not in workbook.sheetnames:
                     raise HarnessError("Each cell requires an existing sheet, cell and value")
@@ -951,9 +966,12 @@ class ToolExecutor:
                     converted += 1
                 else:
                     cell.value = value[1:] if isinstance(value, str) and _kept_text(value) else value
+                column = (item["sheet"], re.match("[A-Z]+", ref).group())
                 if isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
                     percent = bool(number_format and number_format.endswith("%"))
-                    kinds.setdefault((item["sheet"], re.match("[A-Z]+", ref).group()), {}).setdefault(percent, ref)
+                    kinds.setdefault(column, {}).setdefault(percent, ref)
+                elif isinstance(cell.value, str) and _unit_text(cell.value):
+                    with_units.setdefault(column, (ref, cell.value[:40]))
             if (fresh and "Sheet" in workbook.sheetnames and len(workbook.sheetnames) > 1 and "Sheet" not in sheets
                     and all(item["sheet"] != "Sheet" for item in cells)):
                 # A new workbook's automatic empty sheet is not part of the request.
@@ -961,10 +979,18 @@ class ToolExecutor:
             result = self._save(workbook, args, ".xlsx")
             mixed = [f"{sheet}!{column} ({found[True]} is a percentage stored as a fraction, {found[False]} is a plain number)"
                      for (sheet, column), found in kinds.items() if len(found) == 2]
+            warnings = []
             if mixed:
                 # 0.9% becomes 0.009 while 2.16 stays 2.16: the same column then holds two units.
-                result = {**result, "warning": "Mixed units in one column: " + "; ".join(mixed[:5])
-                          + ". Write every value of a column the same way (all as 'x%' strings, or all as plain numbers) and save again."}
+                warnings.append("Mixed units in one column: " + "; ".join(mixed[:5])
+                                + ". Write every value of a column the same way (all as 'x%' strings, or all as plain numbers) and save again.")
+            if with_units:
+                # "2.8 percent" or "1億2269万人" is text: it cannot be summed, sorted or charted.
+                warnings.append("Numbers saved as text because a unit is attached: "
+                                + "; ".join(f"{sheet}!{ref} ({text!r})" for (sheet, _), (ref, text) in list(with_units.items())[:5])
+                                + ". Put the bare number in the cell (2.8, 122690000) and name the unit in the column header, then save again.")
+            if warnings:
+                result = {**result, "warning": " ".join(warnings)}
             return {**result, "numeric_strings_converted": converted} if converted else result
         finally:
             workbook.close()

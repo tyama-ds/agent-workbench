@@ -141,7 +141,7 @@ def test_the_first_engine_answers_and_the_model_gets_the_usual_shape():
 def test_a_bot_check_pauses_only_that_engine_and_the_next_one_is_used(fresh_engine_guards):
     async def run():
         page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG]})
-        search = BrowserSearch(page)
+        search = BrowserSearch(page, browser_search.chosen_engines(bing=True))
         first = await search.search('q one', 3)
         assert first['engine'] == 'bing' and first['results'][0]['url'] == 'https://www.meti.go.jp/policy/ai.html'
         assert fresh_engine_guards['duckduckgo_web'].status()['blocked'] and not fresh_engine_guards['bing'].status()['blocked']
@@ -154,10 +154,52 @@ def test_a_bot_check_pauses_only_that_engine_and_the_next_one_is_used(fresh_engi
     asyncio.run(run())
 
 
+def test_bing_is_not_opened_unless_the_human_turned_it_on(fresh_engine_guards, tmp_path):
+    async def run():
+        # The human's decision to read result pages this way covered DuckDuckGo only.
+        assert [engine['name'] for engine in browser_search.chosen_engines()] == ['duckduckgo_web', 'duckduckgo_html']
+        assert browser_search.chosen_engines(bing=True) == browser_search.ENGINES
+        assert browser_search.chosen_engines(bing='yes') == browser_search.chosen_engines()
+        page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG]})
+        first = await BrowserSearch(page).search('q one', 3)
+        assert first['engine'] == 'duckduckgo_html' and not any('bing.com' in call[0] for call in calls)
+        # When DuckDuckGo wants a person on both pages, the person is asked; Bing is still not tried.
+        page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG_CHECK]})
+        for guard in fresh_engine_guards.values():
+            guard.reset()
+        with pytest.raises(SearchChallenge) as challenge:
+            await BrowserSearch(page).search('q two', 3)
+        assert challenge.value.engines == ['duckduckgo_web', 'duckduckgo_html'] and 'Bing' not in str(challenge.value)
+        assert not any('bing.com' in call[0] for call in calls)
+
+        # The setting reaches a run's search: off by default, on only as true.
+        for guard in fresh_engine_guards.values():
+            guard.reset()
+        for setting, engine in (({}, 'duckduckgo_html'), ({'browser_bing': False}, 'duckduckgo_html'), ({'browser_bing': True}, 'bing')):
+            page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG]})
+            tools = WebTools({'search': {'enabled': True, 'provider': 'browser', **setting}})
+            tools.use_browser(page)
+            answer = await tools.execute('web_search', {'query': 'q ' + engine + str(setting), 'limit': 2})
+            assert answer['engine'] == engine, setting
+            for guard in fresh_engine_guards.values():
+                guard.reset()
+        with pytest.raises(webtools.WebToolError, match='browser_bing'):
+            WebTools({'search': {'enabled': True, 'provider': 'browser', 'browser_bing': 'yes'}})
+    asyncio.run(run())
+    raw = json.loads(json.dumps(DEFAULT))
+    assert raw['search']['browser_bing'] is False and validate_settings(raw)['search']['browser_bing'] is False
+    raw['search']['browser_bing'] = True
+    assert validate_settings(raw)['search']['browser_bing'] is True
+    for bad in ('true', 1, None):
+        raw['search']['browser_bing'] = bad
+        with pytest.raises(ValueError, match='Bing'):
+            validate_settings(raw)
+
+
 def test_when_every_engine_asks_for_a_check_a_person_is_needed(fresh_engine_guards):
     async def run():
         page, calls = pages({'web': [WEB_CHECK, WEB], 'bing': [BING_STEP], 'html': [DDG_CHECK]})
-        search = BrowserSearch(page)
+        search = BrowserSearch(page, browser_search.chosen_engines(bing=True))
         with pytest.raises(SearchChallenge) as challenge:
             await search.search('q', 5)
         assert challenge.value.engines == ['duckduckgo_web', 'bing', 'duckduckgo_html'] and 'human check' in str(challenge.value)
@@ -177,11 +219,11 @@ def test_an_unfinished_human_check_and_an_unreadable_page_are_errors_not_empty_r
     async def run():
         page, _ = pages({'web': [WEB_CHECK], 'bing': [BING_CHECK], 'html': [DDG_CHECK]})
         with pytest.raises(ValueError, match='was not completed'):
-            await BrowserSearch(page).human_check('q', 5, ['bing'])
+            await BrowserSearch(page, browser_search.ENGINES).human_check('q', 5, ['bing'])
         page, _ = pages({'web': ['<html>layout changed</html>'], 'bing': [ValueError('The browser could not open the search page: x')],
                          'html': ['<html>also changed</html>']})
         with pytest.raises(ValueError, match='Browser search failed: DuckDuckGo: the result page was not recognised') as failure:
-            await BrowserSearch(page).search('q', 5)
+            await BrowserSearch(page, browser_search.ENGINES).search('q', 5)
         assert not isinstance(failure.value, SearchChallenge) and 'Bing: The browser could not open' in str(failure.value)
         page, _ = pages({'web': [WEB_EMPTY], 'bing': [BING], 'html': [DDG]})
         assert (await BrowserSearch(page).search('zzzz', 5))['results'] == []  # a real "no results" is an answer
@@ -220,8 +262,42 @@ def test_the_hourly_allowance_counts_requests_across_runs_and_says_when_it_ends(
         cache.spend()
     again = SearchCache(path, hourly=3)  # restarting the application does not reset it
     assert again.recent() == 3
-    again.requests = [time.time() - 3700] * 3  # an hour later
+    again.requests = {'duckduckgo': [time.time() - 3700] * 3}  # an hour later
     again.spend()
+    # A file written before the count was kept by method is still read.
+    path.write_text(json.dumps({'version': 1, 'entries': {}, 'requests': [time.time()] * 2}), encoding='utf-8')
+    assert SearchCache(path).recent('duckduckgo') == 2 and SearchCache(path).recent('browser') == 0
+
+
+def test_each_method_has_its_own_allowance_which_the_human_can_change(tmp_path):
+    """Real-machine finding: one research task sends about 35 searches and a browser was never
+    stopped, yet 60 an hour for the whole PC made every later task fail."""
+    cache = SearchCache(tmp_path / 'search-cache.json')
+    assert [cache.limit(method) for method in ('browser', 'duckduckgo', 'brave', 'searxng')] == [120, 60, 120, 0]
+    assert cache.limit('browser', 500) == 500 and cache.limit('searxng', 30) == 30
+    assert cache.remaining('searxng') is None  # the human's own server: no limit
+    for _ in range(60):
+        cache.spend('duckduckgo')
+    with pytest.raises(browser_search.SearchBudgetExceeded):
+        cache.spend('duckduckgo')
+    cache.spend('browser')  # the methods are counted apart
+    assert cache.remaining('browser') == 119 and cache.remaining('duckduckgo') == 0
+    for _ in range(1000):
+        cache.spend('searxng')
+
+
+def test_after_a_bot_check_fewer_searches_are_allowed_for_an_hour(tmp_path):
+    cache = SearchCache(tmp_path / 'search-cache.json')
+    cache.note_block('browser')
+    assert cache.limit('browser') == 60 and cache.limit('duckduckgo') == 60
+    cache.note_block('browser')
+    assert cache.limit('browser') == 30
+    cache.note_block('browser')
+    assert cache.limit('browser') == 30  # not lower than a quarter
+    assert SearchCache(tmp_path / 'search-cache.json').limit('browser') == 30  # kept across a restart
+    cache.blocks['browser'] = [time.time() - 3700] * 3
+    assert cache.limit('browser') == 120  # an hour later the full allowance is back
+    assert cache.limit('browser', 12) == 12 and SearchCache(tmp_path / 'other.json').limit('browser', 4) == 4
 
 
 def test_a_run_sends_each_question_once_whatever_the_wording_or_the_worker(tmp_path):
@@ -234,7 +310,7 @@ def test_a_run_sends_each_question_once_whatever_the_wording_or_the_worker(tmp_p
         assert tools.endpoint == 'https://duckduckgo.com'
         answers = await asyncio.gather(*(tools.execute('web_search', {'query': query, 'limit': 2})
                                          for query in ('生成AI ガイドライン', 'ガイドライン 生成AI', '生成AI ガイドライン')))
-        assert len(calls) == 1 and cache.recent() == 1
+        assert len(calls) == 1 and cache.recent('browser') == 1 and cache.recent('duckduckgo') == 0
         assert all(answer['results'] == answers[0]['results'] for answer in answers)
         # Another run of the application reuses it from disk.
         later = WebTools({'search': {'enabled': True, 'provider': 'browser'}})
@@ -250,16 +326,54 @@ def test_a_run_sends_each_question_once_whatever_the_wording_or_the_worker(tmp_p
     asyncio.run(run())
 
 
-def test_the_allowance_stops_new_searches_with_a_clear_message(tmp_path):
+def test_one_run_gets_half_the_allowance_is_warned_early_and_held_answers_stay_free(tmp_path):
     async def run():
         page, calls = pages({'web': [WEB], 'bing': [BING], 'html': [DDG]})
+        cache = SearchCache(tmp_path / 'search-cache.json')
+        tools = WebTools({'search': {'enabled': True, 'provider': 'browser', 'hourly_limit': 20}})
+        tools.use_browser(page)
+        tools.use_search_cache(cache)
+        results = [await tools.execute('web_search', {'query': f'question {index}'}) for index in range(10)]
+        # Ten of the PC's twenty an hour belong to this run. The count-down comes with every answer,
+        # and the plain warning while there are still searches left to choose with.
+        assert [row['search_budget']['searches_left'] for row in results] == [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+        assert ['notice' in row['search_budget'] for row in results] == [False] * 4 + [True] * 6
+        assert 'Only 5 more searches' in results[4]['search_budget']['notice']
+        with pytest.raises(WebToolError, match='used its share of this PC'):
+            await tools.execute('web_search', {'query': 'one too many'})
+        assert len(calls) == 10 and cache.recent('browser') == 10
+        # An answer already held costs nothing, in this run or the next.
+        assert (await tools.execute('web_search', {'query': 'question 3'}))['results'] and len(calls) == 10
+        other = WebTools({'search': {'enabled': True, 'provider': 'browser', 'hourly_limit': 20}})
+        other.use_browser(page)
+        other.use_search_cache(cache)
+        assert (await other.execute('web_search', {'query': '3 question'}))['cached'] is True and cache.recent('browser') == 10
+        # Another run still has the other half; then the PC's hour is used up.
+        for index in range(10):
+            await other.execute('web_search', {'query': f'another {index}'})
+        third = WebTools({'search': {'enabled': True, 'provider': 'browser', 'hourly_limit': 20}})
+        third.use_browser(page)
+        third.use_search_cache(cache)
+        with pytest.raises(WebToolError, match='New searches are possible in about'):
+            await third.execute('web_search', {'query': 'late'})
+    asyncio.run(run())
+
+
+def test_a_bot_check_lowers_the_allowance_and_a_server_of_ones_own_has_none(tmp_path):
+    async def run():
+        page, _ = pages({'web': [WEB_CHECK], 'bing': [BING_STEP], 'html': [DDG_CHECK]})
+        cache = SearchCache(tmp_path / 'search-cache.json')
         tools = WebTools({'search': {'enabled': True, 'provider': 'browser'}})
         tools.use_browser(page)
-        tools.use_search_cache(SearchCache(tmp_path / 'search-cache.json', hourly=1))
-        await tools.execute('web_search', {'query': 'first'})
-        with pytest.raises(WebToolError, match='New searches are possible in about'):
-            await tools.execute('web_search', {'query': 'second'})
-        assert (await tools.execute('web_search', {'query': 'first'}))['results'] and len(calls) == 1  # held answers stay free
+        tools.use_search_cache(cache)
+        with pytest.raises(SearchChallenge):
+            await tools.execute('web_search', {'query': 'x'})
+        assert cache.limit('browser') == 60
+        own = WebTools({'search': {'enabled': True, 'provider': 'searxng', 'endpoint': 'https://search.example/search'}})
+        own.use_search_cache(cache)
+        assert own._run_share() is None and own._with_budget({'results': []}) == {'results': []}
+        with pytest.raises(WebToolError, match='hourly limit'):
+            WebTools({'search': {'enabled': True, 'provider': 'browser', 'hourly_limit': -1}})
     asyncio.run(run())
 
 
@@ -280,6 +394,13 @@ def test_browser_search_needs_the_browser_driver_and_python_but_not_selenium_its
     ready = validate_settings(raw)
     assert ready['search']['provider'] == 'browser' and ready['search']['endpoint'] == 'https://duckduckgo.com'
     assert ready['selenium']['enabled'] is False and ready['python']['network_enabled'] is False
+    assert ready['search']['hourly_limit'] == 0  # 0: the chosen method's own number
+    raw['search']['hourly_limit'] = 300
+    assert validate_settings(raw)['search']['hourly_limit'] == 300
+    for bad in (-1, 5001, 1.5, '200', True):
+        raw['search']['hourly_limit'] = bad
+        with pytest.raises(ValueError, match='検索回数の上限'):
+            validate_settings(raw)
 
 
 # --- the human check, through the engine ---------------------------------------------------

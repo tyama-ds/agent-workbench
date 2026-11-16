@@ -8,6 +8,10 @@ import argparse
 import asyncio
 import json
 import socket
+import sys
+import threading
+import time
+import traceback
 from pathlib import Path
 
 from aiohttp import web
@@ -195,7 +199,36 @@ class SyntheticClient:
                                       for i, (name, args) in enumerate(calls)], usage={}, raw={})
 
 
+def watch_loop(loop, limit=2.0, reports=12):
+    """Say on stderr where the server loop was whenever it stopped answering for `limit` seconds.
+
+    A page that waits for the server looks the same as a page that stopped
+    updating; the acceptance report prints this output when a check fails.
+    """
+    beat, main = [time.monotonic()], threading.main_thread().ident
+
+    def tick():
+        beat[0] = time.monotonic()
+        loop.call_later(.1, tick)
+
+    def watch():
+        for _ in range(reports):
+            while time.monotonic() - beat[0] < limit:
+                time.sleep(.25)
+            frame = sys._current_frames().get(main)
+            stack = ''.join(traceback.format_stack(frame)[-12:]) if frame else '(no frame)\n'
+            print(f'[fixture] server loop silent for {time.monotonic() - beat[0]:.1f}s at:\n{stack}', file=sys.stderr, flush=True)
+            while (silent := time.monotonic() - beat[0]) >= limit:
+                longest = silent
+                time.sleep(.25)
+            print(f'[fixture] server loop answered again after {longest:.1f}s', file=sys.stderr, flush=True)
+
+    loop.call_soon(tick)
+    threading.Thread(target=watch, name='fixture-loop-watch', daemon=True).start()
+
+
 async def serve(directory):
+    watch_loop(asyncio.get_running_loop())
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(('127.0.0.1', 0))
     listener.listen()

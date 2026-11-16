@@ -51,6 +51,9 @@ const FIELD_GROUPS = {
     ['proxy_url','検索用プロキシ URL（任意）','url'],
     ['timeout_seconds','検索タイムアウト（秒）','number',1],
     ['max_response_bytes','検索応答の最大サイズ（byte）','number',1024],
+    ['hourly_limit','1時間あたりの検索回数の上限（0 は方式ごとの既定）','number',0,undefined,'この PC から検索サービスへ送る検索の回数です。0 のときは方式ごとの既定を使います（ブラウザー検索 120、DuckDuckGo 60、Brave Search 120、SearXNG は上限なし）。手元にある結果の使い回しは数えません。1つの作業が使えるのは上限の半分までです。検索サービスにボット確認を出されたあとの1時間は、自動的に半分に下げます。'],
+    ['run_guide','1つの作業の検索回数の目安（0 は目安なし）','number',0,undefined,'1つの作業（担当者全員の合計）で使う検索の目安です。上限ではありません。作業の初めにモデルへ伝え、半分を超えると「すでに得た結果とページ取得で進める」よう促します。国別の統計（人口・GDP・物価・失業率など）は、検索を使わずに世界銀行の公開データから直接取得します。'],
+    ['browser_bing','ブラウザー検索の予備に Bing も使う','checkbox',undefined,undefined,'検索エンジンに「ブラウザー検索」を選んだときだけ使います。オフ（既定）では DuckDuckGo だけで検索します。オンにすると、DuckDuckGo で検索できないときに Bing の検索結果ページも開きます。Bing は、検索を続けると人による確認を求めることが多いサービスです。'],
   ],
   local: [
     ['max_concurrent_requests','Local の同時リクエスト上限','range',1,'1','同じモデルの作業者が複数いても、この上限に従って順番待ちします。Copilot の上限とは別です。',16],
@@ -105,7 +108,7 @@ const PROFILE_FIELDS = [
   ['fallback_profile_id','障害時の代替モデル','select',[['','なし']],undefined,'このモデルが応答しないときに、代わりに使うモデルです。'],
 ];
 const STATUS_LABELS = {queued:'順番待ち',working:'作業中',running:'実行中',waiting:'待機',waiting_human:'回答待ち',needs_input:'回答待ち',done:'完了',completed:'完了',error:'エラー',failed:'エラー',stopping:'停止処理中',stopped:'停止',idle:'待機',interrupted:'中断'};
-const NUMBER_BOUNDS={local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],context_trigger_percent:[50,90],context_recent_groups:[2,32],context_summary_chars:[512,16000],context_reserve_tokens:[256,65536],max_history_chars:[4000,4000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
+const NUMBER_BOUNDS={search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304],hourly_limit:[0,5000],run_guide:[0,1000]},local:{max_concurrent_requests:[1,16],queue_timeout_seconds:[1,3600],request_timeout_seconds:[5,1800],min_interval_seconds:[0,120],max_retries:[0,3],retry_backoff_seconds:[0,60],gpu_index:[0,31],max_vram_mb:[0,1048576],max_gpu_utilization_percent:[0,100],gpu_wait_timeout_seconds:[1,3600],gpu_poll_interval_seconds:[.1,60]},limits:{max_workers:[0,16],max_auto_collaborations:[0,1000],max_model_calls:[1,1000],max_tool_calls:[1,5000],max_turns_per_agent:[1,100],max_run_seconds:[10,86400],max_context_chars:[4000,2000000],context_trigger_percent:[50,90],context_recent_groups:[2,32],context_summary_chars:[512,16000],context_reserve_tokens:[256,65536],max_history_chars:[4000,4000000],max_output_tokens:[128,65536],max_file_bytes:[1024,52428800]},search:{timeout_seconds:[1,60],max_response_bytes:[1024,4194304]}};
 const ACTIVE_STATUSES = new Set(['queued','working','running','waiting','waiting_human','needs_input','idle','stopping']);
 const ui = {config:null,secretStatus:{},state:{runs:[],agents:[],events:[],resources:{}},selectedRun:null,selectedAgent:null,selectionGeneration:0,compactState:false,loadedDetail:null,loadedEventsRun:null,detailError:false,settingsDirty:false,settingsLocked:false,authenticated:false,polling:false,pollAgain:false,drafts:new Map(),conversationViews:new Map(),logContext:'',logSignature:'',busyMessage:false,outputSelections:new Map(),outputContext:'',outputRequest:0,outputSignature:'',settingsRevision:0,preflightRequest:0,preflightTimer:null,preflightKey:'',startPointerActive:false,startPointerWaiters:[]};
 Object.assign(ui,{navigationGeneration:0,taskDialogGeneration:0,taskDraftGeneration:0,taskDraftKey:'',workspaceGeneration:0,noticeGeneration:0,startOperation:null,stoppingRuns:new Map(),stoppingAgents:new Map(),restoringReceipt:null});
@@ -2286,6 +2289,16 @@ async function stopSelectedAgent() {
 const APPROVAL_MODE_LABELS={ask:'毎回確認',always_allow:'常に許可'};
 const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',run_tests:'テストの実行',selenium_browse:'ブラウザ操作',search_human_check:'検索の「人による確認」（ブラウザーで操作が必要）'};
 const TEST_CHECK_LABELS={passed:'成功',failed:'失敗あり',missing:'未実行'};
+function searchUseLabel(use){
+  const count=key=>Number.isSafeInteger(use?.[key])&&use[key]>0?use[key]:0;
+  const parts=[['sent','検索 '],['reused','結果の使い回し '],['similar','似た質問への再利用 '],['lookups','統計データの直接取得 ']]
+    .filter(([key])=>count(key)).map(([key,label])=>`${label}${count(key)} 件`);
+  return parts.join(' · ');
+}
+function approvalDeadlineLabel(approval){
+  const at=Number(approval?.expires_at);
+  return Number.isFinite(at)&&at>0?` · 回答期限 ${new Date(at*1000).toLocaleTimeString('ja-JP')}（過ぎると却下の扱いで続行）`:'';
+}
 function outputCheckLabel(check){
   const names=list=>Array.isArray(list)?list.filter(name=>typeof name==='string').slice(0,5).map(name=>name.slice(0,60)):[];
   const expected=names(check?.expected),missing=names(check?.missing);
@@ -2323,7 +2336,7 @@ function renderApproval(agent) {
   if(!approval&&card.contains(document.activeElement))$('conversationHeading').focus({preventScroll:true});
   card.hidden=!approval;
   if(ui.approvalContext!==key){ui.approvalContext=key;$('approvalNote').value='';inlineStatus($('approvalStatus'),'');$('approvalSummary').scrollTop=0;}
-  setVisibleText($('approvalTool'),approval?`操作: ${approvalToolLabel(approval.tool)}`:'');
+  setVisibleText($('approvalTool'),approval?`操作: ${approvalToolLabel(approval.tool)}${approvalDeadlineLabel(approval)}`:'');
   setVisibleText($('approvalSummary'),approval?String(approval.summary??''):'');
   const run=agent&&ui.state.runs.find(item=>item.id===agent.run_id),blocked=!approval||Boolean(ui.approvalOperation)||['stopping','stopped'].includes(run?.status);
   $('approveAction').disabled=blocked;$('rejectAction').disabled=blocked;
@@ -2819,7 +2832,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(outputCheckLabel(run.output_check)?[['依頼されたファイル',outputCheckLabel(run.output_check)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(outputCheckLabel(run.output_check)?[['依頼されたファイル',outputCheckLabel(run.output_check)]]:[]),...(searchUseLabel(run.search_use)?[['Web の利用',searchUseLabel(run.search_use)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }

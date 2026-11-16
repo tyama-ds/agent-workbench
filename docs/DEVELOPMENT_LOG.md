@@ -4,6 +4,98 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev62 — Statistics read directly, a search guide, and a human check that does not wait for ever (2026-11-16)
+
+From a real-machine load run at `2d07f9f` (information gathering and
+statistics three times each, about 50 minutes). The higher allowance and the
+per-run share worked (33/33, 58/58, 17/17, 56/56 searches answered). What it
+showed next: one statistics task sends 56 to 58 searches and one research
+task 17 to 33; duckduckgo.com in a browser asked for a human check after
+about 165 searches in 45 minutes, so the default of 200 an hour was out of
+reach; and with nobody at the machine the request to pass that check held
+the run until it was cut off at 901 seconds, with stats.xlsx already saved.
+
+- `stat_lookup` reads country statistics from World Bank Open Data
+  (`api.worldbank.org`, no key): one indicator, up to 12 countries, a range of
+  years, with the address to cite. Built-in names cover population, GDP, GDP
+  growth, GDP per capita, consumer prices, unemployment and a few more; any
+  World Bank indicator code is accepted. The policy tells the model to use it
+  before searching. **Not run against the real API**: this environment cannot
+  reach it, so the answer's shape is from the API's documentation.
+- `search.run_guide` (default 20, 0 none): the policy says how many searches
+  one piece of work is expected to need; from half of that each answer says so
+  and asks to go on with what is held, and past it asks to stop. A guide, not
+  a limit; the run's hard share stays half of the hourly allowance.
+- Browser search: 120 an hour by default (was 200), 4.5 s between searches on
+  duckduckgo.com (was 3).
+- A query practically equal to an earlier one of the same run (at least 65%
+  of the words shared, and the differing words neither numbers nor country
+  names) is answered once from the earlier result, marked `similar_to`.
+  Sending exactly the same query again searches. Before, only the same set of
+  words was shared; different wordings by several workers each cost a search.
+- `run.search_use` and the run's "Web の利用" line show searches sent, answers
+  reused, similar questions answered and statistics read directly, so the
+  effect can be measured on the real machine.
+- The request to pass a bot check expires after three minutes and then counts
+  as declined. `web_search` is refused for the rest of that run without
+  sending anything, the caller is told at once and every agent at its next
+  turn; `web_fetch` and `stat_lookup` keep working. The card shows the
+  deadline. Other approvals still wait.
+- Tests: `test_pm_accepted_dependency_handoff_runs_real_file_workflow` failed
+  on a Windows runner that took 41 minutes for the suite instead of about 20.
+  Its three-second waits only tell a hang from progress; they are 20 seconds.
+
+## 0.1.1.dev61 — Bing is off unless the human turns it on; acceptance failures say why (2026-11-16)
+
+The human decided the terms question for browser search: DuckDuckGo is fine.
+Bing was not part of that decision, and on the real machine it asked for a
+verification from the second search on, so leaving it out costs nothing.
+
+- `search.browser_bing` (default false; settings: 「ブラウザー検索の予備に Bing
+  も使う」). Off: browser search uses duckduckgo.com and then DuckDuckGo's
+  HTML page. On: Bing is tried between them, as before.
+- No terms notice is attached to DuckDuckGo. The README's general sentence
+  about engines' terms is replaced by one about Bing next to its switch.
+- Edge acceptance: the adaptive script printed only `ok:false`; its report
+  is a build artifact that cannot be fetched from every environment. It now
+  prints the reasons. The first failure read this way was "Read-only
+  process census exceeded 10000ms": `powershell.exe` asking WMI for the
+  process list took longer than ten seconds on a shared runner and then
+  ended normally. The wait is 60 seconds and each census records its time.
+- Edge acceptance, "task dialog stays open after start" (seen now and then
+  since dev53, cause still unknown): the page had the server's acceptance
+  and was waiting to see the run in the list. A failed run now reports the
+  page's last `/api` requests with durations, a direct state request, and
+  where the test server's loop was whenever it did not answer for two
+  seconds, so the next occurrence tells a silent server from a page that
+  stopped updating.
+
+## 0.1.1.dev60 — Search allowance by method, a share per run, and a warning before it runs out (2026-11-16)
+
+Browser search worked on the real machine (35 of 35 searches in one research
+task, no bot check). The allowance of 60 searches an hour for the whole PC
+did not: one research task sends about 35 searches and a statistics task 23
+to 31, so every task after the first two failed within seconds, with values
+left unconfirmed and loosely related sources. Nothing had ever been stopped
+at that rate.
+
+- The allowance is per search method: browser 200 an hour, DuckDuckGo over
+  HTTP 60, Brave 120, a SearXNG server of the human's own none (dev59 had
+  wrongly capped it at 60 too). `search.hourly_limit` replaces the number for
+  the chosen method; 0 keeps the method's own.
+- After a bot check the method's allowance is halved for the next hour, and
+  quartered after two or more, never below 10.
+- One run may send half of the allowance, so a single task cannot use up
+  the hour for the others.
+- Every `web_search` answer that cost a request carries
+  `search_budget.searches_left`; in the last fifth (at least the last five)
+  it also carries a plain notice to keep the remaining searches for what
+  matters most. Before, the model learned of the limit only when it was hit.
+- Answers already held are still not counted.
+- `xlsx_write` also warns about a number saved as text because a unit is
+  attached ("2.8 percent", "1億2269万人", "¥1,200"); labels that only start
+  with digits (a year, a date, a rank) are left alone.
+
 ## 0.1.1.dev59 — Keyless browser search, one search queue, a cache that outlives a run (2026-11-16)
 
 After the Accept-Encoding fix the first three DuckDuckGo searches of a run

@@ -790,3 +790,23 @@ is caught in `Engine.execute_tool`, which waits on the existing approval
 mechanism under an application-wide lock and, on approval, runs the same page
 callable with `visible=True`. The model sees either results or one plain
 statement that search is unavailable.
+
+## Fewer searches per piece of work (0.1.1.dev62)
+
+- `workbench/statdata.py` names World Bank indicators and countries and reads
+  the API's answer; `WebTools._stat_lookup` sends the one request through
+  `_request` (public address, explicit proxy only, size limit). The host is a
+  constant: the model supplies countries, an indicator and years.
+- `WebTools._with_budget` adds the run's search guide from its half on;
+  `WebTools._similar` answers a practically equal question from the run's
+  earlier result once; `WebTools.use` counts what the run did and the engine
+  publishes it as `run.search_use`.
+- `Engine._await_approval(..., timeout=)` turns an unanswered request into a
+  rejection. Only the search human check uses it (180 s): every other approval
+  still waits for the human. After a rejection or expiry `web_search` is
+  refused for the rest of the run before anything is sent, and the policy of
+  every agent's next turn says so.
+
+The engine list a run uses comes from `chosen_engines(search.browser_bing)`:
+duckduckgo.com and DuckDuckGo's HTML page always, Bing between them only when
+the human turned it on (0.1.1.dev61; off by default).
