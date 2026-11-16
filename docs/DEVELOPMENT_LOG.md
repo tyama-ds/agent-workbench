@@ -4,6 +4,42 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev65 — stat_lookup with a source: the IMF, Eurostat and the ILO beside the World Bank (2026-11-17)
+
+The human asked for statistics from more providers than the World Bank. From
+the test machine, without a key: the IMF's SDMX 3.0 API answered in 1.4 s,
+Eurostat in 2.3 s (JSON-stat), the ILO in 2.3 s (SDMX-ML); the IMF DataMapper
+API was refused (403), UNdata failed (500), Destatis timed out, and e-Stat,
+Census, BEA and FRED need keys.
+
+- `stat_lookup` takes `source`: `worldbank` (default), `imf`, `eurostat`,
+  `ilo`. The same plain indicator names work wherever a provider has the
+  series: IMF World Economic Outlook (population, GDP, GDP growth, GDP per
+  capita, inflation, CPI, unemployment, government debt, or any WEO code),
+  Eurostat (population, GDP growth, inflation, unemployment, government
+  debt), ILO (unemployment, youth unemployment).
+- Every result, the World Bank's too, now carries `source` (the id),
+  `source_name`, `unit`, and `as_of` with `as_of_basis`: the provider's own
+  update time, or the day the figures were retrieved when it gives none.
+  `indicator.name` is the provider's own label of what was read.
+- A provider's answer with several series or categories for one country,
+  none of them the one the indicator means, is an error that says what
+  differs. A number is never picked among candidates.
+- One request at a time; answers that could be read are kept for a day; a
+  failed request is tried once more unless the provider refused it.
+- The policy tells the model to compare countries within one source, to
+  prefer a country's own statistical office for its own figures, to report
+  both values with source and date when sources differ, and that units
+  differ (the IMF gives population in millions).
+- **Not run against the real providers from this environment** (none is
+  reachable). The address shapes are the ones that answered on the test
+  machine; the answers' layouts are read as the standards describe them. The
+  Eurostat table codes and the categories chosen in them, and the ILO key
+  for youth unemployment, have not been seen answering.
+- Not in this change: the OECD (no series key is known to answer; guessing
+  one risks a wrong series under a right name), the ECB, UN SDG, national
+  statistical offices' files, and optional keys.
+
 ## 0.1.1.dev64 — Nobody to wait for: a coordinator that works alone, and a worker whose coordinator waits (2026-11-17)
 
 From the real-machine suite at `503253a`: a research task's PM worked alone

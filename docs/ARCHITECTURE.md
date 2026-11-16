@@ -813,6 +813,14 @@ statement that search is unavailable.
   refused for the rest of the run before anything is sent, and the policy of
   every agent's next turn says so.
 
+- Since 0.1.1.dev65 `stat_lookup` takes a `source`. `workbench/statsources.py`
+  holds, per provider, the table of built-in indicators, the fixed address to
+  ask (`plan`) and the readers of the three layouts in use (`sdmx_json`,
+  `sdmx_xml`, `read_jsonstat`). `WebTools._stat_other` sends the requests one
+  at a time and returns the World Bank result's shape with `source`, `unit`
+  and `as_of` added to every provider. A reader never chooses between several
+  series for one country: that is an error which says what differs.
+
 The engine list a run uses comes from `chosen_engines(search.browser_bing)`:
 duckduckgo.com and DuckDuckGo's HTML page always, Bing between them only when
 the human turned it on (0.1.1.dev61; off by default).

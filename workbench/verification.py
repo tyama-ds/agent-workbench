@@ -225,8 +225,9 @@ class VerificationMixin:
             # What the figures are and the latest one per country, beside the two addresses that may be cited.
             latest = '; '.join(f"{row.get('country')} {row.get('latest', {}).get('year')}: {row.get('latest', {}).get('value')}"
                                for row in (result.get('series') or [])[:6] if isinstance(row, dict))
-            start = _excerpt(f"World Bank Open Data — {(result.get('indicator') or {}).get('name', '')}. {latest}")
-            for url in (result.get('url'), result.get('page_url')):
+            start = _excerpt(f"{result.get('source_name') or 'Official statistics'} — {(result.get('indicator') or {}).get('name', '')}"
+                             f"{' (' + str(result['unit']) + ')' if result.get('unit') else ''}. {latest}")
+            for url in (result.get('url'), result.get('page_url'), *(result.get('urls') or [])):
                 if isinstance(url, str):
                     pages[sources.normalize(url)] = ('fetched', start)
         elif name == 'web_search':

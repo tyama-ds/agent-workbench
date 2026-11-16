@@ -37,7 +37,7 @@ SOURCE = 'World Bank Open Data'
 MAX_COUNTRIES, MAX_YEARS, FIRST_YEAR = 12, 60, 1960
 # The bulk file of one indicator is about 150 KB zipped and under 1 MB as CSV.
 MAX_ZIP_BYTES, MAX_CSV_BYTES, MAX_ZIP_ENTRIES = 8 * 1024 * 1024, 24 * 1024 * 1024, 16
-KEEP_SECONDS, KEEP_FILES = 24 * 3600, 60
+KEEP_SECONDS, KEEP_FILES, KEEP_ANSWERS = 24 * 3600, 60, 300
 
 # key: (World Bank indicator code, what it is, other names a model or a person may use)
 INDICATORS = {
@@ -292,6 +292,42 @@ class IndicatorStore:
             return path.read_bytes()
         except (OSError, ValueError):
             return None
+
+    # Answers of the other providers (IMF, Eurostat, ILO): the unchanged bytes of one request, under a
+    # name made of the provider and a hash of the address. They are parsed again whenever they are read.
+    def _answer_path(self, name):
+        if not re.fullmatch(r'[a-z]{2,12}_[0-9a-f]{32}', name):
+            raise ValueError('answer name')
+        return self.directory / f'{name}.bin'
+
+    def get_answer(self, name, *, stale=False):
+        """(bytes, time it was kept) of a kept answer, or None."""
+        try:
+            path = self._answer_path(name)
+            if path.is_symlink() or not path.is_file():
+                return None
+            status = path.stat()
+            if status.st_size > MAX_ZIP_BYTES or (not stale and time.time() - status.st_mtime > self.seconds):
+                return None
+            return path.read_bytes(), status.st_mtime
+        except (OSError, ValueError):
+            return None
+
+    def put_answer(self, name, data):
+        try:
+            path = self._answer_path(name)
+            self.directory.mkdir(parents=True, exist_ok=True)
+            if self.directory.is_symlink():
+                return
+            temporary = path.with_name(path.name + f'.{os.getpid()}.tmp')
+            temporary.write_bytes(data)
+            os.replace(temporary, path)
+            kept = sorted((item for item in self.directory.glob('*.bin') if not item.is_symlink()),
+                          key=lambda item: item.stat().st_mtime)
+            for old in kept[:-KEEP_ANSWERS]:
+                old.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass
 
     def put(self, code, data):
         try:
