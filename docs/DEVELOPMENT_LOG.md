@@ -17,8 +17,16 @@ this user.
   existing Windows Job runner, and reads titles, URLs and snippets from the
   page's HTML on the application's side. The model gets the usual
   `{query, results}`; it cannot steer the browser. Engines are tried in
-  order (Bing, then DuckDuckGo's HTML page), each with its own pacing and its
-  own ten-minute pause after a bot check.
+  order: duckduckgo.com as a browser renders it, then Bing, then DuckDuckGo's
+  HTML page. Each has its own pacing and its own ten-minute pause after a
+  bot check, separate from the keyless HTTP method's pause. The order follows
+  a check on the real test machine with an ordinary window: duckduckgo.com
+  answered ten searches in a row (2.5 s apart) while HTTP requests from the
+  same address were refused; Bing answered once and then asked for a
+  verification every time; a headless window got DuckDuckGo's check at once.
+  A page without result rows that carries a verification text (for example
+  "bots use DuckDuckGo", 「課題を解決してください」) is a bot check, not
+  "no results".
 - The browser runs as an ordinary window kept off the visible screen (not
   headless) with a profile of its own that the application keeps under its
   state folder, so cookies survive between searches. The human's own profile
@@ -41,8 +49,9 @@ this user.
   The keyless methods (browser, DuckDuckGo) also send one search at a time
   per run; a SearXNG server of the human's own or a keyed API is not held
   back.
-- Not verified here: the real Bing result page and its bot check, the
-  off-screen window on Windows, and the human-check flow in a real browser.
+- Not verified here: reading the real result pages (the readers were built
+  from fixtures and from the selectors the tester reported), the off-screen
+  window on Windows, and the human-check flow in a real browser.
   Automated use of a search engine's pages may be against that engine's
   terms; the human decides whether to use this method.
 

@@ -180,7 +180,7 @@ await setup();const endpoint=searchField('endpoint');
 chooseSearch('browser');assert.equal(endpoint.value,BROWSER_SEARCH_ENDPOINT);assert(endpoint.readOnly);
 endpoint.value='https://must-not-be-sent.example/search';
 const pending=submit(),submitted=requests[0].options.body.config;
-assert.equal(submitted.search.provider,'browser');assert.equal(submitted.search.endpoint,'https://www.bing.com/search');
+assert.equal(submitted.search.provider,'browser');assert.equal(submitted.search.endpoint,'https://duckduckgo.com');
 assert.equal(submitted.search.enabled,false);assert.deepEqual(Object.keys(submitted.search).sort(),Object.keys(CONFIG.search).sort());
 accept();await pending;assert.equal(ui.config.search.provider,'browser');
 assert(!credentialControls().some(item=>item.id==='search'));

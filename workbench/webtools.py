@@ -210,7 +210,7 @@ DUCKDUCKGO_ENDPOINT = "https://html.duckduckgo.com/html/"
 # endpoint is fixed, so the key is only ever sent to this origin.
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 # Browser search: the first engine's result page (shown in the start check; the model cannot change it).
-BROWSER_SEARCH_ENDPOINT = "https://www.bing.com/search"
+BROWSER_SEARCH_ENDPOINT = "https://duckduckgo.com"
 BRAVE_KEY_MISSING = ("Brave Search needs an API key and none is set. Do not repeat the search; use web_fetch with known URLs "
                      "or report that web search is unavailable until the human sets the key in the settings")
 

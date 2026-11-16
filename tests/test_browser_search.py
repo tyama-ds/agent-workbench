@@ -34,6 +34,20 @@ BING = f'''<html><body><ol id="b_results">
 </ol></body></html>'''
 BING_EMPTY = '<html><body><ol id="b_results"><li class="b_no"><h1>結果はありません</h1></li></ol></body></html>'
 BING_CHECK = '<html><body><div id="b_captcha"><iframe src="https://challenges.cloudflare.com/turnstile"></iframe></div></body></html>'
+WEB = '''<html><body><ol class="react-results--main">
+<li data-layout="ad"><article data-testid="ad"><h2><a data-testid="result-title-a" href="https://duckduckgo.com/y.js?ad_domain=x.example&u3=abc">
+<span>Sponsored thing</span></a></h2><div data-result="snippet"><span>ad text</span></div></article></li>
+<li data-layout="organic"><article id="r1-0" data-testid="result"><div><a href="https://www.soumu.go.jp/"><img src="x"/>soumu.go.jp</a></div>
+<h2><a href="https://www.soumu.go.jp/ai/guideline.html" rel="noopener" data-testid="result-title-a"><span>AI<b>ガイドライン</b> | 総務省</span></a></h2>
+<div data-result="snippet"><div><span><span>生成AIの<b>ガイドライン</b>を<br>公表しました。</span></span></div></div></article></li>
+<li data-layout="organic"><article data-testid="result"><h2><a data-testid="result-title-a"
+ href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fa%3Fb%3D1&rut=x"><span>Wrapped link</span></a></h2></article></li>
+<script>var s = '<a data-testid="result-title-a" href="https://script.example/">not a result</a>';</script>
+</ol></body></html>'''
+WEB_CHECK = ('<html><body><div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div>'
+             '<p>Select all squares containing a duck</p></body></html>')
+WEB_EMPTY = '<html><body><p>No results found for <b>zzzz</b></p></body></html>'
+BING_STEP = '<html><body><h1>最後のステップ</h1><p>続行するには、以下の課題を解決してください</p></body></html>'
 DDG = ('<div class="result results_links web-result"><h2 class="result__title">'
        '<a class="result__a" href="https://example.com/article">Found</a></h2>'
        '<div><a class="result__snippet">Excerpt</a></div></div>')
@@ -48,8 +62,9 @@ def fresh_engine_guards():
         guard.reset()
         guard.min_interval = 0.0
     yield guards
-    guards['bing'].reset()
-    guards['bing'].min_interval = browser_search.ENGINES[0]['interval']
+    for engine in browser_search.ENGINES:
+        guards[engine['name']].reset()
+        guards[engine['name']].min_interval = engine['interval']
 
 
 def pages(script):
@@ -58,7 +73,7 @@ def pages(script):
 
     async def page(url, ready, visible, wait_seconds):
         calls.append((url, ready, visible, wait_seconds))
-        host = 'bing' if 'bing.com' in url else 'duckduckgo'
+        host = 'bing' if 'bing.com' in url else 'html' if 'html.duckduckgo.com' in url else 'web'
         queue = script[host]
         html = queue.pop(0) if len(queue) > 1 else queue[0]
         if isinstance(html, Exception):
@@ -92,64 +107,83 @@ def test_duckduckgo_pages_use_the_existing_reader():
     assert read_duckduckgo('<html><body>nothing recognisable</body></html>', 5)[0] == 'unknown'
 
 
+def test_the_script_rendered_duckduckgo_page_is_read_and_a_check_is_told_from_no_results():
+    """Real-machine findings: result links are a[data-testid="result-title-a"] with direct URLs;
+    a verification page has no such link and says so in its text."""
+    state, rows = browser_search.read_duckduckgo_web(WEB, 5)
+    assert state == 'results' and rows == [
+        {'title': 'AIガイドライン | 総務省', 'url': 'https://www.soumu.go.jp/ai/guideline.html', 'snippet': '生成AIのガイドラインを公表しました。'},
+        {'title': 'Wrapped link', 'url': 'https://example.org/a?b=1', 'snippet': ''}]  # no advertisement, no script text
+    assert browser_search.read_duckduckgo_web(WEB_CHECK, 5) == ('challenge', [])
+    assert browser_search.read_duckduckgo_web(WEB_EMPTY, 5) == ('empty', [])
+    assert browser_search.read_duckduckgo_web('<html><body>still loading</body></html>', 5) == ('unknown', [])
+    assert read_bing(BING_STEP, 5) == ('challenge', [])  # 「課題を解決してください」 without any captcha element
+    # The words of a check on a page that does have results do not hide the results.
+    assert browser_search.read_duckduckgo_web(WEB + '<p>bots use DuckDuckGo too</p>', 5)[0] == 'results'
+
+
 # --- engines in order, each with its own pause -------------------------------------------
 
 def test_the_first_engine_answers_and_the_model_gets_the_usual_shape():
     async def run():
-        page, calls = pages({'bing': [BING], 'duckduckgo': [DDG]})
+        page, calls = pages({'web': [WEB], 'bing': [BING], 'html': [DDG]})
         result = await BrowserSearch(page).search('生成AI ガイドライン', 5)
-        assert result['engine'] == 'bing' and result['untrusted'] is True and result['query'] == '生成AI ガイドライン'
-        assert [row['url'] for row in result['results']] == ['https://www.meti.go.jp/policy/ai.html', 'https://example.org/direct']
+        assert result['engine'] == 'duckduckgo_web' and result['untrusted'] is True and result['query'] == '生成AI ガイドライン'
+        assert [row['url'] for row in result['results']] == ['https://www.soumu.go.jp/ai/guideline.html', 'https://example.org/a?b=1']
         assert len(calls) == 1
         url, ready, visible, wait = calls[0]
-        assert url == 'https://www.bing.com/search?q=%E7%94%9F%E6%88%90AI+%E3%82%AC%E3%82%A4%E3%83%89%E3%83%A9%E3%82%A4%E3%83%B3'
-        assert visible is False and wait == 8 and 'b_algo' in ready
+        assert url == 'https://duckduckgo.com/?q=%E7%94%9F%E6%88%90AI+%E3%82%AC%E3%82%A4%E3%83%89%E3%83%A9%E3%82%A4%E3%83%B3&ia=web'
+        assert visible is False and wait == 8 and ready == 'a[data-testid="result-title-a"]'
+        assert [engine['name'] for engine in browser_search.ENGINES] == ['duckduckgo_web', 'bing', 'duckduckgo_html']
     asyncio.run(run())
 
 
 def test_a_bot_check_pauses_only_that_engine_and_the_next_one_is_used(fresh_engine_guards):
     async def run():
-        page, calls = pages({'bing': [BING_CHECK], 'duckduckgo': [DDG]})
+        page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG]})
         search = BrowserSearch(page)
         first = await search.search('q one', 3)
-        assert first['engine'] == 'duckduckgo' and first['results'][0]['url'] == 'https://example.com/article'
-        assert fresh_engine_guards['bing'].status()['blocked'] and not fresh_engine_guards['duckduckgo'].status()['blocked']
+        assert first['engine'] == 'bing' and first['results'][0]['url'] == 'https://www.meti.go.jp/policy/ai.html'
+        assert fresh_engine_guards['duckduckgo_web'].status()['blocked'] and not fresh_engine_guards['bing'].status()['blocked']
         second = await search.search('q two', 3)
-        assert second['engine'] == 'duckduckgo'
-        # Bing was asked once; while it is paused the second search goes straight to DuckDuckGo.
-        assert ['bing' if 'bing.com' in call[0] else 'ddg' for call in calls] == ['bing', 'ddg', 'ddg']
+        assert second['engine'] == 'bing'
+        # DuckDuckGo was asked once; while it is paused the second search goes straight to Bing.
+        assert ['bing' if 'bing.com' in call[0] else 'web' for call in calls] == ['web', 'bing', 'bing']
+        # The keyless HTTP method's own pause is a separate record.
+        assert not webtools.SEARCH_GUARD.status()['blocked']
     asyncio.run(run())
 
 
 def test_when_every_engine_asks_for_a_check_a_person_is_needed(fresh_engine_guards):
     async def run():
-        page, calls = pages({'bing': [BING_CHECK, BING], 'duckduckgo': [DDG_CHECK]})
+        page, calls = pages({'web': [WEB_CHECK, WEB], 'bing': [BING_STEP], 'html': [DDG_CHECK]})
         search = BrowserSearch(page)
         with pytest.raises(SearchChallenge) as challenge:
             await search.search('q', 5)
-        assert challenge.value.engines == ['bing', 'duckduckgo'] and 'human check' in str(challenge.value)
+        assert challenge.value.engines == ['duckduckgo_web', 'bing', 'duckduckgo_html'] and 'human check' in str(challenge.value)
         assert all(guard.status()['blocked'] for guard in fresh_engine_guards.values())
-        with pytest.raises(SearchChallenge):  # both paused: nothing more is sent
+        with pytest.raises(SearchChallenge):  # all paused: nothing more is sent
             await search.search('other', 5)
-        assert len(calls) == 2
+        assert len(calls) == 3
         # A person passes the check in a visible window; the engine is usable again.
         result = await search.human_check('q', 5, challenge.value.engines)
-        assert calls[-1][2] is True and calls[-1][3] == browser_search.HUMAN_CHECK_SECONDS and 'bing.com' in calls[-1][0]
-        assert result['engine'] == 'bing' and len(result['results']) == 2
-        assert not fresh_engine_guards['bing'].status()['blocked']
+        assert calls[-1][2] is True and calls[-1][3] == browser_search.HUMAN_CHECK_SECONDS and calls[-1][0].startswith('https://duckduckgo.com/?q=')
+        assert result['engine'] == 'duckduckgo_web' and len(result['results']) == 2
+        assert not fresh_engine_guards['duckduckgo_web'].status()['blocked']
     asyncio.run(run())
 
 
 def test_an_unfinished_human_check_and_an_unreadable_page_are_errors_not_empty_results():
     async def run():
-        page, _ = pages({'bing': [BING_CHECK], 'duckduckgo': [DDG_CHECK]})
+        page, _ = pages({'web': [WEB_CHECK], 'bing': [BING_CHECK], 'html': [DDG_CHECK]})
         with pytest.raises(ValueError, match='was not completed'):
             await BrowserSearch(page).human_check('q', 5, ['bing'])
-        page, _ = pages({'bing': ['<html>layout changed</html>'], 'duckduckgo': [ValueError('The browser could not open the search page: x')]})
-        with pytest.raises(ValueError, match='Browser search failed: Bing: the result page was not recognised') as failure:
+        page, _ = pages({'web': ['<html>layout changed</html>'], 'bing': [ValueError('The browser could not open the search page: x')],
+                         'html': ['<html>also changed</html>']})
+        with pytest.raises(ValueError, match='Browser search failed: DuckDuckGo: the result page was not recognised') as failure:
             await BrowserSearch(page).search('q', 5)
-        assert not isinstance(failure.value, SearchChallenge) and 'DuckDuckGo: The browser could not open' in str(failure.value)
-        page, _ = pages({'bing': [BING_EMPTY], 'duckduckgo': [DDG]})
+        assert not isinstance(failure.value, SearchChallenge) and 'Bing: The browser could not open' in str(failure.value)
+        page, _ = pages({'web': [WEB_EMPTY], 'bing': [BING], 'html': [DDG]})
         assert (await BrowserSearch(page).search('zzzz', 5))['results'] == []  # a real "no results" is an answer
     asyncio.run(run())
 
@@ -192,12 +226,12 @@ def test_the_hourly_allowance_counts_requests_across_runs_and_says_when_it_ends(
 
 def test_a_run_sends_each_question_once_whatever_the_wording_or_the_worker(tmp_path):
     async def run():
-        page, calls = pages({'bing': [BING], 'duckduckgo': [DDG]})
+        page, calls = pages({'web': [WEB], 'bing': [BING], 'html': [DDG]})
         cache = SearchCache(tmp_path / 'search-cache.json')
         tools = WebTools({'search': {'enabled': True, 'provider': 'browser'}})
         tools.use_browser(page)
         tools.use_search_cache(cache)
-        assert tools.endpoint == 'https://www.bing.com/search'
+        assert tools.endpoint == 'https://duckduckgo.com'
         answers = await asyncio.gather(*(tools.execute('web_search', {'query': query, 'limit': 2})
                                          for query in ('生成AI ガイドライン', 'ガイドライン 生成AI', '生成AI ガイドライン')))
         assert len(calls) == 1 and cache.recent() == 1
@@ -218,7 +252,7 @@ def test_a_run_sends_each_question_once_whatever_the_wording_or_the_worker(tmp_p
 
 def test_the_allowance_stops_new_searches_with_a_clear_message(tmp_path):
     async def run():
-        page, calls = pages({'bing': [BING], 'duckduckgo': [DDG]})
+        page, calls = pages({'web': [WEB], 'bing': [BING], 'html': [DDG]})
         tools = WebTools({'search': {'enabled': True, 'provider': 'browser'}})
         tools.use_browser(page)
         tools.use_search_cache(SearchCache(tmp_path / 'search-cache.json', hourly=1))
@@ -239,12 +273,12 @@ def test_browser_search_needs_the_browser_driver_and_python_but_not_selenium_its
     with pytest.raises(ValueError, match='ブラウザ検索には'):
         validate_settings(raw)
     raw['search']['enabled'] = False
-    assert validate_settings(raw)['search']['endpoint'] == 'https://www.bing.com/search'  # choosing it does not switch search on
+    assert validate_settings(raw)['search']['endpoint'] == 'https://duckduckgo.com'  # choosing it does not switch search on
     raw['search']['enabled'] = True
     raw['python']['executable'] = str(tmp_path / 'python.exe')
     raw['selenium'].update(browser_executable=str(tmp_path / 'msedge.exe'), driver_executable=str(tmp_path / 'msedgedriver.exe'))
     ready = validate_settings(raw)
-    assert ready['search']['provider'] == 'browser' and ready['search']['endpoint'] == 'https://www.bing.com/search'
+    assert ready['search']['provider'] == 'browser' and ready['search']['endpoint'] == 'https://duckduckgo.com'
     assert ready['selenium']['enabled'] is False and ready['python']['network_enabled'] is False
 
 
@@ -265,7 +299,7 @@ def browser_run(engine, script):
 async def test_the_human_is_asked_once_to_pass_the_check_and_the_search_then_completes(tmp_path):
     engine, work = configured(tmp_path, None)
     engine.kick = lambda agent: None
-    attach = browser_run(engine, {'bing': [BING_CHECK, BING], 'duckduckgo': [DDG_CHECK]})
+    attach = browser_run(engine, {'web': [WEB_CHECK, WEB], 'bing': [BING_STEP], 'html': [DDG_CHECK]})
     try:
         run, pm = await start(engine, task='生成AI規制を調べて', max_workers=0)
         calls = attach(run)
@@ -280,9 +314,9 @@ async def test_the_human_is_asked_once_to_pass_the_check_and_the_search_then_com
         assert not any(call[2] for call in calls), 'no window is shown before the human agrees'
         engine.resolve_approval(pm.id, {'approval_id': pm.approval['id'], 'decision': 'approve'})
         result = await search
-        assert result['engine'] == 'bing' and len(result['results']) == 2
+        assert result['engine'] == 'duckduckgo_web' and len(result['results']) == 2
         assert calls[-1][2] is True  # the visible window
-        assert 'https://www.meti.go.jp/policy/ai.html' in run['_known_urls']
+        assert 'https://www.soumu.go.jp/ai/guideline.html' in run['_known_urls']
         # The same question again is answered from what is held; nobody is asked twice.
         again = await engine.execute_tool(run, pm, 'web_search', {'query': '規制 生成AI', 'limit': 2})
         assert again['results'] == result['results'] and pm.approval is None
@@ -294,7 +328,7 @@ async def test_the_human_is_asked_once_to_pass_the_check_and_the_search_then_com
 async def test_a_human_who_declines_is_not_asked_again_and_the_model_is_told_plainly(tmp_path):
     engine, work = configured(tmp_path, None)
     engine.kick = lambda agent: None
-    attach = browser_run(engine, {'bing': [BING_CHECK], 'duckduckgo': [DDG_CHECK]})
+    attach = browser_run(engine, {'web': [WEB_CHECK], 'bing': [BING_CHECK], 'html': [DDG_CHECK]})
     try:
         run, pm = await start(engine, task='調べて', max_workers=0)
         calls = attach(run)

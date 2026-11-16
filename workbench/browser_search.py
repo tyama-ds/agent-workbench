@@ -163,20 +163,37 @@ class BingHTML(HTMLParser):
         return rows
 
 
-def read_bing(html, limit):
+# What a verification page says, as seen on a real machine. A page with no
+# result rows that carries one of these is a bot check, not "no results".
+_CHECK_WORDS = ('bots use duckduckgo', 'select all squares containing', '課題を解決してください', '最後のステップ',
+                'one last step', 'solve the challenge', 'verify you are human', 'verifying you are human',
+                'あなたが人間であることを確認', 'unusual traffic')
+_EMPTY_WORDS = ('no results found for', 'の検索結果はありません', 'に一致する結果は見つかりませんでした', 'no more results found for')
+
+
+def _says(html, words):
+    text = html[:MAX_PAGE_CHARS].casefold()
+    return any(word in text for word in words)
+
+
+def _state(rows, html, *, challenge=False, empty=False):
     """('results', rows) | ('empty', []) | ('challenge', []) | ('unknown', [])."""
+    if rows:
+        return 'results', rows
+    if challenge or _says(html, _CHECK_WORDS):
+        return 'challenge', []
+    return ('empty', []) if empty or _says(html, _EMPTY_WORDS) else ('unknown', [])
+
+
+def read_bing(html, limit):
     parser = BingHTML()
     parser.feed(html[:MAX_PAGE_CHARS])
     parser.close()
-    rows = parser.rows(limit)
-    if rows:
-        return 'results', rows
-    if parser.challenge:
-        return 'challenge', []
-    return ('empty', []) if parser.no_results and parser.container else ('unknown', [])
+    return _state(parser.rows(limit), html, challenge=parser.challenge, empty=parser.no_results and parser.container)
 
 
 def read_duckduckgo(html, limit):
+    """html.duckduckgo.com (no scripts): the same page the keyless HTTP method reads."""
     from .webtools import WebToolError, _DuckDuckGoHTML
     parser = _DuckDuckGoHTML()
     parser.feed(html[:MAX_PAGE_CHARS])
@@ -186,30 +203,111 @@ def read_duckduckgo(html, limit):
     try:
         rows = parser.rows(limit)
     except WebToolError:
-        return 'unknown', []
-    return ('results', rows) if rows else ('empty', [])
+        rows = []
+    return _state(rows, html, empty=parser.no_results and not parser.candidates)
+
+
+class DuckDuckGoWeb(HTMLParser):
+    """duckduckgo.com as a browser renders it: ``a[data-testid="result-title-a"]`` and ``[data-result="snippet"]``."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.results, self.challenge = [], False
+        self._depth, self._field, self._field_depth, self._ignored = 0, None, 0, 0
+
+    def handle_startendtag(self, tag, attrs):
+        pass
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {'script', 'style', 'noscript'}:
+            self._ignored += 1
+            return
+        if tag in _VOID:
+            return
+        attributes = dict(attrs)
+        classes = (attributes.get('class') or '').split()
+        if attributes.get('id') in _CHALLENGE_IDS or any(marker in name for name in classes for marker in _CHALLENGE_CLASSES):
+            self.challenge = True
+        self._depth += 1
+        if self._field is not None:
+            return
+        if tag == 'a' and attributes.get('data-testid') == 'result-title-a':
+            self.results.append({'url': attributes.get('href') or '', 'title': [], 'snippet': []})
+            self._field, self._field_depth = 'title', self._depth
+        elif attributes.get('data-result') == 'snippet' and self.results and not self.results[-1]['snippet']:
+            self._field, self._field_depth = 'snippet', self._depth
+
+    def handle_endtag(self, tag):
+        if tag in {'script', 'style', 'noscript'}:
+            self._ignored = max(0, self._ignored - 1)
+            return
+        if tag in _VOID:
+            return
+        if self._field is not None and self._depth == self._field_depth:
+            self._field = None
+        self._depth = max(0, self._depth - 1)
+
+    def handle_data(self, data):
+        if self._field is not None and not self._ignored and self.results:
+            self.results[-1][self._field].append(data)
+
+    def rows(self, limit):
+        from .webtools import WebToolError, _duckduckgo_result_url
+        rows, seen = [], set()
+        for entry in self.results:
+            try:
+                address = _duckduckgo_result_url(entry['url'])
+                host = (urllib.parse.urlsplit(address).hostname or '').lower()
+            except (WebToolError, ValueError):
+                continue
+            title = _clean(entry['title'], 500)
+            if not title or address in seen or host == 'duckduckgo.com' or host.endswith('.duckduckgo.com'):
+                continue  # advertisements and the engine's own pages are not results
+            seen.add(address)
+            rows.append({'title': title, 'url': address, 'snippet': _clean(entry['snippet'], 3000)})
+            if len(rows) >= limit:
+                break
+        return rows
+
+
+def read_duckduckgo_web(html, limit):
+    parser = DuckDuckGoWeb()
+    parser.feed(html[:MAX_PAGE_CHARS])
+    parser.close()
+    return _state(parser.rows(limit), html, challenge=parser.challenge)
 
 
 # Tried in this order. ``ready`` is a CSS selector that exists once results are
 # on the page; the browser waits for it briefly (or, in a human check, until
 # the person has passed the verification).
+#
+# The order follows what a real machine showed with an ordinary (not headless)
+# window: duckduckgo.com answered ten searches in a row, 2.5 s apart, while the
+# keyless HTTP method was paused for the same address; Bing answered once and
+# then asked for a verification every time.
 ENGINES = (
+    {'name': 'duckduckgo_web', 'label': 'DuckDuckGo', 'url': 'https://duckduckgo.com/?q={query}&ia=web',
+     'ready': 'a[data-testid="result-title-a"]', 'read': read_duckduckgo_web, 'interval': 3.0},
     {'name': 'bing', 'label': 'Bing', 'url': 'https://www.bing.com/search?q={query}', 'ready': '#b_results li.b_algo, #b_results .b_no',
-     'read': read_bing, 'interval': 4.0},
-    {'name': 'duckduckgo', 'label': 'DuckDuckGo', 'url': 'https://html.duckduckgo.com/html/?q={query}', 'ready': '.result__a, .no-results',
-     'read': read_duckduckgo, 'interval': 6.0},
+     'read': read_bing, 'interval': 5.0},
+    {'name': 'duckduckgo_html', 'label': 'DuckDuckGo (HTML)', 'url': 'https://html.duckduckgo.com/html/?q={query}',
+     'ready': '.result__a, .no-results', 'read': read_duckduckgo, 'interval': 6.0},
 )
 
 
 def engine_guards():
-    """One pacing/pause record per engine; DuckDuckGo shares the keyless HTTP method's record."""
+    """One pacing/pause record per browser engine.
+
+    These are separate from the keyless HTTP method's record: a browser was
+    answered while HTTP requests from the same address were being refused.
+    """
     from . import webtools
     guards = getattr(engine_guards, '_guards', None)
     if guards is None:
-        bing = webtools.SearchGuard()
-        bing.min_interval = ENGINES[0]['interval']
-        guards = engine_guards._guards = {'bing': bing}
-    guards['duckduckgo'] = webtools.SEARCH_GUARD
+        guards = engine_guards._guards = {}
+        for engine in ENGINES:
+            guard = guards[engine['name']] = webtools.SearchGuard()
+            guard.min_interval = engine['interval']
     return guards
 
 

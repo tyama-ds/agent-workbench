@@ -22,7 +22,7 @@ ORCHESTRATION_DEFAULTS = {'delegation_level': 1, 'workers_per_pm': 2, 'max_deleg
 DUCKDUCKGO_ENDPOINT = 'https://html.duckduckgo.com/html/'
 # Brave Search (optional, needs the human's own API key). The endpoint is fixed, so the key has one destination.
 BRAVE_ENDPOINT = SEARCH_BINDING['base_url']
-BROWSER_SEARCH_ENDPOINT = 'https://www.bing.com/search'
+BROWSER_SEARCH_ENDPOINT = 'https://duckduckgo.com'
 SEARCH_KEY_UNSUPPORTED = ('DuckDuckGo と SearXNG は API キー不要です。検索キーを保存できるのは、'
                           '検索エンジンに Brave Search を選んで設定を保存したあとだけです。')
 

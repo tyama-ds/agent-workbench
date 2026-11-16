@@ -2,7 +2,7 @@
 
 const DUCKDUCKGO_SEARCH_ENDPOINT='https://html.duckduckgo.com/html/';
 const BRAVE_SEARCH_ENDPOINT='https://api.search.brave.com/res/v1/web/search';
-const BROWSER_SEARCH_ENDPOINT='https://www.bing.com/search';
+const BROWSER_SEARCH_ENDPOINT='https://duckduckgo.com';
 const FIELD_GROUPS = {
   work_board: [['enabled','新しい作業で共有掲示板を使う','checkbox']],
   copilot_agent: [
@@ -46,7 +46,7 @@ const FIELD_GROUPS = {
   ],
   search: [
     ['enabled','Web 検索・ページ取得を使う','checkbox'],
-    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['browser','ブラウザー検索（キー不要・Edge などを使う）'],['brave','Brave Search（自分の API キーを使う）'],['searxng','SearXNG（自分の検索サーバー）']],undefined,'DuckDuckGo は、短時間に検索が続くと、しばらく検索を受け付けなくなることがあります（ボット確認）。続く場合は「ブラウザー検索」を選んでください。設定の Python と Selenium にある実行ファイル（python.exe、ブラウザー、ドライバー）を使い、アプリ専用のプロファイルで Bing、DuckDuckGo の順に検索します。Selenium 自体を有効にする必要はありません。検索サービスが人による確認を求めたときは、承認の画面でお知らせします。API キーがある場合は Brave Search、自分の検索サーバーがある場合は SearXNG も使えます。'],
+    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['browser','ブラウザー検索（キー不要・Edge などを使う）'],['brave','Brave Search（自分の API キーを使う）'],['searxng','SearXNG（自分の検索サーバー）']],undefined,'DuckDuckGo は、短時間に検索が続くと、しばらく検索を受け付けなくなることがあります（ボット確認）。続く場合は「ブラウザー検索」を選んでください。設定の Python と Selenium にある実行ファイル（python.exe、ブラウザー、ドライバー）を使い、アプリ専用のプロファイルで DuckDuckGo、Bing の順に検索します。Selenium 自体を有効にする必要はありません。検索サービスが人による確認を求めたときは、承認の画面でお知らせします。API キーがある場合は Brave Search、自分の検索サーバーがある場合は SearXNG も使えます。'],
     ['endpoint','検索の接続先 URL（SearXNG 以外は固定）','url'],
     ['proxy_url','検索用プロキシ URL（任意）','url'],
     ['timeout_seconds','検索タイムアウト（秒）','number',1],
