@@ -793,10 +793,16 @@ statement that search is unavailable.
 
 ## Fewer searches per piece of work (0.1.1.dev62)
 
-- `workbench/statdata.py` names World Bank indicators and countries and reads
-  the API's answer; `WebTools._stat_lookup` sends the one request through
-  `_request` (public address, explicit proxy only, size limit). The host is a
-  constant: the model supplies countries, an indicator and years.
+- `workbench/statdata.py` names World Bank indicators and countries, reads the
+  answers and keeps downloaded files; `WebTools._stat_lookup` sends the
+  requests through `_request` (public address, explicit proxy only, size
+  limit). The host is a constant: the model supplies countries, an indicator
+  and years.
+- Since 0.1.1.dev63 the source is the indicator's bulk file (a zip of CSV with
+  every country and year), read by `statdata.read_bulk` in memory and kept by
+  `statdata.IndicatorStore` for a day under `stat-cache` in the state folder.
+  The JSON API is the fallback (`WebTools._stat_api`): on a real machine its
+  first answer for a new address took 34 seconds to over a minute.
 - `WebTools._with_budget` adds the run's search guide from its half on;
   `WebTools._similar` answers a practically equal question from the run's
   earlier result once; `WebTools.use` counts what the run did and the engine

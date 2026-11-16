@@ -24,7 +24,7 @@ from .checkpoints import CheckpointStore
 from .memo import MemoStore, MAX_PROPOSAL_CHARS, clean as memo_clean
 from .turn_engine import TurnWorkMixin, PLAN_TOOL_NAMES, PLAN_NUDGE
 from .verification import VerificationMixin, RUN_TESTS_TOOL
-from . import sources
+from . import sources, statdata
 from .harness import HarnessError, PathHarness, ToolExecutor
 from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
@@ -456,6 +456,8 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         self.memo = MemoStore(settings.directory)
         # Search results kept for a few hours across runs, and this PC's hourly search count.
         self.search_cache = SearchCache(settings.directory / 'search-cache.json')
+        # World Bank indicator files, kept for a day so statistics cost one small download per indicator.
+        self.stat_store = statdata.IndicatorStore(settings.directory / 'stat-cache')
         self._search_check_lock, self._search_check_passed_at = asyncio.Lock(), 0.0
         self.memo_proposals = {}  # id -> PM proposal waiting for the human
         self.credentials = CredentialStore(settings.directory, settings.value['providers'], lease=self.history._lease)
@@ -1059,6 +1061,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         web_tools = WebTools({'search': copy.deepcopy(config['search'])})
         web_tools.use_search_key(self.settings.search_key)
         web_tools.use_search_cache(self.search_cache)
+        web_tools.use_stat_store(self.stat_store)
         if config['search']['provider'] == 'browser':
             web_tools.use_browser(self._browser_page(config, harness))
         return task, config, pms, workers, count, harness, web_tools

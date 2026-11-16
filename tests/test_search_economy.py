@@ -4,7 +4,11 @@ unanswered human check that does not hold the run for ever.
 No network: the World Bank answer is a fixture and the browser is a function returning prepared HTML.
 """
 import asyncio
+import io
 import json
+import os
+import time
+import zipfile
 
 import pytest
 
@@ -79,44 +83,198 @@ def test_the_answer_becomes_values_per_country_and_missing_values_are_said():
     assert statdata.read([{'page': 0}, None], 'X.Y', 'L', ['JPN'])['no_values'] == ['JPN']  # an empty answer
 
 
+# --- the bulk file: one indicator, every country and year ---------------------------------------------
+
+def bulk_csv(rows, code='NY.GDP.MKTP.KD.ZG', name='GDP growth (annual %)', years=range(2019, 2026)):
+    """The data table as the World Bank's download has it: four lead lines, then one row per country."""
+    table = {}
+    for iso3, _iso2, country, year, value in rows:
+        table.setdefault((country, iso3 or 'WLD'), {})[year] = value
+    lines = ['\ufeff"Data Source","World Development Indicators",', '', '"Last Updated Date","2026-07-01",', '',
+             '"Country Name","Country Code","Indicator Name","Indicator Code",' + ','.join(f'"{year}"' for year in years) + ',']
+    for (country, iso3), values in table.items():
+        cells = ','.join('"' + ('' if values.get(year) is None else str(values[year])) + '"' for year in years)
+        lines.append(f'"{country}","{iso3}","{name}","{code}",{cells},')
+    return '\r\n'.join(lines) + '\r\n'
+
+
+def bulk_zip(rows=None, code='NY.GDP.MKTP.KD.ZG', *, files=None, **csv_options):
+    files = files if files is not None else {
+        f'API_{code}_DS2_en_csv_v2_123456.csv': bulk_csv(ROWS if rows is None else rows, code, **csv_options),
+        f'Metadata_Country_API_{code}_DS2_en_csv_v2_123456.csv': '"Country Code","Region",\r\n"JPN","East Asia & Pacific",\r\n',
+        f'Metadata_Indicator_API_{code}_DS2_en_csv_v2_123456.csv': '"INDICATOR_CODE","INDICATOR_NAME",\r\n'}
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, text in files.items():
+            archive.writestr(name, text)
+    return buffer.getvalue()
+
+
+def test_the_bulk_file_is_read_in_memory_and_only_in_the_expected_form(monkeypatch):
+    table = statdata.read_bulk(bulk_zip(), 'NY.GDP.MKTP.KD.ZG')
+    assert table['label'] == 'GDP growth (annual %)' and table['last_updated'] == '2026-07-01'
+    assert table['rows']['JPN'] == ('Japan', {2022: 0.95, 2023: 1.48}) and table['rows']['WLD'][1] == {2023: 2.83}
+    found = statdata.select(table, 'NY.GDP.MKTP.KD.ZG', '', ['JPN', 'USA', 'WLD', 'DEU'], 2023, 2025)
+    assert [row['code'] for row in found['series']] == ['JPN', 'USA', 'WLD'] and found['no_values'] == ['DEU']
+    assert found['series'][0] == {'country': 'Japan', 'code': 'JPN', 'values': [{'year': 2023, 'value': 1.48}], 'latest': {'year': 2023, 'value': 1.48}}
+    whole = statdata.read_bulk(bulk_zip([('JPN', 'JP', 'Japan', 2023, 124516650)], 'SP.POP.TOTL', name='Population, total'), 'SP.POP.TOTL')
+    assert whole['rows']['JPN'][1] == {2023: 124516650}  # a whole number stays one
+
+    data = bulk_csv(ROWS)
+    for files, problem in (
+            ({'../API_NY.GDP.MKTP.KD.ZG_DS2.csv': data}, 'does not accept'),
+            ({'data/API_NY.GDP.MKTP.KD.ZG_DS2.csv': data}, 'does not accept'),
+            ({'C:\\Windows\\API_NY.GDP.MKTP.KD.ZG_DS2.csv': data}, 'does not accept'),
+            ({'/etc/API_NY.GDP.MKTP.KD.ZG_DS2.csv': data}, 'does not accept'),
+            ({'API_NY.GDP.MKTP.KD.ZG_DS2.csv': data, '.hidden': 'x'}, 'does not accept'),
+            ({f'API_NY.GDP.MKTP.KD.ZG_{index}.txt': 'x' for index in range(17)}, 'expected contents'),
+            ({'Metadata_Country_API_NY.GDP.MKTP.KD.ZG_DS2.csv': 'x'}, 'does not contain the data table'),
+            ({'API_NY.GDP.MKTP.KD.ZG_a.csv': data, 'API_NY.GDP.MKTP.KD.ZG_b.csv': data}, 'does not contain the data table'),
+            ({'API_SP.POP.TOTL_DS2.csv': data}, 'does not contain the data table'),
+            ({'API_NY.GDP.MKTP.KD.ZG_DS2.csv': bulk_csv(ROWS, code='SP.POP.TOTL')}, 'expected columns'),
+            ({'API_NY.GDP.MKTP.KD.ZG_DS2.csv': 'no table here'}, 'expected columns'),
+            ({'API_NY.GDP.MKTP.KD.ZG_DS2.csv': b'\xff\xfe\x00bad'.decode('latin-1').encode('latin-1')}, 'not UTF-8')):
+        with pytest.raises(ValueError, match=problem):
+            statdata.read_bulk(bulk_zip(files=files), 'NY.GDP.MKTP.KD.ZG')
+    for junk in (b'', b'<html>busy</html>', b'PK\x03\x04broken', None, 'text'):
+        with pytest.raises(ValueError, match='not a zip archive|larger than'):
+            statdata.read_bulk(junk, 'NY.GDP.MKTP.KD.ZG')
+    # Sizes: the download, what an entry declares, and what is really unpacked.
+    monkeypatch.setattr(statdata, 'MAX_CSV_BYTES', 2000)
+    with pytest.raises(ValueError, match='does not accept'):
+        statdata.read_bulk(bulk_zip(files={'API_NY.GDP.MKTP.KD.ZG_DS2.csv': 'x' * 5000}), 'NY.GDP.MKTP.KD.ZG')
+    forged = bytearray(bulk_zip(files={'API_NY.GDP.MKTP.KD.ZG_DS2.csv': 'x' * 5000}))
+    for at in (index for index in range(len(forged) - 4) if forged[index:index + 4] in (b'PK\x01\x02', b'PK\x03\x04')):
+        offset = at + (24 if forged[at:at + 4] == b'PK\x01\x02' else 22)
+        forged[offset:offset + 4] = (100).to_bytes(4, 'little')  # the archive claims 100 bytes
+    with pytest.raises(ValueError, match='larger than the application reads|could not be unpacked'):
+        statdata.read_bulk(bytes(forged), 'NY.GDP.MKTP.KD.ZG')
+    monkeypatch.setattr(statdata, 'MAX_ZIP_BYTES', 100)
+    with pytest.raises(ValueError, match='larger than'):
+        statdata.read_bulk(bulk_zip(), 'NY.GDP.MKTP.KD.ZG')
+
+
 # --- the tool ------------------------------------------------------------------------------------------
 
-def lookup_tools(payload, **search):
+def lookup_tools(*, bulk=None, api=None, **search):
+    """WebTools whose requests are answered here. ``bulk``/``api``: bytes or payload, or an exception to raise."""
     tools, sent = WebTools({'search': {'enabled': True, **search}}), []
+    tools.STAT_API_PAUSE = 0
 
     async def request(url, **kwargs):
         sent.append((url, kwargs))
-        return json.dumps(payload).encode(), 'application/json;charset=utf-8', url
+        answer = bulk if 'downloadformat=csv' in url else api
+        answer = answer(url) if callable(answer) else answer
+        if isinstance(answer, Exception) or answer is None:
+            raise answer or WebToolError('Web request failed: timeout waiting for the response (20 s limit)')
+        return (answer if isinstance(answer, bytes) else json.dumps(answer).encode()), 'application/octet-stream', url
     tools._request = request
     return tools, sent
 
 
-def test_stat_lookup_reads_the_figures_without_a_search():
+BULK = 'https://api.worldbank.org/v2/en/indicator/NY.GDP.MKTP.KD.ZG?downloadformat=csv'
+
+
+def test_stat_lookup_reads_one_small_file_per_indicator_without_a_search():
     async def run():
-        tools, sent = lookup_tools(world_bank(ROWS))
+        tools, sent = lookup_tools(bulk=bulk_zip())
         assert 'stat_lookup' in {item['name'] for item in tools.schemas()}
         result = await tools.execute('stat_lookup', {'countries': ['日本', '米国', 'ドイツ'], 'indicator': 'GDP成長率', 'start_year': 2022, 'end_year': 2024})
-        assert sent == [('https://api.worldbank.org/v2/country/JPN;USA;DEU/indicator/NY.GDP.MKTP.KD.ZG?format=json&date=2022:2024&per_page=1000', {})]
+        assert sent == [(BULK, {'wait': 20, 'size': statdata.MAX_ZIP_BYTES})]
         assert result['source'] == 'World Bank Open Data' and result['untrusted'] is True and result['years'] == [2022, 2024]
-        assert result['url'] == sent[0][0] and result['page_url'] == 'https://data.worldbank.org/indicator/NY.GDP.MKTP.KD.ZG?locations=JP-US-DE'
-        assert [row['code'] for row in result['series']] == ['JPN', 'USA'] and result['no_values'] == ['DEU'] and 'DEU' in result['note']
-        # The same figures again cost no request; nothing is counted against the searches.
+        assert result['read_from'] == BULK and result['last_updated'] == '2026-07-01'
+        assert result['url'] == 'https://api.worldbank.org/v2/country/JPN;USA;DEU/indicator/NY.GDP.MKTP.KD.ZG?format=json&date=2022:2024&per_page=1000'
+        assert result['page_url'] == 'https://data.worldbank.org/indicator/NY.GDP.MKTP.KD.ZG?locations=JP-US-DE'
+        assert result['indicator'] == {'id': 'NY.GDP.MKTP.KD.ZG', 'name': 'GDP growth (annual %)'}
+        assert [(row['code'], row['latest']) for row in result['series']] == [
+            ('JPN', {'year': 2023, 'value': 1.48}), ('USA', {'year': 2023, 'value': 2.89})]
+        assert result['no_values'] == ['DEU'] and 'DEU' in result['note']
+        # The same figures again, and other countries or years of the same indicator, cost no request.
         again = await tools.execute('stat_lookup', {'countries': ['JPN', 'USA', 'DEU'], 'indicator': 'gdp_growth', 'start_year': 2022, 'end_year': 2024})
-        assert again is result and len(sent) == 1
-        assert tools.use == {'sent': 0, 'reused': 0, 'similar': 0, 'lookups': 1}
+        world = await tools.execute('stat_lookup', {'countries': ['世界'], 'indicator': 'gdp_growth'})
+        assert again is result and world['series'][0]['code'] == 'WLD' and len(sent) == 1
+        assert tools.use == {'sent': 0, 'reused': 0, 'similar': 0, 'lookups': 2}
         for bad in ({'countries': ['Japan']}, {'indicator': 'population'}, {'countries': ['Japan'], 'indicator': 'population', 'host': 'x'},
                     {'countries': ['Atlantis'], 'indicator': 'population'}, {'countries': ['Japan'], 'indicator': 'vibes'}):
             with pytest.raises(WebToolError):
                 await tools.execute('stat_lookup', bad)
         assert len(sent) == 1
-        tools, _ = lookup_tools('<html>not json</html>')
-        tools._request = lambda url, **kwargs: asyncio.sleep(0, (b'<html>', 'text/html', url))
-        with pytest.raises(WebToolError, match='could not be read as JSON'):
-            await tools.execute('stat_lookup', {'countries': ['Japan'], 'indicator': 'population'})
         off = WebTools({'search': {'enabled': False}})
         assert off.schemas() == []
         with pytest.raises(WebToolError, match='disabled'):
             await off.execute('stat_lookup', {'countries': ['Japan'], 'indicator': 'population'})
+    asyncio.run(run())
+
+
+def test_the_file_is_kept_for_a_day_and_an_older_copy_serves_when_nothing_newer_can_be_had(tmp_path):
+    async def run():
+        store = statdata.IndicatorStore(tmp_path / 'stat-cache')
+        ask = {'countries': ['Japan'], 'indicator': 'gdp_growth', 'start_year': 2023, 'end_year': 2023}
+        tools, sent = lookup_tools(bulk=bulk_zip())
+        tools.use_stat_store(store)
+        assert (await tools.execute('stat_lookup', ask))['series'][0]['latest']['value'] == 1.48 and len(sent) == 1
+        kept = tmp_path / 'stat-cache' / 'wb_NY.GDP.MKTP.KD.ZG.zip'
+        assert kept.read_bytes() == bulk_zip() and [item.name for item in kept.parent.iterdir()] == [kept.name]
+        # Another run of the application the same day: nothing is requested.
+        later, sent = lookup_tools(bulk=WebToolError('must not be asked'))
+        later.use_stat_store(store)
+        assert (await later.execute('stat_lookup', ask))['series'][0]['latest']['value'] == 1.48 and sent == []
+        # Two days later the file is fetched again and replaced.
+        os.utime(kept, (time.time() - 2 * 86400,) * 2)
+        fresh = bulk_zip([('JPN', 'JP', 'Japan', 2023, 1.5)])
+        newer, sent = lookup_tools(bulk=fresh)
+        newer.use_stat_store(store)
+        assert (await newer.execute('stat_lookup', ask))['series'][0]['latest']['value'] == 1.5 and len(sent) == 1
+        assert kept.read_bytes() == fresh
+        # The World Bank cannot be reached and the copy is old: the old copy still answers.
+        os.utime(kept, (time.time() - 5 * 86400,) * 2)
+        down, sent = lookup_tools()
+        down.use_stat_store(store)
+        answer = await down.execute('stat_lookup', ask)
+        assert answer['series'][0]['latest']['value'] == 1.5 and [url for url, _ in sent] == [BULK]
+        # A damaged copy is not trusted: it is fetched again.
+        kept.write_bytes(b'PK\x03\x04damaged')
+        repaired, sent = lookup_tools(bulk=bulk_zip())
+        repaired.use_stat_store(store)
+        assert (await repaired.execute('stat_lookup', ask))['series'][0]['latest']['value'] == 1.48 and len(sent) == 1
+        assert kept.read_bytes() == bulk_zip()
+        # Names that are not indicator codes never become file names.
+        for odd in ('../x', 'CON', 'a/b', ''):
+            assert store.get(odd) is None
+            store.put(odd, b'x')
+        assert [item.name for item in kept.parent.iterdir()] == [kept.name]
+    asyncio.run(run())
+
+
+def test_the_json_api_is_the_fallback_one_country_at_a_time_with_a_long_wait_and_one_retry():
+    async def run():
+        attempts = {}
+
+        def api(url):
+            country = url.split('/country/')[1].split('/')[0]
+            attempts[country] = attempts.get(country, 0) + 1
+            if country == 'DEU' or (country == 'USA' and attempts[country] == 1):
+                return None  # times out (USA only the first time)
+            return world_bank([row for row in ROWS if row[0] == country])
+        tools, sent = lookup_tools(api=api)
+        result = await tools.execute('stat_lookup', {'countries': ['JPN', 'USA', 'DEU'], 'indicator': 'gdp_growth', 'start_year': 2022, 'end_year': 2023})
+        assert [url for url, _ in sent] == [BULK] + [
+            f'https://api.worldbank.org/v2/country/{country}/indicator/NY.GDP.MKTP.KD.ZG?format=json&date=2022:2023&per_page=1000'
+            for country in ('JPN', 'USA', 'USA', 'DEU', 'DEU')]
+        assert all(options == {'wait': 75} for _url, options in sent[1:])
+        assert [row['code'] for row in result['series']] == ['JPN', 'USA'] and result['series'][1]['latest'] == {'year': 2023, 'value': 2.89}
+        assert 'Not read' in result['note'] and 'DEU' in result['note'] and result['read_from'] == result['url']
+        # Nothing answers at all: one plain error, and the model is told not to repeat it.
+        tools, sent = lookup_tools()
+        with pytest.raises(WebToolError, match='could not be read: Web request failed: timeout.*Do not repeat'):
+            await tools.execute('stat_lookup', {'countries': ['JPN'], 'indicator': 'population'})
+        assert len(sent) == 3
+        # The whole fallback is bounded: past its time no further country is tried.
+        tools, sent = lookup_tools(api=lambda url: world_bank(ROWS))
+        tools.STAT_API_SECONDS = -1
+        with pytest.raises(WebToolError, match='could not be read'):
+            await tools.execute('stat_lookup', {'countries': ['JPN', 'USA'], 'indicator': 'gdp_growth'})
+        assert [url for url, _ in sent] == [BULK]
     asyncio.run(run())
 
 
@@ -129,8 +287,10 @@ async def test_figures_read_directly_can_be_cited_and_the_model_is_told_to_use_t
         run, pm = await start(engine, task='日米のGDP成長率を比べて', max_workers=0)
 
         async def request(url, **kwargs):
-            return json.dumps(world_bank(ROWS)).encode(), 'application/json', url
+            assert 'downloadformat=csv' in url
+            return bulk_zip(), 'application/zip', url
         run['_web']._request = request
+        assert run['_web']._stat_store is engine.stat_store and engine.stat_store.directory == engine.settings.directory / 'stat-cache'
         policy = engine._policy(run, pm)
         assert 'stat_lookup first' in policy and 'about 20 searches' in policy
         assert 'stat_lookup' in {tool['name'] for tool in engine.tool_schemas(run, pm)} if hasattr(engine, 'tool_schemas') else True
@@ -251,7 +411,7 @@ async def test_an_unanswered_human_check_ends_and_the_run_goes_on_without_search
 
         # Reading statistics directly still works.
         async def request(url, **kwargs):
-            return json.dumps(world_bank(ROWS)).encode(), 'application/json', url
+            return bulk_zip(), 'application/zip', url
         run['_web']._request = request
         assert (await engine.execute_tool(run, pm, 'stat_lookup', {'countries': ['USA'], 'indicator': 'gdp_growth'}))['series'][0]['code'] == 'USA'
     finally:

@@ -2,25 +2,42 @@
 
 Most searches of a statistics task only look for the page that holds a
 well-known figure (population, GDP growth, consumer prices, unemployment). The
-World Bank publishes those series through a public JSON API, so the application
-can ask for the numbers directly:
+World Bank publishes those series, so the application can read the numbers
+directly. Two addresses are used, both fixed:
 
-    https://api.worldbank.org/v2/country/JPN;USA/indicator/SP.POP.TOTL?format=json&date=2015:2024
+    https://api.worldbank.org/v2/en/indicator/SP.POP.TOTL?downloadformat=csv
+        One indicator for every country and year, as a zip of CSV files. It
+        answers in a fraction of a second, so it is what is normally read; the
+        countries and years are picked out here. A copy is kept for a day.
+    https://api.worldbank.org/v2/country/JPN/indicator/SP.POP.TOTL?format=json&date=2015:2024
+        The JSON API. From a real machine the first request for an address it
+        has not served before took 34 seconds to over a minute (the same
+        address answered in 0.2 s a few minutes later), so it is only the
+        fallback, one country at a time with a long wait.
 
-This module only names things and reads the answer; the request itself is sent
-by WebTools with the same rules as every other fetch (public address, explicit
-proxy only, size limit). The destination is fixed: the model chooses countries,
-an indicator and years, never a host.
+This module names things, reads the answers and keeps the copies; the requests
+themselves are sent by WebTools with the same rules as every other fetch (public
+address, explicit proxy only, size limit). The model chooses countries, an
+indicator and years, never a host.
 """
 from __future__ import annotations
 
+import csv
+import io
+import os
 import re
+import time
 import unicodedata
+import zipfile
+from pathlib import Path
 
 API = 'https://api.worldbank.org/v2'
 PAGE = 'https://data.worldbank.org/indicator'
 SOURCE = 'World Bank Open Data'
 MAX_COUNTRIES, MAX_YEARS, FIRST_YEAR = 12, 60, 1960
+# The bulk file of one indicator is about 150 KB zipped and under 1 MB as CSV.
+MAX_ZIP_BYTES, MAX_CSV_BYTES, MAX_ZIP_ENTRIES = 8 * 1024 * 1024, 24 * 1024 * 1024, 16
+KEEP_SECONDS, KEEP_FILES = 24 * 3600, 60
 
 # key: (World Bank indicator code, what it is, other names a model or a person may use)
 INDICATORS = {
@@ -147,9 +164,150 @@ def request(countries, indicator_name, start_year, end_year, this_year):
             raise ValueError(f'{name} must be a year from {FIRST_YEAR} to {this_year + 1}')
     if start > end or end - start + 1 > MAX_YEARS:
         raise ValueError(f'start_year must not be after end_year, and the range may cover at most {MAX_YEARS} years')
-    url = f'{API}/country/{";".join(codes)}/indicator/{code}?format=json&date={start}:{end}&per_page=1000'
+    url = api_url(codes, code, start, end)
     places = '-'.join(COUNTRIES[item][0] for item in codes if item in COUNTRIES)
     return url, f'{PAGE}/{code}' + (f'?locations={places}' if places else ''), code, label, codes, start, end
+
+
+def api_url(codes, code, start, end):
+    """The JSON API's address for these countries, this indicator and these years."""
+    return f'{API}/country/{";".join(codes)}/indicator/{code}?format=json&date={start}:{end}&per_page=1000'
+
+
+def bulk_url(code):
+    """The address of one indicator's whole table (every country, every year) as a zip of CSV files."""
+    return f'{API}/en/indicator/{code}?downloadformat=csv'
+
+
+def _number(cell):
+    text = cell.strip()
+    if not text:
+        return None
+    try:
+        value = int(text) if re.fullmatch(r'-?\d{1,18}', text) else float(text)
+    except ValueError:
+        return None
+    return value if value == value and abs(value) != float('inf') else None
+
+
+def read_bulk(data, code):
+    """One indicator's table from the downloaded zip: {'label', 'last_updated', 'rows': {ISO3: (name, {year: value})}}.
+
+    Nothing is written to disk from the archive. Every entry must be a plain
+    file name, the data file is chosen by its name, and no more than
+    MAX_CSV_BYTES are read from it whatever size the archive declares.
+    """
+    if not isinstance(data, (bytes, bytearray)) or len(data) > MAX_ZIP_BYTES:
+        raise ValueError('The World Bank file is larger than the application reads')
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(bytes(data)))
+    except (zipfile.BadZipFile, OSError, ValueError):
+        raise ValueError('The World Bank file was not a zip archive') from None
+    with archive:
+        entries = archive.infolist()
+        if not 1 <= len(entries) <= MAX_ZIP_ENTRIES:
+            raise ValueError('The World Bank file does not have the expected contents')
+        for entry in entries:
+            name = entry.filename
+            if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,150}', name) or '..' in name or entry.is_dir()
+                    or entry.flag_bits & 0x1 or entry.file_size > MAX_CSV_BYTES):
+                raise ValueError('The World Bank file has an entry the application does not accept (name, size or encryption)')
+        wanted = [entry for entry in entries
+                  if entry.filename.upper().startswith(f'API_{code}_') and entry.filename.lower().endswith('.csv')]
+        if len(wanted) != 1:
+            raise ValueError('The World Bank file does not contain the data table for this indicator')
+        try:
+            with archive.open(wanted[0]) as handle:
+                raw = handle.read(MAX_CSV_BYTES + 1)
+        except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError, EOFError):
+            raise ValueError('The World Bank data table could not be unpacked') from None
+    if len(raw) > MAX_CSV_BYTES:
+        raise ValueError('The World Bank data table is larger than the application reads')
+    try:
+        text = raw.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        raise ValueError('The World Bank data table is not UTF-8 text') from None
+    years, rows, label, updated = None, {}, '', ''
+    try:
+        for row in csv.reader(io.StringIO(text)):
+            if years is None:
+                if len(row) >= 2 and row[0].strip() == 'Last Updated Date':
+                    updated = row[1].strip()[:20]
+                elif len(row) >= 5 and row[0].strip() == 'Country Name' and row[1].strip() == 'Country Code':
+                    years = [(index, int(cell)) for index, cell in enumerate(row) if re.fullmatch(r'\d{4}', cell.strip())]
+                continue
+            if len(row) < 4 or row[3].strip().upper() != code:
+                continue
+            iso3 = row[1].strip().upper()
+            if not re.fullmatch(r'[A-Z]{3}', iso3) or len(rows) >= 600:
+                continue
+            label = label or row[2].strip()[:200]
+            values = {year: value for index, year in years if index < len(row) and (value := _number(row[index])) is not None}
+            rows[iso3] = (row[0].strip()[:80], values)
+    except csv.Error:
+        raise ValueError('The World Bank data table could not be read') from None
+    if not years or not rows:
+        raise ValueError('The World Bank data table does not have the expected columns for this indicator')
+    return {'label': label, 'last_updated': updated, 'rows': rows}
+
+
+def select(table, code, label, codes, start, end):
+    """The same shape as read(): the asked countries and years out of one indicator's table."""
+    result, missing = [], []
+    for item in codes:
+        name, values = table['rows'].get(item, ('', {}))
+        chosen = [{'year': year, 'value': values[year]} for year in sorted(values) if start <= year <= end]
+        if not chosen:
+            missing.append(item)
+            continue
+        result.append({'country': name or COUNTRIES.get(item, ('', item))[1], 'code': item, 'values': chosen, 'latest': chosen[-1]})
+    return {'indicator': {'id': code, 'name': table['label'] or label}, 'series': result, 'no_values': missing,
+            'last_updated': table['last_updated']}
+
+
+class IndicatorStore:
+    """Downloaded indicator files kept on disk for a day, in the application's state folder.
+
+    A copy is the unchanged zip: reading it goes through read_bulk() again, so
+    a damaged or replaced file is refused like a bad download.
+    """
+
+    def __init__(self, directory, *, seconds=KEEP_SECONDS):
+        self.directory, self.seconds = Path(directory), seconds
+
+    def _path(self, code):
+        if not re.fullmatch(r'[A-Z0-9]{2,10}(\.[A-Z0-9]{1,10}){1,6}', code):
+            raise ValueError('indicator code')
+        return self.directory / f'wb_{code}.zip'  # the prefix keeps Windows device names (CON, NUL …) out
+
+    def get(self, code, *, stale=False):
+        """The kept file's bytes, or None. ``stale`` also returns a copy older than a day (when nothing newer can be had)."""
+        try:
+            path = self._path(code)
+            if path.is_symlink() or not path.is_file():
+                return None
+            status = path.stat()
+            if status.st_size > MAX_ZIP_BYTES or (not stale and time.time() - status.st_mtime > self.seconds):
+                return None
+            return path.read_bytes()
+        except (OSError, ValueError):
+            return None
+
+    def put(self, code, data):
+        try:
+            path = self._path(code)
+            self.directory.mkdir(parents=True, exist_ok=True)
+            if self.directory.is_symlink():
+                return
+            temporary = path.with_name(path.name + f'.{os.getpid()}.tmp')
+            temporary.write_bytes(data)
+            os.replace(temporary, path)
+            kept = sorted((item for item in self.directory.glob('wb_*.zip') if not item.is_symlink()),
+                          key=lambda item: item.stat().st_mtime)
+            for old in kept[:-KEEP_FILES]:
+                old.unlink(missing_ok=True)
+        except (OSError, ValueError):
+            pass  # a copy that cannot be kept only costs the next download
 
 
 def read(payload, code, label, codes):
