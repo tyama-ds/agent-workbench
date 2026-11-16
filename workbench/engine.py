@@ -205,6 +205,7 @@ PYTHON_TOOL = schema('python_execute',
     '(path = host path, name = relative name) and open it by that name; write results to relative names declared in outputs. '
     'No subprocesses or pip. To run tests, have test_*.py files in the working directory (inputs or written by the script) '
     'and call `import awb_pytest; raise SystemExit(awb_pytest.run())`. '
+    'Keep helper code inside `code`; do not save temporary scripts into the human\'s folders. '
     'Reserve output paths first; create host output folders with create_directory. '
     'Files are published only after successful execution; only outputs with successful save receipts were saved. '
     'expected_sha256 is the current hash of the file being replaced, or "missing" for a new file.',
@@ -1458,18 +1459,71 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                 parent.status = 'done'
                 parent = self.agents.get(parent.parent_id)
                 continue
-            if (waiting and parent.waiting_for_workers and getattr(parent, '_stall_notices', 0) < 2
-                    and not run.get('_turns') and not run.get('_ordered_work') and not run.get('adaptive_team')
-                    and all(member.status == 'error' or member.waiting_for_message for member in waiting)):
-                parent._stall_notices = getattr(parent, '_stall_notices', 0) + 1
-                names = '、'.join(f'{member.name}（{"エラー" if member.status == "error" else "連絡待ち"}）' for member in waiting[:8])
-                try:
-                    self.enqueue(parent, 'アプリからの通知: 作業者は全員止まっていて、このままでは報告は届きません。'
-                                 f'状態: {names}。ここまでの結果をまとめて finish_work で報告するか、'
-                                 '続きが必要な担当に send_message で具体的に依頼してください。')
-                except ValueError:
-                    pass
+            break
+        self._stall_check(run)
+
+    # Whether the application nudges a team in which everybody waits for
+    # somebody else. Scripted fixtures that park agents on purpose turn it off.
+    stall_recovery = True
+    STALL_NOTICES = 3
+
+    def _stall_check(self, run):
+        """Nobody in the run can act and no mail is undelivered: wake the PM.
+
+        A PM that asked for a correction and then waits, while the worker reads
+        the request and waits too, would otherwise keep the run "waiting"
+        until a human notices. The PM is told who is waiting and that only it
+        can move things; after the last notice the PM is stopped with a clear
+        reason instead of waiting silently.
+        """
+        if (not type(self).stall_recovery or self.closed or run['status'] in {'stopping', 'stopped'}
+                or run.get('_ordered_work') or run.get('adaptive_team')
+                or (run.get('_turns') is not None and not run['_turns'].finished)):
             return
+        live = [self.agents[i] for i in run['agent_ids']
+                if not self.agents[i].closing and self.agents[i].status not in {'done', 'stopped'}]
+        current = asyncio.current_task()
+        for member in live:
+            if (member.status in {'working', 'queued', 'stopping'} or member.question or member.approval
+                    or (member.task and not member.task.done() and member.task is not current)
+                    or (member.pending and member.status != 'error' and self._dependency_can_start(member))):
+                return  # Someone can still act, or a human is being waited for.
+        pms = [member for member in live if member.parent_id is None and member.status == 'idle'
+               and not getattr(member, '_answered', False) and not self._formation_reviewer(run, member)]
+        workers = [member for member in live if member.parent_id is not None]
+        if not pms or not workers:
+            return
+        def state(member):
+            if member.status == 'error':
+                return 'エラーで停止'
+            if member.waiting_for_message:
+                return '連絡待ち'
+            if member.waiting_for_workers:
+                return '配下の報告待ち'
+            return '未開始（前の担当の承認待ち）' if member.pending else '待機'
+        names = '、'.join(f'{member.name}（{state(member)}）' for member in workers[:8])
+        for pm in pms:
+            count = getattr(pm, '_stall_notices', 0)
+            if count >= self.STALL_NOTICES:
+                pm.status = 'error'
+                pm.last_error = ('行き詰まり: チームの全員が互いの連絡を待ったまま進まなかったため、停止しました。'
+                                 'この担当にメッセージを送ると再開できます。')
+                self.log(pm, 'error', pm.last_error)
+                self.event(run['id'], pm.id, 'error', pm.last_error)
+                continue
+            pm._stall_notices = count + 1
+            last = count + 1 == self.STALL_NOTICES
+            try:
+                self.enqueue(pm, 'アプリからの通知: チームの全員が待機していて、届いていない連絡もありません。このままでは何も進みません。\n'
+                             f'作業者の状態: {names}\n'
+                             '次のどちらかを、いま行ってください。\n'
+                             '1. すでに受け取った結果で仕上げられるなら、成果物を保存して finish_work で報告する。\n'
+                             '2. 続きが必要なら、その担当に send_message で「何を、どの形で返すか」を具体的に依頼する。\n'
+                             'wait_for_message や wait_for_workers だけを呼ぶと、また同じ状態で止まります。'
+                             + ('\nこれが最後の通知です。次も進まなければ、この作業は停止します。' if last else ''))
+                self.event(run['id'], pm.id, 'stall_notice', f'全員が待機していたため、{pm.name} に再開を促しました（{count + 1}/{self.STALL_NOTICES}）')
+            except ValueError:
+                pass
 
     def _active_workers(self, run, agent):
         """Owned workers minus those a human stopped; those no longer report."""
@@ -1597,6 +1651,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                     f'PM correction for worker result revision {revision}:\n{feedback}',
                     subject='Revision requested')
                 audit['mail_id'] = receipt['mail_id']
+                child._revise_pending, child._revise_wait_refused = True, False
             if proof is not None:
                 # Recheck at commit; a prepared proof is not authority after a
                 # revision/generation/delivery change, even within one batch.
@@ -2938,6 +2993,11 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                 raise ValueError('待機するエージェントがこの作業と一致しません')
             if agent.question:
                 raise ValueError('人への質問はチームメールや待機では解除できません')
+            if getattr(agent, '_revise_pending', False) and not getattr(agent, '_revise_wait_refused', False):
+                # A correction request is work to do, not something to wait on.
+                agent._revise_wait_refused = True
+                raise ValueError('待機できません。PM から修正の依頼が届いています。依頼の内容を直して、finish_work で報告し直してください。'
+                                 '自分では直せない場合は、その理由と必要なものを send_message で PM に伝えてから待ってください')
             agent.waiting_for_message = True
             self.event(run['id'], agent.id, 'message_wait', 'チーム連絡を待っています。完了や人への質問ではありません。')
             return {'ok': True, 'waiting_for_message': True, 'pending_count': len(agent.pending)}
@@ -2986,6 +3046,7 @@ class Engine(TurnWorkMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFall
                 if any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
                         for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
                     raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
+                agent._revise_pending = False
                 summary += self._turn_footer(run, agent)
                 if agent.parent_id is None:
                     summary += self._source_footer(run)

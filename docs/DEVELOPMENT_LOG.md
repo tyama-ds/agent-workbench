@@ -38,6 +38,19 @@ spreadsheet tasks (gpt-5.4-mini).
   not start in time the helper dumps all thread stacks and falls back to a
   built-in simple runner, so the call always returns a result.
   Not yet run on Windows LPAC.
+- Second real-machine round. A team in which everybody waits and no mail is
+  undelivered (a PM that asked for a correction and waits, a worker that read
+  it and waits too) is detected at the end of each turn: the PM is told who
+  waits and what it can do (three notices, then it stops with a clear reason
+  instead of waiting silently). A worker that received a correction may not
+  `wait_for_message` before acting (refused once). `awb_pytest` treats a path
+  it may not examine as absent (the sandbox may not stat the parent of its
+  working directory, which made pytest fail while collecting) and falls back
+  to the simple runner when pytest cannot collect anything. DuckDuckGo
+  searches are spaced two seconds apart, the same query is sent once per run,
+  and after a bot check no search is sent for ten minutes; the start check and
+  the settings say so and point to SearXNG. Text tools name the right tool for
+  .xlsx/.docx/.pptx.
 - Questions that wait for a person (no recommendation, or `kind=permission`)
   are for the root PM only and limited to two per run; others become
   consultations when they carry a recommendation, or are refused with

@@ -399,7 +399,9 @@ class PathHarness:
         with self._lock:
             path = self.resolve(value, write=True, must_exist=False)
             if text_only and path.suffix.lower() in _TEXT_MUTATION_DENIED_SUFFIXES:
-                raise HarnessError("Known document or binary extension cannot be modified with text tools; use a dedicated format tool")
+                tool = {".xlsx": "xlsx_write", ".docx": "docx_write (or docx_edit)", ".pptx": "pptx_write (or pptx_edit)"}.get(path.suffix.lower())
+                raise HarnessError("Known document or binary extension cannot be modified with text tools; "
+                                   + (f"use {tool} for {path.suffix.lower()} files" if tool else "use a dedicated format tool"))
             _inspect(path.parent, directory=True)
             with self._parents_held(path):
                 original = self._read(path) if path.exists() else None

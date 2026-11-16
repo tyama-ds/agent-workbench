@@ -1,6 +1,7 @@
 """Local admission preview. No network, inference, writes, or capability guesses."""
 from .providers import _endpoint
 from .config import ORCHESTRATION_DEFAULTS
+from .webtools import SEARCH_GUARD
 
 
 def summarize(prepared, *, orchestration=None, adaptive_team=False):
@@ -46,4 +47,7 @@ def summarize(prepared, *, orchestration=None, adaptive_team=False):
                   'write_roots': [str(p) for p in harness.write_roots],
                   'deny_roots': [str(p) for p in harness.deny_roots]},
         'web': {'enabled': web.enabled, 'search_configured': bool(web.enabled), 'fetch_enabled': web.enabled,
-                'search_endpoint': web.endpoint if web.enabled else '', 'proxy': web.proxy if web.enabled else None}}
+                'search_endpoint': web.endpoint if web.enabled else '', 'proxy': web.proxy if web.enabled else None,
+                # Only present while DuckDuckGo is refusing this PC (bot check).
+                **({'search_blocked_minutes': SEARCH_GUARD.status()['blocked_minutes']}
+                   if web.enabled and web.provider == 'duckduckgo' and SEARCH_GUARD.status()['blocked'] else {})}}

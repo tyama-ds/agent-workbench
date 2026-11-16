@@ -13,6 +13,7 @@ def pytest_configure(config):
     config.addinivalue_line('markers', 'approvals: keep the default approval mode (ask)')
     config.addinivalue_line('markers', 'plan: keep the mandatory plan_work gate for root PMs')
     config.addinivalue_line('markers', 'question_limits: keep the limit on questions that wait for a person')
+    config.addinivalue_line('markers', 'stall: keep the wake-up of a team in which everybody waits')
 
 
 @pytest.fixture(autouse=True)
@@ -49,3 +50,27 @@ def _unlimited_human_questions_unless_marked(request):
     Engine.human_question_limit = 2 if request.node.get_closest_marker('question_limits') is not None else None
     yield
     Engine.human_question_limit = previous
+
+
+@pytest.fixture(autouse=True)
+def _no_stall_recovery_unless_marked(request):
+    """The application wakes a PM when the whole team only waits. Existing
+    tests park agents on purpose to inspect that state; tests marked `stall`
+    keep the shipped behaviour."""
+    from workbench.engine import Engine
+    previous = Engine.stall_recovery
+    Engine.stall_recovery = request.node.get_closest_marker('stall') is not None
+    yield
+    Engine.stall_recovery = previous
+
+
+@pytest.fixture(autouse=True)
+def _fresh_search_guard():
+    """The DuckDuckGo pacing and block memory is process-wide; tests start
+    unblocked and without the two-second spacing."""
+    from workbench.webtools import SEARCH_GUARD
+    SEARCH_GUARD.reset()
+    SEARCH_GUARD.min_interval = 0.0
+    yield
+    SEARCH_GUARD.reset()
+    SEARCH_GUARD.min_interval = 2.0

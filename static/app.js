@@ -44,7 +44,7 @@ const FIELD_GROUPS = {
   ],
   search: [
     ['enabled','Web 検索・ページ取得を使う','checkbox'],
-    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['searxng','SearXNG']]],
+    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['searxng','SearXNG']],undefined,'DuckDuckGo は、短時間に検索が続くと、しばらく検索を受け付けなくなることがあります（ボット確認）。続く場合は、自分で用意した SearXNG（JSON 出力を有効にしたもの）を選び、その URL を接続先に入れてください。'],
     ['endpoint','検索の接続先 URL（DuckDuckGo は固定）','url'],
     ['proxy_url','検索用プロキシ URL（任意）','url'],
     ['timeout_seconds','検索タイムアウト（秒）','number',1],
@@ -1002,6 +1002,7 @@ async function refreshPreflight(request) {
       details.append(element('p','small','拒否が優先されます。読み取りと書き込みは独立した権限です。各ファイルの操作時にも確認します。'));target.append(details);
       const web=response.web||{};
       target.append(element('p','small',`Web 検索: ${web.search_configured?'設定あり（未接続確認）':'使用不可'} · 公開ページ取得: ${web.fetch_enabled?'有効':'無効'}${web.enabled?' · 検索先: '+web.search_endpoint+' · ページ取得先: モデルが選ぶ公開 HTTP(S) サイト'+(web.proxy?' · proxy: '+web.proxy:''):''}`));
+      if(Number.isInteger(web.search_blocked_minutes))target.append(element('p','small warning-text',`検索サービス（DuckDuckGo）が、このPCからの検索を一時的に止めています（ボット確認）。あと約${web.search_blocked_minutes}分は検索できません。ページの取得（URL を指定した読み込み）は使えます。続く場合は、設定の「Web 検索」で SearXNG に切り替えてください。`));
       target.append(element('p','small','依頼・会話・作業方針・許可パスと、必要に応じたファイル内容やツール結果は、選択したモデル接続先へ送られます。Web 有効時は検索語・取得 URL も各接続先へ送られます。'));
       target.append(element('p','small','「この PC で実行」はアプリの実行場所です。Local はこの PC またはプライベート LAN の API に接続し、別の PC の場合もあります。チーム内の連絡で内容が別のモデル接続先へ共有される場合があります。PM・作業者すべての接続先・プロキシと、保存・再転送・学習利用の条件が社内の承認範囲に収まるか確認してください。アプリは会社の承認状況や接続先でのデータの取り扱いを判定しません。'));
     }

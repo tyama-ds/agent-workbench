@@ -67,6 +67,7 @@ def synthetic_native(profile, text, calls=(), *, private=''):
 # (phase 8) is exercised by tests/test_phase8_turns.py instead.
 Engine.plan_required = False
 Engine.human_question_limit = None
+Engine.stall_recovery = False
 
 
 class SyntheticClient:

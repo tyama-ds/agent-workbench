@@ -83,6 +83,7 @@ async def test_a_worker_that_starts_waiting_after_the_final_answer_does_not_hold
         await engine.close()
 
 
+@pytest.mark.stall
 @pytest.mark.asyncio
 async def test_a_pm_waiting_for_reports_is_told_when_every_worker_only_waits(tmp_path):
     class Team:
@@ -102,8 +103,81 @@ async def test_a_pm_waiting_for_reports_is_told_when_every_worker_only_waits(tmp
     try:
         run, pm = await start(engine)
         await quiet(engine)
-        assert any('作業者は全員止まっていて' in str(message) for message in client.pm_messages)
+        assert any('チームの全員が待機していて' in str(message) and '連絡待ち' in str(message) for message in client.pm_messages)
         assert run['status'] == 'done' and pm.status == 'done'
+    finally:
+        await engine.close()
+
+
+@pytest.mark.stall
+@pytest.mark.asyncio
+async def test_pm_and_worker_waiting_for_each_other_after_a_correction_are_woken(tmp_path):
+    """Real-machine case (statistics task): the PM asked for a correction and
+    waited; the worker read the request and waited too; the run stayed
+    "waiting" for 15 minutes although the PM already had what it needed."""
+    class Team:
+        pm_turns, worker_calls, refused = [], 0, []
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            last = messages[-1]['content']
+            if '"assigned_role"' in system:
+                self.worker_calls += 1
+                if self.worker_calls == 1:
+                    return reply(calls=[('finish_work', {'summary': '人口: 日本 1.2億（年が不明）'})])
+                if 'ok": false' in str(last) or '待機できません' in str(last):
+                    self.refused.append(str(last))
+                return reply(calls=[('wait_for_message', {})])  # does not act on the correction
+            self.pm_turns.append(str(last))
+            if len(self.pm_turns) == 1:
+                return reply(calls=[('spawn_worker', {'role': '人口調査', 'task': '人口を調べる', 'profile_id': 'local'}),
+                                    ('wait_for_workers', {})])
+            if 'チームの全員が待機していて' in str(last):
+                return reply(calls=[('finish_work', {'summary': '手元の値で表を仕上げました。'})])
+            if 'worker_completed' in str(last):
+                worker = next(a for a in engine.agents.values() if a.parent_id)
+                return reply(calls=[('review_worker_report', {'worker_id': worker.id, 'result_revision': worker.result_revision,
+                                                              'decision': 'revise', 'feedback': '年を明記してください'}),
+                                    ('wait_for_message', {})])
+            return reply(calls=[('wait_for_message', {})])
+
+    client = Team()
+    engine, work = configured(tmp_path, client)
+    try:
+        run, pm = await start(engine)
+        await quiet(engine)
+        assert client.refused, 'a worker that received a correction is told to act instead of waiting'
+        assert any('チームの全員が待機していて' in turn and '人口調査' in turn for turn in client.pm_turns)
+        assert run['status'] == 'done' and pm.status == 'done', (run['status'], pm.status, pm.last_error)
+        assert any(row['kind'] == 'stall_notice' for row in engine.events)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.stall
+@pytest.mark.asyncio
+async def test_a_team_that_keeps_waiting_is_stopped_with_a_reason_after_three_notices(tmp_path):
+    class Team:
+        notices = 0
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            if '"assigned_role"' in system:
+                return reply(calls=[('wait_for_message', {})])
+            if 'チームの全員が待機していて' in str(messages[-1]['content']):
+                self.notices += 1
+            if not any(row.get('role') == 'assistant' for row in messages):
+                return reply(calls=[('spawn_worker', {'role': '確認', 'task': '待つ', 'profile_id': 'local'}),
+                                    ('wait_for_message', {})])
+            return reply(calls=[('wait_for_message', {})])
+
+    client = Team()
+    engine, work = configured(tmp_path, client)
+    try:
+        run, pm = await start(engine)
+        await quiet(engine)
+        assert client.notices == 3 and pm.status == 'error' and '行き詰まり' in pm.last_error
+        assert 'これが最後の通知です' in pm.conversation[-3]['content'] or any(
+            'これが最後の通知です' in str(row.get('content')) for row in pm.conversation)
+        assert run['status'] == 'waiting'
     finally:
         await engine.close()
 
@@ -231,3 +305,32 @@ async def test_only_the_pm_may_block_on_a_human_and_only_twice(tmp_path):
         assert third['question_state']['kind'] == 'consultation'
     finally:
         await engine.close()
+
+
+# --- smaller real-machine findings ----------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_text_tools_name_the_right_tool_for_office_files(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0)
+        with pytest.raises(ValueError, match=r'use xlsx_write for \.xlsx files'):
+            await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'stats.xlsx'), 'text': 'a,b', 'expected_sha256': 'missing'})
+        with pytest.raises(ValueError, match=r'docx_write'):
+            await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'report.docx'), 'text': 'x', 'expected_sha256': 'missing'})
+    finally:
+        await engine.close()
+
+
+def test_the_start_check_says_when_the_search_service_is_blocking_this_pc(tmp_path):
+    from workbench.webtools import SEARCH_GUARD
+    engine, work = configured(tmp_path, None)
+    engine.settings.value['search']['enabled'] = True
+    payload = {'task': '調べて', 'pm_profile': 'local', 'worker_profiles': ['local'], 'max_workers': 0}
+    try:
+        assert 'search_blocked_minutes' not in engine.preflight(payload)['web']
+        SEARCH_GUARD.refused()
+        assert engine.preflight(payload)['web']['search_blocked_minutes'] == 10
+    finally:
+        asyncio.run(engine.close())

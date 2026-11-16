@@ -665,3 +665,57 @@ def test_schemas_state_ranges_shapes_and_an_example_within_a_size_budget():
     assert "#fragment" in schemas["web_fetch"]["description"]
     # Every schema is sent with every model request; the baseline was 2195.
     assert sum(len(json.dumps(item, ensure_ascii=False)) for item in schemas.values()) <= 2600
+
+
+# --- real-machine follow-up: DuckDuckGo blocks an address that searches too often ---
+
+def test_after_a_bot_check_no_further_search_is_sent_until_the_cooldown_ends(monkeypatch):
+    from workbench import webtools
+    from workbench.readiness import summarize  # noqa: F401  (imports the shared guard)
+
+    async def run():
+        hits = []
+
+        async def handler(request):
+            hits.append(request.method)
+            if len(hits) == 1:
+                return web.Response(status=202, text="<html>bot check</html>", content_type="text/html")
+            return web.Response(text='<div class="result results_links"><a class="result__a" href="https://example.org/a">A</a>'
+                                     '<a class="result__snippet">s</a></div>', content_type="text/html")
+
+        pin(monkeypatch)
+        async with http_server(handler) as port:
+            tools = duckduckgo(port)
+            with pytest.raises(WebToolError, match="HTTP 202"):
+                await tools.execute("web_search", {"query": "x"})
+            assert webtools.SEARCH_GUARD.status()["blocked"] and webtools.SEARCH_GUARD.status()["blocked_minutes"] == 10
+            for query in ("y", "z"):
+                with pytest.raises(WebToolError, match="will not be asked again for about 10 more minutes"):
+                    await tools.execute("web_search", {"query": query})
+            assert hits == ["POST"], "a blocked service is not asked again"
+            # Another run's tools share the block; it lifts when the cool-down ends.
+            other = duckduckgo(port)
+            with pytest.raises(WebToolError, match="bot check"):
+                await other.execute("web_search", {"query": "x"})
+            webtools.SEARCH_GUARD.blocked_until = 0.0
+            first = await other.execute("web_search", {"query": "x"})
+            again = await other.execute("web_search", {"query": "x"})
+            assert first["results"] and again is first and len(hits) == 2, "the same query in one run is sent once"
+            assert not webtools.SEARCH_GUARD.status()["blocked"] and webtools.SEARCH_GUARD.status()["last_success"]
+    asyncio.run(run())
+
+
+def test_searches_are_spaced_out(monkeypatch):
+    from workbench import webtools
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(round(seconds, 1))
+
+    async def run():
+        monkeypatch.setattr(webtools.asyncio, "sleep", fake_sleep)
+        guard = webtools.SearchGuard()
+        for _ in range(3):
+            await guard.pace()
+    asyncio.run(run())
+    assert waits == [2.0, 4.0], "the first search goes at once; later ones wait their turn"

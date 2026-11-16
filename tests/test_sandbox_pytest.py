@@ -385,3 +385,42 @@ def test_helper_source_is_standard_library_only_and_ascii():
             imported.add((node.module or '.').split('.')[0])
     # pytest is imported lazily inside functions and is optional.
     assert imported - {'pytest'} <= set(sys.stdlib_module_names)
+
+
+# Real-machine finding (Windows LPAC): the sandboxed process may not stat the
+# folder that contains its working directory. pytest asks whether that parent
+# "is a file" while collecting, and Python 3.13 lets the PermissionError out.
+DENY_PARENT = '''import os
+_stat, _parent = os.stat, os.path.dirname(os.getcwd())
+
+def _denied(path, *args, **kwargs):
+    if os.path.normcase(os.path.abspath(os.fspath(path))) == os.path.normcase(_parent):
+        raise PermissionError(13, 'Access is denied', os.fspath(path))
+    return _stat(path, *args, **kwargs)
+
+os.stat = _denied
+'''
+
+
+def test_pytest_collects_when_the_parent_of_the_workspace_cannot_be_read(tmp_path):
+    result = sandbox(tmp_path, DENY_PARENT + RUN, {'calc.py': CALC, 'test_calc.py': PASSING})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'passed' in result.stdout and '(pytest, exit code 0)' in result.stdout
+    assert 'PermissionError' not in result.stdout + result.stderr
+
+
+def test_when_pytest_cannot_collect_at_all_the_simple_runner_still_runs_the_tests(tmp_path):
+    # The same refusal, but raised as OSError so the helper's own guard does not absorb it:
+    # pytest reports "ERROR collecting test session" and no test runs.
+    script = DENY_PARENT.replace('PermissionError(13', 'OSError(5') + RUN
+    files = {'calc.py': CALC, 'test_calc.py': 'from calc import add\n\ndef test_add():\n    assert add(1, 2) == 3\n'}
+    result = sandbox(tmp_path, script, files)
+    assert 'ERROR collecting test session' in result.stdout, result.stdout + result.stderr
+    assert 'pytest could not collect any test' in result.stdout and 'falling back to the built-in simple runner' in result.stdout
+    assert summary(result) == 'awb_pytest: 1 passed, 0 failed, 0 not run (simple runner, exit code 0)'
+    assert result.returncode == 0
+
+
+def test_a_broken_test_file_is_still_a_failure_after_the_fallback(tmp_path):
+    result = sandbox(tmp_path, RUN, {'test_broken.py': 'import module_that_does_not_exist\n\ndef test_x():\n    pass\n'})
+    assert result.returncode != 0, result.stdout + result.stderr

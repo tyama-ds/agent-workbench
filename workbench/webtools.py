@@ -9,6 +9,7 @@ import json
 import re
 import socket
 import ssl
+import time
 import urllib.parse
 from html.parser import HTMLParser
 from typing import Any
@@ -319,6 +320,55 @@ class _DuckDuckGoHTML(HTMLParser):
         return rows
 
 
+class SearchGuard:
+    """Process-wide pacing and block memory for the keyless DuckDuckGo endpoint.
+
+    The service blocks an address that searches too often (it answers every
+    request with a bot check for a while). Searches are therefore spaced out,
+    and after a bot check or refusal no further request is sent until the
+    cool-down ends: asking again only prolongs the block.
+    """
+
+    def __init__(self):
+        self.min_interval, self.cooldown = 2.0, 600.0
+        self.reset()
+
+    def reset(self):
+        self.blocked_until = self.next_request = 0.0
+        self.last_success = None
+
+    def blocked_seconds(self):
+        return max(0.0, self.blocked_until - time.time())
+
+    def check(self):
+        remaining = self.blocked_seconds()
+        if remaining:
+            raise WebToolError(
+                f"DuckDuckGo is refusing searches from this PC (bot check); it will not be asked again for about "
+                f"{int(remaining // 60) + 1} more minutes. {_BOT_CHECK_ADVICE[0].upper() + _BOT_CHECK_ADVICE[1:]}")
+
+    async def pace(self):
+        now = time.monotonic()
+        wait = max(0.0, self.next_request - now)
+        self.next_request = max(now, self.next_request) + self.min_interval
+        if wait:
+            await asyncio.sleep(wait)
+
+    def refused(self):
+        self.blocked_until = time.time() + self.cooldown
+
+    def succeeded(self):
+        self.blocked_until, self.last_success = 0.0, time.time()
+
+    def status(self):
+        remaining = self.blocked_seconds()
+        return {'blocked': bool(remaining), 'blocked_minutes': int(remaining // 60) + 1 if remaining else 0,
+                'last_success': self.last_success}
+
+
+SEARCH_GUARD = SearchGuard()
+
+
 class WebTools:
     def __init__(self, settings: dict):
         if not isinstance(settings, dict) or not isinstance(settings.get("search", {}), dict):
@@ -336,6 +386,7 @@ class WebTools:
         self.timeout = config.get("timeout_seconds", 20)
         self.max_bytes = config.get("max_response_bytes", 1024 * 1024)
         self._snapshots = WebSnapshots()
+        self._search_cache = {}
         if type(self.timeout) not in {int, float} or not 1 <= self.timeout <= 60:
             raise WebToolError("Web timeout must be between 1 and 60 seconds")
         if type(self.max_bytes) is not int or not 1024 <= self.max_bytes <= 5 * 1024 * 1024:
@@ -507,12 +558,19 @@ class WebTools:
             # The HTML endpoint answers a GET, or any HTTP-library User-Agent,
             # with HTTP 403 or a bot-check page. It is queried the way its own
             # search form does: a same-origin urlencoded POST.
+            cached = self._search_cache.get((query, limit))
+            if cached is not None:
+                return cached  # the same query in the same run is not sent twice
+            SEARCH_GUARD.check()
+            await SEARCH_GUARD.pace()
             site = f"{parsed.scheme}://{parsed.netloc}"
             headers = {"Accept": BROWSER_HEADERS["Accept"], "Origin": site, "Referer": site + "/"}
             request_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(parameters), ""))
             try:
                 data, content_type, _ = await self._request(request_url, headers=headers, trusted_search=False, form=[("q", query)])
             except _HTTPStatusError as exc:
+                if exc.status in {202, 403, 429}:
+                    SEARCH_GUARD.refused()
                 if exc.status == 202:
                     raise WebToolError(f"DuckDuckGo asked for a bot check instead of returning results (HTTP 202); {_BOT_CHECK_ADVICE}") from None
                 if exc.status in {403, 429}:
@@ -528,7 +586,14 @@ class WebTools:
             parser = _DuckDuckGoHTML()
             parser.feed(text)
             parser.close()
-            return {"query": query, "results": parser.rows(limit), "untrusted": True}
+            if parser.challenge:
+                SEARCH_GUARD.refused()  # a bot-check page arrived with HTTP 200
+            rows = parser.rows(limit)
+            SEARCH_GUARD.succeeded()
+            result = {"query": query, "results": rows, "untrusted": True}
+            if len(self._search_cache) < 50:
+                self._search_cache[(query, limit)] = result
+            return result
         parameters += [("q", query), ("format", "json")]
         request_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(parameters), ""))
         data, content_type, _ = await self._request(request_url, headers={"Accept": "application/json"}, trusted_search=self.provider == "searxng")

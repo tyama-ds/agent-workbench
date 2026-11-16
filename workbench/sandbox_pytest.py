@@ -105,8 +105,24 @@ def _sandbox_os(windows=None):
     (tmp_path, --basetemp) and tempfile.mkdtemp use that mode, and a sandboxed
     process is not expected to be able to enter such a directory afterwards.
     The private workspace needs no extra protection.
+
+    Path.is_file / is_dir / exists answer False instead of raising
+    PermissionError: the sandboxed process may not even stat the folder that
+    contains its working directory, and pytest asks whether that parent "is a
+    file" while collecting (seen on Windows LPAC with Python 3.13, which lets
+    the error out). A path that cannot be examined is treated as absent.
     """
+    import pathlib
     mkdir, symlink = os.mkdir, getattr(os, 'symlink', None)
+    probes = {name: getattr(pathlib.Path, name) for name in ('is_file', 'is_dir', 'exists')}
+
+    def tolerant(probe):
+        def checked(self, *args, **kwargs):
+            try:
+                return probe(self, *args, **kwargs)
+            except PermissionError:
+                return False
+        return checked
 
     def plain_mkdir(path, mode=0o777, *args, **kwargs):
         return mkdir(path, 0o777 if mode == 0o700 else mode, *args, **kwargs)
@@ -118,9 +134,13 @@ def _sandbox_os(windows=None):
         os.mkdir = plain_mkdir
     if symlink is not None:
         os.symlink = no_symlink
+    for name, probe in probes.items():
+        setattr(pathlib.Path, name, tolerant(probe))
     try:
         yield
     finally:
+        for name, probe in probes.items():
+            setattr(pathlib.Path, name, probe)
         os.mkdir = mkdir
         if symlink is not None:
             os.symlink = symlink
@@ -198,7 +218,9 @@ def _run(selected, root, simple, deadline, out):
                 _say(out, f'{_counts(outcomes)}; time limit reached at stage: {stage}; '
                           f'thread stacks are on stderr (pytest, exit code {code})', interrupts=True)
                 return code
-        if status == 'done' and value in (0, 1, 2, 5):
+        blocked = (status == 'done' and value == 2 and state['collection_errors'] and not state['outcomes']
+                   and not state['collected'])
+        if status == 'done' and value in (0, 1, 2, 5) and not blocked:
             _say(out, _counts(state['outcomes'].values()) + _plural(state['collection_errors'], 'collection error')
                  + f' (pytest, exit code {value})')
             return value
@@ -211,6 +233,11 @@ def _run(selected, root, simple, deadline, out):
             why = f'pytest started no test within {limit:.1f} s (stage: {stage}; thread stacks are on stderr)'
         elif status == 'error' and isinstance(value, ImportError) and state['stage'] == 'importing pytest':
             why = f'pytest is not available ({value})'
+        elif blocked:
+            # pytest could not even list the tests (its report is above). The
+            # simple runner imports the test files directly, so a problem in
+            # the tests themselves is still reported as a failure.
+            why = 'pytest could not collect any test (see its report above)'
         elif status == 'error':
             why = f'pytest could not run ({type(value).__name__}: {str(value)[:300]})'
             with contextlib.suppress(Exception):
