@@ -4,6 +4,32 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev64 — Nobody to wait for: a coordinator that works alone, and a worker whose coordinator waits (2026-11-17)
+
+From the real-machine suite at `503253a`: a research task's PM worked alone
+(no worker was created). Search was used up (two bot checks had lowered the
+allowance from 120 to 30) and 25 of 28 page fetches failed, several with HTTP
+202 from one site. At 273 seconds the PM called `wait_for_message`; the run
+stayed "waiting / peer_message" past 900 seconds with no notice and nothing
+saved. `stat_lookup` at `d0e9b23` was confirmed there: six of six lookups in
+1.3 seconds together.
+
+- The refusal of a wait that nobody can end (dev55) and the stall notices
+  required the coordinator to own workers. Both now hold for any agent:
+  `wait_for_message` is refused, once per turn, whenever no other member of
+  the run is working, startable or waiting for a human. A coordinator
+  without workers is told to finish with what it has and to mark what could
+  not be confirmed; a worker whose coordinator only waits for its report is
+  told to report, or to say what it needs and then wait.
+- A coordinator without workers that waits anyway now gets the three stall
+  notices and is then stopped with its own reason.
+- A worker that has sent its coordinator a question may still wait: the
+  coordinator has mail to read, so somebody can act.
+- `web_fetch`: HTTP 202 is named as what it usually is, a browser check that
+  first runs a script, with the advice not to retry that address. The
+  application does not run such a check. Why that site answers 202 could not
+  be examined from this environment (it cannot reach the site).
+
 ## 0.1.1.dev63 — stat_lookup reads the World Bank's bulk file (2026-11-17)
 
 `stat_lookup` at `503253a` was tried against the real API from the test

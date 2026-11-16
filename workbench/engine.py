@@ -1565,7 +1565,11 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         pms = [member for member in live if member.parent_id is None and member.status == 'idle'
                and not getattr(member, '_answered', False) and not self._formation_reviewer(run, member)]
         workers = [member for member in live if member.parent_id is not None]
-        if not pms or (not workers and not any(self._owned_workers(run, pm) for pm in pms)):
+        alone = not workers and not any(self._owned_workers(run, pm) for pm in pms)
+        if alone:
+            # A coordinator without workers is only stuck when it chose to wait for a message.
+            pms = [pm for pm in pms if pm.waiting_for_message]
+        if not pms:
             return
         def state(member):
             if member.status == 'error':
@@ -1575,30 +1579,52 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
             if member.waiting_for_workers:
                 return '配下の報告待ち'
             return '未開始（前の担当の承認待ち）' if member.pending else '待機'
-        names = '、'.join(f'{member.name}（{state(member)}）' for member in workers[:8]) or '全員が終了しています'
+        names = '、'.join(f'{member.name}（{state(member)}）' for member in workers[:8]) or ('作業者はいません' if alone else '全員が終了しています')
         for pm in pms:
             count = getattr(pm, '_stall_notices', 0)
             if count >= self.STALL_NOTICES:
                 pm.status = 'error'
-                pm.last_error = ('行き詰まり: チームの全員が互いの連絡を待ったまま進まなかったため、停止しました。'
-                                 'この担当にメッセージを送ると再開できます。')
+                pm.last_error = (('行き詰まり: 連絡を送ってくる担当がいないまま待機を続けたため、停止しました。' if alone else
+                                  '行き詰まり: チームの全員が互いの連絡を待ったまま進まなかったため、停止しました。')
+                                 + 'この担当にメッセージを送ると再開できます。')
                 self.log(pm, 'error', pm.last_error)
                 self.event(run['id'], pm.id, 'error', pm.last_error)
                 continue
             pm._stall_notices = count + 1
             last = count + 1 == self.STALL_NOTICES
             try:
-                self.enqueue(pm, 'アプリからの通知: チームの全員が待機していて、届いていない連絡もありません。このままでは何も進みません。\n'
-                             f'作業者の状態: {names}\n'
+                self.enqueue(pm, ('アプリからの通知: 連絡を待っていますが、送ってくる担当がいません。このままでは何も進みません。\n' if alone else
+                                  'アプリからの通知: チームの全員が待機していて、届いていない連絡もありません。このままでは何も進みません。\n')
+                             + f'作業者の状態: {names}\n'
                              + self._stall_next_step(run, pm)
                              + 'wait_for_message や wait_for_workers だけを呼ぶと、また同じ状態で止まります。'
                              + ('\nこれが最後の通知です。次も進まなければ、この作業は停止します。' if last else ''))
-                self.event(run['id'], pm.id, 'stall_notice', f'全員が待機していたため、{pm.name} に再開を促しました（{count + 1}/{self.STALL_NOTICES}）')
+                self.event(run['id'], pm.id, 'stall_notice', (f'連絡を送る担当がいないまま待機していたため、{pm.name} に再開を促しました（{count + 1}/{self.STALL_NOTICES}）' if alone else
+                            f'全員が待機していたため、{pm.name} に再開を促しました（{count + 1}/{self.STALL_NOTICES}）'))
             except ValueError:
                 pass
 
+    def _wait_refusal(self, run, agent):
+        """Why this agent may not wait for a message now, and what to do instead."""
+        if agent.parent_id is not None:
+            return ('待機できません。チームに、これから連絡を送れる担当がいません（あなたの報告を待っている担当だけです）。'
+                    '待っても何も届きません。\n'
+                    '次のどちらかを、いま行ってください。\n'
+                    '1. ここまでの結果を finish_work で報告する。できなかったこと・確認できなかったことも、そのまま書く。\n'
+                    '2. 続けるのに必要なものがあるなら、send_message で「何が、どの形で必要か」を具体的に伝えてから待つ。\n')
+        if not self._owned_workers(run, agent) and not any(
+                ident != agent.id and self.agents[ident].status not in {'done', 'stopped'} for ident in run['agent_ids']):
+            return '待機できません。この作業には、連絡を送ってくる担当がいません。待っても何も届きません。\n' + self._stall_next_step(run, agent)
+        return ('待機できません。チームに、これから連絡を送れる担当がいません（全員が終了、または待機中です）。'
+                '待っても何も届きません。\n' + self._stall_next_step(run, agent))
+
     def _stall_next_step(self, run, pm):
         """What a coordinator that nobody can wake should do now, as concretely as the records allow."""
+        if not self._owned_workers(run, pm):
+            # Working alone: nothing will arrive, so the work is finished with what there is.
+            return ('手元の結果で成果物を仕上げて保存し、finish_work で報告してください。確認できなかった点は「未確認」と明記します。'
+                    '検索やページ取得ができなかった場合も、その事実を書いて仕上げてください。'
+                    '人の判断がどうしても必要なときだけ、ask_user で質問してください。\n')
         issue = self._delegation_issue(run, pm, finishing=True)
         if issue and issue[0] in {'worker_review_pending', 'worker_dependency_pending', 'worker_reports_pending'}:
             return ('完了の前に必要な操作が残っています: ' + issue[1] + '\n'
@@ -3145,16 +3171,18 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 agent._revise_wait_refused = True
                 raise ValueError('待機できません。PM から修正の依頼が届いています。依頼の内容を直して、finish_work で報告し直してください。'
                                  '自分では直せない場合は、その理由と必要なものを send_message で PM に伝えてから待ってください')
-            if (type(self).stall_recovery and agent.parent_id is None and not agent.pending
+            if (type(self).stall_recovery and not agent.pending
                     and not getattr(agent, '_wait_refused', False)
                     and not run.get('_ordered_work') and not run.get('adaptive_team')
                     and (run.get('_turns') is None or run['_turns'].finished)
-                    and self._owned_workers(run, agent) and self._nobody_else_can_act(run, agent)):
+                    and not self._formation_reviewer(run, agent)
+                    and self._nobody_else_can_act(run, agent)):
                 # Nobody is left who could send anything: waiting would only stop the run.
-                # Said once per turn; a model that waits anyway is handled by the stall notices.
+                # This holds for a coordinator with workers, one that works alone, and a
+                # worker whose coordinator only waits for it. Said once per turn; a model
+                # that waits anyway is handled by the stall notices.
                 agent._wait_refused = True
-                raise ValueError('待機できません。チームに、これから連絡を送れる担当がいません（全員が終了、または待機中です）。'
-                                 '待っても何も届きません。\n' + self._stall_next_step(run, agent))
+                raise ValueError(self._wait_refusal(run, agent))
             agent.waiting_for_message = True
             self.event(run['id'], agent.id, 'message_wait', 'チーム連絡を待っています。完了や人への質問ではありません。')
             return {'ok': True, 'waiting_for_message': True, 'pending_count': len(agent.pending)}
