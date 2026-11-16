@@ -429,3 +429,35 @@ def test_real_live_stream_disappearance_is_ignored_but_ads_is_denied(tmp_path, m
     Path(str(cache)+':hidden').write_text('named stream')
     assert not browser_job._workspace_ok(tmp_path, 1024, native, live=True)
     assert not browser_job._workspace_ok(tmp_path, 1024, native)
+
+
+def test_live_storage_retry_outlasts_a_repeating_transient_error_and_still_fails_closed(monkeypatch):
+    """A cache that recreates and deletes the same names can show ACCESS_DENIED
+    several times in a row; that must not end the job, but a lasting error must."""
+    pauses = []
+    monkeypatch.setattr(browser_job.time, 'sleep', pauses.append)
+
+    def denied(times):
+        state = {'left': times}
+
+        def operation():
+            if state['left']:
+                state['left'] -= 1
+                error = OSError('denied')
+                error.winerror = 5
+                raise error
+            return 'inspected'
+        return operation
+
+    assert browser_job._live_storage_call(denied(6), live=True) == 'inspected'
+    assert len(pauses) == 6 and sum(pauses) < .25
+    attempts = len(browser_job._LIVE_RETRY_PAUSES)
+    with pytest.raises(OSError):
+        browser_job._live_storage_call(denied(attempts), live=True)  # still denied on the last attempt
+    with pytest.raises(OSError):
+        browser_job._live_storage_call(denied(1), live=False)  # the final strict scan never retries
+    other = OSError('other')
+    other.winerror = 87
+    with pytest.raises(OSError):
+        browser_job._live_storage_call(lambda: (_ for _ in ()).throw(other), live=True)
+    assert .15 < sum(pause for pause in browser_job._LIVE_RETRY_PAUSES if pause) < .3
