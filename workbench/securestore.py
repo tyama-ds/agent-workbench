@@ -19,6 +19,10 @@ PROTECTION = 'windows-dpapi-current-user'
 MAX_BYTES = 1024 * 1024
 MAX_PLAIN_BYTES = 256 * 1024
 IDENTITY = ('id', 'kind', 'base_url', 'api_key_env')
+# The optional Brave Search key. Its binding is fixed, not a provider profile:
+# the key is only ever stored for, and sent to, this one endpoint.
+SEARCH_BINDING = {'id': 'search', 'kind': 'brave', 'base_url': 'https://api.search.brave.com/res/v1/web/search',
+                  'api_key_env': ''}
 ID = re.compile(r'[a-zA-Z][a-zA-Z0-9_-]{0,63}\Z')
 ERROR = '保存済み API キーを使用できません。元のファイルを保持しています。保存先・Windows ユーザー・設定を確認してください。'
 MISMATCH = '保存済み API キーと接続先設定が一致しません。該当キーを明示的に解除してから設定してください。'
@@ -105,14 +109,23 @@ def _validate(value):
             raise CredentialStorageError(ERROR)
         if any(not isinstance(row[field], str) for field in row):
             raise CredentialStorageError(ERROR)
-        if not ID.fullmatch(row['id']) or row['id'] in found or row['id'] in {'search', 'copilot-agent'}:
+        if not ID.fullmatch(row['id']) or row['id'] in found or row['id'] == 'copilot-agent':
             raise CredentialStorageError(ERROR)
-        if row['kind'] not in {'local', 'openai', 'anthropic'} or not 1 <= len(row['key']) <= 4096:
+        if row['id'] == 'search' or row['kind'] == 'brave':
+            if any(row[field] != SEARCH_BINDING[field] for field in IDENTITY):
+                raise CredentialStorageError(ERROR)
+        elif row['kind'] not in {'local', 'openai', 'anthropic'}:
+            raise CredentialStorageError(ERROR)
+        if not 1 <= len(row['key']) <= 4096:
             raise CredentialStorageError(ERROR)
         if len(row['base_url']) > 2048 or len(row['api_key_env']) > 128 or any(ord(c) < 32 or ord(c) == 127 for field in row for c in row[field]):
             raise CredentialStorageError(ERROR)
         found[row['id']] = dict(row)
     return found
+
+
+def _bound(profiles):
+    return {**{p['id']: p for p in profiles}, 'search': SEARCH_BINDING}
 
 
 class CredentialStore:
@@ -184,7 +197,7 @@ class CredentialStore:
 
     def check_bindings(self, profiles):
         self._profiles = profiles
-        actual = {p['id']: p for p in profiles}
+        actual = _bound(profiles)
         self.affected_ids = sorted(ident for ident, row in self._entries.items()
                                    if ident not in actual or any(row[k] != actual[ident].get(k, '') for k in IDENTITY)) if self._loaded else []
         return self.affected_ids
@@ -198,7 +211,7 @@ class CredentialStore:
     def require_identity(self, profiles):
         if not self._loaded or self.error:
             raise CredentialStorageError(self.error or ERROR)
-        actual = {p['id']: p for p in profiles}
+        actual = _bound(profiles)
         affected = [ident for ident, row in self._entries.items()
                     if ident not in actual or any(row[k] != actual[ident].get(k, '') for k in IDENTITY)]
         if affected:

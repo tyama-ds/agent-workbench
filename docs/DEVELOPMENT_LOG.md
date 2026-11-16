@@ -4,6 +4,83 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev54 — Runs that end, working web search, sandbox hints and tests (2026-11-16)
+
+Phase 9, from real-machine runs of coding, research, statistics, slides and
+spreadsheet tasks (gpt-5.4-mini).
+
+- A run ends when the work is done. When a coordinator gives its final answer
+  (`finish_work`, or plain text without it) and no teammate under it can still
+  act, teammates that only wait for a message, never started or failed are
+  closed (`team_settled`), so the run becomes `done` instead of `waiting`.
+  Teammates that are working, queued or waiting for a human still hold the
+  report back. A worker that starts waiting after the final answer closes the
+  team then. A PM that waits for reports while every worker only waits for a
+  message is told so (twice at most).
+- Cited URLs: the run remembers URLs from the request, human messages, web
+  tool results, files it read and scripts it ran. A document write (not source
+  code) citing other URLs is refused once when web tools are available, and a
+  visibly made-up URL (long zero runs, xxxx, template marks) is always refused;
+  what is saved anyway is listed for the human at the end of the PM's result.
+  The system prompt says to cite only URLs a tool returned (web runs only).
+- Web tools: DuckDuckGo searches are a form POST with browser headers (every
+  search had returned HTTP 403); a bot check or refusal is reported as such,
+  never as an empty list. Page fetches use the same headers, accept long
+  response headers, try up to three resolved addresses and name the failure
+  class. `web_read` caps an oversized `limit` and its errors say what is
+  accepted and what was received.
+- `python_execute`: a failed run gets a `hint` for the common sandbox
+  failures (a host path opened in the script, with the `inputs` shape to use;
+  subprocess; network; missing module; timeout). The working directory is now
+  importable. `import awb_pytest; raise SystemExit(awb_pytest.run())` runs
+  tests inside the sandbox: real pytest with plugin autoload, cache, fd
+  capture and outside temp dirs switched off, under a deadline; if pytest does
+  not start in time the helper dumps all thread stacks and falls back to a
+  built-in simple runner, so the call always returns a result.
+  Not yet run on Windows LPAC.
+- Second real-machine round. A team in which everybody waits and no mail is
+  undelivered (a PM that asked for a correction and waits, a worker that read
+  it and waits too) is detected at the end of each turn: the PM is told who
+  waits and what it can do (three notices, then it stops with a clear reason
+  instead of waiting silently). A worker that received a correction may not
+  `wait_for_message` before acting (refused once). `awb_pytest` treats a path
+  it may not examine as absent (the sandbox may not stat the parent of its
+  working directory, which made pytest fail while collecting) and falls back
+  to the simple runner when pytest cannot collect anything. DuckDuckGo
+  searches are spaced two seconds apart, the same query is sent once per run,
+  and after a bot check no search is sent for ten minutes; the start check and
+  the settings say so and point to SearXNG. Text tools name the right tool for
+  .xlsx/.docx/.pptx.
+- Third real-machine round (8 of 8 runs ended `done`).
+  `run_tests({paths})`: the application copies the given files or folders into
+  the sandbox (layout kept below their common folder, `src/` importable, no
+  caches or virtual environments, at most 200 files) and runs `awb_pytest`
+  there; nothing is written back. Offered to the PM and every worker,
+  including read-only ones, wherever Python may run; it follows the Python
+  approval setting. Every test run (this tool, or `python_execute` output with
+  an `awb_pytest:` summary) is recorded (`tests_run` event, `run.test_check`).
+  When the request asks for tests to be run, the root PM's completion is sent
+  back once if no run passed, and the result always ends with the
+  application's own record (passed / last run failed / never run), also shown
+  as a run metric. Without Python the missing run is reported, not retried.
+  Brave Search returns as an optional engine that uses the human's own API
+  key; the default stays keyless DuckDuckGo and SearXNG is unchanged. Its
+  endpoint is fixed, the key is kept for the session or in the encrypted
+  store under a fixed binding (never in settings, history or the
+  environment), sent only as `X-Subscription-Token` to that origin, and
+  accepted only while Brave Search is the saved engine. A retired Brave
+  configuration (another endpoint) still becomes DuckDuckGo. The start check
+  points to this option while DuckDuckGo is blocking, and warns when Brave
+  is selected without a key. Not yet run against the real Brave API.
+  `xlsx_write` stores a numeric string (`'123,366,734'`, `'12.5%'`, `'42'`)
+  as a number with a matching format; leading zeros, 16+ digits and a leading
+  apostrophe stay text.
+- Questions that wait for a person (no recommendation, or `kind=permission`)
+  are for the root PM only and limited to two per run; others become
+  consultations when they carry a recommendation, or are refused with
+  guidance. The `ask_user` description says a failed tool is not a permission
+  matter.
+
 ## 0.1.1.dev53 — Mandatory plan and application-run turns (2026-11-15)
 
 Phase 8. Goal: a request such as 「5人でしりとりを10回」 runs to the end on a real

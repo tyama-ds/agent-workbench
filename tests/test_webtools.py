@@ -181,9 +181,12 @@ def test_duckduckgo_fixed_public_endpoint_and_no_search_credentials(monkeypatch,
         monkeypatch.setattr(tools, "_request", request)
         result = await tools.execute("web_search", {"query": "日本語 & robotics", "limit": 2})
         url, options = requests[0]
-        assert url.startswith("https://html.duckduckgo.com/html/?")
-        assert urllib.parse.parse_qs(urllib.parse.urlsplit(url).query) == {"q": ["日本語 & robotics"]}
-        assert options == {"headers": {"Accept": "text/html"}, "trusted_search": False}
+        # The query travels only in the POST form, never in the URL.
+        assert url == "https://html.duckduckgo.com/html/"
+        assert options == {"headers": {"Accept": module.BROWSER_HEADERS["Accept"],
+                                       "Origin": "https://html.duckduckgo.com",
+                                       "Referer": "https://html.duckduckgo.com/"},
+                           "trusted_search": False, "form": [("q", "日本語 & robotics")]}
         assert tools.api_key == "" and tools.provider == "duckduckgo"
         assert result == {"query": "日本語 & robotics", "results": [
             {"title": "調査結果", "url": "https://example.com/article", "snippet": "資料の抜粋"}], "untrusted": True}

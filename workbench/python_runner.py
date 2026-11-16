@@ -24,6 +24,13 @@ from .windows_sandbox import SandboxError, run_isolated
 # ACL read/modify/write and cleanup must not race between Python executions.
 _RUN_LOCK = threading.Lock()
 _MAX_TRANSFER = 32 * 1024 * 1024
+_MAX_FILES = 16
+_WORKSPACE_LIMIT = 64 * 1024 * 1024
+# The in-sandbox test helper: sandbox_pytest.py is copied to a reserved folder
+# (no declared name can collide with it) that is first on the script's sys.path.
+_HELPER_SOURCE = Path(__file__).with_name('sandbox_pytest.py')
+_HELPER_FOLDER, _HELPER_MODULE = '.awb_lib', 'awb_pytest'
+_RUN_TESTS = 'import awb_pytest; raise SystemExit(awb_pytest.run())'
 
 
 class _Workspace:
@@ -62,14 +69,18 @@ def _name(value):
         raise HarnessError('Sandbox names must be relative paths')
     if any(part.casefold().startswith('.awb_') for part in path.parts):
         raise HarnessError('Sandbox name uses a reserved prefix')
+    if path.parts and path.parts[0].casefold().split('.')[0] == _HELPER_MODULE:
+        # `import awb_pytest` always means the built-in helper; a file of that
+        # name in the working directory could never be imported.
+        raise HarnessError(f'Sandbox name {_HELPER_MODULE} is reserved for the built-in test helper')
     return path
 
 
-def _mappings(items, *, outputs=False):
+def _mappings(items, *, outputs=False, limit=_MAX_FILES):
     if items is None:
         return []
-    if not isinstance(items, list) or len(items) > 16:
-        raise HarnessError('Python inputs and outputs must each contain at most 16 files')
+    if not isinstance(items, list) or len(items) > limit:
+        raise HarnessError(f'Python inputs and outputs must each contain at most {limit} files')
     result, seen = [], set()
     keys = {'path', 'name', 'expected_sha256'} if outputs else {'path', 'name'}
     for item in items:
@@ -168,13 +179,151 @@ def _integer(config, name, default, low, high):
     return value
 
 
-def _execute(config, harness, code, inputs, outputs, on_complete, cancel):
+def _prepare_workspace(workspace, code, libraries, timeout):
+    """Write the script, the test helper and the bootstrap; return the bootstrap.
+
+    `-I -S` leaves only the standard library on sys.path. The bootstrap adds the
+    helper folder and the working directory first (as `python script.py` does
+    for the script's folder), then the selected library folders.
+    """
+    script = workspace / '.awb_script.py'
+    script.write_text(code, encoding='utf-8')
+    helper = workspace / _HELPER_FOLDER
+    try:
+        source = _HELPER_SOURCE.read_bytes()
+    except OSError as exc:
+        raise HarnessError('The Python test helper (sandbox_pytest.py) is missing from this installation') from exc
+    helper.mkdir()
+    (helper / f'{_HELPER_MODULE}.py').write_bytes(source)
+    bootstrap = workspace / '.awb_bootstrap.py'
+    bootstrap.write_text('import sys,runpy,os,time\n'
+                         # awb_pytest budgets its own deadline from these two.
+                         f'os.environ["AWB_PYTHON_TIMEOUT"]={str(timeout)!r}\n'
+                         'os.environ["AWB_PYTHON_STARTED"]=repr(time.monotonic())\n'
+                         f'sys.path[:0]={[str(helper), str(workspace)]!r}\n'
+                         f'sys.path.extend({[str(path) for path in libraries]!r})\n'
+                         f'os.chdir({str(workspace)!r})\n'
+                         f'os.environ["TEMP"]=os.environ["TMP"]={str(workspace)!r}\n'
+                         f'sys.argv=[{str(script)!r}]\n'
+                         f'runpy.run_path({str(script)!r},run_name="__main__")\n', encoding='utf-8')
+    return bootstrap
+
+
+_FILE_DENIED = re.compile(r'\[Errno 13\]|\[WinError 5\]')
+_FILE_MISSING = re.compile(r'FileNotFoundError|NotADirectoryError|\[Errno 2\]|\[WinError [23]\]')
+_PROCESS = re.compile(r'subprocess\.py|CreateProcess|popen_spawn_win32|\bos\.(?:system|popen|startfile|spawn\w*|exec\w*)\(')
+_SOCKET_DENIED = re.compile(r'WinError 10013')
+_CONNECTION = re.compile(r'gaierror|getaddrinfo failed|URLError|ConnectionError|ConnectTimeout|NameResolutionError'
+                         r'|\[WinError 100(?:5[01]|6[015])\]')
+_MODULE_MISSING = re.compile(r"ModuleNotFoundError: No module named '([^'\r\n]{1,80})'")
+# A quoted absolute path: drive, UNC or rooted. Exception messages print paths
+# with repr(), so backslashes may be doubled.
+_QUOTED_PATH = re.compile(r'''(['"])((?:[A-Za-z]:[\\/]|\\\\|/)[^'"\r\n\t<>|*?]{1,300})\1''')
+_HINT_PATHS, _HINT_PATH_LENGTH, _HINT_LENGTH = 3, 200, 1800
+
+
+def _host_paths(stderr, internal=()):
+    """Absolute host paths the script named, at most a few and each bounded.
+
+    They come from exception messages and from the source lines a traceback
+    quotes. Traceback frame lines are skipped, and anything inside the
+    workspace, interpreter or library folders is the sandbox's own.
+    """
+    internal = [str(path).casefold().rstrip('\\/') for path in internal]
+    host = []
+    for line in stderr.splitlines():
+        if line.lstrip().startswith('File "'):
+            continue
+        for match in _QUOTED_PATH.finditer(line):
+            path = match.group(2).rstrip()
+            if re.search(r'(?<!\\)\\(?!\\)', path) is None:  # no single backslash: repr()-doubled
+                path = path.replace('\\\\', '\\')
+            folded = path.casefold()
+            if 'awb-python-' in folded or any(folded == root or folded.startswith((root + '\\', root + '/'))
+                                              for root in internal):
+                continue
+            # A rooted '/x' string in a source line is as likely a URL path.
+            if (4 <= len(path) <= _HINT_PATH_LENGTH and path not in host and len(host) < _HINT_PATHS
+                    and (path[0] != '/' or not line[:1].isspace())):
+                host.append(path)
+    return host
+
+
+def failure_hint(exit_code, termination_reason, stderr, *, timeout=None, network_enabled=False,
+                 output_limit=None, internal=()):
+    """Explain a recognisable sandbox failure to the model, or return None.
+
+    Pure: it reads only the exit status and stderr text of a finished run. The
+    hint quotes paths that already appear in stderr and never file contents.
+    """
+    if termination_reason == 'cancelled' or (exit_code == 0 and not termination_reason):
+        return None
+    stderr = stderr if isinstance(stderr, str) else ''
+    hints = []
+    if termination_reason == 'timeout':
+        hints.append(f'The script was stopped at the {timeout or "configured"} s time limit; nothing was published. '
+                     'Typical causes: waiting on a blocked connection or on input(), an endless loop, or too much work '
+                     'for one call. Do less per call and print progress to see where it stops. Run tests with '
+                     f'`{_RUN_TESTS}`: it has its own deadline and names the test that was running.')
+    elif termination_reason == 'output_limit':
+        hints.append(f'stdout+stderr exceeded the {output_limit or "configured"}-byte limit and the script was stopped; '
+                     'nothing was published. Print summaries, not whole files, and write large results to a declared output.')
+    elif termination_reason == 'workspace_limit':
+        hints.append(f'The working directory exceeded its limit ({_WORKSPACE_LIMIT // (1024 * 1024)} MiB, 2048 entries, '
+                     'no links or alternate data streams) and the script was stopped; nothing was published. '
+                     'Create fewer or smaller temporary files and delete them when done.')
+    paths = _host_paths(stderr, internal)
+    process = _PROCESS.search(stderr) is not None
+    if process:
+        hints.append('Starting other programs is blocked in the sandbox (subprocess, os.system, multiprocessing, pip, '
+                     f'the pytest command). Do the work in this script with imports; to run tests call `{_RUN_TESTS}`.')
+    # Access denied without a named host path has other causes (a refused
+    # CreateProcess, a directory opened as a file); a missing relative file
+    # usually means an undeclared input.
+    denied = _FILE_DENIED.search(stderr) is not None
+    missing = _FILE_MISSING.search(stderr) is not None
+    if (paths and (denied or missing)) or (missing and not process):
+        example = paths[0] if paths else r'C:\folder\data.csv'
+        name = re.split(r'[\\/]', example.rstrip('\\/'))[-1]
+        if not name or name.casefold().startswith('.awb_') or ':' in name:
+            name = 'data.csv'
+        hints.append(('Host files cannot be opened by their host path inside the script. ' if paths else '') +
+                     'The script runs in a private working directory that holds only the declared inputs and the '
+                     f'files it creates. For each file to read (up to {_MAX_FILES}), add '
+                     "{'path': <host path>, 'name': <relative name>} to inputs and open it by that name, e.g. "
+                     f"inputs=[{{'path': '{example}', 'name': '{name}'}}] then open('{name}'). "
+                     'For each file to save, write it to a relative name and add '
+                     "{'path': <host path>, 'name': <relative name>, 'expected_sha256': 'missing' for a new file "
+                     'or the current sha256 of the file being replaced} to outputs.'
+                     + (' Host paths in the error: ' + '; '.join(paths) if paths else ''))
+    if _SOCKET_DENIED.search(stderr) or (not network_enabled and _CONNECTION.search(stderr)):
+        if network_enabled:
+            hints.append('WinError 10013 with network access enabled: Windows still blocks loopback '
+                         '(localhost/127.0.0.1) connections from the sandbox, including local servers and '
+                         'asyncio socket pairs. Only outbound connections to other hosts can work.')
+        else:
+            hints.append('Network access is disabled for this run: sockets are refused (WinError 10013), including '
+                         'localhost and libraries that open a socket on import (asyncio event loops, pytest plugins '
+                         'such as pytest-asyncio). Do not retry; work offline or ask the human to enable Python '
+                         f'network access. For tests use `{_RUN_TESTS}`, which loads no such plugins.')
+    module = _MODULE_MISSING.search(stderr)
+    if module:
+        hints.append(f"No module named '{module.group(1)}': only the standard library and the library folders the "
+                     'human selected can be imported, and packages cannot be installed from the script. '
+                     'For your own module, declare its .py file in inputs (the working directory is on sys.path).'
+                     + (' awb_pytest.run() also works without pytest (built-in simple runner).'
+                        if module.group(1) == 'pytest' else ''))
+    text = ' '.join(hints)
+    return (text if len(text) <= _HINT_LENGTH else text[:_HINT_LENGTH - 3] + '...') or None
+
+
+def _execute(config, harness, code, inputs, outputs, on_complete, cancel, input_limit=_MAX_FILES):
     if not config.get('enabled', False):
         raise HarnessError('Python execution is disabled in settings')
     if os.name != 'nt':
         raise HarnessError('Python execution requires Windows LPAC; no unrestricted fallback is available')
     code = _string(code, 'Python code', 200000)
-    inputs, outputs = _mappings(inputs), _mappings(outputs, outputs=True)
+    inputs, outputs = _mappings(inputs, limit=input_limit), _mappings(outputs, outputs=True)
     timeout = _integer(config, 'timeout_seconds', 60, 1, 600)
     memory = _integer(config, 'max_memory_mb', 512, 128, 8192)
     output_limit = _integer(config, 'max_output_bytes', 65536, 1024, 1048576)
@@ -212,19 +361,11 @@ def _execute(config, harness, code, inputs, outputs, on_complete, cancel):
                 target.write_bytes(data)
             for item in outputs:
                 (workspace / item['name']).parent.mkdir(parents=True, exist_ok=True)
-            script = workspace / '.awb_script.py'
-            script.write_text(code, encoding='utf-8')
-            bootstrap = workspace / '.awb_bootstrap.py'
-            bootstrap.write_text('import sys,runpy,os\n'
-                                 f'sys.path.extend({[str(path) for path in libraries]!r})\n'
-                                 f'os.chdir({str(workspace)!r})\n'
-                                 f'os.environ["TEMP"]=os.environ["TMP"]={str(workspace)!r}\n'
-                                 f'sys.argv=[{str(script)!r}]\n'
-                                 f'runpy.run_path({str(script)!r},run_name="__main__")\n', encoding='utf-8')
+            bootstrap = _prepare_workspace(workspace, code, libraries, timeout)
             try:
                 result = run_isolated([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8', str(bootstrap)],
                                       workspace, access, timeout=timeout, memory_mb=memory,
-                                      output_limit=output_limit, workspace_limit=64 * 1024 * 1024, cancel=cancel,
+                                      output_limit=output_limit, workspace_limit=_WORKSPACE_LIMIT, cancel=cancel,
                                       network_enabled=network_enabled)
             except SandboxError as exc:
                 if exc.preserve_private:
@@ -233,6 +374,12 @@ def _execute(config, harness, code, inputs, outputs, on_complete, cancel):
                 raise HarnessError(str(exc)) from exc
             result['outputs'] = []
             if cancel.is_set() or result['exit_code'] != 0 or result['termination_reason']:
+                hint = None if cancel.is_set() else failure_hint(
+                    result['exit_code'], result['termination_reason'], result.get('stderr', ''),
+                    timeout=timeout, network_enabled=network_enabled, output_limit=output_limit,
+                    internal=[workspace, executable.parent, *libraries])
+                if hint:
+                    result['hint'] = hint
                 return result
             # Validate and read all generated files before the first publication.
             local = PathHarness([temporary], [], max_file_bytes=harness.max_file_bytes)
@@ -258,7 +405,87 @@ def _execute(config, harness, code, inputs, outputs, on_complete, cancel):
             return result
 
 
-async def execute_python(config, harness, code, inputs=None, outputs=None, *, on_complete=None):
+# run_tests: what the app copies into the sandbox for a test run, and the script it runs there.
+_TEST_SUFFIXES = frozenset(('.py', '.pyi', '.json', '.csv', '.tsv', '.txt', '.md', '.toml', '.ini', '.cfg', '.yaml', '.yml'))
+_TEST_SKIPPED_FOLDERS = frozenset(('__pycache__', 'node_modules', 'venv', 'env', 'build', 'dist', 'site-packages'))
+MAX_TEST_PATHS, MAX_TEST_FILES, _MAX_TEST_FILE_BYTES, _MAX_TEST_DEPTH = 16, 200, 2 * 1024 * 1024, 8
+TEST_CODE = ('import os, sys\n'
+             '# A src/ folder next to the tests is importable, as in the usual project layout.\n'
+             'if os.path.isdir("src"):\n'
+             '    sys.path.insert(1, os.path.abspath("src"))\n'
+             'import awb_pytest\n'
+             'raise SystemExit(awb_pytest.run())\n')
+
+
+def collect_test_inputs(harness, paths):
+    """Expand host files and folders into python inputs for a test run.
+
+    Returns (inputs, skipped). Sandbox names keep the layout below the folder
+    all paths share, so `tests/` still finds `src/` or the package beside it.
+    A folder contributes its source and small data files, not caches or
+    virtual environments. Every read still goes through the harness.
+    """
+    if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_TEST_PATHS or not all(isinstance(item, str) for item in paths):
+        raise HarnessError(f'paths must list 1 to {MAX_TEST_PATHS} files or folders')
+    resolved = [harness.resolve(_string(item, 'path', 4096)) for item in paths]
+    folders = [path if path.is_dir() else path.parent for path in resolved]
+    try:
+        base = Path(os.path.commonpath([str(folder) for folder in folders]))
+    except ValueError as exc:
+        raise HarnessError('All test paths must be on one drive') from exc
+    files, seen, skipped = [], set(), 0
+
+    def add(path):
+        nonlocal skipped
+        key = str(path).casefold()
+        if key in seen:
+            return
+        relative = path.relative_to(base)
+        try:
+            _name(relative.as_posix())
+        except HarnessError:
+            skipped += 1
+            return
+        if len(files) >= MAX_TEST_FILES:
+            raise HarnessError(f'More than {MAX_TEST_FILES} files; name the folder that holds only the code and its tests')
+        seen.add(key)
+        files.append({'path': str(path), 'name': relative.as_posix()})
+
+    for path in resolved:
+        if not path.is_dir():
+            add(path)
+            continue
+        pending = [(path, 0)]
+        while pending:
+            directory, depth = pending.pop()
+            for entry in harness.list_directory(str(directory))['entries']:
+                name, child = entry['name'], Path(entry['path'])
+                if entry['kind'] == 'directory':
+                    if (depth < _MAX_TEST_DEPTH and not name.startswith('.') and name.casefold() not in _TEST_SKIPPED_FOLDERS
+                            and not name.casefold().endswith('.egg-info')):
+                        pending.append((child, depth + 1))
+                elif (child.suffix.lower() in _TEST_SUFFIXES and not name.startswith('.')
+                        and entry['bytes'] <= _MAX_TEST_FILE_BYTES):
+                    add(child)
+                else:
+                    skipped += 1
+    if not any(item['name'].lower().endswith('.py') for item in files):
+        raise HarnessError('No Python files found in the given paths')
+    return sorted(files, key=lambda item: item['name'].casefold()), skipped
+
+
+async def execute_tests(config, harness, paths):
+    """run_tests: copy the given host files into the sandbox and run their tests there.
+
+    Nothing is written back to the host. The result is execute_python's, plus
+    the sandbox names that were copied.
+    """
+    inputs, skipped = await asyncio.to_thread(collect_test_inputs, harness, paths)
+    result = await execute_python(config, harness, TEST_CODE, inputs, None, input_limit=MAX_TEST_FILES)
+    return {**result, 'files': [item['name'] for item in inputs], 'files_skipped': skipped}
+
+
+async def execute_python(config, harness, code, inputs=None, outputs=None, *, on_complete=None, input_limit=_MAX_FILES):
     """Execute with a python-settings dict. Callback receives each saved receipt.
 
     Cancellation kills and waits for the OS job and cleanup before propagating.
@@ -277,7 +504,8 @@ async def execute_python(config, harness, code, inputs=None, outputs=None, *, on
                 pass
     def dispatch(receipt):
         loop.call_soon_threadsafe(complete, receipt)
-    task = asyncio.create_task(asyncio.to_thread(_execute, config, harness, code, inputs, outputs, dispatch, cancel))
+    task = asyncio.create_task(asyncio.to_thread(_execute, config, harness, code, inputs, outputs, dispatch, cancel,
+                                                 input_limit))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

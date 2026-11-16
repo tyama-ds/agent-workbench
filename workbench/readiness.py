@@ -1,6 +1,7 @@
 """Local admission preview. No network, inference, writes, or capability guesses."""
 from .providers import _endpoint
 from .config import ORCHESTRATION_DEFAULTS
+from .webtools import SEARCH_GUARD
 
 
 def summarize(prepared, *, orchestration=None, adaptive_team=False):
@@ -39,6 +40,11 @@ def summarize(prepared, *, orchestration=None, adaptive_team=False):
     formation = ({'adaptive_team': True, 'formation_rules': {
         'workers': {'low': 1, 'medium': 2, 'high': 3}, 'reviewer_slots': 1,
         'min_cap': 2, 'manual_counts_used': False}} if adaptive_team else {})
+    key_missing = web.enabled and web.provider == 'brave' and not web.search_key_set()
+    if key_missing:
+        warnings.append({'code': 'search_key_missing', 'message':
+            'Web 検索に Brave Search を選んでいますが、API キーが未設定です。このままでは検索できません（ページの取得は使えます）。'
+            '設定 → Web 検索・ページ取得 でキーをセットしてください。'})
     return {'ok': True, 'can_start': True, 'blockers': [], 'warnings': warnings, **formation,
         'orchestration': orchestration or {**ORCHESTRATION_DEFAULTS, **config.get('orchestration', {})},
         'inference_tested': False, 'tools_tested': False, 'destinations': destinations,
@@ -46,4 +52,8 @@ def summarize(prepared, *, orchestration=None, adaptive_team=False):
                   'write_roots': [str(p) for p in harness.write_roots],
                   'deny_roots': [str(p) for p in harness.deny_roots]},
         'web': {'enabled': web.enabled, 'search_configured': bool(web.enabled), 'fetch_enabled': web.enabled,
-                'search_endpoint': web.endpoint if web.enabled else '', 'proxy': web.proxy if web.enabled else None}}
+                'search_endpoint': web.endpoint if web.enabled else '', 'proxy': web.proxy if web.enabled else None,
+                'search_provider': web.provider if web.enabled else '', **({'search_key_missing': True} if key_missing else {}),
+                # Only present while DuckDuckGo is refusing this PC (bot check).
+                **({'search_blocked_minutes': SEARCH_GUARD.status()['blocked_minutes']}
+                   if web.enabled and web.provider == 'duckduckgo' and SEARCH_GUARD.status()['blocked'] else {})}}

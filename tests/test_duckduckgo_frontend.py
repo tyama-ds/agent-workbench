@@ -22,12 +22,15 @@ def check(source):
     settings_check(SETUP + source)
 
 
-def test_search_key_controls_removed_while_model_credentials_remain():
+def test_retired_search_key_controls_stay_removed_and_brave_is_an_explicit_option():
+    """The old always-present search key field and its environment variable are
+    gone. Brave Search is offered as a choice; its key uses the shared control."""
     for name in ('searchSecret', 'setSearchSecret', 'searchSecretStatus', 'searchCredentialTarget'):
         assert name not in APP and name not in HTML
     assert 'BRAVE_SEARCH_API_KEY' not in APP
     assert "['brave','Brave Search']" not in APP
-    assert "['duckduckgo','DuckDuckGo（API キー不要）']" in APP
+    assert "['duckduckgo','DuckDuckGo（API キー不要）'],['brave','Brave Search（自分の API キーを使う）'],['searxng'," in APP
+    assert 'searchKeyInput' not in HTML  # built only while Brave Search is the saved engine
     assert "['api_key_env','API キーの環境変数名','text','OPENAI_API_KEY']" in APP
     assert "'/api/secrets'" in APP
 
@@ -148,4 +151,23 @@ requests[0].resolve({config:CONFIG,config_revision:5,secret_status:{local:false,
 assert.equal(searchField('provider').value,'duckduckgo');assert(searchField('endpoint').readOnly);
 assert.equal(searchField('endpoint').value,DUCKDUCKGO_SEARCH_ENDPOINT);assert.equal(searchField('enabled').checked,false);
 assert.deepEqual(runPayload(),task);assert(!ui.settingsDirty);assert.equal(requests.length,1);
+''')
+
+
+def test_brave_has_a_fixed_readonly_endpoint_and_saves_it_without_any_key_field():
+    check(r'''
+await setup();const endpoint=searchField('endpoint');
+chooseSearch('searxng');endpoint.value='https://edited.example/search';
+chooseSearch('brave');assert.equal(endpoint.value,BRAVE_SEARCH_ENDPOINT);assert(endpoint.readOnly);
+assert.equal(collectConfig().search.provider,'brave');assert.equal(collectConfig().search.endpoint,'https://api.search.brave.com/res/v1/web/search');
+endpoint.value='https://must-not-be-sent.example/search';
+const pending=submit(),submitted=requests[0].options.body.config;
+assert.equal(submitted.search.provider,'brave');assert.equal(submitted.search.endpoint,BRAVE_SEARCH_ENDPOINT);
+assert.equal(submitted.search.api_key_env,'');assert.equal(submitted.search.enabled,false);
+assert.deepEqual(Object.keys(submitted.search).sort(),Object.keys(CONFIG.search).sort());
+accept();await pending;assert.equal(ui.config.search.provider,'brave');
+// The key control appears once Brave Search is the saved engine.
+assert(credentialControls().some(item=>item.id==='search'));
+chooseSearch('searxng');assert(!endpoint.readOnly);assert.equal(endpoint.value,'https://edited.example/search');
+chooseSearch('duckduckgo');assert.equal(endpoint.value,DUCKDUCKGO_SEARCH_ENDPOINT);assert(endpoint.readOnly);
 ''')

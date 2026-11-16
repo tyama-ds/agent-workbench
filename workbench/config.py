@@ -11,6 +11,7 @@ from pathlib import Path, PureWindowsPath
 from urllib.parse import urlsplit
 
 from .runtime_paths import RESOURCE_ROOT as ROOT
+from .securestore import SEARCH_BINDING
 DEFAULT = json.loads((ROOT / 'docs' / 'interface.json').read_text(encoding='utf-8'))['config']
 ID = re.compile(r'[a-zA-Z][a-zA-Z0-9_-]{0,63}\Z')
 ENV = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}\Z')
@@ -19,7 +20,10 @@ LAN = [ipaddress.ip_network(n) for n in ('10.0.0.0/8', '172.16.0.0/12', '192.168
 COPILOT_PROFILE_ID = 'copilot-agent'
 ORCHESTRATION_DEFAULTS = {'delegation_level': 1, 'workers_per_pm': 2, 'max_delegation_depth': 3}
 DUCKDUCKGO_ENDPOINT = 'https://html.duckduckgo.com/html/'
-SEARCH_KEY_UNSUPPORTED = 'Web 検索は API キー不要です。検索キーは保存できません。'
+# Brave Search (optional, needs the human's own API key). The endpoint is fixed, so the key has one destination.
+BRAVE_ENDPOINT = SEARCH_BINDING['base_url']
+SEARCH_KEY_UNSUPPORTED = ('DuckDuckGo と SearXNG は API キー不要です。検索キーを保存できるのは、'
+                          '検索エンジンに Brave Search を選んで設定を保存したあとだけです。')
 
 
 def effective_profiles(config):
@@ -259,13 +263,18 @@ def validate_settings(raw, *, check_paths=True):
         raise ValueError('検索 API endpoint を指定してください')
     number(search['timeout_seconds'], 'search timeout', 1, 60)
     number(search['max_response_bytes'], 'search response limit', 1024, 4 * 1024 * 1024, integer=True)
-    if search['provider'] == 'brave' or (search['provider'] == 'searxng' and not search['endpoint']):
+    if search['provider'] == 'brave' and search['endpoint'].rstrip('/') == BRAVE_ENDPOINT:
+        # The key-based option. Its key is never part of settings: it lives in
+        # the session or the encrypted store, like a model provider's key.
+        search['endpoint'] = BRAVE_ENDPOINT
+    elif search['provider'] == 'brave' or (search['provider'] == 'searxng' and not search['endpoint']):
+        # A retired Brave configuration (custom endpoint, key from the environment) becomes DuckDuckGo.
         search.update(provider='duckduckgo', endpoint=DUCKDUCKGO_ENDPOINT)
     elif search['provider'] == 'duckduckgo':
         if search['endpoint'] != DUCKDUCKGO_ENDPOINT.rstrip('/'):
             raise ValueError('DuckDuckGo の接続先は固定です')
         search['endpoint'] = DUCKDUCKGO_ENDPOINT
-    # Kept as an empty compatibility field; search never consumes credentials.
+    # Kept as an empty compatibility field; search never reads a key from the environment.
     search['api_key_env'] = ''
     local = value['local']
     for field in ('gpu_guard_enabled', 'gpu_guard_fail_closed'):
@@ -379,6 +388,17 @@ class Settings:
             saved = self.credential_store.key(profile)
         return self.secrets.get(profile['id']) or saved or os.environ.get(profile.get('api_key_env', ''), '')
 
+    def search_key(self):
+        """The Brave Search key, or '' when another engine is selected or none is set."""
+        if self.value['search']['provider'] != 'brave':
+            return ''
+        if self.secrets.get('search'):
+            return self.secrets['search']
+        if self.credential_store is None:
+            return ''
+        self.credential_store.check_bindings(self.value['providers'])
+        return self.credential_store.key(SEARCH_BINDING)
+
     def secret_sources(self):
         store = self.credential_store
         if store is not None:
@@ -391,7 +411,10 @@ class Settings:
             source = 'none' if blocked else ('session' if self.secrets.get(ident) else
                      'saved' if saved else 'environment' if os.environ.get(profile.get('api_key_env', ''), '') else 'none')
             result[ident] = {'source': source, 'saved': saved}
-        result['search'] = {'source': 'none', 'saved': False}
+        # A search key counts only while Brave Search is the selected engine.
+        saved = bool(store and store.contains('search')) and self.value['search']['provider'] == 'brave'
+        result['search'] = {'source': 'none' if blocked or self.value['search']['provider'] != 'brave' else
+                            'session' if self.secrets.get('search') else 'saved' if saved else 'none', 'saved': saved}
         return result
 
     def public(self):

@@ -24,7 +24,7 @@ MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
     'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
     'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
-    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries', 'approval_mode', 'turn_work'))
+    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries', 'approval_mode', 'turn_work', 'test_check'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
     'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind', 'recovery', 'read_only_worker', 'plan', 'turn_player'))
@@ -128,7 +128,7 @@ def redact_document(document, redact):
         restore(before, after, ('run_id', 'agent_id', 'from_agent_id', 'to_agent_id'))
         if isinstance(before.get('mail_id'), str) and re.fullmatch(r'm-[0-9a-f]{32}', before['mail_id']):
             after['mail_id'] = before['mail_id']
-        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped', 'restored', 'approval', 'approval_resolved', 'memo_proposal', 'model_fallback', 'plan', 'turn', 'turn_rejected', 'turn_pass', 'turns_complete'})
+        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped', 'restored', 'approval', 'approval_resolved', 'memo_proposal', 'model_fallback', 'plan', 'turn', 'turn_rejected', 'turn_pass', 'turns_complete', 'team_settled', 'stall_notice', 'tests_run'})
         enum(before, after, 'message_type', {'worker_report', 'worker_error', 'worker_notice', 'peer_message'})
         enum(before, after, 'delivery_state', {'queued', 'context_consumed'})
     for before, after in zip(document['board'], result['board']):
