@@ -45,7 +45,7 @@ def test_brave_migrates_without_changing_policy_or_input(enabled):
     result = validate_settings(raw)['search']
     assert raw == before
     assert result == {**raw['search'], 'provider': 'duckduckgo',
-                      'endpoint': DUCKDUCKGO_ENDPOINT, 'api_key_env': '', 'hourly_limit': 0}
+                      'endpoint': DUCKDUCKGO_ENDPOINT, 'api_key_env': '', 'hourly_limit': 0, 'browser_bing': False}
 
 
 @pytest.mark.parametrize('provider', ['searxng', 'brave'])
@@ -70,7 +70,7 @@ def test_configured_searxng_keeps_destination_and_policy(enabled):
                       'api_key_env': 'OLD_SEARCH_ENV', 'proxy_url': 'http://127.0.0.1:8181',
                       'timeout_seconds': 12, 'max_response_bytes': 131072}}
     result = validate_settings(raw)['search']
-    assert result == {**raw['search'], 'api_key_env': '', 'hourly_limit': 0}
+    assert result == {**raw['search'], 'api_key_env': '', 'hourly_limit': 0, 'browser_bing': False}
 
 
 @pytest.mark.parametrize('endpoint', [{}, {'endpoint': ''}, {'endpoint': DUCKDUCKGO_ENDPOINT},

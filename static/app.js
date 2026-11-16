@@ -52,6 +52,7 @@ const FIELD_GROUPS = {
     ['timeout_seconds','検索タイムアウト（秒）','number',1],
     ['max_response_bytes','検索応答の最大サイズ（byte）','number',1024],
     ['hourly_limit','1時間あたりの検索回数の上限（0 は方式ごとの既定）','number',0,undefined,'この PC から検索サービスへ送る検索の回数です。0 のときは方式ごとの既定を使います（ブラウザー検索 200、DuckDuckGo 60、Brave Search 120、SearXNG は上限なし）。手元にある結果の使い回しは数えません。1つの作業が使えるのは上限の半分までです。検索サービスにボット確認を出されたあとの1時間は、自動的に半分に下げます。'],
+    ['browser_bing','ブラウザー検索の予備に Bing も使う','checkbox',undefined,undefined,'検索エンジンに「ブラウザー検索」を選んだときだけ使います。オフ（既定）では DuckDuckGo だけで検索します。オンにすると、DuckDuckGo で検索できないときに Bing の検索結果ページも開きます。Bing は、検索を続けると人による確認を求めることが多いサービスです。'],
   ],
   local: [
     ['max_concurrent_requests','Local の同時リクエスト上限','range',1,'1','同じモデルの作業者が複数いても、この上限に従って順番待ちします。Copilot の上限とは別です。',16],

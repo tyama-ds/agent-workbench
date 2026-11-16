@@ -4,6 +4,31 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev61 — Bing is off unless the human turns it on; acceptance failures say why (2026-11-16)
+
+The human decided the terms question for browser search: DuckDuckGo is fine.
+Bing was not part of that decision, and on the real machine it asked for a
+verification from the second search on, so leaving it out costs nothing.
+
+- `search.browser_bing` (default false; settings: 「ブラウザー検索の予備に Bing
+  も使う」). Off: browser search uses duckduckgo.com and then DuckDuckGo's
+  HTML page. On: Bing is tried between them, as before.
+- No terms notice is attached to DuckDuckGo. The README's general sentence
+  about engines' terms is replaced by one about Bing next to its switch.
+- Edge acceptance: the adaptive script printed only `ok:false`; its report
+  is a build artifact that cannot be fetched from every environment. It now
+  prints the reasons. The first failure read this way was "Read-only
+  process census exceeded 10000ms": `powershell.exe` asking WMI for the
+  process list took longer than ten seconds on a shared runner and then
+  ended normally. The wait is 60 seconds and each census records its time.
+- Edge acceptance, "task dialog stays open after start" (seen now and then
+  since dev53, cause still unknown): the page had the server's acceptance
+  and was waiting to see the run in the list. A failed run now reports the
+  page's last `/api` requests with durations, a direct state request, and
+  where the test server's loop was whenever it did not answer for two
+  seconds, so the next occurrence tells a silent server from a page that
+  stopped updating.
+
 ## 0.1.1.dev60 — Search allowance by method, a share per run, and a warning before it runs out (2026-11-16)
 
 Browser search worked on the real machine (35 of 35 searches in one research

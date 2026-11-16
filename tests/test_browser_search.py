@@ -141,7 +141,7 @@ def test_the_first_engine_answers_and_the_model_gets_the_usual_shape():
 def test_a_bot_check_pauses_only_that_engine_and_the_next_one_is_used(fresh_engine_guards):
     async def run():
         page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG]})
-        search = BrowserSearch(page)
+        search = BrowserSearch(page, browser_search.chosen_engines(bing=True))
         first = await search.search('q one', 3)
         assert first['engine'] == 'bing' and first['results'][0]['url'] == 'https://www.meti.go.jp/policy/ai.html'
         assert fresh_engine_guards['duckduckgo_web'].status()['blocked'] and not fresh_engine_guards['bing'].status()['blocked']
@@ -154,10 +154,52 @@ def test_a_bot_check_pauses_only_that_engine_and_the_next_one_is_used(fresh_engi
     asyncio.run(run())
 
 
+def test_bing_is_not_opened_unless_the_human_turned_it_on(fresh_engine_guards, tmp_path):
+    async def run():
+        # The human's decision to read result pages this way covered DuckDuckGo only.
+        assert [engine['name'] for engine in browser_search.chosen_engines()] == ['duckduckgo_web', 'duckduckgo_html']
+        assert browser_search.chosen_engines(bing=True) == browser_search.ENGINES
+        assert browser_search.chosen_engines(bing='yes') == browser_search.chosen_engines()
+        page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG]})
+        first = await BrowserSearch(page).search('q one', 3)
+        assert first['engine'] == 'duckduckgo_html' and not any('bing.com' in call[0] for call in calls)
+        # When DuckDuckGo wants a person on both pages, the person is asked; Bing is still not tried.
+        page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG_CHECK]})
+        for guard in fresh_engine_guards.values():
+            guard.reset()
+        with pytest.raises(SearchChallenge) as challenge:
+            await BrowserSearch(page).search('q two', 3)
+        assert challenge.value.engines == ['duckduckgo_web', 'duckduckgo_html'] and 'Bing' not in str(challenge.value)
+        assert not any('bing.com' in call[0] for call in calls)
+
+        # The setting reaches a run's search: off by default, on only as true.
+        for guard in fresh_engine_guards.values():
+            guard.reset()
+        for setting, engine in (({}, 'duckduckgo_html'), ({'browser_bing': False}, 'duckduckgo_html'), ({'browser_bing': True}, 'bing')):
+            page, calls = pages({'web': [WEB_CHECK], 'bing': [BING], 'html': [DDG]})
+            tools = WebTools({'search': {'enabled': True, 'provider': 'browser', **setting}})
+            tools.use_browser(page)
+            answer = await tools.execute('web_search', {'query': 'q ' + engine + str(setting), 'limit': 2})
+            assert answer['engine'] == engine, setting
+            for guard in fresh_engine_guards.values():
+                guard.reset()
+        with pytest.raises(webtools.WebToolError, match='browser_bing'):
+            WebTools({'search': {'enabled': True, 'provider': 'browser', 'browser_bing': 'yes'}})
+    asyncio.run(run())
+    raw = json.loads(json.dumps(DEFAULT))
+    assert raw['search']['browser_bing'] is False and validate_settings(raw)['search']['browser_bing'] is False
+    raw['search']['browser_bing'] = True
+    assert validate_settings(raw)['search']['browser_bing'] is True
+    for bad in ('true', 1, None):
+        raw['search']['browser_bing'] = bad
+        with pytest.raises(ValueError, match='Bing'):
+            validate_settings(raw)
+
+
 def test_when_every_engine_asks_for_a_check_a_person_is_needed(fresh_engine_guards):
     async def run():
         page, calls = pages({'web': [WEB_CHECK, WEB], 'bing': [BING_STEP], 'html': [DDG_CHECK]})
-        search = BrowserSearch(page)
+        search = BrowserSearch(page, browser_search.chosen_engines(bing=True))
         with pytest.raises(SearchChallenge) as challenge:
             await search.search('q', 5)
         assert challenge.value.engines == ['duckduckgo_web', 'bing', 'duckduckgo_html'] and 'human check' in str(challenge.value)
@@ -177,11 +219,11 @@ def test_an_unfinished_human_check_and_an_unreadable_page_are_errors_not_empty_r
     async def run():
         page, _ = pages({'web': [WEB_CHECK], 'bing': [BING_CHECK], 'html': [DDG_CHECK]})
         with pytest.raises(ValueError, match='was not completed'):
-            await BrowserSearch(page).human_check('q', 5, ['bing'])
+            await BrowserSearch(page, browser_search.ENGINES).human_check('q', 5, ['bing'])
         page, _ = pages({'web': ['<html>layout changed</html>'], 'bing': [ValueError('The browser could not open the search page: x')],
                          'html': ['<html>also changed</html>']})
         with pytest.raises(ValueError, match='Browser search failed: DuckDuckGo: the result page was not recognised') as failure:
-            await BrowserSearch(page).search('q', 5)
+            await BrowserSearch(page, browser_search.ENGINES).search('q', 5)
         assert not isinstance(failure.value, SearchChallenge) and 'Bing: The browser could not open' in str(failure.value)
         page, _ = pages({'web': [WEB_EMPTY], 'bing': [BING], 'html': [DDG]})
         assert (await BrowserSearch(page).search('zzzz', 5))['results'] == []  # a real "no results" is an answer

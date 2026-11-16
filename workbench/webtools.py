@@ -417,6 +417,10 @@ class WebTools:
         self.hourly_limit, self._sent = config.get("hourly_limit", 0), 0
         if type(self.hourly_limit) is not int or not 0 <= self.hourly_limit <= 5000:
             raise WebToolError("Search hourly limit must be an integer 0..5000")
+        # Browser search only: Bing as a second engine is the human's separate choice (off unless they turn it on).
+        self.browser_bing = config.get("browser_bing", False)
+        if type(self.browser_bing) is not bool:
+            raise WebToolError("Search browser_bing must be true or false")
         self.api_key = ""  # Never holds a key: the Brave key is read from search_key when a search is sent.
         self._search_key = None
         self.use_search_key(search_key)
@@ -594,8 +598,9 @@ class WebTools:
 
     def use_browser(self, page) -> None:
         """Browser search only: the async callable that opens one page in the application's browser profile."""
-        from .browser_search import BrowserSearch
-        self._browser = BrowserSearch(page) if callable(page) and self.provider == "browser" else None
+        from .browser_search import BrowserSearch, chosen_engines
+        self._browser = (BrowserSearch(page, chosen_engines(self.browser_bing))
+                         if callable(page) and self.provider == "browser" else None)
 
     async def _queued_search(self, query: str, limit: int) -> dict:
         """An answer already held (this run, or on disk) is reused; keyless methods search one at a time.

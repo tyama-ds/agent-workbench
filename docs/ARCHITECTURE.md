@@ -790,3 +790,7 @@ is caught in `Engine.execute_tool`, which waits on the existing approval
 mechanism under an application-wide lock and, on approval, runs the same page
 callable with `visible=True`. The model sees either results or one plain
 statement that search is unavailable.
+
+The engine list a run uses comes from `chosen_engines(search.browser_bing)`:
+duckduckgo.com and DuckDuckGo's HTML page always, Bing between them only when
+the human turned it on (0.1.1.dev61; off by default).

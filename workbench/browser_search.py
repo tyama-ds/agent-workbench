@@ -291,6 +291,10 @@ def read_duckduckgo_web(html, limit):
 # window: duckduckgo.com answered ten searches in a row, 2.5 s apart, while the
 # keyless HTTP method was paused for the same address; Bing answered once and
 # then asked for a verification every time.
+#
+# Bing is listed but not used unless the human turns it on
+# (search.browser_bing): their decision to read result pages this way covered
+# DuckDuckGo only.
 ENGINES = (
     {'name': 'duckduckgo_web', 'label': 'DuckDuckGo', 'url': 'https://duckduckgo.com/?q={query}&ia=web',
      'ready': 'a[data-testid="result-title-a"]', 'read': read_duckduckgo_web, 'interval': 3.0},
@@ -299,6 +303,11 @@ ENGINES = (
     {'name': 'duckduckgo_html', 'label': 'DuckDuckGo (HTML)', 'url': 'https://html.duckduckgo.com/html/?q={query}',
      'ready': '.result__a, .no-results', 'read': read_duckduckgo, 'interval': 6.0},
 )
+
+
+def chosen_engines(bing=False):
+    """The engines a search may use: DuckDuckGo always, Bing only when the human turned it on."""
+    return tuple(engine for engine in ENGINES if bing is True or engine['name'] != 'bing')
 
 
 def engine_guards():
@@ -325,8 +334,8 @@ class BrowserSearch:
     ``{'url', 'title', 'html'}``. It is the only thing that touches a browser.
     """
 
-    def __init__(self, page, engines=ENGINES):
-        self.page, self.engines = page, tuple(engines)
+    def __init__(self, page, engines=None):
+        self.page, self.engines = page, tuple(chosen_engines() if engines is None else engines)
 
     async def search(self, query, limit):
         guards, asked, problems = engine_guards(), [], []
