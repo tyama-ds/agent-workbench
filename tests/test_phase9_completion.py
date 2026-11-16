@@ -253,11 +253,74 @@ async def test_a_document_citing_unseen_urls_is_refused_once_and_reported(tmp_pa
             await engine.execute_tool(run, pm, 'write_text', {'path': other, 'text': 'https://unseen.jp/page', 'expected_sha256': 'missing'})
         await engine.execute_tool(run, pm, 'write_text', {'path': other, 'text': 'https://unseen.jp/page', 'expected_sha256': 'missing'})
         pm.pending.clear()
+        # The cited sources are sent back once for a check (see the next test), then the result is accepted.
+        review = await engine.execute_tool(run, pm, 'finish_work', {'summary': '報告書を保存しました。'})
+        assert review['ok'] is False and review['code'] == 'sources_review'
         result = await engine.execute_tool(run, pm, 'finish_work', {'summary': '報告書を保存しました。'})
         assert '【アプリの確認】' in result['summary'] and 'https://unseen.jp/page' in result['summary'] and 'notes.md' in result['summary']
         # Source code is not a citation.
         await engine.execute_tool(run, pm, 'write_text', {
             'path': str(work / 'client.py'), 'text': 'URL = "https://api.unseen.jp/v1"', 'expected_sha256': 'missing'})
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_cited_sources_are_checked_once_against_what_was_retrieved(tmp_path):
+    """Real-machine case: the only page that could be fetched was about another
+    subject, and it was cited as the source of the report."""
+    engine, work = configured(tmp_path, None)
+    engine.settings.value['search']['enabled'] = True
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='生成AI規制の動向を https://www.kantei.go.jp/ai も参考にまとめて', max_workers=0)
+        assert 'Cite a page only for what its retrieved text states' in engine._policy(run, pm)
+        fetched = 'https://www.meti.go.jp/press/2024/04/20240419003/20240419003.html'
+        engine._pages_note(run, 'web_fetch', {'url': fetched}, engine._urls_seen(run, {
+            'url': fetched, 'text': '令和6年度 中小企業者に関する国等の契約の基本方針\n\n  官公需についての方針を閣議決定しました。' + 'あ' * 500}))
+        listed = 'https://digital-strategy.ec.europa.eu/ai-act-overview'
+        engine._pages_note(run, 'web_search', {'query': 'AI 規制'}, engine._urls_seen(run, {
+            'results': [{'title': 'EU AI Act の概要', 'url': listed, 'snippet': '...'}, {'title': 'ignored', 'url': fetched}]}))
+        assert run['_pages'][fetched][0] == 'fetched'  # a search hit does not replace the page's own text
+        text = f'# 生成AI規制の動向\n出典: {fetched}\n参考: {listed}\n依頼の資料: https://www.kantei.go.jp/ai\n'
+        await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'report.md'), 'text': text, 'expected_sha256': 'missing'})
+        await engine.execute_tool(run, pm, 'write_text', {  # source code is not a document
+            'path': str(work / 'client.py'), 'text': f'URL = "{fetched}"', 'expected_sha256': 'missing'})
+        pm.pending.clear()
+        review = await engine.execute_tool(run, pm, 'finish_work', {'summary': '報告書を保存しました。'})
+        assert review['ok'] is False and review['code'] == 'sources_review'
+        notice = review['error']
+        assert 'report.md' in notice and 'client.py' not in notice and 'untrusted data' in notice
+        assert f'{fetched} - fetched page begins: «令和6年度 中小企業者に関する国等の契約の基本方針 官公需についての方針' in notice
+        assert f'{listed} - only seen as a search result titled «EU AI Act の概要»' in notice
+        assert 'https://www.kantei.go.jp/ai - known from the request' in notice
+        assert len(notice) < 2500  # page text is quoted briefly
+        assert 'delete the citation from the file' in notice and 'Do not keep an unrelated page' in notice
+        # The PM corrects the document; the list for the human follows the corrected file.
+        saved = (work / 'report.md').read_bytes()
+        import hashlib
+        await engine.execute_tool(run, pm, 'write_text', {
+            'path': str(work / 'report.md'), 'text': f'# 生成AI規制の動向\n参考: {listed}（本文は未確認）\n',
+            'expected_sha256': hashlib.sha256(saved).hexdigest()})
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '出典を見直して保存しました。'})
+        assert done['ok'] and '出典として書かれた URL' in done['summary'] and 'アプリでは確認していません' in done['summary']
+        assert f'{listed} — 検索結果の題名「EU AI Act の概要」のみ（本文は未取得）' in done['summary']
+        assert fetched not in done['summary'] and 'kantei' not in done['summary']
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_cites_nothing_is_not_sent_back(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.settings.value['search']['enabled'] = True
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='売上を集計して', max_workers=0)
+        await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'memo.md'), 'text': '集計結果: 42', 'expected_sha256': 'missing'})
+        pm.pending.clear()
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '集計しました。'})
+        assert done['ok'] and '【アプリの確認】' not in done['summary']
     finally:
         await engine.close()
 
@@ -334,3 +397,77 @@ def test_the_start_check_says_when_the_search_service_is_blocking_this_pc(tmp_pa
         assert engine.preflight(payload)['web']['search_blocked_minutes'] == 10
     finally:
         asyncio.run(engine.close())
+
+
+# --- files the request names ----------------------------------------------------------
+
+def test_file_names_in_a_request():
+    from workbench.verification import named_files
+    assert named_files('日本とドイツの人口を調べて stats.xlsx にまとめて') == ['stats.xlsx']
+    assert named_files('結果をstats.xlsxに保存し、Report.MD も作って。stats.xlsx は1シートで') == ['stats.xlsx', 'Report.MD']
+    assert named_files('「売上集計.xlsx」と C:\\work\\out\\result.docx を作成') == ['売上集計.xlsx', 'result.docx']
+    assert named_files('https://example.com/data/file.csv を参考に、Node.js と v1.2.3 を調べて data.csv.bak は無視') == []
+
+
+@pytest.mark.asyncio
+async def test_finishing_without_a_file_the_request_names_is_sent_back_once_then_reported(tmp_path):
+    """Real-machine case: the PM rejected a worker's report and finished without
+    creating stats.xlsx; the run was done and the output folder was empty."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    (work / 'input.csv').write_text('国,人口\n', encoding='utf-8')
+    try:
+        run, pm = await start(engine, task='input.csv を読み、日本とドイツの人口を stats.xlsx と summary.md にまとめて', max_workers=0)
+        # A named file that already exists is an input, not a deliverable.
+        assert run['output_check'] == {'expected': ['stats.xlsx', 'summary.md'], 'missing': ['stats.xlsx', 'summary.md']}
+        await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'summary.md'), 'text': '要約', 'expected_sha256': 'missing'})
+        assert run['output_check']['missing'] == ['stats.xlsx']
+        pm.pending.clear()
+        refused = await engine.execute_tool(run, pm, 'finish_work', {'summary': '統計をまとめました。'})
+        assert refused['ok'] is False and refused['code'] == 'outputs_missing'
+        assert 'stats.xlsx' in refused['error'] and 'summary.md' not in refused['error'] and '未確認' in refused['error']
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '統計をまとめました。'})
+        assert done['ok'] and '依頼された成果物は作られていません' in done['summary'] and 'stats.xlsx' in done['summary']
+        assert run['output_check']['missing'] == ['stats.xlsx']
+        # Asked again by the human, the check applies again; saving the file settles it.
+        await engine.human_message(pm.id, 'stats.xlsx を作ってください')
+        pm.pending.clear()
+        again = await engine.execute_tool(run, pm, 'finish_work', {'summary': '作りました。'})
+        assert again['ok'] is False and again['code'] == 'outputs_missing'
+        await engine.execute_tool(run, pm, 'xlsx_write', {'path': str(work / 'stats.xlsx'), 'expected_sha256': 'missing',
+                                                           'cells': [{'sheet': 'Sheet', 'cell': 'A1', 'value': '83,491,249'}]})
+        pm.pending.clear()
+        final = await engine.execute_tool(run, pm, 'finish_work', {'summary': 'stats.xlsx を保存しました。'})
+        assert final['ok'] and '【アプリの確認】' not in final['summary'] and run['output_check']['missing'] == []
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_a_plain_text_completion_without_the_named_file_is_sent_back_and_a_worker_save_counts(tmp_path):
+    class Team:
+        pm_calls = 0
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            if '"assigned_role": "集計"' in system:
+                if not any(message.get('role') == 'tool' for message in messages):
+                    return reply(calls=[('xlsx_write', {'path': 'stats.xlsx', 'expected_sha256': 'missing',
+                                                        'cells': [{'sheet': 'Sheet', 'cell': 'A1', 'value': 1}]})])
+                return reply(calls=[('finish_work', {'summary': 'stats.xlsx を保存しました。'})])
+            self.pm_calls += 1
+            if self.pm_calls == 1:
+                return reply('統計をまとめました。完了です。')  # nothing was saved
+            if self.pm_calls == 2:
+                assert any('no record that they were saved' in str(message.get('content')) for message in messages)
+                return reply(calls=[('spawn_worker', {'role': '集計', 'task': 'stats.xlsx を作る', 'profile_id': 'local'})])
+            return reply('集計担当が stats.xlsx を保存しました。')
+
+    engine, work = configured(tmp_path, Team())
+    try:
+        run, pm = await start(engine, task='人口統計を stats.xlsx にまとめて')
+        await quiet(engine)
+        assert run['status'] == 'done', (run['status'], pm.status, pm.last_error)
+        assert (work / 'stats.xlsx').exists() and run['output_check'] == {'expected': ['stats.xlsx'], 'missing': []}
+        assert '【アプリの確認】' not in pm.results[-1]['text']
+    finally:
+        await engine.close()

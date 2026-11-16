@@ -24,7 +24,7 @@ MAX_ITEMS = 50000
 RUN_FIELDS = frozenset(('id', 'task', 'pm_profile', 'pm_profiles', 'pm_agent_ids', 'worker_profiles',
     'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'max_workers', 'status', 'created_at', 'model_calls', 'tool_calls',
     'auto_collaborations', 'work_board', 'max_auto_collaborations', 'collaboration_limit_reached', 'agent_ids',
-    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries', 'approval_mode', 'turn_work', 'test_check'))
+    'budget', 'stop_reason', 'stop_reasons', 'ordered_reference', 'coordination', 'skills', 'adaptive_team', 'formation', 'worker_recoveries', 'approval_mode', 'turn_work', 'test_check', 'output_check'))
 AGENT_FIELDS = frozenset(('id', 'run_id', 'name', 'role', 'profile_id', 'parent_id', 'status', 'question',
     'last_error', 'turns', 'assignment', 'configured_profile', 'logs', 'results', 'output_receipts',
     'results_omitted', 'receipts_omitted', 'result_revision', 'stop_reason', 'coordination', 'worker_dependencies', 'question_state', 'hierarchy', 'kind', 'recovery', 'read_only_worker', 'plan', 'turn_player'))

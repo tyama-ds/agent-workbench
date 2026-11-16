@@ -116,7 +116,7 @@ async def test_run_tests_is_offered_with_python_and_records_the_result(tmp_path,
     engine.kick = lambda agent: None
     calls = sandbox(monkeypatch, [FAIL, PASS])
     try:
-        run, pm = await start(engine, task='calc.py を作ってテストも実行して', max_workers=0)
+        run, pm = await start(engine, task='計算モジュールを作ってテストも実行して', max_workers=0)
         assert 'run_tests' not in {tool['name'] for tool in engine._model_tools(run, pm)}
         assert 'cannot execute code' in engine._policy(run, pm)
         run['_config']['python']['enabled'] = True
@@ -225,7 +225,7 @@ async def test_a_plain_text_completion_is_also_sent_back_and_a_worker_run_counts
     engine, work = configured(tmp_path, Team())
     engine.settings.value['python']['enabled'] = True
     try:
-        run, pm = await start(engine, task='calc.py を実装し、テストも実行して')
+        run, pm = await start(engine, task='計算モジュールを実装し、テストも実行して')
         await quiet(engine)
         assert run['status'] == 'done', (run['status'], pm.status, pm.last_error)
         assert run['test_check']['state'] == 'passed'
@@ -266,13 +266,19 @@ async def test_numeric_strings_become_numbers_in_xlsx(tmp_path):
     import openpyxl
     tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
     target = str(tmp_path / 'stats.xlsx')
-    values = ['123,366,734', '1,234.50', '12.5%', '42', '-1,000', '００１２', '0123', "'2024", '1234567890123456', '東京都', 3.5, None]
+    values = ['123,366,734', '1,234.50', '12.5%', '42', '-1,000', '００１２', '0123', "'2024", '1234567890123456', '東京都', 3.5, None,
+              # Real-machine case: one column held both; the second stayed text because its "0." was counted as a digit.
+              '1.19311288444599%', '0.239578342117881%', '0.0023957834211788123', '123456789012345.678']
     cells = [{'sheet': 'Sheet', 'cell': f'A{index}', 'value': value} for index, value in enumerate(values, 1)]
     result = await tools.execute('xlsx_write', {'path': target, 'cells': cells, 'expected_sha256': 'missing'})
-    assert result['numeric_strings_converted'] == 5
+    assert result['numeric_strings_converted'] == 9
     sheet = openpyxl.load_workbook(io.BytesIO((tmp_path / 'stats.xlsx').read_bytes()))['Sheet']
     got = [sheet[f'A{index}'].value for index in range(1, len(values) + 1)]
-    assert got == [123366734, 1234.5, 0.125, 42, -1000, '００１２', '0123', '2024', '1234567890123456', '東京都', 3.5, None]
+    assert got[:12] == [123366734, 1234.5, 0.125, 42, -1000, '００１２', '0123', '2024', '1234567890123456', '東京都', 3.5, None]
+    assert got[12] == pytest.approx(0.0119311288444599) and got[13] == pytest.approx(0.00239578342117881)
+    assert got[14] == pytest.approx(0.0023957834211788123) and got[15] == pytest.approx(123456789012345.678)
+    assert all(isinstance(value, float) for value in got[12:])
+    assert sheet['A13'].number_format == sheet['A14'].number_format  # the whole column is one type and format
     assert sheet['A1'].number_format == '#,##0' and sheet['A2'].number_format == '#,##0.00' and sheet['A3'].number_format == '0.0%'
     assert sheet['A4'].number_format == 'General'
     # Other formula-like text is still refused.

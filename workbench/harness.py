@@ -584,8 +584,9 @@ _GROUPED_NUMBER = re.compile(r"-?(?:[1-9][0-9]{0,2}(?:,[0-9]{3})+|0|[1-9][0-9]*)
 def _numeric_text(value: str):
     """(number, Excel format) for a string that is plainly a number, else (None, None).
 
-    Identifiers are left alone: leading zeros, more than 15 digits (Excel would
-    round them) and anything with other characters stay text.
+    Identifiers are left alone: leading zeros, a whole part of more than 15
+    digits (Excel would round it) and anything with other characters stay
+    text. A decimal fraction never makes a number an identifier, however long.
     """
     text = unicodedata.normalize("NFKC", value).strip()
     percent = text.endswith("%")
@@ -594,7 +595,7 @@ def _numeric_text(value: str):
         return None, None
     digits = body.replace(",", "")
     whole, _, fraction = digits.partition(".")
-    if len(whole.lstrip("-")) + len(fraction) > 15:
+    if len(whole.lstrip("-")) > 15:
         return None, None
     number = float(digits) if fraction else int(whole)
     decimals = "." + "0" * min(len(fraction), 10) if fraction else ""
