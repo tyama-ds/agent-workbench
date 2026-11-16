@@ -781,6 +781,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 'agent_id': agent.id, 'path': result['path'], 'sha256': result['sha256'], 'previous_sha256': previous}
         agent.output_receipts.append(receipt)
         agent.output_receipt_count += 1
+        self._outputs_saved(self.runs[agent.run_id], result['path'])
         self._persist_run(agent.run_id)
 
     def active(self):
@@ -1111,6 +1112,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         run['_known_urls'] = sources.extract(task)
         run['_unverified_urls'] = {}
         self._tests_note_request(run, task)
+        self._outputs_note_request(run, task)
         # Create every PM before scheduling any inference so each dispatch has
         # the complete, verified set of peers. Repeated profiles are intentional:
         # every PM still has its own identity, history and conversation header.
@@ -1307,6 +1309,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         self.enqueue(agent, content, human=True)
         run.setdefault('_known_urls', set()).update(sources.extract(content))
         self._tests_note_request(run, content)
+        self._outputs_note_request(run, content)
         run['status'] = 'running'
         # A human may continue an individual agent, but cannot silently refill
         # the team's automatic handoff budget.
@@ -2553,7 +2556,8 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 agent.status = 'idle' if children and any(a.status not in {'done', 'stopped'} for a in children) else 'done'
                 if terminal_response:
                     if agent.parent_id is None:
-                        terminal_response += self._tests_footer(run) + self._source_footer(run) + self._citations_footer(run)
+                        terminal_response += (self._outputs_footer(run) + self._tests_footer(run)
+                                              + self._source_footer(run) + self._citations_footer(run))
                     self.record_result(agent, 'assistant_response', terminal_response, revision=turn_revision)
                 if agent.parent_id and not ordered_report_sent:
                     parent = self.agents[agent.parent_id]
@@ -3072,7 +3076,8 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 agent._revise_pending = False
                 summary += self._turn_footer(run, agent)
                 if agent.parent_id is None:
-                    summary += self._tests_footer(run) + self._source_footer(run) + self._citations_footer(run)
+                    summary += (self._outputs_footer(run) + self._tests_footer(run) + self._source_footer(run)
+                                + self._citations_footer(run))
                 self.log(agent, 'result', summary)
                 self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
                 agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)

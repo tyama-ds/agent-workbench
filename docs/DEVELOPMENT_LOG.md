@@ -4,7 +4,7 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev55 — Cited sources are checked against what was retrieved (2026-11-16)
+## 0.1.1.dev55 — Named deliverables and cited sources are checked at completion (2026-11-16)
 
 From a real-machine research run in which search returned nothing, one page
 could be fetched, and that page (about another subject) was cited as the
@@ -23,7 +23,23 @@ had been retrieved.
 - The system prompt (web runs only) says to cite a page only for what its
   retrieved text states.
 - The application still does not compare a claim with a page's text; the
-  judgement stays with the PM and the human, who now see the evidence.
+  judgement stays with the PM and the human, who now see the evidence. After
+  a real-machine run in which the PM kept an unrelated page, the notice now
+  says to delete such a citation or fetch a page that covers the point.
+- Named deliverables. A real-machine run ended `done` with an empty output
+  folder: the PM rejected a correct report and finished without creating the
+  requested `stats.xlsx`. A file the request names (a bare ASCII name or any
+  quoted name with a document, data or code extension; not inside a URL) that
+  does not exist when the run starts is a deliverable. Saves are recorded by
+  name. A root PM that finishes while one is neither recorded nor on disk is
+  sent back once (`outputs_missing`); after that the result ends with the
+  application's record that the file was not made, and the run shows
+  「依頼されたファイル」 as a metric (`run.output_check`). A file that already
+  exists is treated as an input.
+- `xlsx_write`: a decimal such as `'0.239578342117881%'` stayed text because
+  its leading `0.` was counted towards the 15-digit limit, leaving one column
+  with numbers and strings. Only a whole part longer than 15 digits keeps a
+  value as text now.
 
 ## 0.1.1.dev54 — Runs that end, working web search, sandbox hints and tests (2026-11-16)
 
