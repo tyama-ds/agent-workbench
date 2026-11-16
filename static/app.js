@@ -2,6 +2,7 @@
 
 const DUCKDUCKGO_SEARCH_ENDPOINT='https://html.duckduckgo.com/html/';
 const BRAVE_SEARCH_ENDPOINT='https://api.search.brave.com/res/v1/web/search';
+const BROWSER_SEARCH_ENDPOINT='https://duckduckgo.com';
 const FIELD_GROUPS = {
   work_board: [['enabled','新しい作業で共有掲示板を使う','checkbox']],
   copilot_agent: [
@@ -45,8 +46,8 @@ const FIELD_GROUPS = {
   ],
   search: [
     ['enabled','Web 検索・ページ取得を使う','checkbox'],
-    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['brave','Brave Search（自分の API キーを使う）'],['searxng','SearXNG（自分の検索サーバー）']],undefined,'DuckDuckGo は、短時間に検索が続くと、しばらく検索を受け付けなくなることがあります（ボット確認）。続く場合は、Brave Search を選んで設定を保存し、下に表示される欄へ API キーを入れてください。自分で用意した SearXNG（JSON 出力を有効にしたもの）の URL も使えます。'],
-    ['endpoint','検索の接続先 URL（DuckDuckGo と Brave Search は固定）','url'],
+    ['provider','検索エンジン','select',[['duckduckgo','DuckDuckGo（API キー不要）'],['browser','ブラウザー検索（キー不要・Edge などを使う）'],['brave','Brave Search（自分の API キーを使う）'],['searxng','SearXNG（自分の検索サーバー）']],undefined,'DuckDuckGo は、短時間に検索が続くと、しばらく検索を受け付けなくなることがあります（ボット確認）。続く場合は「ブラウザー検索」を選んでください。設定の Python と Selenium にある実行ファイル（python.exe、ブラウザー、ドライバー）を使い、アプリ専用のプロファイルで DuckDuckGo、Bing の順に検索します。Selenium 自体を有効にする必要はありません。検索サービスが人による確認を求めたときは、承認の画面でお知らせします。API キーがある場合は Brave Search、自分の検索サーバーがある場合は SearXNG も使えます。'],
+    ['endpoint','検索の接続先 URL（SearXNG 以外は固定）','url'],
     ['proxy_url','検索用プロキシ URL（任意）','url'],
     ['timeout_seconds','検索タイムアウト（秒）','number',1],
     ['max_response_bytes','検索応答の最大サイズ（byte）','number',1024],
@@ -656,7 +657,7 @@ function configureSearchFields(search) {
   const update=()=>{
     if(previous==='searxng')searxngEndpoint=endpoint.value;
     endpoint.readOnly=provider.value!=='searxng';
-    endpoint.value=provider.value==='brave'?BRAVE_SEARCH_ENDPOINT:endpoint.readOnly?DUCKDUCKGO_SEARCH_ENDPOINT:searxngEndpoint;
+    endpoint.value=provider.value==='brave'?BRAVE_SEARCH_ENDPOINT:provider.value==='browser'?BROWSER_SEARCH_ENDPOINT:endpoint.readOnly?DUCKDUCKGO_SEARCH_ENDPOINT:searxngEndpoint;
     previous=provider.value;
   };
   container._syncSavedSearch=saved=>{
@@ -750,6 +751,7 @@ function collectConfig() {
   config.search.api_key_env='';
   if(config.search.provider==='duckduckgo')config.search.endpoint=DUCKDUCKGO_SEARCH_ENDPOINT;
   if(config.search.provider==='brave')config.search.endpoint=BRAVE_SEARCH_ENDPOINT;
+  if(config.search.provider==='browser')config.search.endpoint=BROWSER_SEARCH_ENDPOINT;
   if(ui.config.copilot_agent===undefined&&JSON.stringify(config.copilot_agent)===JSON.stringify(COPILOT_AGENT_DEFAULTS))delete config.copilot_agent;
   if(ui.config.orchestration===undefined&&JSON.stringify(config.orchestration)===JSON.stringify(ORCHESTRATION_DEFAULTS))delete config.orchestration;
   if(ui.config.work_board===undefined&&JSON.stringify(config.work_board)===JSON.stringify(WORK_BOARD_DEFAULTS))delete config.work_board;
@@ -1032,7 +1034,7 @@ async function refreshPreflight(request) {
       details.append(element('p','small','拒否が優先されます。読み取りと書き込みは独立した権限です。各ファイルの操作時にも確認します。'));target.append(details);
       const web=response.web||{};
       target.append(element('p','small',`Web 検索: ${web.search_configured?'設定あり（未接続確認）':'使用不可'} · 公開ページ取得: ${web.fetch_enabled?'有効':'無効'}${web.enabled?' · 検索先: '+web.search_endpoint+' · ページ取得先: モデルが選ぶ公開 HTTP(S) サイト'+(web.proxy?' · proxy: '+web.proxy:''):''}`));
-      if(Number.isInteger(web.search_blocked_minutes))target.append(element('p','small warning-text',`検索サービス（DuckDuckGo）が、このPCからの検索を一時的に止めています（ボット確認）。あと約${web.search_blocked_minutes}分は検索できません。ページの取得（URL を指定した読み込み）は使えます。すぐに検索を使いたいときは、設定の「Web 検索・ページ取得」で検索エンジンを「Brave Search（自分の API キーを使う）」に切り替えて保存し、キーを入れてください。自分の SearXNG の URL も使えます。`));
+      if(Number.isInteger(web.search_blocked_minutes))target.append(element('p','small warning-text',`検索サービス（DuckDuckGo）が、このPCからの検索を一時的に止めています（ボット確認）。あと約${web.search_blocked_minutes}分は検索できません。ページの取得（URL を指定した読み込み）は使えます。すぐに検索を使いたいときは、設定の「Web 検索・ページ取得」で検索エンジンを「ブラウザー検索（キー不要）」に切り替えて保存してください。API キーがあれば Brave Search、自分の検索サーバーがあれば SearXNG も使えます。`));
       target.append(element('p','small','依頼・会話・作業方針・許可パスと、必要に応じたファイル内容やツール結果は、選択したモデル接続先へ送られます。Web 有効時は検索語・取得 URL も各接続先へ送られます。'));
       target.append(element('p','small','「この PC で実行」はアプリの実行場所です。Local はこの PC またはプライベート LAN の API に接続し、別の PC の場合もあります。チーム内の連絡で内容が別のモデル接続先へ共有される場合があります。PM・作業者すべての接続先・プロキシと、保存・再転送・学習利用の条件が社内の承認範囲に収まるか確認してください。アプリは会社の承認状況や接続先でのデータの取り扱いを判定しません。'));
     }
@@ -2282,7 +2284,7 @@ async function stopSelectedAgent() {
 // Phase 7: tool-call approval, the team memo and its proposals, and history search.
 // Every model/state string below is untrusted and is placed with textContent only.
 const APPROVAL_MODE_LABELS={ask:'毎回確認',always_allow:'常に許可'};
-const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',run_tests:'テストの実行',selenium_browse:'ブラウザ操作'};
+const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',run_tests:'テストの実行',selenium_browse:'ブラウザ操作',search_human_check:'検索の「人による確認」（ブラウザーで操作が必要）'};
 const TEST_CHECK_LABELS={passed:'成功',failed:'失敗あり',missing:'未実行'};
 function outputCheckLabel(check){
   const names=list=>Array.isArray(list)?list.filter(name=>typeof name==='string').slice(0,5).map(name=>name.slice(0,60)):[];

@@ -29,7 +29,8 @@ def test_retired_search_key_controls_stay_removed_and_brave_is_an_explicit_optio
         assert name not in APP and name not in HTML
     assert 'BRAVE_SEARCH_API_KEY' not in APP
     assert "['brave','Brave Search']" not in APP
-    assert "['duckduckgo','DuckDuckGo（API キー不要）'],['brave','Brave Search（自分の API キーを使う）'],['searxng'," in APP
+    assert ("['duckduckgo','DuckDuckGo（API キー不要）'],['browser','ブラウザー検索（キー不要・Edge などを使う）'],"
+            "['brave','Brave Search（自分の API キーを使う）'],['searxng',") in APP
     assert 'searchKeyInput' not in HTML  # built only while Brave Search is the saved engine
     assert "['api_key_env','API キーの環境変数名','text','OPENAI_API_KEY']" in APP
     assert "'/api/secrets'" in APP
@@ -170,4 +171,18 @@ accept();await pending;assert.equal(ui.config.search.provider,'brave');
 assert(credentialControls().some(item=>item.id==='search'));
 chooseSearch('searxng');assert(!endpoint.readOnly);assert.equal(endpoint.value,'https://edited.example/search');
 chooseSearch('duckduckgo');assert.equal(endpoint.value,DUCKDUCKGO_SEARCH_ENDPOINT);assert(endpoint.readOnly);
+''')
+
+
+def test_browser_search_has_a_fixed_endpoint_and_no_key_control():
+    check(r'''
+await setup();const endpoint=searchField('endpoint');
+chooseSearch('browser');assert.equal(endpoint.value,BROWSER_SEARCH_ENDPOINT);assert(endpoint.readOnly);
+endpoint.value='https://must-not-be-sent.example/search';
+const pending=submit(),submitted=requests[0].options.body.config;
+assert.equal(submitted.search.provider,'browser');assert.equal(submitted.search.endpoint,'https://duckduckgo.com');
+assert.equal(submitted.search.enabled,false);assert.deepEqual(Object.keys(submitted.search).sort(),Object.keys(CONFIG.search).sort());
+accept();await pending;assert.equal(ui.config.search.provider,'browser');
+assert(!credentialControls().some(item=>item.id==='search'));
+assert.equal(APPROVAL_TOOL_LABELS.search_human_check.includes('人による確認'),true);
 ''')
