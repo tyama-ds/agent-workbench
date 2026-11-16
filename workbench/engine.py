@@ -201,10 +201,13 @@ SKILL_TOOL = schema('read_skill',
 COORDINATION_TOOLS = COORDINATION_TOOLS | {'read_skill', 'propose_memo', 'search_past_work'} | PLAN_TOOL_NAMES
 PYTHON_TOOL = schema('python_execute',
     'Run a normal Python script with the human-selected existing libraries in a Windows sandbox. '
-    'Use relative paths in a private working directory, not host paths. No subprocesses. '
-    'Declare each input file to copy in and each output file to publish. Reserve output paths first; '
-    'create host output folders with create_directory. Only outputs with successful save receipts were saved. '
-    'Files are published only after successful execution. File edits need the current expected_sha256.',
+    'The script runs in a private working directory and cannot open host paths: declare each file to read in inputs '
+    '(path = host path, name = relative name) and open it by that name; write results to relative names declared in outputs. '
+    'No subprocesses or pip. To run tests, have test_*.py files in the working directory (inputs or written by the script) '
+    'and call `import awb_pytest; raise SystemExit(awb_pytest.run())`. '
+    'Reserve output paths first; create host output folders with create_directory. '
+    'Files are published only after successful execution; only outputs with successful save receipts were saved. '
+    'expected_sha256 is the current hash of the file being replaced, or "missing" for a new file.',
     {'code': {'type': 'string', 'maxLength': 200000},
      'inputs': {'type': 'array', 'maxItems': 16, 'items': {'type': 'object',
          'properties': {'path': STRING, 'name': STRING}, 'required': ['path', 'name'], 'additionalProperties': False}},

@@ -23,6 +23,21 @@ spreadsheet tasks (gpt-5.4-mini).
   visibly made-up URL (long zero runs, xxxx, template marks) is always refused;
   what is saved anyway is listed for the human at the end of the PM's result.
   The system prompt says to cite only URLs a tool returned (web runs only).
+- Web tools: DuckDuckGo searches are a form POST with browser headers (every
+  search had returned HTTP 403); a bot check or refusal is reported as such,
+  never as an empty list. Page fetches use the same headers, accept long
+  response headers, try up to three resolved addresses and name the failure
+  class. `web_read` caps an oversized `limit` and its errors say what is
+  accepted and what was received.
+- `python_execute`: a failed run gets a `hint` for the common sandbox
+  failures (a host path opened in the script, with the `inputs` shape to use;
+  subprocess; network; missing module; timeout). The working directory is now
+  importable. `import awb_pytest; raise SystemExit(awb_pytest.run())` runs
+  tests inside the sandbox: real pytest with plugin autoload, cache, fd
+  capture and outside temp dirs switched off, under a deadline; if pytest does
+  not start in time the helper dumps all thread stacks and falls back to a
+  built-in simple runner, so the call always returns a result.
+  Not yet run on Windows LPAC.
 - Questions that wait for a person (no recommendation, or `kind=permission`)
   are for the root PM only and limited to two per run; others become
   consultations when they carry a recommendation, or are refused with

@@ -68,7 +68,8 @@ def test_denied_input_or_output_fails_before_launch(setup, monkeypatch):
         execute(setup, outputs=[{'path': str(denied / 'out.txt'), 'name': 'x', 'expected_sha256': 'missing'}])
 
 
-@pytest.mark.parametrize('name', ['../escape', '/absolute', 'C:\\absolute', 'a:stream', '.awb_script.py', 'a/../x'])
+@pytest.mark.parametrize('name', ['../escape', '/absolute', 'C:\\absolute', 'a:stream', '.awb_script.py', 'a/../x',
+                                  '.awb_lib/awb_pytest.py', 'awb_pytest.py'])
 def test_mapping_names_reject_escapes(name):
     with pytest.raises(HarnessError):
         runner._mappings([{'path': 'ignored', 'name': name}])
@@ -156,6 +157,41 @@ def test_failed_execution_never_publishes(setup, monkeypatch, exit_code, reason)
     monkeypatch.setattr(runner, 'run_isolated', child)
     result = execute(setup, outputs=[{'path': str(target), 'name': 'out.txt', 'expected_sha256': 'missing'}])
     assert not target.exists() and result['outputs'] == []
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows transfer integration')
+@pytest.mark.parametrize('reason', [None, 'timeout'])
+def test_failed_run_carries_a_hint_and_the_test_helper_is_staged(setup, monkeypatch, reason):
+    harness, config, source, target, denied = setup
+    host = source / 'sales.csv'
+    host.write_text('a,b')
+    seen = {}
+    def child(command, workspace, access, **limits):
+        seen['helper'] = (workspace / '.awb_lib' / 'awb_pytest.py').is_file()
+        seen['bootstrap'] = (workspace / '.awb_bootstrap.py').read_text(encoding='utf-8')
+        return {'exit_code': 1, 'termination_reason': reason, 'stdout': '',
+                'stderr': f'PermissionError: [Errno 13] Permission denied: {str(host)!r}\n'}
+    monkeypatch.setattr(runner, 'run_isolated', child)
+    result = execute(setup, f'open({str(host)!r})')
+    assert seen['helper'] and 'os.environ["AWB_PYTHON_TIMEOUT"]=\'10\'' in seen['bootstrap']
+    assert result['outputs'] == []
+    # The retry is spelled out with the path the script used.
+    assert f"'path': '{host}', 'name': 'sales.csv'" in result['hint']
+    assert result['hint'].startswith('The script was stopped at the 10 s time limit') is (reason == 'timeout')
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows transfer integration')
+def test_successful_run_has_no_hint_and_publishes_only_declared_outputs(setup, monkeypatch):
+    harness, config, source, target, denied = setup
+    def child(command, workspace, access, **limits):
+        (workspace / 'out.txt').write_text('done')
+        return {'exit_code': 0, 'termination_reason': None, 'stdout': '',
+                'stderr': "ResourceWarning: [Errno 13] Permission denied: 'C:\\\\elsewhere\\\\x.csv'"}
+    monkeypatch.setattr(runner, 'run_isolated', child)
+    result = execute(setup, outputs=[{'path': str(target / 'out.txt'), 'name': 'out.txt', 'expected_sha256': 'missing'}])
+    assert 'hint' not in result and len(result['outputs']) == 1
+    # The staged helper, script and bootstrap stay in the private workspace.
+    assert [path.name for path in target.iterdir()] == ['out.txt']
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows transfer integration')
