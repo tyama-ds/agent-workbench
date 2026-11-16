@@ -4,6 +4,24 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev58 — DuckDuckGo searches return results: no "gzip, deflate" beside a browser identity (2026-11-16)
+
+Every DuckDuckGo search on the real test machine had returned 0 results
+(HTTP 202, bot check). The tester isolated the cause on that machine, with
+the same POST at the same time: aiohttp's automatic
+`Accept-Encoding: gzip, deflate` next to the Chrome User-Agent got 202 every
+time; without the header, or with `identity`, the same search returned 10
+results. The address was never blocked.
+
+- Every web request (search and page fetch) now states
+  `Accept-Encoding: identity`, so aiohttp adds nothing of its own. This
+  client cannot decode `br` or `zstd`, which a browser would also offer.
+- A challenge page that arrives with HTTP 200 raises its error where it is
+  detected, before anything could count as a success; the block stays.
+- Not verified here: the effect on page fetches (403 from some sites may
+  have had the same cause), and whether the ten-minute pause after a bot
+  check is still needed now that the cause is known.
+
 ## 0.1.1.dev57 — An ended worker's unmet dependency no longer holds the run (2026-11-16)
 
 - Regression from dev56, seen on a real machine: a worker that depended on

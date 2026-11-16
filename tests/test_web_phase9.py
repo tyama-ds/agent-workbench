@@ -822,3 +822,60 @@ def test_blocked_minutes_round_up_without_adding_a_minute_to_a_whole_number(monk
         if seconds:
             with pytest.raises(WebToolError, match=f"about {minutes} more minutes"):
                 guard.check()
+
+
+# --- 6. What the bot check keys on, and what a challenge page leaves behind ----------------------
+
+
+def test_no_request_offers_only_gzip_and_deflate_with_the_browser_identity(monkeypatch):
+    """Real-machine finding: aiohttp's automatic "Accept-Encoding: gzip, deflate" next to a
+    Chrome User-Agent got HTTP 202 (bot check) from DuckDuckGo on every search, while the same
+    request without it returned results. Every request states the header itself."""
+    async def run():
+        requests = []
+
+        async def handler(request):
+            requests.append(await record(request))
+            if request.path.startswith("/html"):
+                return web.Response(text=RESULT, content_type="text/html")
+            if request.path.startswith("/res"):
+                return web.json_response({"web": {"results": [{"title": "T", "url": "https://example.com/a", "description": "D"}]}})
+            if request.path.startswith("/search"):
+                return web.json_response({"results": [{"url": "https://example.com/a", "title": "T", "content": "C"}]})
+            return web.Response(text="<html><title>page</title><p>body</p></html>", content_type="text/html")
+
+        pin(monkeypatch)
+        async with http_server(handler) as port:
+            await duckduckgo(port).execute("web_search", {"query": "生成AI ガイドライン"})
+            await brave(port).execute("web_search", {"query": "q"})
+            await WebTools({"search": {"enabled": True, "provider": "searxng",
+                                       "endpoint": f"http://127.0.0.1:{port}/search"}}).execute("web_search", {"query": "q"})
+            await fetcher().execute("web_fetch", {"url": f"http://page.example:{port}/article"})
+        assert [row["path"].split("?")[0] for row in requests] == ["/html/", "/res/v1/web/search", "/search", "/article"]
+        for sent in requests:
+            offered = sent["headers"].get("Accept-Encoding", "")
+            assert offered == "identity", (sent["path"], offered)
+            assert "gzip" not in offered and "deflate" not in offered
+            assert [name for name in sent["headers"] if name.lower() == "accept-encoding"] == ["Accept-Encoding"]  # sent once
+    asyncio.run(run())
+
+
+def test_a_challenge_page_with_status_200_keeps_the_block_and_is_an_error(monkeypatch):
+    async def run():
+        hits = []
+
+        async def handler(request):
+            hits.append(request.method)
+            return web.Response(text=ANOMALY if len(hits) == 1 else RESULT, content_type="text/html")
+
+        pin(monkeypatch)
+        async with http_server(handler) as port:
+            tools = duckduckgo(port)
+            with pytest.raises(WebToolError, match="bot check"):
+                await tools.execute("web_search", {"query": "x"})
+            status = module.SEARCH_GUARD.status()
+            assert status["blocked"] and status["blocked_minutes"] == 10 and status["last_success"] is None
+            with pytest.raises(WebToolError, match="will not be asked again"):
+                await tools.execute("web_search", {"query": "y"})
+            assert hits == ["POST"]  # the challenge did not count as a success, so nothing more was sent
+    asyncio.run(run())
