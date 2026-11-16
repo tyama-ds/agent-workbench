@@ -313,7 +313,7 @@ def test_header_limits_remain_bounded(monkeypatch):
     ("/404", r"Web service returned HTTP 404 \(not found\)"),
     ("/429", r"Web service returned HTTP 429 \(too many requests\)"),
     ("/500", r"Web service returned HTTP 500 \(server error\)"),
-    ("/202", r"Web service returned HTTP 202$"),
+    ("/202", r"Web service returned HTTP 202 \(the site did not send the page; this answer is usually a browser check.*Do not retry this URL"),
     ("/pdf", r"Only textual web responses are supported \(HTML, plain text, JSON, Markdown, CSV\); got application/pdf$"),
     ("/odd-type", r"Only textual web responses are supported \(HTML, plain text, JSON, Markdown, CSV\)$"),
 ])

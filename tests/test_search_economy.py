@@ -431,3 +431,10 @@ async def test_other_approvals_still_wait_for_the_human(tmp_path):
         await waiting
     finally:
         await engine.close()
+
+
+def test_an_http_202_is_named_as_a_likely_browser_check_and_not_to_be_retried():
+    from workbench.webtools import _HTTPStatusError
+    text = str(_HTTPStatusError(202))
+    assert text.startswith('Web service returned HTTP 202 (') and 'browser check' in text and 'Do not retry this URL' in text
+    assert str(_HTTPStatusError(404)) == 'Web service returned HTTP 404 (not found)'

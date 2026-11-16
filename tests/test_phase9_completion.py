@@ -632,3 +632,137 @@ def test_tool_arguments_are_summarised_for_the_activity_log():
     assert nested['outputs'][-1] == '…ほか4件' and nested['outputs'][0]['name'] == 'a.docx' and len(nested['outputs']) == 9
     long = _args_summary({f'field{index}': 'x' * 150 for index in range(10)})
     assert isinstance(long, str) and long.startswith('{"field0": "xxx') and len(long) <= 701  # clipped when even the summary is long
+
+
+# --- nobody could ever send anything: a coordinator that works alone, and a worker whose coordinator waits ---
+
+@pytest.mark.stall
+@pytest.mark.asyncio
+async def test_a_pm_without_workers_may_not_wait_for_a_message_and_is_told_to_finish(tmp_path):
+    """Real-machine case (research task): search was used up and most pages could
+    not be fetched; the PM, working alone, called wait_for_message and the run
+    stayed "waiting" for 15 minutes with no notice and nothing saved."""
+    class Alone:
+        refusals = []
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            last = str(messages[-1]['content'])
+            if '待機できません' in last:
+                self.refusals.append(last)
+                return reply(calls=[('finish_work', {'summary': '検索できなかった点は未確認として報告します。'})])
+            return reply(calls=[('wait_for_message', {})])
+    client = Alone()
+    engine, work = configured(tmp_path, client)
+    try:
+        run, pm = await start(engine, task='生成AI規制を調べて要約する', max_workers=0)
+        await asyncio.wait_for(settled(engine), 5)
+        assert run['agent_ids'] == [pm.id]
+        assert len(client.refusals) == 1 and '連絡を送ってくる担当がいません' in client.refusals[0]
+        for phrase in ('待っても何も届きません', 'finish_work', '未確認', 'ask_user'):
+            assert phrase in client.refusals[0], phrase
+        assert pm.status == 'done' and run['status'] == 'done' and not pm.waiting_for_message
+        assert not any(row['kind'] == 'stall_notice' for row in engine.events)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.stall
+@pytest.mark.asyncio
+async def test_a_pm_without_workers_that_keeps_waiting_gets_three_notices_and_a_clear_stop(tmp_path):
+    class Alone:
+        refusals, notices = [], []
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            last = str(messages[-1]['content'])
+            if '待機できません' in last:
+                self.refusals.append(last)
+            if 'アプリからの通知' in last:
+                self.notices.append(last)
+            return reply(calls=[('wait_for_message', {})])  # waits whatever it is told
+    client = Alone()
+    engine, work = configured(tmp_path, client)
+    try:
+        run, pm = await start(engine, task='調べて要約する', max_workers=0)
+        for _ in range(400):
+            await asyncio.sleep(.01)
+            if pm.status == 'error':
+                break
+        await quiet(engine)
+        notices = [row['text'] for row in engine.events if row['kind'] == 'stall_notice']
+        assert [text[-4:-1] for text in notices] == ['1/3', '2/3', '3/3'], notices
+        assert all('連絡を送る担当がいないまま待機していた' in text for text in notices)
+        assert len(client.notices) == 3 and '送ってくる担当がいません' in client.notices[0] and '作業者はいません' in client.notices[0]
+        assert 'finish_work' in client.notices[0] and 'これが最後の通知です' in client.notices[2]
+        assert pm.status == 'error' and '連絡を送ってくる担当がいないまま待機を続けたため' in pm.last_error
+        # The run shows an error with its reason (a message to the PM resumes it); it is no longer "waiting for a peer".
+        assert engine.run_status_reason(run) == 'error' and len(client.refusals) >= 1 and run['model_calls'] < 30
+    finally:
+        await engine.close()
+
+
+@pytest.mark.stall
+@pytest.mark.asyncio
+async def test_a_worker_may_not_wait_while_its_coordinator_only_waits_for_its_report(tmp_path):
+    class Team:
+        refusals = []
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            last = str(messages[-1]['content'])
+            if '"assigned_role"' in system:
+                if '待機できません' in last:
+                    self.refusals.append(last)
+                    return reply(calls=[('finish_work', {'summary': '値は確認できませんでした（未確認）。'})])
+                return reply(calls=[('wait_for_message', {})])  # nothing was asked of anyone
+            workers = [agent for agent in engine.agents.values() if agent.parent_id]
+            if not workers:
+                return reply(calls=[('spawn_worker', {'role': '調査', 'task': '値を調べる', 'profile_id': 'local'}), ('wait_for_workers', {})])
+            if 'worker_completed' in last:
+                return reply(calls=[('review_worker_report', {'worker_id': workers[0].id, 'result_revision': workers[0].result_revision,
+                                                              'decision': 'accept'}), ('finish_work', {'summary': '未確認として報告します。'})])
+            return reply(calls=[('wait_for_workers', {})])
+    client = Team()
+    engine, work = configured(tmp_path, client)
+    try:
+        run, pm = await start(engine, task='値を調べる')
+        await asyncio.wait_for(settled(engine), 5)
+        assert len(client.refusals) == 1
+        for phrase in ('あなたの報告を待っている担当だけです', 'finish_work', 'send_message'):
+            assert phrase in client.refusals[0], phrase
+        assert run['status'] == 'done' and not any(row['kind'] == 'stall_notice' for row in engine.events)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.stall
+@pytest.mark.asyncio
+async def test_a_worker_that_asked_its_coordinator_something_may_wait_for_the_answer(tmp_path):
+    class Team:
+        refusals, asked = [], False
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            last = str(messages[-1]['content'])
+            if '"assigned_role"' in system:
+                if '待機できません' in last:
+                    self.refusals.append(last)
+                if '2023年です' in last:
+                    return reply(calls=[('finish_work', {'summary': '2023年の値を調べました。'})])
+                pm = next(agent for agent in engine.agents.values() if agent.parent_id is None)
+                return reply(calls=[('send_message', {'to_agent_id': pm.id, 'body': 'どの年の値が必要ですか'}), ('wait_for_message', {})])
+            workers = [agent for agent in engine.agents.values() if agent.parent_id]
+            if not workers:
+                return reply(calls=[('spawn_worker', {'role': '調査', 'task': '値を調べる', 'profile_id': 'local'}), ('wait_for_workers', {})])
+            if 'どの年の値' in last and not self.asked:
+                self.asked = True
+                return reply(calls=[('send_message', {'to_agent_id': workers[0].id, 'body': '2023年です'}), ('wait_for_workers', {})])
+            if 'worker_completed' in last:
+                return reply(calls=[('review_worker_report', {'worker_id': workers[0].id, 'result_revision': workers[0].result_revision,
+                                                              'decision': 'accept'}), ('finish_work', {'summary': 'まとめました。'})])
+            return reply(calls=[('wait_for_workers', {})])
+    client = Team()
+    engine, work = configured(tmp_path, client)
+    try:
+        run, pm = await start(engine, task='値を調べる')
+        await asyncio.wait_for(settled(engine), 5)
+        assert client.refusals == [] and client.asked and run['status'] == 'done'
+    finally:
+        await engine.close()
