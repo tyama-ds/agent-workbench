@@ -63,6 +63,7 @@ async function command(name){
   if(name==='shutdown'){assert(!shutdownSent);shutdownSent=true;child.stdin.end(line);}else child.stdin.write(line);
   const receipt=await pending;assert.equal(receipt.ok,true,receipt.error);return receipt;
 }
+const CENSUS_MS=60000;
 async function census(label){
   if(process.platform!=='win32'){report.ownership.push({label,platform:process.platform,unsupported:true});return null;}
   assert(!censusPending,'Do not replace an unfinished process census');
@@ -70,14 +71,16 @@ async function census(label){
 @(Get-CimInstance Win32_Process -Filter "Name='msedge.exe' OR Name='node.exe' OR Name='python.exe' OR Name='pythonw.exe'" -Property ProcessId,ParentProcessId,CreationDate,Name,CommandLine | ForEach-Object {
 [pscustomobject]@{pid=[int]$_.ProcessId;ppid=[int]$_.ParentProcessId;created=$_.CreationDate.ToUniversalTime().ToString('o');name=$_.Name;profile=([string]$_.CommandLine).IndexOf($env:AWB_ADAPTIVE_PROFILE,[StringComparison]::OrdinalIgnoreCase)-ge 0}
 }) | ConvertTo-Json -Depth 3 -Compress`;
-  const processRecord={label,pid:null,exit:null,ended:false};report.censusChildren.push(processRecord);
+  const processRecord={label,pid:null,exit:null,ended:false,elapsed_ms:null},censusStarted=Date.now();report.censusChildren.push(processRecord);
   censusPending=new Promise((resolve,reject)=>{
     const observer=spawn('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...process.env,AWB_ADAPTIVE_PROFILE:profile}});
     processRecord.pid=observer.pid;let stdout='',stderr='';observer.stdout.setEncoding('utf8');observer.stderr.setEncoding('utf8');
     observer.stdout.on('data',value=>stdout+=value);observer.stderr.on('data',value=>stderr+=value);
-    observer.on('error',reject);observer.on('close',code=>{processRecord.exit=code;processRecord.ended=true;code===0?resolve(stdout):reject(new Error('Census failed: '+stderr));});
+    observer.on('error',reject);observer.on('close',code=>{processRecord.exit=code;processRecord.ended=true;processRecord.elapsed_ms=Date.now()-censusStarted;code===0?resolve(stdout):reject(new Error('Census failed: '+stderr));});
   });
-  let raw;try{raw=await bounded(censusPending,10000,'Read-only process census');}finally{if(processRecord.ended)censusPending=null;}
+  // Starting powershell.exe and asking WMI for the process list took longer than 10 seconds on a shared
+  // Windows runner (the census itself then ended normally), so the wait is long and the time is recorded.
+  let raw;try{raw=await bounded(censusPending,CENSUS_MS,'Read-only process census');}finally{if(processRecord.ended)censusPending=null;}
   const parsed=JSON.parse(raw.replace(/^\uFEFF/,'')),rows=Array.isArray(parsed)?parsed:[parsed];
   const me=rows.find(row=>row.pid===process.pid);assert(me&&me.created,'Current Node identity must be observed');
   const pids=new Set([process.pid]);let changed=true;
@@ -265,7 +268,7 @@ async function main(){
       const ack=JSON.parse(fs.readFileSync(path.join(OUT,'fixture/closure-ack.json'),'utf8'));assert.equal(ack.ok,true);assert.equal(ack.stdin_valid,true);assert.equal(ack.lifecycles.length,2);
       report.lifecycle.fixtureAck=true;
     }catch(error){report.errors.push(clean(error.stack||error));}
-    try{if(censusPending){await bounded(censusPending,20000,'Pending census exit');censusPending=null;}
+    try{if(censusPending){await bounded(censusPending,CENSUS_MS,'Pending census exit');censusPending=null;}
       const remaining=await census('after-normal-close');report.lifecycle.remainingOwned=remaining;
       if(process.platform==='win32')assert.deepEqual(remaining,[],'Owned browser/server processes remain');
       else report.limitations.push('Fresh OS process absence was not measured on this non-Windows host.');
@@ -286,6 +289,6 @@ async function main(){
     consoleErrors:report.consoleErrors,externalRequests:report.externalRequests,lifecycle:report.lifecycle,
     censusChildren:report.censusChildren,lastSnapshot:report.snapshots.at(-1)?.label??null,
     frames:frames.map(row=>({kind:row.kind,phase:row.phase,ok:row.ok,error:row.error}))},null,2));
-  console.log(JSON.stringify({ok:report.ok,result:path.join(OUT,'result.json'),realModelInference:false}));process.exitCode=report.ok?0:1;
+  console.log(JSON.stringify({ok:report.ok,result:path.join(OUT,'result.json'),realModelInference:false,censusMs:report.censusChildren.map(row=>row.elapsed_ms)}));process.exitCode=report.ok?0:1;
 }
 main().catch(error=>{console.error(clean(error.stack||error));process.exitCode=1;});
