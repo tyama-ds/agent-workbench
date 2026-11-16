@@ -395,6 +395,9 @@ BRAVE_PACE.min_interval = 1.1
 
 
 class WebTools:
+    # stat_lookup's fallback to the JSON API: seconds to wait for one answer, between the two tries, and in all.
+    STAT_API_WAIT, STAT_API_PAUSE, STAT_API_SECONDS = 75, 5, 170
+
     def __init__(self, settings: dict, *, search_key=None):
         """search_key: a callable returning the current Brave Search key ('' when unset).
 
@@ -427,6 +430,7 @@ class WebTools:
         # one), and statistics read directly.
         self.use = {"sent": 0, "reused": 0, "similar": 0, "lookups": 0}
         self._asked, self._insisted, self._lookups, self._lookup_queue = [], set(), {}, asyncio.Lock()
+        self._tables, self._stat_store = {}, None
         # Browser search only: Bing as a second engine is the human's separate choice (off unless they turn it on).
         self.browser_bing = config.get("browser_bing", False)
         if type(self.browser_bing) is not bool:
@@ -480,14 +484,18 @@ class WebTools:
         ]
 
     async def _request(self, url: str, *, headers: dict | None = None, trusted_search: bool = False,
-                       form: list[tuple[str, str]] | None = None) -> tuple[bytes, str, str]:
+                       form: list[tuple[str, str]] | None = None, wait: float | None = None,
+                       size: int | None = None) -> tuple[bytes, str, str]:
         """One bounded request. ``headers`` marks a search request, which must
-        stay on its origin; ``form`` sends a urlencoded POST body instead of a GET."""
+        stay on its origin; ``form`` sends a urlencoded POST body instead of a GET.
+        ``wait`` and ``size`` replace the configured time and size limits for a
+        fixed destination the application itself chose (never a model's URL)."""
+        wait, size = wait or self.timeout, size or self.max_bytes
         search = headers is not None or form is not None
         first = _url(url)
         original_origin = (first.scheme, first.hostname, first.port or (443 if first.scheme == "https" else 80))
         body = urllib.parse.urlencode(form).encode("ascii") if form is not None else None
-        timeout = aiohttp.ClientTimeout(total=self.timeout, connect=min(8, self.timeout), sock_read=self.timeout)
+        timeout = aiohttp.ClientTimeout(total=wait, connect=min(8, wait), sock_read=wait)
         # Never inherit HTTP_PROXY/HTTPS_PROXY or NETRC. Only the explicit proxy
         # setting is shared with the configured search and page-fetch requests.
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False, auto_decompress=True, cookie_jar=aiohttp.DummyCookieJar(),
@@ -517,7 +525,7 @@ class WebTools:
                         host_literal = f"[{address}]" if ":" in address else address
                         targets.append((urllib.parse.urlunsplit((parsed.scheme, f"{host_literal}:{port}", parsed.path or "/", parsed.query, "")),
                                         {**sent, "Host": host_header}, original_host if parsed.scheme == "https" else None))
-                deadline = asyncio.get_running_loop().time() + self.timeout
+                deadline = asyncio.get_running_loop().time() + wait
                 for attempt, (request_url, request_headers, tls_name) in enumerate(targets, 1):
                     try:
                         async with session.request("GET" if body is None else "POST", request_url, data=body, headers=request_headers,
@@ -544,7 +552,7 @@ class WebTools:
                             data = bytearray()
                             async for chunk in response.content.iter_chunked(16384):
                                 data.extend(chunk)
-                                if len(data) > self.max_bytes:
+                                if len(data) > size:
                                     raise WebToolError("Web response exceeds the configured size limit")
                             return bytes(data), response.headers.get("Content-Type", ""), url
                     except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError) as exc:
@@ -552,7 +560,7 @@ class WebTools:
                             raise
                         if attempt < len(targets) and _retry_next_address(exc) and asyncio.get_running_loop().time() < deadline:
                             continue
-                        raise WebToolError("Web request failed: " + _failure_class(exc, self.timeout)
+                        raise WebToolError("Web request failed: " + _failure_class(exc, wait)
                                            + ("; check the configured search service or proxy" if search else "")) from exc
         raise WebToolError("Too many redirects")
 
@@ -622,25 +630,106 @@ class WebTools:
                 args["countries"], args["indicator"], args.get("start_year"), args.get("end_year"), time.gmtime().tm_year)
         except ValueError as exc:
             raise WebToolError(str(exc)) from None
-        async with self._lookup_queue:  # one request at a time to the public API
-            held = self._lookups.get(url)
+        key = (code, tuple(codes), start, end)
+        async with self._lookup_queue:  # one request at a time to the World Bank
+            held = self._lookups.get(key)
             if held is not None:
                 return held
-            data, _content_type, _final = await self._request(url)
             try:
-                found = statdata.read(json.loads(data.decode("utf-8-sig")), code, label, codes)
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                raise WebToolError("The World Bank answer could not be read as JSON; report that the figures could not be read") from None
-            except ValueError as exc:
-                raise WebToolError(str(exc)) from None
-            result = {"source": statdata.SOURCE, **found, "years": [start, end], "url": url, "page_url": page, "untrusted": True}
+                found = statdata.select(await self._indicator_table(code), code, label, codes, start, end)
+                read_from = statdata.bulk_url(code)
+            except WebToolError as bulk_problem:
+                found = await self._stat_api(code, label, codes, start, end, str(bulk_problem))
+                read_from = url
+            result = {"source": statdata.SOURCE, **found, "years": [start, end], "url": url, "page_url": page,
+                      "read_from": read_from, "untrusted": True}
+            notes = [found.pop("note")] if "note" in found else []
+            result.pop("note", None)
             if found["no_values"]:
-                result["note"] = ("No values in these years for: " + ", ".join(found["no_values"])
-                                  + ". Try a wider range of years, or report the figure as unconfirmed.")
+                notes.append("No values in these years for: " + ", ".join(found["no_values"])
+                             + ". Try a wider range of years, or report the figure as unconfirmed.")
+            if notes:
+                result["note"] = " ".join(notes)
             self.use["lookups"] += 1
             if len(self._lookups) < 100:
-                self._lookups[url] = result
+                self._lookups[key] = result
             return result
+
+    def use_stat_store(self, store) -> None:
+        """A statdata.IndicatorStore shared by every run of this application (or None: nothing is kept on disk)."""
+        self._stat_store = store
+
+    async def _indicator_table(self, code: str) -> dict:
+        """One indicator for every country and year: this run's copy, the copy on disk, or a fresh download."""
+        table = self._tables.get(code)
+        if table is not None:
+            return table
+        store = self._stat_store
+        kept = await asyncio.to_thread(store.get, code) if store is not None else None
+        if kept is not None:
+            try:
+                table = statdata.read_bulk(kept, code)
+            except ValueError:
+                kept = None  # a damaged copy is replaced
+        if table is None:
+            try:
+                data, _content_type, _final = await self._request(statdata.bulk_url(code), wait=max(15, self.timeout),
+                                                                  size=statdata.MAX_ZIP_BYTES)
+                table = statdata.read_bulk(data, code)
+                if store is not None:
+                    await asyncio.to_thread(store.put, code, data)
+            except ValueError as exc:  # the request failed, or the file was not what was expected
+                old = await asyncio.to_thread(store.get, code, stale=True) if store is not None else None
+                try:
+                    # Statistics change rarely: an older copy is better than none.
+                    table = statdata.read_bulk(old, code) if old is not None else None
+                except ValueError:
+                    table = None
+                if table is None:
+                    raise WebToolError(str(exc)) from None
+        if len(self._tables) < 40:
+            self._tables[code] = table
+        return table
+
+    async def _stat_api(self, code, label, codes, start, end, bulk_problem: str) -> dict:
+        """The fallback: the JSON API, one country at a time, a long wait and one retry each.
+
+        Its first answer for an address it has not served before can take over a
+        minute, so the whole fallback stops after STAT_API_SECONDS and says
+        which countries were not read.
+        """
+        series, missing, unread, name, updated, problem = [], [], [], label, "", ""
+        started = asyncio.get_running_loop().time()
+        for item in codes:
+            found = None
+            for attempt in range(2):
+                if asyncio.get_running_loop().time() - started > self.STAT_API_SECONDS:
+                    break
+                if attempt:
+                    await asyncio.sleep(self.STAT_API_PAUSE)
+                try:
+                    data, _content_type, _final = await self._request(statdata.api_url([item], code, start, end),
+                                                                      wait=self.STAT_API_WAIT)
+                    found = statdata.read(json.loads(data.decode("utf-8-sig")), code, name, [item])
+                    break
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    problem = "the answer was not JSON"
+                except ValueError as exc:
+                    problem = str(exc)[:300]
+            if found is None:
+                unread.append(item)
+                continue
+            name, updated = found["indicator"]["name"] or name, found["last_updated"] or updated
+            series += found["series"]
+            missing += found["no_values"]
+        if len(unread) == len(codes):
+            raise WebToolError("World Bank data could not be read: " + bulk_problem[:300] + ("; then: " + problem if problem else "")
+                               + ". Do not repeat the same call now; report these figures as unconfirmed")
+        result = {"indicator": {"id": code, "name": name}, "series": series, "no_values": missing, "last_updated": updated}
+        if unread:
+            result["note"] = ("Not read (the World Bank did not answer in time): " + ", ".join(unread)
+                              + ". Report these as unconfirmed or try them again later.")
+        return result
 
     def _similar(self, query: str, limit: int):
         """An earlier answer of this run to practically the same question, shown once instead of searching again.

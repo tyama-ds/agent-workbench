@@ -4,6 +4,33 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev63 — stat_lookup reads the World Bank's bulk file (2026-11-17)
+
+`stat_lookup` at `503253a` was tried against the real API from the test
+machine: all four calls ended in "timeout waiting for the response (20 s
+limit)". Measured there with curl: an address the JSON API had served before
+answered in 0.13 to 0.17 s; a new one took 34 s or ran past 60 s (six of six),
+and answered in 0.17 s a few minutes later. The bulk download of one indicator
+(`/v2/en/indicator/<code>?downloadformat=csv`, a 140 KB zip with every
+country and year) always answered in 0.15 s. The IMF DataMapper API returned
+403 from that machine and is not used.
+
+- The bulk file is the source. Countries and years are picked out by the
+  application; another lookup of the same indicator costs no request.
+- The unchanged zip is kept for 24 hours in `stat-cache` under the state
+  folder and read through the same checks each time. When no newer file can
+  be had, an older copy still answers.
+- The archive is unpacked in memory only: every entry must be a plain file
+  name (no folders, no `..`), at most 16 entries, 8 MiB zipped, and no more
+  than 24 MiB is read from the table whatever the archive declares.
+- The JSON API is the fallback when no file can be read: one country at a
+  time, 75 s wait, one retry after 5 s, about 170 s in all; countries it did
+  not read are named.
+- `read_from` in the result says which address was actually read.
+- **Not run against the real World Bank from this environment** (it cannot
+  reach it): the file's layout is as the test machine described it and as the
+  World Bank documents it.
+
 ## 0.1.1.dev62 — Statistics read directly, a search guide, and a human check that does not wait for ever (2026-11-16)
 
 From a real-machine load run at `2d07f9f` (information gathering and
