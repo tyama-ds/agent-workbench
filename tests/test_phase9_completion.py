@@ -538,9 +538,14 @@ async def test_a_pm_whose_finish_is_refused_is_told_what_to_approve_and_may_not_
         assert '連絡を送れる担当がいません' in client.wait_refusals[0] and first.id in client.wait_refusals[0]
         assert not client.notices and not any(row['kind'] == 'stall_notice' for row in engine.events)
         # The activity log keeps what each tool was called with, not only its result.
-        assert any(log['kind'] == 'tool' and log['text'].startswith('spawn_worker\nargs: {"role": "ドイツ担当"') for log in pm.logs)
-        assert any(log['kind'] == 'tool' and log['text'].startswith('review_worker_report\nargs: {"worker_id": "' + first.id)
-                   for log in pm.logs)
+        import json
+        tool_logs = {name: json.loads(body) for name, _, body in
+                     (log['text'].partition('\n') for log in pm.logs if log['kind'] == 'tool')}  # still "name, newline, JSON"
+        assert tool_logs['review_worker_report']['called_with']['worker_id'] == first.id
+        assert tool_logs['review_worker_report']['ok'] is True
+        assert tool_logs['spawn_worker']['called_with']['role'] in {'ドイツ担当', '集計担当'}
+        # The model's own tool result does not carry the summary.
+        assert not any('called_with' in str(row.get('content')) for row in pm.conversation if row.get('role') == 'tool')
     finally:
         await engine.close()
 
@@ -619,8 +624,11 @@ async def test_a_stopped_worker_that_was_still_waiting_on_a_dependency_does_not_
 
 def test_tool_arguments_are_summarised_for_the_activity_log():
     from workbench.engine import _args_summary
-    assert _args_summary({}) == '' and _args_summary(None) == ''
+    assert _args_summary({}) is None and _args_summary(None) is None
     brief = _args_summary({'path': 'C:\\out\\report.docx', 'expected_sha256': 'missing', 'text': 'あ' * 5000})
-    assert '"path": "C:\\\\out\\\\report.docx"' in brief and '（全5000文字）' in brief and len(brief) < 400
+    assert brief['path'] == 'C:\\out\\report.docx' and brief['expected_sha256'] == 'missing'
+    assert brief['text'].startswith('あ' * 80 + '…') and brief['text'].endswith('（全5000文字）')
     nested = _args_summary({'code': 'print(1)', 'outputs': [{'path': 'out/a.docx', 'name': 'a.docx', 'expected_sha256': 'missing'}] * 12})
-    assert '"name": "a.docx"' in nested and 'ほか4件' in nested and len(nested) <= 701
+    assert nested['outputs'][-1] == '…ほか4件' and nested['outputs'][0]['name'] == 'a.docx' and len(nested['outputs']) == 9
+    long = _args_summary({f'field{index}': 'x' * 150 for index in range(10)})
+    assert isinstance(long, str) and long.startswith('{"field0": "xxx') and len(long) <= 701  # clipped when even the summary is long

@@ -83,7 +83,11 @@ STRING = {'type': 'string'}
 
 
 def _args_summary(args, limit=700):
-    """Tool arguments for the activity log: short values in full, long ones as a start and a length."""
+    """Tool arguments for the activity log: short values in full, long ones as a start and a length.
+
+    Returns a JSON-ready value (the shortened arguments, or one clipped string
+    when even those are long), or None when there is nothing to show.
+    """
     def brief(value, depth=0):
         if isinstance(value, str):
             return value if len(value) <= 160 else f'{value[:80]}…（全{len(value)}文字）'
@@ -91,14 +95,12 @@ def _args_summary(args, limit=700):
             return [brief(item, depth + 1) for item in value[:8]] + ([f'…ほか{len(value) - 8}件'] if len(value) > 8 else [])
         if isinstance(value, dict):
             return {str(key)[:40]: brief(item, depth + 1) for key, item in list(value.items())[:12]} if depth < 3 else '{…}'
-        return value
+        return value if isinstance(value, (int, float, bool)) or value is None else str(value)[:80]
     if not isinstance(args, dict) or not args:
-        return ''
-    try:
-        text_value = json.dumps(brief(args), ensure_ascii=False, default=str)
-    except (TypeError, ValueError):
-        return ''
-    return text_value if len(text_value) <= limit else text_value[:limit] + '…'
+        return None
+    shortened = brief(args)
+    text_value = json.dumps(shortened, ensure_ascii=False)
+    return shortened if len(text_value) <= limit else text_value[:limit] + '…'
 
 
 CONTINUATION_NUDGES = 1
@@ -2555,9 +2557,13 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                                 yielded_for_message = finished = True
                             if name == 'submit_independent_review' and result.get('ok') is True:
                                 finished = True
-                            # The arguments in brief (paths, names, sizes), then the result.
-                            summary_line = _args_summary(args)
-                            self.log(agent, 'tool', name + ('\nargs: ' + summary_line if summary_line else '') + '\n' + encoded[:12000])
+                            # The log line stays "name, newline, result JSON". What the tool was
+                            # called with (paths, names, sizes) is the first key of that JSON, in
+                            # the log only: the model's own result is unchanged.
+                            called_with = _args_summary(args)
+                            logged = (json.dumps({'called_with': called_with, **result}, ensure_ascii=False, allow_nan=False)
+                                      if called_with is not None and 'called_with' not in result else encoded)
+                            self.log(agent, 'tool', name + '\n' + logged[:12000])
                         except RedactionCapacityError:
                             # The outer fixed-text handler must remain fail-closed.
                             raise

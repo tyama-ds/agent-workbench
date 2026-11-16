@@ -19,8 +19,10 @@ overview keeps only the latest head’s checks; archived claims retain their ori
 - `python_execute` file-mapping errors name the argument and the value
   (`outputs[0].name '...'`, `inputs[1].path '...'`) with what that argument
   must be; a missing destination folder says to create it first.
-- The activity log's tool lines keep a short summary of the arguments (paths
-  and names in full, long text as its start and length) before the result.
+- The activity log keeps what each tool was called with (paths and names in
+  full, long text as its start and length) as the first key, `called_with`,
+  of the logged result. The line format (tool name, newline, result JSON) is
+  unchanged, and the model's own tool result does not carry the summary.
 
 ## 0.1.1.dev56 — A coordinator nobody can wake is told what to do, then stopped (2026-11-16)
 
