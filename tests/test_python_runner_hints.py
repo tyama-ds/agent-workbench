@@ -180,3 +180,23 @@ def test_missing_helper_source_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, '_HELPER_SOURCE', tmp_path / 'absent.py')
     with pytest.raises(HarnessError, match='test helper'):
         runner._prepare_workspace(tmp_path, 'pass', [], 10)
+
+
+def test_a_rejected_file_mapping_names_the_argument_and_the_value():
+    """Real-machine case: three saves failed with "Path contains traversal..." and
+    "Path does not exist", and nothing said which argument was wrong."""
+    from workbench import python_runner
+    from workbench.harness import HarnessError
+    good = {'path': 'out/report.docx', 'name': 'report.docx', 'expected_sha256': 'missing'}
+    assert python_runner._mappings([good], outputs=True)[0]['path'] == 'out/report.docx'
+    with pytest.raises(HarnessError) as absolute:
+        python_runner._mappings([{**good, 'name': 'C:\\Users\\me\\out\\report.docx'}], outputs=True)
+    message = str(absolute.value)
+    assert message.startswith("outputs[0].name 'C:\\\\Users") and 'relative file name inside the sandbox' in message
+    with pytest.raises(HarnessError, match=r"inputs\[1\]\.name '\.\./secret\.txt'"):
+        python_runner._mappings([{'path': 'a.csv', 'name': 'a.csv'}, {'path': 'b.csv', 'name': '../secret.txt'}])
+    with pytest.raises(HarnessError, match=r'outputs\[0\] needs exactly expected_sha256, name, path'):
+        python_runner._mappings([{'path': 'out/report.docx', 'name': 'report.docx'}], outputs=True)
+    with pytest.raises(HarnessError, match=r"inputs\[0\]\.path 'missing\.csv': .* \(path is the existing host file"):
+        python_runner._located("inputs[0].path", 'missing.csv', lambda: (_ for _ in ()).throw(HarnessError('Path does not exist')),
+                               'path is the existing host file to copy in')
