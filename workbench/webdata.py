@@ -166,49 +166,113 @@ def _describe(value, depth=2, budget=None):
     return result
 
 
+def received(value):
+    """Bounded echo of the caller's OWN argument for an error message.
+
+    Never pass snapshot (web) content here: error text is not labeled untrusted.
+    """
+    try:
+        text = json.dumps(value, ensure_ascii=False, allow_nan=True)
+    except (TypeError, ValueError, RecursionError):
+        return _kind(value)
+    text = text.encode('utf-8', 'replace').decode('utf-8')
+    return text if len(text) <= 60 else text[:57] + '...'
+
+
+def _got(value):
+    if value is None or type(value) in {int, float}:
+        return received(value)
+    return f'{_kind(value)} {received(value)}'
+
+
+def received_names(names):
+    shown = sorted(received(name) for name in names)[:5]
+    return '; got unsupported: ' + ', '.join(shown) if shown else ''
+
+
+_POINTER_SHAPE = 'pointer must be one RFC 6901 string such as "/items/0/name" ("" is the whole document)'
+
+
 def _pointer(value, pointer):
-    if not isinstance(pointer, str) or len(pointer) > 2048:
-        raise WebDataError('pointer must be an RFC 6901 string of at most 2048 characters')
+    if not isinstance(pointer, str):
+        raise WebDataError(f'{_POINTER_SHAPE}; got {_got(pointer)}')
+    if len(pointer) > 2048:
+        raise WebDataError(f'pointer must be at most 2048 characters; got {len(pointer)}')
     try:
         pointer.encode('utf-8')
     except UnicodeError:
         raise WebDataError('pointer must contain valid Unicode text') from None
     if not pointer:
         return value
-    if not pointer.startswith('/') or pointer.count('/') > MAX_JSON_DEPTH:
-        raise WebDataError('pointer must be an RFC 6901 path; URI fragments and excessive depth are unsupported')
-    for token in pointer[1:].split('/'):
+    if not pointer.startswith('/'):
+        hint = f' (try {received("/" + pointer)})' if re.fullmatch(r'[^$#.*\[\]]+', pointer) else ''
+        raise WebDataError(f'{_POINTER_SHAPE}: start with "/" and put "/" before every key or array index; '
+                           f'got {received(pointer)}{hint}. JSONPath, dots, brackets, "#" fragments and wildcards are unsupported')
+    if pointer.count('/') > MAX_JSON_DEPTH:
+        raise WebDataError(f'pointer must have at most {MAX_JSON_DEPTH} "/" levels; got {pointer.count("/")}')
+    tokens = pointer[1:].split('/')
+    for position, token in enumerate(tokens):
         if re.search(r'~(?![01])', token):
-            raise WebDataError('pointer contains an invalid RFC 6901 escape')
+            raise WebDataError(f'pointer contains an invalid RFC 6901 escape in {received(token)}; only ~0 (for ~) and ~1 (for /) exist')
         key = token.replace('~1', '/').replace('~0', '~')
+        # Only the caller's own pointer text and container sizes are reported.
+        parent = received('/' + '/'.join(tokens[:position])) if position else 'the root ("")'
         if isinstance(value, dict):
             if key not in value:
-                raise WebDataError('JSON pointer does not exist in this snapshot')
+                raise WebDataError(f'JSON pointer does not exist in this snapshot: the object at {parent} has no key '
+                                   f'{received(key)}; read that pointer to see its keys')
             value = value[key]
         elif isinstance(value, list):
-            if not re.fullmatch(r'0|[1-9][0-9]*', key) or len(key) > 10 or int(key) >= len(value):
-                raise WebDataError('JSON pointer array index does not exist; use a nonnegative canonical index')
+            if not re.fullmatch(r'0|[1-9][0-9]*', key) or len(key) > 10:
+                raise WebDataError(f'JSON pointer array index must be a canonical nonnegative integer such as 0; got '
+                                   f'{received(key)} for the array at {parent}. Wildcards and "-" are unsupported; page with offset/limit')
+            if int(key) >= len(value):
+                raise WebDataError(f'JSON pointer array index does not exist: got {key}, but the array at {parent} has '
+                                   f'{len(value)} items (valid indices start at 0)')
             value = value[int(key)]
         else:
-            raise WebDataError('JSON pointer cannot descend into a scalar')
+            raise WebDataError(f'JSON pointer cannot descend into a scalar: the value at {parent} has type {_kind(value)}, '
+                               f'so {received(key)} cannot be selected')
     return value
 
 
-def _integer(args, name, default, minimum, maximum):
+def _integer(args, name, default, minimum, maximum, *, cap=False, scope=''):
+    """Validate an integer argument. ``cap`` lowers a too-large value to the
+    maximum, which can only shrink the response; nothing else is repaired."""
     value = args.get(name, default)
+    if cap and type(value) is int and value > maximum:
+        return maximum
     if type(value) is not int or not minimum <= value <= maximum:
-        raise WebDataError(f'{name} must be an integer between {minimum} and {maximum}')
+        raise WebDataError(f'{name} must be an integer {minimum}..{maximum}{scope}; got {_got(value)}')
     return value
+
+
+def _limit(base, args, default, maximum, scope):
+    limit = _integer(args, 'limit', default, 1, maximum, cap=True, scope=scope)
+    if limit != args.get('limit', default):
+        base['limit_capped_to'] = maximum  # visible, so a short page is not mistaken for the end
+    return limit
+
+
+_FIELDS_SHAPE = 'fields must be an array of 1..20 distinct object-key strings such as ["name","code"]'
 
 
 def _fields(args):
     fields = args.get('fields')
     if fields is None and 'fields' not in args:
         return None
-    if (not isinstance(fields, list) or not 1 <= len(fields) <= 20
-            or any(not isinstance(key, str) or len(key) > 256 for key in fields)
-            or len(set(fields)) != len(fields)):
-        raise WebDataError('fields must contain 1 to 20 distinct literal object keys, each at most 256 characters')
+    if not isinstance(fields, list):
+        raise WebDataError(f'{_FIELDS_SHAPE}; got {_got(fields)}')
+    if not 1 <= len(fields) <= 20:
+        raise WebDataError(f'{_FIELDS_SHAPE}; got {len(fields)} entries')
+    for key in fields:
+        if not isinstance(key, str):
+            raise WebDataError(f'{_FIELDS_SHAPE}; got an entry of type {_kind(key)} (nested paths belong in pointer)')
+        if len(key) > 256:
+            raise WebDataError(f'{_FIELDS_SHAPE}, each at most 256 characters; got one of {len(key)}')
+    if len(set(fields)) != len(fields):
+        repeated = next(key for index, key in enumerate(fields) if key in fields[:index])
+        raise WebDataError(f'{_FIELDS_SHAPE}; got {received(repeated)} more than once')
     try:
         for key in fields:
             key.encode('utf-8')
@@ -221,7 +285,8 @@ def _project(value, fields):
     if fields is None:
         return value, []
     if not isinstance(value, dict):
-        raise WebDataError('fields selects object keys; select an object or an array of objects')
+        raise WebDataError(f'fields selects object keys, but the selected value has type {_kind(value)}; '
+                           'select an object or an array of objects, or omit fields')
     return {key: value[key] for key in fields if key in value}, [key for key in fields if key not in value]
 
 
@@ -249,10 +314,11 @@ class WebSnapshots:
         raise WebDataError('max_chars is too small for snapshot metadata; request a larger response limit')
 
     def _text_page(self, base, text, args, maximum):
-        offset = _integer(args, 'offset', 0, 0, MAX_TEXT_CHARS)
-        limit = _integer(args, 'limit', 2000, 1, 10000)
+        offset = _integer(args, 'offset', 0, 0, MAX_TEXT_CHARS, scope=' characters')
+        base = dict(base)
+        limit = _limit(base, args, 2000, 10000, ' characters for text')
         if offset > len(text):
-            raise WebDataError('offset is beyond the retained text; no request was made')
+            raise WebDataError(f'offset {offset} is beyond the retained text ({len(text)} characters); no request was made')
         wanted = min(limit, len(text) - offset)
 
         def page(count):
@@ -298,8 +364,14 @@ class WebSnapshots:
         snapshot = _Snapshot(text, encoded, len(text.encode('utf-8')) + len(encoded.encode('utf-8')))
         if snapshot.charge > MAX_SNAPSHOT_BYTES:
             raise WebDataError('This snapshot exceeds the in-memory retention limit')
+        # State the accepted shapes where the model decides its next call.
         base = {**metadata, 'mode': 'preview', 'cached': False,
-                'read_hint': 'Use web_read with this snapshot_id. JSON uses exact RFC6901 pointer, object fields or array offset/limit. Raw text uses character offset/limit. Samples and previews are not complete data.'}
+                'read_hint': ('Use web_read with this snapshot_id: an exact RFC6901 pointer such as "/items/0/name" ("" is the root), '
+                              'fields such as ["name","code"], and offset/limit for arrays (limit 1..100) or strings (limit 1..10000). '
+                              if valid else
+                              'Use web_read with this snapshot_id and character offset/limit (limit 1..10000); '
+                              'this snapshot is raw text, so pointer and fields do not apply. ')
+                             + 'Samples and previews are not complete data.'}
         if valid:
             # Leave room for the preview/page envelope before describing nodes.
             base = self._fit_structure(base, value, DEFAULT_RESPONSE_CHARS - 1500)
@@ -314,11 +386,14 @@ class WebSnapshots:
 
     def read(self, args):
         if not isinstance(args, dict) or set(args) - {'snapshot_id', 'pointer', 'offset', 'limit', 'fields', 'max_chars'}:
-            raise WebDataError('web_read accepts only snapshot_id, pointer, offset, limit, fields and max_chars')
+            raise WebDataError('web_read accepts only snapshot_id, pointer, offset, limit, fields and max_chars' + (
+                received_names(set(args) - {'snapshot_id', 'pointer', 'offset', 'limit', 'fields', 'max_chars'})
+                if isinstance(args, dict) else ''))
         ident = args.get('snapshot_id')
         if not isinstance(ident, str) or not re.fullmatch(r'web-[0-9a-f]{32}', ident):
-            raise WebDataError('snapshot_id must be an ID returned by web_fetch in this run')
-        maximum = _integer(args, 'max_chars', DEFAULT_RESPONSE_CHARS, 1024, MAX_RESPONSE_CHARS)
+            raise WebDataError('snapshot_id must be the "web-" plus 32 hex characters ID returned by web_fetch in this run; '
+                               f'got {received(ident) if "snapshot_id" in args else "no snapshot_id"}')
+        maximum = _integer(args, 'max_chars', DEFAULT_RESPONSE_CHARS, 1024, MAX_RESPONSE_CHARS, cap=True)
         fields = _fields(args)
         snapshot = self._entries.get(ident)
         if snapshot is None:
@@ -339,10 +414,10 @@ class WebSnapshots:
                 raise WebDataError('fields cannot select string characters; use offset/limit')
             return self._text_page(base, selected, args, maximum)
         if isinstance(selected, list):
-            offset = _integer(args, 'offset', 0, 0, MAX_JSON_NODES)
-            limit = _integer(args, 'limit', 20, 1, 100)
+            offset = _integer(args, 'offset', 0, 0, MAX_JSON_NODES, scope=' items')
+            limit = _limit(base, args, 20, 100, ' items for a JSON array')
             if offset > len(selected):
-                raise WebDataError('offset is beyond this JSON array')
+                raise WebDataError(f'offset {offset} is beyond this JSON array ({len(selected)} items)')
             end = min(offset + limit, len(selected))
             # Validate every requested item before returning a partial page.
             items = []
@@ -383,7 +458,8 @@ class WebSnapshots:
                 raise WebDataError('max_chars is too small for snapshot metadata; request a larger response limit')
             return result
         if 'offset' in args or 'limit' in args:
-            raise WebDataError('offset/limit apply only to arrays or strings')
+            raise WebDataError(f'offset/limit apply only to arrays or strings; the selected value has type {_kind(selected)}. '
+                               'Omit them, or use fields or a deeper pointer')
         projected, missing = _project(selected, fields)
         result = {**base, 'value': projected, 'value_included': True,
                   'fields': fields, 'missing_fields': missing, 'projected': fields is not None,

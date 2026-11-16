@@ -148,8 +148,10 @@ def test_invalid_pointer_or_missing_path_never_fetches_again(monkeypatch, pointe
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('args', [{'offset': True}, {'offset': -1}, {'limit': False}, {'limit': 101},
-                                  {'max_chars': True}, {'max_chars': 24001}, {'max_chars': 0},
+# A too-large limit or max_chars is capped (tests/test_web_phase9.py); every
+# other out-of-range or wrongly shaped value is still refused.
+@pytest.mark.parametrize('args', [{'offset': True}, {'offset': -1}, {'limit': False}, {'limit': 0}, {'limit': '101'},
+                                  {'offset': 20001}, {'max_chars': True}, {'max_chars': 1023}, {'max_chars': 0},
                                   {'fields': []}, {'fields': ['a', 'a']}, {'fields': [[]]},
                                   {'fields': None}, {'fields': ['\ud800']}, {'url': 'https://other.example'}])
 def test_invalid_projection_arguments_are_rejected(monkeypatch, args):
