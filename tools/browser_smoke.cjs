@@ -766,8 +766,16 @@ async function main() {
         const text=id=>(document.getElementById(id)?.textContent||'').slice(0,400);
         return {runFormStatus:text('runFormStatus'),connection:text('connectionStatus'),notice:text('globalNotice'),settingsStatus:text('settingsStatus'),
           activeRunStatus:text('activeRunStatus'),taskDialogOpen:Boolean(document.getElementById('taskDialog')?.open),settingsDialogOpen:Boolean(document.getElementById('settingsDialog')?.open),
-          startDisabled:Boolean(document.getElementById('startRun')?.disabled),focus:document.activeElement?.id||document.activeElement?.tagName||''};
+          startDisabled:Boolean(document.getElementById('startRun')?.disabled),focus:document.activeElement?.id||document.activeElement?.tagName||'',
+          // The page's last own requests: one that is still waiting for the server has no entry yet.
+          now:Math.round(performance.now()),requests:performance.getEntriesByType('resource').filter(row=>new URL(row.name).pathname.startsWith('/api/')).slice(-12)
+            .map(row=>({path:new URL(row.name).pathname,start:Math.round(row.startTime),ms:Math.round(row.duration),status:row.responseStatus??null}))};
       }).catch(error=>({unavailable:String(error?.message||error).slice(0,200)})));
+      // Whether the server itself still answers, how fast, and which runs it lists.
+      const asked=Date.now();
+      report.failureContext.push(await context.request.get(new URL(open.url()).origin+'/api/state?view=selected',{maxRetries:0,timeout:20000})
+        .then(async response=>({serverState:response.status(),ms:Date.now()-asked,runs:((await response.json()).runs||[]).slice(-6).map(run=>`${run.id}:${run.status}`)}))
+        .catch(error=>({serverState:'unavailable',ms:Date.now()-asked,error:String(error?.message||error).slice(0,200)})));
     }
     report.ok=false;const redact=value=>[...Object.values(redactionCases).flatMap(item=>[item.old,item.new]),
       ...['old','new','search_old','search_new','other'].map(name=>credentialScenario[name]),'fixture-memory-secret']
