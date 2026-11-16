@@ -40,9 +40,15 @@ _STATUS_REASONS = {401: "authentication required", 403: "access refused", 404: "
 # user, machine, session or credential data, and cookies are never kept or sent.
 BROWSER_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+# Accept-Encoding is stated explicitly. Left out, aiohttp adds "gzip, deflate"
+# by itself; with a browser User-Agent that pair (a browser also offers br and
+# zstd) is what DuckDuckGo's bot check keys on: the same search answered 202
+# with it and 200 with results without it, from the same PC at the same time.
+# This client can decode neither br nor zstd, so it asks for no compression.
 BROWSER_HEADERS = {"User-Agent": BROWSER_USER_AGENT,
                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                   "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"}
+                   "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+                   "Accept-Encoding": "identity"}
 # aiohttp's defaults (8190 bytes per header, 128 headers) reject ordinary pages
 # that send a long Content-Security-Policy or many Set-Cookie lines.
 _MAX_HEADER_BYTES, _MAX_HEADER_COUNT = 32768, 256
@@ -610,7 +616,10 @@ class WebTools:
             parser.feed(text)
             parser.close()
             if parser.challenge:
-                SEARCH_GUARD.refused()  # a bot-check page arrived with HTTP 200
+                # A bot-check page that arrived with HTTP 200: the block stays, and this is an error.
+                SEARCH_GUARD.refused()
+                raise WebToolError("DuckDuckGo asked for a bot check (verification page) instead of returning results; "
+                                   + _BOT_CHECK_ADVICE)
             rows = parser.rows(limit)
             SEARCH_GUARD.succeeded()
             result = {"query": query, "results": rows, "untrusted": True}
