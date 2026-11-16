@@ -2875,6 +2875,8 @@ async function pollState(fresh=false) {
           applyState(state,request);renderState();setConnection(true,'Workbench 接続中');
         } catch(error) {
           if(request.generation!==ui.selectionGeneration){ui.pollAgain=true;continue;}
+          // A programming error while drawing the state is not a connection problem: leave a trace for diagnosis.
+          if(error instanceof TypeError||error instanceof ReferenceError||error instanceof RangeError)console.error('[workbench] state update failed',error?.stack||String(error));
           if(error.code==='redaction_capacity')hideWorkBoardAfterRedactionFailure();
           setConnection(false,'接続を確認してください');ui.detailError=true;renderConversation(getAgent());if(!ui.authenticated)notice(errorText(error),true);
         }

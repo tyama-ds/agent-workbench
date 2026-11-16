@@ -7,6 +7,7 @@ import hashlib
 import html
 import ipaddress
 import json
+import math
 import re
 import socket
 import ssl
@@ -356,7 +357,7 @@ class SearchGuard:
         if remaining:
             raise WebToolError(
                 f"DuckDuckGo is refusing searches from this PC (bot check); it will not be asked again for about "
-                f"{int(remaining // 60) + 1} more minutes. {_BOT_CHECK_ADVICE[0].upper() + _BOT_CHECK_ADVICE[1:]}")
+                f"{math.ceil(remaining / 60)} more minutes. {_BOT_CHECK_ADVICE[0].upper() + _BOT_CHECK_ADVICE[1:]}")
 
     async def pace(self):
         now = time.monotonic()
@@ -373,7 +374,7 @@ class SearchGuard:
 
     def status(self):
         remaining = self.blocked_seconds()
-        return {'blocked': bool(remaining), 'blocked_minutes': int(remaining // 60) + 1 if remaining else 0,
+        return {'blocked': bool(remaining), 'blocked_minutes': math.ceil(remaining / 60),
                 'last_success': self.last_success}
 
 

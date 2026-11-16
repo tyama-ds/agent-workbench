@@ -811,3 +811,14 @@ def test_the_brave_key_never_follows_a_redirect_to_another_origin(monkeypatch):
                 await brave(port).execute("web_search", {"query": "q"})
         assert hosts == ["search.example"]
     asyncio.run(run())
+
+
+def test_blocked_minutes_round_up_without_adding_a_minute_to_a_whole_number(monkeypatch):
+    """A coarse clock (Windows) can leave exactly 600 seconds: that is 10 minutes, not 11."""
+    guard = module.SearchGuard()
+    for seconds, minutes in ((600.0, 10), (599.2, 10), (540.0, 9), (0.4, 1), (0.0, 0)):
+        monkeypatch.setattr(guard, "blocked_seconds", lambda seconds=seconds: seconds)
+        assert guard.status()["blocked_minutes"] == minutes
+        if seconds:
+            with pytest.raises(WebToolError, match=f"about {minutes} more minutes"):
+                guard.check()

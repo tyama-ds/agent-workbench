@@ -137,6 +137,8 @@ async function main() {
     report.browserVersion=browser.version();report.platform=process.platform;
     context=await browser.newContext({viewport:{width:1366,height:768},reducedMotion:'reduce',locale:'ja-JP',timezoneId:'UTC'});
     await context.route('**/*',route=>new URL(route.request().url()).origin===origin?route.continue():route.abort('blockedbyclient'));
+    // Drawing errors the app reports itself (every page of this context) fail the run like page errors.
+    context.on('console',message=>{if(message.text().startsWith('[workbench]'))report.pageErrors.push(message.text().slice(0,2000));});
     page=await context.newPage();page.setDefaultTimeout(10000);
     const ownedHeadingTarget=Object.freeze({page,context});
     page.on('pageerror',error=>report.pageErrors.push(error.message));
@@ -756,10 +758,22 @@ async function main() {
   } catch(error) {
     if(page&&!page.isClosed())await page.screenshot({path:path.join(artifacts,'workbench-failure.png'),fullPage:true,animations:'disabled'}).catch(()=>{report.failureScreenshot='unavailable';});
     else report.failureScreenshot=page?'owned page already closed':'page not created';
+    // What each open page showed when the check failed (status lines only; synthetic data).
+    report.failureContext=[];
+    for(const open of context?context.pages():[]){
+      if(open.isClosed())continue;
+      report.failureContext.push(await open.evaluate(()=>{
+        const text=id=>(document.getElementById(id)?.textContent||'').slice(0,400);
+        return {runFormStatus:text('runFormStatus'),connection:text('connectionStatus'),notice:text('globalNotice'),settingsStatus:text('settingsStatus'),
+          activeRunStatus:text('activeRunStatus'),taskDialogOpen:Boolean(document.getElementById('taskDialog')?.open),settingsDialogOpen:Boolean(document.getElementById('settingsDialog')?.open),
+          startDisabled:Boolean(document.getElementById('startRun')?.disabled),focus:document.activeElement?.id||document.activeElement?.tagName||''};
+      }).catch(error=>({unavailable:String(error?.message||error).slice(0,200)})));
+    }
     report.ok=false;const redact=value=>[...Object.values(redactionCases).flatMap(item=>[item.old,item.new]),
       ...['old','new','search_old','search_new','other'].map(name=>credentialScenario[name]),'fixture-memory-secret']
       .reduce((text,key)=>text.replaceAll(key,'[REDACTED]'),String(value).replace(/(#token=|X-Workbench-Bootstrap[=: ]+)[A-Za-z0-9_-]+/gi,'$1[REDACTED]'));
     report.error=redact(error?.stack||error?.message||error);report.serverError=redact(stderr);
+    report.failureContext=JSON.parse(redact(JSON.stringify(report.failureContext)));
     fs.writeFileSync(path.join(artifacts,'browser-smoke.json'),JSON.stringify(report,null,2));
     console.error(JSON.stringify(report,null,2));process.exitCode=1;
   } finally {
