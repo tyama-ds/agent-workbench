@@ -25,9 +25,9 @@ saved. `stat_lookup` at `d0e9b23` was confirmed there: six of six lookups in
   notices and is then stopped with its own reason.
 - A worker that has sent its coordinator a question may still wait: the
   coordinator has mail to read, so somebody can act.
-- `web_fetch`: HTTP 202 is named as what it usually is, a browser check that
-  first runs a script, with the advice not to retry that address. The
-  application does not run such a check. Why that site answers 202 could not
+- `web_fetch`: HTTP 202 is named as what it usually is, a browser check the
+  site runs before it sends the page, with the advice not to retry that
+  address. The application does not pass such a check. Why that site answers 202 could not
   be examined from this environment (it cannot reach the site).
 
 ## 0.1.1.dev63 — stat_lookup reads the World Bank's bulk file (2026-11-17)

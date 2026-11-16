@@ -35,8 +35,8 @@ class _HTTPStatusError(WebToolError):
         self.status = status
 
 
-_STATUS_REASONS = {202: ("the site did not send the page; this answer is usually a browser check that first runs a script, "
-                         "which this tool does not do. Do not retry this URL: use another source, or report the point as unconfirmed"),
+_STATUS_REASONS = {202: ("the site did not send the page; this answer is usually a browser check the site runs first, "
+                         "which this tool does not pass. Do not retry this URL: use another source, or report the point as unconfirmed"),
                    401: "authentication required", 403: "access refused", 404: "not found",
                    407: "proxy authentication required", 410: "gone", 429: "too many requests"}
 # Search engines and many public sites refuse or challenge an HTTP-library
