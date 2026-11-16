@@ -253,11 +253,73 @@ async def test_a_document_citing_unseen_urls_is_refused_once_and_reported(tmp_pa
             await engine.execute_tool(run, pm, 'write_text', {'path': other, 'text': 'https://unseen.jp/page', 'expected_sha256': 'missing'})
         await engine.execute_tool(run, pm, 'write_text', {'path': other, 'text': 'https://unseen.jp/page', 'expected_sha256': 'missing'})
         pm.pending.clear()
+        # The cited sources are sent back once for a check (see the next test), then the result is accepted.
+        review = await engine.execute_tool(run, pm, 'finish_work', {'summary': '報告書を保存しました。'})
+        assert review['ok'] is False and review['code'] == 'sources_review'
         result = await engine.execute_tool(run, pm, 'finish_work', {'summary': '報告書を保存しました。'})
         assert '【アプリの確認】' in result['summary'] and 'https://unseen.jp/page' in result['summary'] and 'notes.md' in result['summary']
         # Source code is not a citation.
         await engine.execute_tool(run, pm, 'write_text', {
             'path': str(work / 'client.py'), 'text': 'URL = "https://api.unseen.jp/v1"', 'expected_sha256': 'missing'})
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_cited_sources_are_checked_once_against_what_was_retrieved(tmp_path):
+    """Real-machine case: the only page that could be fetched was about another
+    subject, and it was cited as the source of the report."""
+    engine, work = configured(tmp_path, None)
+    engine.settings.value['search']['enabled'] = True
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='生成AI規制の動向を https://www.kantei.go.jp/ai も参考にまとめて', max_workers=0)
+        assert 'Cite a page only for what its retrieved text states' in engine._policy(run, pm)
+        fetched = 'https://www.meti.go.jp/press/2024/04/20240419003/20240419003.html'
+        engine._pages_note(run, 'web_fetch', {'url': fetched}, engine._urls_seen(run, {
+            'url': fetched, 'text': '令和6年度 中小企業者に関する国等の契約の基本方針\n\n  官公需についての方針を閣議決定しました。' + 'あ' * 500}))
+        listed = 'https://digital-strategy.ec.europa.eu/ai-act-overview'
+        engine._pages_note(run, 'web_search', {'query': 'AI 規制'}, engine._urls_seen(run, {
+            'results': [{'title': 'EU AI Act の概要', 'url': listed, 'snippet': '...'}, {'title': 'ignored', 'url': fetched}]}))
+        assert run['_pages'][fetched][0] == 'fetched'  # a search hit does not replace the page's own text
+        text = f'# 生成AI規制の動向\n出典: {fetched}\n参考: {listed}\n依頼の資料: https://www.kantei.go.jp/ai\n'
+        await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'report.md'), 'text': text, 'expected_sha256': 'missing'})
+        await engine.execute_tool(run, pm, 'write_text', {  # source code is not a document
+            'path': str(work / 'client.py'), 'text': f'URL = "{fetched}"', 'expected_sha256': 'missing'})
+        pm.pending.clear()
+        review = await engine.execute_tool(run, pm, 'finish_work', {'summary': '報告書を保存しました。'})
+        assert review['ok'] is False and review['code'] == 'sources_review'
+        notice = review['error']
+        assert 'report.md' in notice and 'client.py' not in notice and 'untrusted data' in notice
+        assert f'{fetched} - fetched page begins: «令和6年度 中小企業者に関する国等の契約の基本方針 官公需についての方針' in notice
+        assert f'{listed} - only seen as a search result titled «EU AI Act の概要»' in notice
+        assert 'https://www.kantei.go.jp/ai - known from the request' in notice
+        assert len(notice) < 2500  # page text is quoted briefly
+        # The PM corrects the document; the list for the human follows the corrected file.
+        saved = (work / 'report.md').read_bytes()
+        import hashlib
+        await engine.execute_tool(run, pm, 'write_text', {
+            'path': str(work / 'report.md'), 'text': f'# 生成AI規制の動向\n参考: {listed}（本文は未確認）\n',
+            'expected_sha256': hashlib.sha256(saved).hexdigest()})
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '出典を見直して保存しました。'})
+        assert done['ok'] and '出典として書かれた URL' in done['summary'] and 'アプリでは確認していません' in done['summary']
+        assert f'{listed} — 検索結果の題名「EU AI Act の概要」のみ（本文は未取得）' in done['summary']
+        assert fetched not in done['summary'] and 'kantei' not in done['summary']
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_cites_nothing_is_not_sent_back(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.settings.value['search']['enabled'] = True
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='売上を集計して', max_workers=0)
+        await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'memo.md'), 'text': '集計結果: 42', 'expected_sha256': 'missing'})
+        pm.pending.clear()
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '集計しました。'})
+        assert done['ok'] and '【アプリの確認】' not in done['summary']
     finally:
         await engine.close()
 

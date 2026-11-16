@@ -4,6 +4,27 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev55 — Cited sources are checked against what was retrieved (2026-11-16)
+
+From a real-machine research run in which search returned nothing, one page
+could be fetched, and that page (about another subject) was cited as the
+source of the report. Until now the application checked only that a cited URL
+had been retrieved.
+
+- The run remembers how each page a web tool returned begins (90 characters;
+  a fetched page's own text, or only a search result's title).
+- Before the root PM finishes, once per run and only when web tools are
+  available and a saved document cites retrieved URLs, the PM is sent back
+  with each citation beside that evidence: the page's first words, "only seen
+  as a search result", or "no page text was retrieved". It is asked to remove
+  or relabel any citation the page does not support.
+- The PM's result ends with the same list for the human, stating that the
+  application has not judged whether the pages support the claims.
+- The system prompt (web runs only) says to cite a page only for what its
+  retrieved text states.
+- The application still does not compare a claim with a page's text; the
+  judgement stays with the PM and the human, who now see the evidence.
+
 ## 0.1.1.dev54 — Runs that end, working web search, sandbox hints and tests (2026-11-16)
 
 Phase 9, from real-machine runs of coding, research, statistics, slides and
