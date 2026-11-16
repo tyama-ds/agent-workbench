@@ -168,7 +168,7 @@ def test_stream_scan_retries_transient_errors_but_requires_verified_result(error
     assert browser_job._named_stream(native, 'cache', live=True) is None
     errors = iter([error, 38])
     assert browser_job._named_stream(native, 'cache', live=True) is False
-    errors = iter([error]*4)
+    errors = iter([error]*len(browser_job._LIVE_RETRY_PAUSES))  # one error per attempt: the last one is final
     with pytest.raises(SandboxError, match=f'Windows error {error}'):
         browser_job._named_stream(native, 'cache', live=True)
     errors = iter([error])
