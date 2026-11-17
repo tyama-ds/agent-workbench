@@ -821,6 +821,14 @@ statement that search is unavailable.
   and `as_of` added to every provider. A reader never chooses between several
   series for one country: that is an error which says what differs.
 
+- Since 0.1.1.dev67 `workbench/usstats.py` adds four United States agencies
+  as sources for that country only (BEA, BLS, EIA, the Treasury). Two of
+  them publish whole files rather than answers to a question; the file is
+  fetched once, kept for a day, and the one series asked for is read out of
+  it off the event loop. `NoSeries` tells "the file is fine and lacks this
+  series" from "the file could not be read", so a good file is not fetched
+  again.
+
 The engine list a run uses comes from `chosen_engines(search.browser_bing)`:
 duckduckgo.com and DuckDuckGo's HTML page always, Bing between them only when
 the human turned it on (0.1.1.dev61; off by default).

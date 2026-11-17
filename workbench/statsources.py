@@ -29,9 +29,10 @@ import json
 import re
 import xml.etree.ElementTree as ElementTree
 
-from . import statdata
+from . import statdata, usstats
 
 MAX_BYTES = 4 * 1024 * 1024
+NoSeries = usstats.NoSeries
 
 # What a result says about each provider.
 PROVIDERS = {
@@ -40,6 +41,7 @@ PROVIDERS = {
     'eurostat': 'Eurostat',
     'ilo': 'ILOSTAT (International Labour Organization)',
     'oecd': 'OECD Data Explorer',
+    **usstats.PROVIDERS,  # United States only: bea, bls, eia, treasury
 }
 # Seconds between two requests to one provider. The ILO refused (HTTP 403) a machine that asked in quick succession.
 PAUSE = {'ilo': 3.0}
@@ -83,7 +85,7 @@ OECD = {
     'inflation': ('OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0', '{countries}.A.N.CPI.PA._T.N.GY',
                   'percent change on the previous year (consumer prices)', {}),
 }
-TABLES = {'imf': IMF, 'eurostat': EUROSTAT, 'ilo': ILO, 'oecd': OECD}
+TABLES = {'imf': IMF, 'eurostat': EUROSTAT, 'ilo': ILO, 'oecd': OECD, **usstats.TABLES}
 
 # Eurostat writes Greece and the United Kingdom differently, and has codes for its own groups.
 _EUROSTAT_GEO = {'GRC': 'EL', 'GBR': 'UK', 'EUU': 'EU27_2020', 'EMU': 'EA20'}
@@ -97,7 +99,9 @@ def source(value):
         return 'worldbank'
     name = statdata._plain(value) if isinstance(value, str) else ''
     name = {'world bank': 'worldbank', 'wb': 'worldbank', '世界銀行': 'worldbank', 'ilostat': 'ilo', 'weo': 'imf',
-            '国際通貨基金': 'imf', 'ユーロスタット': 'eurostat', '国際労働機関': 'ilo', '経済協力開発機構': 'oecd'}.get(name, name)
+            '国際通貨基金': 'imf', 'ユーロスタット': 'eurostat', '国際労働機関': 'ilo', '経済協力開発機構': 'oecd',
+            '商務省': 'bea', '経済分析局': 'bea', '労働省': 'bls', '労働統計局': 'bls', 'エネルギー省': 'eia',
+            'エネルギー情報局': 'eia', '財務省': 'treasury', 'fiscaldata': 'treasury'}.get(name, name)
     if name not in PROVIDERS:
         raise ValueError('source must be one of: ' + ', '.join(PROVIDERS))
     return name
@@ -105,6 +109,8 @@ def source(value):
 
 def indicator(provider, value):
     """(key, specification) of a built-in indicator for this provider; IMF also takes a WEO series code."""
+    if provider in usstats.PROVIDERS:
+        return usstats.indicator(provider, value)
     if not isinstance(value, str) or not value.strip() or len(value) > 120:
         raise ValueError('indicator must be a name such as ' + ', '.join(TABLES[provider]))
     plain = statdata._plain(value)
@@ -123,6 +129,8 @@ def indicator(provider, value):
 
 def plan(provider, indicator_name, countries, start_year, end_year, this_year):
     """What to request: {'key', 'label', 'unit', 'codes', 'start', 'end', 'requests': [(url, [ISO3, ...])], 'page'}."""
+    if provider in usstats.PROVIDERS:
+        return _plan_us(provider, indicator_name, countries, start_year, end_year, this_year)
     if isinstance(countries, str):
         countries = [countries]
     if not isinstance(countries, list) or not 1 <= len(countries) <= statdata.MAX_COUNTRIES:
@@ -149,9 +157,13 @@ def plan(provider, indicator_name, countries, start_year, end_year, this_year):
     elif provider == 'oecd':
         flow, key_shape, unit, _wanted = spec
         label = ''
-        requests = [('https://sdmx.oecd.org/public/rest/data/' + flow + '/' + key_shape.format(countries='+'.join(codes))
+        asked = key_shape.format(countries='+'.join(codes))
+        requests = [('https://sdmx.oecd.org/public/rest/data/' + flow + '/' + asked
                      + f'?startPeriod={start}&format=csvfilewithlabels', codes)]
-        page = 'https://data-explorer.oecd.org/'
+        # The Data Explorer page of the same table and selection (a person can open it; brackets and '+' are encoded).
+        agency, table = flow.split(',')[:2]
+        page = ('https://data-explorer.oecd.org/vis?df%5Bds%5D=dsDisseminateFinalDMZ&df%5Bid%5D=' + table.replace('@', '%40')
+                + '&df%5Bag%5D=' + agency + '&dq=' + asked.replace('+', '%2B'))
     else:
         flow, rest, unit = spec
         label = ''
@@ -162,6 +174,25 @@ def plan(provider, indicator_name, countries, start_year, end_year, this_year):
         page = 'https://ilostat.ilo.org/data/'
     return {'key': key, 'spec': spec, 'label': label, 'unit': unit, 'codes': codes, 'start': start, 'end': end,
             'requests': requests, 'page': page}
+
+
+def _years(start_year, end_year, this_year):
+    end = this_year if end_year is None else end_year
+    start = max(statdata.FIRST_YEAR, end - 9) if start_year is None else start_year
+    for name, year in (('start_year', start), ('end_year', end)):
+        if type(year) is not int or not statdata.FIRST_YEAR <= year <= this_year + 1:
+            raise ValueError(f'{name} must be a year from {statdata.FIRST_YEAR} to {this_year + 1}')
+    if start > end or end - start + 1 > statdata.MAX_YEARS:
+        raise ValueError(f'start_year must not be after end_year, and the range may cover at most {statdata.MAX_YEARS} years')
+    return start, end
+
+
+def _plan_us(provider, indicator_name, countries, start_year, end_year, this_year):
+    """A United States agency: one request, one country."""
+    start, end = _years(start_year, end_year, this_year)
+    key, spec, url, page, size, wait = usstats.plan(provider, indicator_name, countries, start, end)
+    return {'key': key, 'spec': spec, 'label': spec[1], 'unit': spec[2], 'codes': ['USA'], 'start': start, 'end': end,
+            'requests': [(url, ['USA'])], 'page': page, 'size': size, 'wait': wait}
 
 
 # --- reading the answers -------------------------------------------------------------------------------
@@ -492,6 +523,9 @@ def read_jsonstat(payload, plan_, codes):
 
 def read(provider, data, plan_, codes):
     """(rows by ISO3 code, the provider's own label for what was read, the provider's update time or '', remarks)."""
+    if provider in usstats.PROVIDERS:
+        values, label, updated, remarks = usstats.read(provider, data, plan_['spec'][0], plan_['start'], plan_['end'])
+        return ({'USA': ('United States', values)} if values else {}), label, updated, remarks
     if provider == 'oecd':
         return read_csv(data, plan_, codes)
     if provider == 'eurostat':

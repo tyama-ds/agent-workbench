@@ -38,6 +38,8 @@ MAX_COUNTRIES, MAX_YEARS, FIRST_YEAR = 12, 60, 1960
 # The bulk file of one indicator is about 150 KB zipped and under 1 MB as CSV.
 MAX_ZIP_BYTES, MAX_CSV_BYTES, MAX_ZIP_ENTRIES = 8 * 1024 * 1024, 24 * 1024 * 1024, 16
 KEEP_SECONDS, KEEP_FILES, KEEP_ANSWERS = 24 * 3600, 60, 300
+# A kept answer may be a whole file of an agency (the BEA's national accounts are about 12 MB).
+MAX_ANSWER_BYTES = 64 * 1024 * 1024
 
 # key: (World Bank indicator code, what it is, other names a model or a person may use)
 INDICATORS = {
@@ -307,7 +309,7 @@ class IndicatorStore:
             if path.is_symlink() or not path.is_file():
                 return None
             status = path.stat()
-            if status.st_size > MAX_ZIP_BYTES or (not stale and time.time() - status.st_mtime > self.seconds):
+            if status.st_size > MAX_ANSWER_BYTES or (not stale and time.time() - status.st_mtime > self.seconds):
                 return None
             return path.read_bytes(), status.st_mtime
         except (OSError, ValueError):

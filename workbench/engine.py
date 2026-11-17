@@ -1986,10 +1986,11 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
             if run['_config']['search']['enabled']:
                 guide = run['_config']['search'].get('run_guide', 0)
                 budget_policy += ('Country statistics (population, GDP, GDP growth, consumer prices, unemployment and the like): call '
-                                  'stat_lookup first. It reads official providers directly (World Bank, IMF, Eurostat, ILO), costs no '
+                                  'stat_lookup first. It reads official providers directly (World Bank, IMF, Eurostat, ILO, OECD, and for the '
+                                  'United States BEA, BLS, EIA and the Treasury), costs no '
                                   'search, and returns the unit, the source, the date the data is from and the URL to cite. '
                                   'Compare countries with figures from one source; for one country\'s own statistics prefer its '
-                                  'national statistical office when you can retrieve it. When two sources give different values, '
+                                  'national statistical office when you can retrieve it (United States: bea, bls, eia, treasury). When two sources give different values, '
                                   'report both with their source and date instead of choosing one silently, and never mix units '
                                   '(the IMF gives population in millions).\n'
                                   + (f'Search guide: this whole work (all agents together) is expected to need about {guide} searches. '

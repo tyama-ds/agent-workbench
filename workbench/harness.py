@@ -733,7 +733,7 @@ class ToolExecutor:
             ("docx_write", "Create or explicitly replace a DOCX from paragraphs and tables.", {**common, "paragraphs": {"type": "array", "items": text}, "tables": {"type": "array", "items": rows}}, ("path", "expected_sha256")),
             ("docx_edit", "Edit DOCX with operations: append_paragraph(text), replace_paragraph(index,text), replace_cell(table,row,column,text), append_table(rows). Zero-based indices; edited paragraphs retain first-run formatting.", {**common, "operations": {"type": "array", "items": docx_operation}}, ("path", "operations", "expected_sha256")),
             ("xlsx_read", "Read bounded cells from XLSX; formulas are returned as text and never evaluated.", {"path": path, "sheet": text, "range": text}, ("path",)),
-            ("xlsx_write", "Set explicit XLSX cells [{sheet,cell,value}]. Creates a workbook when missing; create_sheets explicitly adds sheets. Pass numbers as JSON numbers; a numeric string such as '1,234' or '12.5%' is stored as a number (prefix an apostrophe to keep it text). Formula-like strings are rejected unless allow_formulas is true; external-data formulas remain disabled.", {**common, "cells": {"type": "array", "items": cell}, "create_sheets": {"type": "array", "items": text}, "allow_formulas": {"type": "boolean"}}, ("path", "cells", "expected_sha256")),
+            ("xlsx_write", "Set explicit XLSX cells [{sheet,cell,value}]. Creates a workbook when missing; create_sheets explicitly adds sheets and remove_sheets deletes sheets that an earlier write left and are no longer wanted. Pass numbers as JSON numbers; a numeric string such as '1,234' or '12.5%' is stored as a number (prefix an apostrophe to keep it text). Formula-like strings are rejected unless allow_formulas is true; external-data formulas remain disabled.", {**common, "cells": {"type": "array", "items": cell}, "create_sheets": {"type": "array", "items": text}, "remove_sheets": {"type": "array", "items": text}, "allow_formulas": {"type": "boolean"}}, ("path", "cells", "expected_sha256")),
             ("pptx_read", "Read slide text from a safe PPTX without launching PowerPoint.", {"path": path}, ("path",)),
             ("pptx_write", "Create or explicitly replace a PPTX from slides [{title,body:[text]}].", {**common, "slides": {"type": "array", "items": slide}}, ("path", "slides", "expected_sha256")),
             ("pptx_edit", "Replace exact paragraph text using operations [{slide,shape,paragraph,text}] with zero-based indices, retaining first-run formatting.", {**common, "operations": {"type": "array", "items": pptx_operation}}, ("path", "operations", "expected_sha256")),
@@ -925,10 +925,12 @@ class ToolExecutor:
                     raise HarnessError("Cells exceed the response limit")
                 return {"sheet": sheet_name, "sheets": workbook.sheetnames, "cells": rows,
                         "sha256": hashlib.sha256(source).hexdigest()}
-            cells, sheets = args["cells"], args.get("create_sheets", [])
+            cells, sheets, remove = args["cells"], args.get("create_sheets", []), args.get("remove_sheets", [])
             allow = _bool(args.get("allow_formulas", False), "allow_formulas")
-            if not isinstance(cells, list) or len(cells) > 10000 or not isinstance(sheets, list) or len(sheets) > 30:
+            if (not isinstance(cells, list) or len(cells) > 10000 or not isinstance(sheets, list) or len(sheets) > 30
+                    or not isinstance(remove, list) or len(remove) > 30):
                 raise HarnessError("Too many cells or sheets")
+            existing = set(workbook.sheetnames)
             for title in sheets:
                 _string(title, "sheet title", 31)
                 if re.search(r"[\[\]:*?/\\]", title):
@@ -976,10 +978,28 @@ class ToolExecutor:
                     and all(item["sheet"] != "Sheet" for item in cells)):
                 # A new workbook's automatic empty sheet is not part of the request.
                 workbook.remove(workbook["Sheet"])
+            written = {item["sheet"] for item in cells}
+            for title in remove:
+                if not isinstance(title, str) or title not in workbook.sheetnames:
+                    raise HarnessError("remove_sheets names a sheet that does not exist; existing sheets: " + ", ".join(workbook.sheetnames[:30]))
+                if title in written or title in sheets:
+                    raise HarnessError("A sheet cannot be written or created and removed in the same call")
+            if remove and len(set(remove)) >= len(workbook.sheetnames):
+                raise HarnessError("A workbook keeps at least one sheet; remove_sheets would delete them all")
+            for title in dict.fromkeys(remove):
+                workbook.remove(workbook[title])
+            # A rewrite under a new sheet name leaves the earlier sheet in the file, with its old content.
+            leftover = [name for name in workbook.sheetnames if name in existing and name not in written
+                        and (workbook[name].max_row > 1 or workbook[name].max_column > 1 or workbook[name]["A1"].value is not None)]
+            added = [title for title in sheets if title not in existing]
             result = self._save(workbook, args, ".xlsx")
             mixed = [f"{sheet}!{column} ({found[True]} is a percentage stored as a fraction, {found[False]} is a plain number)"
                      for (sheet, column), found in kinds.items() if len(found) == 2]
             warnings = []
+            if added and leftover and not fresh:
+                warnings.append("This file still holds the sheet(s) " + ", ".join(repr(name) for name in leftover[:5])
+                                + " from an earlier write, beside the new " + ", ".join(repr(name) for name in added[:5])
+                                + ". If the new sheet replaces them, call xlsx_write again with remove_sheets; if they are still wanted, leave them.")
             if mixed:
                 # 0.9% becomes 0.009 while 2.16 stays 2.16: the same column then holds two units.
                 warnings.append("Mixed units in one column: " + "; ".join(mixed[:5])

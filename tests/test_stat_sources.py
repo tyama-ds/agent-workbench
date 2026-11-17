@@ -123,6 +123,9 @@ def test_requests_go_to_fixed_addresses_built_from_codes_only():
         ['JPN', 'USA', 'DEU'])]
     assert statsources.plan('oecd', 'gdp_growth', ['JPN', 'USA', 'DEU'], 2024, 2025, 2026)['requests'][0][0] == (
         base + 'OECD.SDD.NAD,DSD_NAMAIN1@DF_QNA_EXPENDITURE_GROWTH_OECD,/A..JPN+USA+DEU.S1..B1GQ......GY.?startPeriod=2024&format=csvfilewithlabels')
+    assert statsources.plan('oecd', '失業率', ['JPN', 'USA'], 2024, 2025, 2026)['page'] == (
+        'https://data-explorer.oecd.org/vis?df%5Bds%5D=dsDisseminateFinalDMZ&df%5Bid%5D=DSD_LFS%40DF_IALFS_UNE_M&df%5Bag%5D=OECD.SDD.TPS'
+        '&dq=JPN%2BUSA..._Z.Y._T.Y_GE15..A')                # the table and selection themselves, not the site's front page
     assert statsources.plan('oecd', 'inflation', ['USA', 'DEU'], 2024, 2025, 2026)['requests'][0][0] == (
         base + 'OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/USA+DEU.A.N.CPI.PA._T.N.GY?startPeriod=2024&format=csvfilewithlabels')
     with pytest.raises(ValueError, match='OECD Data Explorer has no built-in indicator .*Available from this source: unemployment, gdp_growth, inflation'):
@@ -417,7 +420,8 @@ def test_a_failed_request_is_tried_once_more_then_an_old_copy_serves_and_a_bad_a
         broken.use_stat_store(store)
         with pytest.raises(WebToolError, match='ILOSTAT .* could not be read: the XML answer was not an SDMX data message.*try another source'):
             await broken.execute('stat_lookup', ask)
-        assert len(sent) == 2 and list((tmp_path / 'stat-cache').iterdir()) == []
+        # The provider did answer, so it is not asked again; and what could not be read is not kept.
+        assert len(sent) == 1 and list((tmp_path / 'stat-cache').iterdir()) == []
         for odd in ('../x', 'imf_short', 'IMF_' + '0' * 32, 'imf_' + 'g' * 32):
             assert store.get_answer(odd) is None
             store.put_answer(odd, b'x')

@@ -4,6 +4,56 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev67 — United States government statistics: BEA, BLS, EIA and the Treasury (2026-11-17)
+
+dev66 was confirmed on the real machine for all five providers (IMF 3 to 4
+s, OECD about 9 s, Eurostat about 10 s, ILO about 54 s). The human then asked
+for United States government statistics. Without a key, from that machine:
+the BEA's bulk file `NipaDataA.txt` (12 MB, 7 s), the BLS API v1, the EIA's
+bulk zips (`TOTAL.zip` 3.2 MB, 4 s) and the Treasury's fiscal data API
+answered; the BEA, Census and EIA APIs need a key; FRED timed out.
+
+- `stat_lookup` sources `bea`, `bls`, `eia`, `treasury`, for the United
+  States only (another country is refused with that reason).
+- BEA: gdp, real_gdp, gdp_growth, gdp_price_index, personal_consumption,
+  pce_price_index, or a series code. One series is read out of the whole
+  file by its exact code.
+- BLS: unemployment, cpi, payrolls, labor_force_participation, or a series
+  id. The series are monthly: a year is the agency's own annual figure where
+  the series has one, otherwise the mean of its twelve monthly values
+  (marked `months: 12`), and only complete years are given; the latest
+  month is in `note`. Keyless BLS answers few requests a day, so an answer
+  is kept for a day and a refused request is not repeated.
+- EIA: energy_consumption, energy_production, electricity_generation from
+  `TOTAL.zip`; crude_oil_price and brent_oil_price from `STEO.zip`, whose
+  forecast years are marked `forecast: true`. The zip is read in memory, one
+  line at a time, with the same checks as the World Bank's.
+- Treasury: government_debt and debt_held_by_public, the amount on the last
+  reported day of each year with its date.
+- A provider's answer that was received but cannot be read is no longer
+  requested a second time (it would be the same answer).
+- **Not run from this environment.** Seen on the real machine: the four
+  addresses and the first lines of the BEA file. Not seen: the BEA series
+  codes other than the example line, whether the BLS v1 address honours
+  `startyear`/`endyear`, the EIA file's line format and the series ids
+  (TOTAL.TETCBUS.A, TOTAL.TEPRBUS.A, TOTAL.ELETPUS.A, STEO.WTIPUUS.A,
+  STEO.BREPUUS.A), and the Treasury `fields`/`filter` parameters. A series
+  that is not in a file is an error naming it, never another series.
+- Not in this change: Census, and optional keys (BEA, Census, EIA, BLS).
+
+Two small things from the agent runs at `920dee1` (all passed: 18 of 18
+lookups in a three-provider comparison, 2 of 2 for Eurostat):
+
+- The OECD `page_url` was the Data Explorer's front page. It now opens the
+  table and selection that were read
+  (`…/vis?df[ds]=dsDisseminateFinalDMZ&df[id]=<table>&df[ag]=<agency>&dq=<key>`,
+  with brackets, `@` and `+` encoded).
+- A statistics task rewrote its table under a new sheet name and the file
+  kept the old sheet beside the new one. `xlsx_write` only sets cells, so
+  nothing could delete a sheet. It now takes `remove_sheets`, and a write
+  that adds a sheet while an earlier sheet with content is left untouched
+  says so and names the way to remove it.
+
 ## 0.1.1.dev66 — The IMF's periods, several records of one ILO series, a refusal that is temporary, and the OECD (2026-11-17)
 
 dev65 was tried on the real machine for Japan, the United States and
