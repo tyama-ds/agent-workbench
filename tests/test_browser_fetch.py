@@ -16,7 +16,7 @@ from workbench.config import DEFAULT, validate_settings
 from workbench.engine import AdmissionError
 from workbench.harness import HarnessError, PathHarness
 from workbench.pdfdocs import PdfLibrary
-from workbench.webtools import WebToolError, WebTools
+from workbench.webtools import BrowserCheck, WebToolError, WebTools
 from pdf_fixture import make_pdf
 from test_engine import configured, start
 from test_web_phase9 import http_server, pin
@@ -31,10 +31,20 @@ class Window:
     """What the worker needs from a WebDriver. ``arrives`` writes a file into the download folder when the
     address is loaded; otherwise ``html`` stands in the window."""
 
-    def __init__(self, downloads, *, arrives=None, html=PAGE, status=200, content_type='text/html', closes=False, never=False):
+    def __init__(self, downloads, *, arrives=None, html=PAGE, status=200, content_type='text/html', closes=False, never=False,
+                 title='World Economic Outlook Reports', passes_after=None, clock=None):
         self.downloads, self.arrives, self.html, self.status = downloads, arrives, html, status
         self.content_type, self.closes, self.never = content_type, closes, never
-        self.calls, self.current_url, self.title = [], 'data:,', 'World Economic Outlook Reports'
+        self.calls, self.current_url, self._title = [], 'data:,', title
+        # A person passes the site's check after this many seconds: the page then turns into the real one.
+        self.passes_after, self.clock = passes_after, clock
+
+    def _passed(self):
+        return self.passes_after is not None and self.clock() >= self.passes_after
+
+    @property
+    def title(self):
+        return 'World Economic Outlook Reports' if self._passed() else self._title
 
     def set_page_load_timeout(self, value):
         self.calls.append(('load_timeout', value))
@@ -60,11 +70,11 @@ class Window:
         assert 'responseStatus' in script and 'click' not in script  # only reads how the page arrived
         if self.closes:
             raise RuntimeError('no such window')
-        return [self.status, self.content_type, 'complete']
+        return [200 if self._passed() else self.status, self.content_type, 'complete']
 
     @property
     def page_source(self):
-        return self.html
+        return PAGE if self._passed() else self.html
 
     def quit(self):
         self.calls.append(('quit',))
@@ -93,7 +103,7 @@ def fetch_job(**changes):
 def run_fetch(tmp_path, window_options, **job):
     clock = Clock()
     (tmp_path / 'downloads').mkdir(exist_ok=True)
-    window = Window(tmp_path / 'downloads', **window_options)
+    window = Window(tmp_path / 'downloads', clock=clock, **window_options)
     result = worker.run_fetch_job(fetch_job(**job), tmp_path, driver_factory=lambda *_: window, clock=clock, sleep=clock.sleep)
     return result, window, clock
 
@@ -128,6 +138,34 @@ def test_a_page_a_refusal_a_closed_window_and_nothing_at_all_are_told_apart(tmp_
     large, window, _ = run_fetch(tmp_path / 'f', {'arrives': ('big.pdf', b'%PDF' + b'0' * 5000)}, max_download_bytes=2048)
     assert large['kind'] == 'too_large' and large['bytes'] == 5004 and window.calls[-1] == ('quit',)
     for bad in ({'wait_seconds': 1}, {'wait_seconds': 3000}, {'url': 'file:///C:/secret'}, {'max_download_bytes': 5}):
+        with pytest.raises(ValueError):
+            worker.run_fetch_job(fetch_job(**bad), tmp_path, driver_factory=lambda *_: Window(tmp_path))
+
+
+CHECK = {'html': '<html><title>Just a moment...</title><body>Verify you are human</body></html>', 'title': 'Just a moment...', 'status': 403}
+WORDS = ['just a moment', 'verify you are human']
+
+
+def test_a_check_meant_for_a_person_is_reported_at_once_or_waited_through_when_a_person_agreed(tmp_path):
+    """Real-machine case: the IEA's report page shows a Turnstile box even in a person's own browser."""
+    for name in 'abcd':
+        (tmp_path / name).mkdir()
+    # The first try: the check is recognised and the window is closed; nothing is clicked.
+    first, window, clock = run_fetch(tmp_path / 'a', dict(CHECK), check_words=WORDS)
+    assert first['kind'] == 'page' and first['check'] is True and first['status'] == 403 and clock.now < 5
+    assert window.calls[-1] == ('quit',)
+    # A person agreed to pass it: the window stays open, and what follows the check is returned.
+    passed, window, clock = run_fetch(tmp_path / 'b', {**CHECK, 'passes_after': 40}, check_words=WORDS, person_seconds=300)
+    assert passed['kind'] == 'page' and passed['check'] is False and passed['status'] == 200 and passed['html'] == PAGE
+    assert 40 <= clock.now <= 45 and window.calls[-1] == ('quit',)
+    assert [call for call in window.calls if call[0] == 'get'] == [('get', fetch_job()['url'])]  # loaded once, never reloaded
+    # Nobody passes it: the window closes when the time is over, still a check.
+    waited, window, clock = run_fetch(tmp_path / 'c', dict(CHECK), check_words=WORDS, person_seconds=60)
+    assert waited['kind'] == 'page' and waited['check'] is True and 60 <= clock.now <= 63 and window.calls[-1] == ('quit',)
+    # The person closes the window instead.
+    closed, _, _ = run_fetch(tmp_path / 'd', {**CHECK, 'closes': True}, check_words=WORDS, person_seconds=60)
+    assert closed['kind'] == 'closed'
+    for bad in ({'person_seconds': 5000}, {'check_words': 'captcha'}, {'check_words': ['x' * 200]}):
         with pytest.raises(ValueError):
             worker.run_fetch_job(fetch_job(**bad), tmp_path, driver_factory=lambda *_: Window(tmp_path))
 
@@ -201,13 +239,16 @@ def tools_with(tmp_path, answers):
     """WebTools whose browser opener answers from ``answers`` (url suffix -> result or exception) and counts its calls."""
     opened = []
 
-    async def opener(url, max_download_bytes):
-        opened.append(url)
+    async def opener(url, max_download_bytes, person_seconds=0, check_words=()):
+        opened.append((url, person_seconds) if person_seconds else url)
         answer = next(value for key, value in answers.items() if url.endswith(key))
+        if isinstance(answer, dict) and 'person' in answer:  # what the window shows once a person is there
+            answer = answer['person'] if person_seconds else {key: value for key, value in answer.items() if key != 'person'}
         if isinstance(answer, Exception):
             raise answer
+        assert 'just a moment' in check_words and 'access denied' not in check_words
         return {'kind': 'page', 'url': url, 'status': 200, 'content_type': 'text/html', 'title': '', 'html': '',
-                'truncated': False, 'file': '', 'bytes': 0, 'data': None, **answer}
+                'truncated': False, 'file': '', 'bytes': 0, 'check': False, 'data': None, **answer}
 
     tools = WebTools({'search': {'enabled': True, 'provider': 'duckduckgo'}})
     tools.use_pdf_library(PdfLibrary(tmp_path / 'pdf-cache'), 50 * 1024 * 1024)
@@ -249,7 +290,7 @@ async def test_a_refusal_or_a_check_in_the_window_is_final_and_the_human_is_aske
             await tools.execute('web_fetch', {'url': base + '/denied.pdf'})
         text = str(caught.value)
         assert 'HTTP 403 (access refused)' in text and 'A browser window tried once and was also turned away: refused (HTTP 403)' in text
-        assert 'does not solve such checks or disguise the browser' in text and 'Ask the human with ask_user' in text
+        assert 'does not solve checks or disguise the browser' in text and 'Ask the human with ask_user' in text
         # The same address again, and another address of the site that turned the window away: no window.
         with pytest.raises(WebToolError, match='already tried this address once in this work'):
             await tools.execute('web_fetch', {'url': base + '/denied.pdf'})
@@ -262,8 +303,9 @@ async def test_a_refusal_or_a_check_in_the_window_is_final_and_the_human_is_aske
                                               '/gone.pdf': {'kind': 'closed'}, '/slow.pdf': {'kind': 'timeout'},
                                               '/big.pdf': {'kind': 'too_large', 'bytes': 80 * 1024 * 1024},
                                               '/shown.pdf': {'content_type': 'application/pdf', 'html': '<html><embed></html>'}})
-        with pytest.raises(WebToolError, match='the site showed a check meant for a person'):
+        with pytest.raises(BrowserCheck, match='the site showed a check meant for a person') as caught:
             await tools.execute('web_fetch', {'url': check + '/doc.pdf'})
+        assert caught.value.url == check + '/doc.pdf' and 'does not solve it' in str(caught.value)
         other = f'http://files.example:{port}'
         for path, problem in (('/gone.pdf', 'the window was closed before anything arrived'), ('/slow.pdf', 'nothing arrived in time'),
                               ('/big.pdf', r'larger than the limit in the settings \(80\.0 MB; limit 50\.0 MB\)'),
@@ -310,7 +352,7 @@ async def test_the_window_is_off_unless_the_human_chose_it_for_the_setting_or_th
     async def execute_fetch(*args, **kwargs):
         started.append(args[3])
         return {'kind': 'download', 'url': args[3], 'status': 0, 'content_type': '', 'title': '', 'html': '',
-                'truncated': False, 'file': 'text.pdf', 'bytes': len(REPORT), 'data': REPORT}
+                'truncated': False, 'file': 'text.pdf', 'bytes': len(REPORT), 'check': False, 'data': REPORT}
 
     monkeypatch.setattr(engine_module, 'execute_fetch', execute_fetch)
     seen = []
@@ -370,6 +412,65 @@ async def test_a_refusal_in_the_window_is_recorded_for_the_human(tmp_path, monke
                 await engine.execute_tool(run, pm, 'web_fetch', {'url': f'http://www.imf.example:{port}/files/text.pdf'})
             events = [row['text'] for row in engine.events if row['kind'] == 'browser_fetch']
             assert len(events) == 1 and 'ブラウザで試行 → 失敗（the browser could not be opened' in events[0]
+    finally:
+        await engine.close()
+
+
+@pytest.mark.approvals
+async def test_the_human_is_asked_to_pass_a_check_and_the_work_goes_on_with_what_the_window_then_shows(tmp_path, monkeypatch):
+    import asyncio
+    import workbench.engine as engine_module
+    windows = []
+
+    async def execute_fetch(*args, **kwargs):
+        windows.append(kwargs.get('person_seconds', 0))
+        base = {'kind': 'page', 'url': args[3], 'status': 403, 'content_type': 'text/html', 'title': 'Just a moment...',
+                'html': '<html>Verify you are human</html>', 'truncated': False, 'file': '', 'bytes': 0, 'check': True, 'data': None}
+        if kwargs.get('person_seconds'):
+            assert kwargs['person_seconds'] == 300 and 'captcha' in kwargs['check_words']
+            return {**base, 'status': 200, 'title': 'World Energy Outlook 2025', 'check': False,
+                    'html': '<html><body><h1>World Energy Outlook 2025</h1><a href="https://iea.blob.core.windows.net/assets/1438d3a5/WorldEnergyOutlook2025.pdf">Download</a></body></html>'}
+        return base
+
+    monkeypatch.setattr(engine_module, 'execute_fetch', execute_fetch)
+    seen = []
+    pin(monkeypatch)
+    engine, work = configured(tmp_path, None)
+    engine.settings.value['search'].update(enabled=True, browser_fetch=True)
+    engine.kick = lambda agent: None
+    try:
+        async with http_server(refusing(seen)) as port:
+            run, pm = await start(engine, max_workers=0)
+            url = f'http://www.iea.example:{port}/reports/world-energy-outlook-2025'
+            call = asyncio.create_task(engine.execute_tool(run, pm, 'web_fetch', {'url': url}))
+            for _ in range(200):
+                await asyncio.sleep(.01)
+                if pm.approval:
+                    break
+            assert pm.approval['tool'] == 'fetch_human_check' and windows == [0]   # the first window is closed; the human is asked
+            assert '人による確認' in pm.approval['summary'] and 'アプリは自動では解きません' in pm.approval['summary'] and url in pm.approval['summary']
+            assert pm.approval['expires_at'] > 0
+            engine.resolve_approval(pm.id, {'approval_id': pm.approval['id'], 'decision': 'approve'})
+            result = await call
+            assert windows == [0, 300] and 'World Energy Outlook 2025' in result['text'] and result['fetched_with'] == 'browser window'
+            assert result['pdf_links'][0]['url'] == 'https://iea.blob.core.windows.net/assets/1438d3a5/WorldEnergyOutlook2025.pdf'
+            events = [row['text'] for row in engine.events if row['kind'] == 'browser_fetch']
+            assert len(events) == 1 and 'ブラウザで試行 → 成功（page read after a person passed the check）' in events[0]
+            # Declined: said once, the site is left alone, and the human is not asked again in this work.
+            other = f'http://www.iea.example:{port}/reports/other'
+            call = asyncio.create_task(engine.execute_tool(run, pm, 'web_fetch', {'url': other}))
+            for _ in range(200):
+                await asyncio.sleep(.01)
+                if pm.approval:
+                    break
+            engine.resolve_approval(pm.id, {'approval_id': pm.approval['id'], 'decision': 'reject'})
+            with pytest.raises(ValueError, match='確認は行われませんでした'):
+                await call
+            assert windows == [0, 300, 0] and run['_fetch_check_declined'] is True
+            with pytest.raises(ValueError, match='also refused the browser window earlier'):
+                await engine.execute_tool(run, pm, 'web_fetch', {'url': f'http://www.iea.example:{port}/reports/third'})
+            assert windows == [0, 300, 0]
+            assert any('ブラウザで試行 → 拒否' in row['text'] for row in engine.events if row['kind'] == 'browser_fetch')
     finally:
         await engine.close()
 

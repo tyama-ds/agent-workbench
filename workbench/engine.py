@@ -37,7 +37,7 @@ from .selenium_runner import execute_fetch, execute_page, execute_selenium
 from .browser_search import SearchCache, SearchChallenge
 from .resources import ResourceGate
 from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
-from .webtools import WebTools
+from .webtools import BrowserCheck, WebTools
 from .pdfdocs import PdfLibrary, PdfToolMixin, PDF_READ_TOOL, PDF_SEARCH_TOOL, MAX_PDF_BYTES
 from .history import HistoryStore, HistoryError, ArchivedReadOnly, public_document, archived_view, redact_tree as redact_history_tree
 from .securestore import CredentialStore, CredentialStorageError, SEARCH_BINDING
@@ -1093,10 +1093,11 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
 
     def _browser_fetcher(self, config, harness):
         """Opens one address once in a visible window of the configured browser (a fresh profile, deleted afterwards)."""
-        async def fetch(url, max_download_bytes):
+        async def fetch(url, max_download_bytes, person_seconds=0, check_words=()):
             try:
                 return await execute_fetch(config['selenium'], config['python'], harness, url,
-                                           proxy_url=config['search']['proxy_url'], max_download_bytes=max_download_bytes)
+                                           proxy_url=config['search']['proxy_url'], max_download_bytes=max_download_bytes,
+                                           person_seconds=person_seconds, check_words=check_words)
             except HarnessError as exc:
                 raise ValueError(str(exc)) from None
         return fetch
@@ -3355,6 +3356,9 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                     # Every engine wants a person. The application never solves a
                     # bot check; it asks the human to pass it in a visible window.
                     result = await self._search_human_check(run, agent, args, challenge)
+                except BrowserCheck as check:
+                    # The same for a page: the human is asked, and passes the check themselves or not at all.
+                    result = await self._fetch_human_check(run, agent, check)
                 finally:
                     self._search_use(run)
                     self._browser_tries_publish(run, agent)
@@ -3724,7 +3728,37 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             self.log(agent, 'notice', '検索のボット確認を人が通過しました。検索を続けます')
             return result
 
+    async def _fetch_human_check(self, run, agent, check):
+        """Ask the human to pass a site's check in the browser window, then take what the window shows.
+
+        One such window at a time for the whole application. A human who
+        declines, or does not answer in time, is not asked again in this run.
+        """
+        web = run['_web']
+        declined = ('サイトが人による確認を求めましたが、確認は行われませんでした。この URL は取得できません。'
+                    'ask_user で、人に自分のブラウザで開いて PDF を読み取り許可フォルダーに保存してもらうよう依頼するか、別の公式な配布先を使ってください')
+        async with self._search_check_lock:
+            if run.get('_fetch_check_declined'):
+                web.browser_declined(check.url)
+                raise ValueError(declined)
+            try:
+                await self._await_approval(run, agent, 'fetch_human_check', {'url': check.url},
+                                           timeout=self.SEARCH_CHECK_ANSWER_SECONDS)
+            except ValueError:
+                run['_fetch_check_declined'] = True
+                web.browser_declined(check.url)
+                self.log(agent, 'notice', 'ブラウザでの「人による確認」は行われませんでした。この作業では、確認が必要なページは取得しません')
+                raise ValueError(declined) from None
+            return await web.browser_person(check.url, check.refused)
+
     def _approval_summary(self, run, name, args):
+        if name == 'fetch_human_check':
+            return ('サイトが「人による確認」（チェックボックスや画像の選択など）を求めています。アプリは自動では解きません。\n'
+                    '「承認」を押すと、ブラウザのウィンドウがもう一度開きます。画面の確認を済ませてください。'
+                    'ページが表示されるか PDF が保存されると、ウィンドウは自動で閉じ、作業が続きます（最長5分）。\n'
+                    '「却下」を押すと、この作業では確認が必要なページを取得せずに続けます。'
+                    f'{self.SEARCH_CHECK_ANSWER_SECONDS // 60}分以内に応答がない場合も、却下と同じ扱いにして続けます。\n'
+                    f'URL: {str(args.get("url", ""))[:300]}')
         if name == 'search_human_check':
             return ('検索サービスが「人による確認」（ボット確認）を求めています。アプリは自動では解きません。\n'
                     '「承認」を押すと、検索用のブラウザーのウィンドウが開きます。画面の確認（チェックや画像の選択）を済ませてください。'

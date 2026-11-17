@@ -254,10 +254,24 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
     """Load one address once in a visible window and report what came: a saved file, a page, or neither.
 
     Nothing is clicked, typed or solved. The window is closed whatever happens.
-    Returns {kind: download|page|closed|timeout|too_large, url, status, content_type, title, html, truncated, file, bytes}.
+    With ``person_seconds`` a person has agreed to pass the site's check in this window: while the page is
+    such a check (one of ``check_words`` in its title or its short text), the window stays open and is
+    looked at again, until the page or a download arrives, the window is closed, or that time is over.
+    Returns {kind: download|page|closed|timeout|too_large, url, status, content_type, title, html, truncated,
+    file, bytes, check}.
     """
     url = validate_url(job['url'])
     wait, maximum, largest = job['wait_seconds'], job['max_page_chars'], job['max_download_bytes']
+    person, words = job.get('person_seconds', 0), job.get('check_words', [])
+    if type(person) is not int or not 0 <= person <= 600:
+        raise ValueError('Invalid wait for a person')
+    if not isinstance(words, list) or len(words) > 60 or not all(isinstance(word, str) and 0 < len(word) <= 80 for word in words):
+        raise ValueError('Invalid check words')
+    words = [word.casefold() for word in words]
+
+    def is_check(title, text):
+        title, text = title.casefold(), text[:6000].casefold()
+        return any(word in title for word in words) or (len(text) < 6000 and any(word in text for word in words))
     if type(wait) is not int or not 5 <= wait <= 300:
         raise ValueError('Invalid fetch wait')
     if type(maximum) is not int or not 10000 <= maximum <= 4000000:
@@ -267,7 +281,7 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
     downloads = workspace / 'downloads'
     downloads.mkdir(exist_ok=True)
     result = {'kind': 'timeout', 'url': url, 'status': 0, 'content_type': '', 'title': '', 'html': '',
-              'truncated': False, 'file': '', 'bytes': 0}
+              'truncated': False, 'file': '', 'bytes': 0, 'check': False}
     driver = (driver_factory or create_driver)(job, workspace)
     try:
         driver.set_page_load_timeout(45)
@@ -279,7 +293,7 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
             driver.get(url)
         except Exception:
             pass  # an address that starts a download does not "load"; what arrived is looked at below
-        deadline, last = started + wait, None
+        deadline, last = started + max(wait, person), None
         while True:
             files = sorted(item for item in downloads.iterdir() if item.is_file())
             sizes = [(item.name, item.stat().st_size) for item in files]
@@ -303,8 +317,15 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
             if (not sizes and ready == 'complete' and current.startswith(('http://', 'https://'))
                     and clock() - started >= 2):
                 # A page stands in the window and no download began.
+                try:
+                    check = is_check(str(driver.title), str(driver.page_source))
+                except Exception:
+                    check = False
+                if check and person and clock() < deadline:
+                    sleep(1)  # the person is passing the check; look again
+                    continue
                 result.update(kind='page', status=status if type(status) is int and 0 <= status <= 599 else 0,
-                              content_type=str(content_type)[:80])
+                              content_type=str(content_type)[:80], check=check)
                 break
             if clock() >= deadline:
                 break

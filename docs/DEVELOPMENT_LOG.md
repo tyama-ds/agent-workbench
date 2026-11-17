@@ -4,6 +4,38 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev74 — The publisher's own copy of a report; a person passes a check in the window; tables in DOCX (2026-11-17)
+
+The next goal on the real machine is the IEA's World Energy Outlook. Its
+report page answers 403 behind a Cloudflare check to every HTTP library and
+to a driven Edge, and shows a Turnstile box even in a person's own Chrome.
+The PDF itself is served without any check from the IEA's own storage
+(`iea.blob.core.windows.net`), where five files carry the same name.
+
+- Policy: when a report's page is refused, search for the publisher's own
+  copy (`filetype:pdf`, `site:` the publisher's domain) and fetch the PDF
+  from where the publisher distributes it. Among same-named copies take the
+  newest and say on what basis; an unrelated mirror only when no official
+  copy can be had, and say so.
+- `web_fetch` with `headers_only` returns the size and date the server
+  states without downloading, so five candidates of 15 MB are compared by
+  five small requests. A downloaded PDF's result carries that date.
+- The browser window (off by default) no longer ends at a check meant for a
+  person. It is closed, the human is asked through an approval that expires
+  after three minutes whether they will pass it, and only then does the
+  window open again and wait up to five minutes while they do; what follows
+  the check is taken in. The application clicks nothing. A flat refusal
+  ("Access Denied") is still final at once, and a human who declines is not
+  asked again in that work.
+- `docx_write`: a table written into the paragraphs as Markdown rows or as
+  tab-separated cells is written as a real table at that place. On the real
+  machine the Markdown rows had stayed in the document beside the real
+  table, and in another run the table was tab-separated paragraphs.
+
+Not verified here: no browser is started in the tests; whether the page
+that follows a Turnstile check is recognised as such is for the real
+machine (the worker waits while the title or short text is a check).
+
 ## 0.1.1.dev73 — Slides get a theme, a layout per slide, tables and charts, and text that fits (2026-11-17)
 
 The same run on the real machine asked for "fashionable, modern" slides with

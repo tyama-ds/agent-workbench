@@ -90,7 +90,12 @@ PDF_WEB_POLICY = (
     'points from another part (an executive summary is not chapter 1).'
     ' To get a report, web_fetch its PDF address (the result has a pdf_id); a page that web_fetch returns lists the PDF '
     'files it links to (pdf_links). If an institution\'s main site refuses the request, use the same institution\'s '
-    'official distribution site (for the IMF, the IMF eLibrary) instead of retrying. If a part still cannot be '
+    'official distribution site (for the IMF, the IMF eLibrary) instead of retrying: search for "<report name> '
+    'filetype:pdf" or with site:<the publisher\'s domain> and fetch the PDF directly from where the publisher itself '
+    'distributes it (its content network or file storage counts). Where several copies carry the same name, compare '
+    'them with web_fetch headers_only, take the newest by last_modified and size, and report that basis. A copy on '
+    'a site that is not the publisher\'s (a university repository, a mirror) only when no official one can be had, '
+    'and say so. If a part still cannot be '
     'downloaded, ask the human once with ask_user: give its URL and ask them to save the PDF from their browser into '
     'a read folder (recommendation: go on without that part and report it as not obtained). Once it is saved, read it '
     'with pdf_read by path.')
@@ -104,8 +109,9 @@ _NEEDS_PASSWORD = ('This PDF needs a password to open. The application does not 
 # Only in a piece of work for which the human allowed it.
 BROWSER_TRY_POLICY = (
     ' For this work the human allowed one try in a visible browser window: when a site refuses web_fetch, the '
-    'application opens that address once by itself and returns what the window showed. You do not ask for it and '
-    'cannot repeat it; if it also fails, ask the human as described above.')
+    'application opens that address once by itself and returns what the window showed. Where the site shows a check '
+    'meant for a person, the human is asked to pass it in that window. You do not ask for the window and cannot '
+    'repeat it; if it also fails, ask the human as described above.')
 
 
 class PdfError(ValueError):

@@ -694,6 +694,59 @@ def _check_package(data: bytes, max_file_bytes: int) -> None:
         raise HarnessError("Invalid Office package") from exc
 
 
+_MARKDOWN_RULE = re.compile(r"\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*\Z")
+
+
+def _table_cells(line: str):
+    """The cells of a line that is a table row written as text, or None."""
+    stripped = line.strip()
+    if stripped.startswith("|") and stripped.endswith("|") and len(stripped) >= 3:
+        if _MARKDOWN_RULE.match(stripped):
+            return "rule"
+        cells = [cell.strip() for cell in stripped[1:-1].split("|")]
+        return cells if len(cells) >= 2 else None
+    if "\t" in line:
+        cells = [cell.strip() for cell in line.split("\t")]
+        return cells if len(cells) >= 2 and sum(bool(cell) for cell in cells) >= 2 else None
+    return None
+
+
+def _table_blocks(paragraphs: list[str]) -> list:
+    """Paragraphs in order, with each run of table rows (two or more of equal width) gathered into one list of rows."""
+    lines = [line for text in paragraphs for line in (text.split("\n") if _table_cells(text.split("\n")[0]) else [text])]
+    blocks, rows, held = [], [], []
+
+    def close():
+        if len(rows) >= 2 and len(rows) <= 200 and len(rows[0]) <= 50:
+            blocks.append([list(row) for row in rows])
+        else:
+            blocks.extend(held)  # one row alone, or too large: it stays as it was written
+        rows.clear()
+        held.clear()
+
+    kind = None
+    for line in lines:
+        cells = _table_cells(line)
+        own = "markdown" if line.strip().startswith("|") else "tabs"
+        if cells == "rule" and rows and kind == "markdown":
+            held.append(line)
+            continue
+        if isinstance(cells, list) and (not rows or (own == kind and len(cells) == len(rows[0]))):
+            kind = own
+            rows.append(cells)
+            held.append(line)
+            continue
+        close()
+        if isinstance(cells, list):
+            kind = own
+            rows.append(cells)
+            held.append(line)
+        else:
+            blocks.append(line)
+    close()
+    return blocks
+
+
 def _paragraph_text(paragraph, text: str) -> None:
     text = _string(text, "text", MAX_OUTPUT, empty=True)
     if paragraph.runs:
@@ -738,7 +791,7 @@ class ToolExecutor:
             ("write_text", "Write UTF-8 text with optimistic hash checking; rejects known document/binary extensions, signatures and binary controls in original and output.", {**common, "text": text}, ("path", "text", "expected_sha256")),
             ("patch_text", "Edit UTF-8 text: one unique exact find/replace, or edits applied together, each {find,replace} or {start_line,end_line,replace} (1-based, inclusive, non-overlapping). Same protection as write_text; needs read+write access.", {**common, "find": text, "replace": text, "edits": {"type": "array", "items": edit}}, ("path", "expected_sha256")),
             ("docx_read", "Read paragraphs and tables from a safe DOCX package without opening Word.", {"path": path}, ("path",)),
-            ("docx_write", "Create or explicitly replace a DOCX from paragraphs and tables.", {**common, "paragraphs": {"type": "array", "items": text}, "tables": {"type": "array", "items": rows}}, ("path", "expected_sha256")),
+            ("docx_write", "Create or explicitly replace a DOCX from paragraphs and tables (each table as rows of cells; do not write a table as Markdown or tab-separated text).", {**common, "paragraphs": {"type": "array", "items": text}, "tables": {"type": "array", "items": rows}}, ("path", "expected_sha256")),
             ("docx_edit", "Edit DOCX with operations: append_paragraph(text), replace_paragraph(index,text), replace_cell(table,row,column,text), append_table(rows). Zero-based indices; edited paragraphs retain first-run formatting.", {**common, "operations": {"type": "array", "items": docx_operation}}, ("path", "operations", "expected_sha256")),
             ("xlsx_read", "Read bounded cells from XLSX; formulas are returned as text and never evaluated.", {"path": path, "sheet": text, "range": text}, ("path",)),
             ("xlsx_write", "Set explicit XLSX cells [{sheet,cell,value}]. Creates a workbook when missing; create_sheets explicitly adds sheets and remove_sheets deletes sheets that an earlier write left and are no longer wanted. Pass numbers as JSON numbers; a numeric string such as '1,234' or '12.5%' is stored as a number (prefix an apostrophe to keep it text). Formula-like strings are rejected unless allow_formulas is true; external-data formulas remain disabled.", {**common, "cells": {"type": "array", "items": cell}, "create_sheets": {"type": "array", "items": text}, "remove_sheets": {"type": "array", "items": text}, "allow_formulas": {"type": "boolean"}}, ("path", "cells", "expected_sha256")),
@@ -871,8 +924,15 @@ class ToolExecutor:
             paragraphs, tables = args.get("paragraphs", []), args.get("tables", [])
             if not isinstance(paragraphs, list) or not isinstance(tables, list) or len(paragraphs) > 1000 or len(tables) > 30:
                 raise HarnessError("Too many paragraphs or tables")
-            for text in paragraphs:
-                document.add_paragraph(_string(text, "paragraph", 10000, empty=True))
+            # A table written as text (Markdown rows, or cells separated by tabs) becomes a real table where it
+            # stands: left as paragraphs it is neither readable as a table nor editable as one.
+            converted = 0
+            for block in _table_blocks([_string(text, "paragraph", 10000, empty=True) for text in paragraphs]):
+                if isinstance(block, str):
+                    document.add_paragraph(block)
+                else:
+                    self._docx_table(document, block, header=True)
+                    converted += 1
             operations = [{"type": "append_table", "rows": table} for table in tables]
         else:
             operations = self._operations(args)
@@ -892,16 +952,32 @@ class ToolExecutor:
                 for paragraph in cell.paragraphs[1:]:
                     _paragraph_text(paragraph, "")
             elif kind == "append_table" and set(operation) == {"type", "rows"}:
-                rows = self._table_rows(operation["rows"])
-                table = document.add_table(rows=len(rows), cols=len(rows[0]))
-                for row_index, row in enumerate(rows):
-                    for column, text in enumerate(row):
-                        table.cell(row_index, column).text = text
+                self._docx_table(document, self._table_rows(operation["rows"]))
             else:
                 raise HarnessError("Unsupported DOCX edit operation")
         result = self._save(document, args, ".docx")
         result["formatting_note"] = "Edited paragraphs retain first-run formatting; mixed run formatting may change."
+        if name == "docx_write" and converted:
+            result["tables_converted"] = converted
+            result["tables_note"] = ("Paragraphs that held a table as text (Markdown rows or tab-separated cells) were written as "
+                                     "real tables. Pass tables in the tables argument, as rows of cells.")
         return result
+
+    @staticmethod
+    def _docx_table(document, rows, *, header=False):
+        table = document.add_table(rows=len(rows), cols=len(rows[0]))
+        try:
+            table.style = "Table Grid"  # visible borders; a document without this style keeps its own default
+        except (KeyError, ValueError):
+            pass
+        for row_index, row in enumerate(rows):
+            for column, text in enumerate(row):
+                cell = table.cell(row_index, column)
+                cell.text = text
+                if header and row_index == 0:
+                    for run in cell.paragraphs[0].runs:
+                        run.font.bold = True
+        return table
 
     def _xlsx(self, name: str, args: dict) -> dict:
         import openpyxl
