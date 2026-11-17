@@ -134,6 +134,9 @@ BROWSER_TRY_POLICY = (
     'about the file; the file itself is then fetched.')
 
 
+_PUT_LOCK = threading.Lock()  # one writer at a time into the folder of downloaded PDFs
+
+
 class PdfError(ValueError):
     """A PDF could not be opened or read; the text is safe to show to a model."""
 
@@ -275,15 +278,42 @@ class PdfLibrary:
         record = {'pdf_id': ident, 'sha256': digest, 'bytes': len(data), 'url': url,
                   'fetched_at': datetime.now(timezone.utc).isoformat()}
         self.directory.mkdir(parents=True, exist_ok=True)
-        for name, content in ((ident + '.pdf', data), (ident + '.json', json.dumps(record).encode('utf-8'))):
-            temporary = self.directory / (name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
-            try:
-                temporary.write_bytes(content)
-                os.replace(temporary, self.directory / name)
-            finally:
-                temporary.unlink(missing_ok=True)
+        with _PUT_LOCK:
+            for name, content in ((ident + '.pdf', data), (ident + '.json', json.dumps(record).encode('utf-8'))):
+                target = self.directory / name
+                if name.endswith('.pdf') and self._same(target, data, digest):
+                    # Real-machine case: two agents fetched the same report at the same time; replacing the
+                    # file the other one had open was refused on Windows ("[WinError 5]") and the fetch failed.
+                    # The file is named after its content: the one that is there is this one.
+                    continue
+                temporary = self.directory / (name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
+                try:
+                    temporary.write_bytes(content)
+                    for attempt in range(6):
+                        try:
+                            os.replace(temporary, target)
+                            break
+                        except PermissionError:
+                            # Another reader has the old file open for a moment (Windows).
+                            if name.endswith('.pdf') and self._same(target, data, digest):
+                                break
+                            if attempt == 5:
+                                if target.is_file():
+                                    break  # the record that is there describes the same file; keep it
+                                raise PdfError('The downloaded PDF could not be kept (the file is in use); fetch it again') from None
+                            time.sleep(.1 * (attempt + 1))
+                finally:
+                    temporary.unlink(missing_ok=True)
         self._prune(keep=ident)
         return record
+
+    @staticmethod
+    def _same(path, data, digest):
+        """The file is there and holds exactly this content."""
+        try:
+            return path.stat().st_size == len(data) and hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        except OSError:
+            return False
 
     def get(self, ident):
         if not isinstance(ident, str) or not _ID.fullmatch(ident) or self.directory is None:

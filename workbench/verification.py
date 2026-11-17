@@ -103,7 +103,7 @@ def named_files(text):
 # Words after a file name (Japanese) or before it (English) that say the file is to be produced, or read.
 _OUT_AFTER = re.compile(r'保存|出力|作成|生成|書き出|書き込|にまとめ|を作|に書')
 _IN_AFTER = re.compile(r'を読|を参照|を開|を使|を基|をもと|に基づ|から|を入力|を見')
-_OUT_BEFORE = re.compile(r'\b(?:sav|writ|creat|export|produc|generat|output|put)\w*', re.I)
+_OUT_BEFORE = re.compile(r'\b(?:sav|writ|creat|export|produc|generat|output|put|deliverable)\w*|成果物|出力ファイル|納品物', re.I)
 _IN_BEFORE = re.compile(r'\b(?:read|open|load|from|using|use|based on|according to)\w*', re.I)
 
 
@@ -332,6 +332,8 @@ class VerificationMixin:
         unverified = {url for row in (run.get('_unverified_urls') or {}).values() for url in row['urls']}
         pages, rows = run.get('_pages') or {}, []
         for entry in (run.get('_cited') or {}).values():
+            if not self._was_saved(run, entry['path']):
+                continue  # the save was refused or failed afterwards: there is no such file to speak of
             for url in entry['urls']:
                 if url in unverified:
                     continue  # already reported as never retrieved
@@ -339,6 +341,11 @@ class VerificationMixin:
                 if len(rows) >= limit:
                     return rows
         return rows
+
+    @staticmethod
+    def _was_saved(run, path):
+        """A file of this name was saved in this run (the citations of a write are noted before it runs)."""
+        return PureWindowsPath(str(path)).name.casefold() in (run.get('_saved_names') or set())
 
     def _citations_gate(self, run, agent):
         """Once per run: ask the root PM to check each cited source against the retrieved page."""

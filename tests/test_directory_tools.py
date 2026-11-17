@@ -30,7 +30,7 @@ def test_nested_creation_is_write_only_idempotent_and_planned(tmp_path):
         execute(tools, 'list_directory', path=str(target))
     specification = next(item for item in tools.schemas() if item['name'] == 'create_directory')
     assert specification['parameters']['required'] == ['path']
-    with pytest.raises(HarnessError, match='Unsupported'):
+    with pytest.raises(HarnessError, match='it has no argument named parents'):
         execute(tools, 'create_directory', path=str(target), parents=True)
 
 

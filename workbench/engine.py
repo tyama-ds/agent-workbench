@@ -3751,7 +3751,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         self._citations_note(run, name, args, cited)  # only a write that is not refused here
 
     def _source_footer(self, run):
-        ledger = run.get('_unverified_urls') or {}
+        # Only files that were really saved: a write that was refused afterwards left no file.
+        ledger = {key: row for key, row in (run.get('_unverified_urls') or {}).items() if self._was_saved(run, row['path'])}
         if not ledger:
             return ''
         lines = [f'- {self.redact(row["path"])}: ' + '、'.join(self.redact(url)[:200] for url in row['urls'][:10])

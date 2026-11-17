@@ -250,7 +250,9 @@ def _native_call(call_id, name, arguments, seen: set[str]) -> dict:
                                            "no tools were executed") from None
         return {"id": call_id, "name": name, "arguments": {},
                 "error": "Tool arguments were not one valid JSON object, so this tool was not executed. "
-                         "Call it again with a single JSON object that matches the tool schema."}
+                         "Call it again with a single JSON object that matches the tool schema. If the content is "
+                         "long, the reply may have been cut off before the JSON ended: send it in parts (for a "
+                         "document, docx_write with the first part, then docx_edit to append the rest)."}
 
 
 def split_thinking(content: str) -> tuple[str, str]:

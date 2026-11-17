@@ -4,7 +4,24 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev78 — The newest of several copies is the application's to say; a missing PDF is named again (2026-11-17)
+## 0.1.1.dev79 — A refusal names the argument; one table is one table; the same PDF twice (2026-11-17)
+
+The energy outlook run at dev77 chose the newest copy of the report and
+read it, and produced no file.
+
+- `docx_write` answered "Unsupported or missing tool arguments" seven
+  times. The refusal now names the argument that is not one, the one that
+  is missing, what the tool takes, and an example. `tables` that holds the
+  rows of one table is one table; a cell may be a number.
+- "[WinError 5] Access is denied: …pdf.tmp -> …pdf": the coordinator and
+  a worker fetched the same report at once, and replacing the file the
+  other had open was refused. A file of the same content is kept, not
+  replaced; a refused replacement is tried again.
+- The result listed the document among the files with cited sources
+  although its save had failed every time: citations are noted before the
+  write runs. Only saved files are listed.
+
+The newest of several copies is the application's to say; a missing PDF is named again (2026-11-17)
 
 The energy outlook run at dev76 ended `incomplete`, as it should: the
 downloaded PDF was to be saved in the folder and was not. But `pdf_save`
