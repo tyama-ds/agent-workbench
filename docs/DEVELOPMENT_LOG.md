@@ -4,7 +4,26 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev83 — The page is written by the one who knows it; a busy window is not a closed one (2026-11-17)
+## 0.1.1.dev84 — A heavy page is read when its document is there; the report at its own address (2026-11-17)
+
+At dev83 the energy report came out nearly right: three files, 14 of 15
+quotations on their pages, one page corrected by the application, one
+invented quotation marked.
+
+- The economic outlook's issue page failed for the third run, now with
+  its reason: "Timed out receiving message from renderer". The driver
+  waited for the whole page with every question. The window now takes a
+  page once its document is there, stops a page that does not answer, and
+  reads what had arrived.
+- The report itself had still not been asked for after the page failed;
+  saying so to the model had not been enough. Where a page is an issue of
+  the World Economic Outlook, the application asks for that issue's report
+  at the address that follows from the page's, once, as its own address.
+- "STEPS｜CO2排出｜2035年に35…｜Gt｜p.176｜“…”" stood in a paragraph above the
+  table with the same cells: rows set apart by bars or tabs are left out
+  like comma-separated ones.
+
+The page is written by the one who knows it; a busy window is not a closed one (2026-11-17)
 
 At dev82 the newest copy was fetched and saved, the marks were written
 (17 of them), and the coordinator, shown the right pages, changed none:

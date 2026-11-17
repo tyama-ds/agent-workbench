@@ -105,3 +105,32 @@ def test_text_with_commas_that_is_not_a_table_stays_as_written():
         assert _comma_tables(paragraphs, []) == (paragraphs, 0), paragraphs
     # One line that happens to equal one row of a given table is not taken for a copy.
     assert _comma_tables(['項目,CPS,STEPS'], [[['項目', 'CPS', 'STEPS'], ['供給', '1', '2']]]) == (['項目,CPS,STEPS'], 0)
+
+
+def test_rows_set_apart_by_bars_or_tabs_that_repeat_a_given_table_leave_the_text(tmp_path):
+    """Real-machine case: "STEPS｜CO2排出｜2035年に35…｜Gt｜p.176｜“…”" stood in a paragraph, and the table below it held
+    the same cells."""
+    rows = [['シナリオ', '指標', '値', '単位', '出典ページ', '原文の引用'],
+            ['STEPS', 'CO2排出', '2035年に35', 'Gt', 'p.176', '“emissions fall to around 35 Gt by 2035 in the STEPS”'],
+            ['NZE', 'CO2排出', '2035年に18', 'Gt', 'p.321', '“emissions fall to 18 Gt”']]
+    full_width = '｜'.join(rows[1])
+    for copy in (full_width, ' | '.join(rows[1]), '\t'.join(rows[1]), 'STEPS ｜ CO2排出 ｜ 2035年に35 ｜ Gt ｜ p.176 ｜ ' + rows[1][5]):
+        # One line alone is enough: with bars or tabs and this many cells it is no sentence.
+        assert _comma_tables(['排出量の見通し', copy, '出典: Annex A'], [rows]) == (['排出量の見通し', '出典: Annex A'], 1), copy
+    (tmp_path / 'a').mkdir()
+    result, document, _, _ = write(tmp_path / 'a', paragraphs=['排出量の見通し', full_width, '｜'.join(rows[2]), '出典: Annex A'], tables=[rows])
+    assert [paragraph.text for paragraph in document.paragraphs] == ['排出量の見通し', '出典: Annex A']
+    assert len(document.tables) == 1 and result['text_tables_dropped'] == 1
+    # Given only as text: three or more such rows with figures become a table where they stand.
+    (tmp_path / 'b').mkdir()
+    result, document, _, _ = write(tmp_path / 'b', paragraphs=['前文', '｜'.join(rows[0]), full_width, '｜'.join(rows[2]), '後文'])
+    assert [[cell.text for cell in row.cells] for row in document.tables[0].rows] == rows and result['tables_converted'] == 1
+    assert [paragraph.text for paragraph in document.paragraphs] == ['前文', '後文']
+    # A line with bars that is no row of the table, a two-cell line, and a Markdown table (handled as before) stay.
+    for paragraphs in (['A ｜ B ｜ C'], ['STEPS｜CO2排出'], ['区分｜説明', '甲｜乙']):
+        assert _comma_tables(paragraphs, [rows]) == (paragraphs, 0), paragraphs
+    markdown = ['| ' + ' | '.join(row) + ' |' for row in rows]
+    assert _comma_tables(markdown, [rows]) == (markdown, 0)
+    (tmp_path / 'c').mkdir()
+    result, document, _, _ = write(tmp_path / 'c', paragraphs=['前文', *markdown], tables=[rows])
+    assert len(document.tables) == 1 and [paragraph.text for paragraph in document.paragraphs] == ['前文']

@@ -226,6 +226,10 @@ def _fetch_options(options, job, workspace):
     into this job's private folder instead of being shown in the viewer.
     """
     options.binary_location = job['browser_executable']
+    # The page is taken once its document is there, without waiting for every image and script. Real-machine
+    # case: an issue's page with many heavy parts never finished loading, the driver waited for it with every
+    # question ("Timed out receiving message from renderer"), and its links were never read.
+    options.page_load_strategy = 'eager'
     for value in ('--disable-extensions', '--no-first-run', '--no-default-browser-check',
                   '--disable-component-update', '--disable-sync', '--remote-debugging-pipe',
                   '--window-size=1180,860', '--window-position=60,40', f'--user-data-dir={workspace / "profile"}'):
@@ -424,7 +428,13 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
                     item.unlink()
         def watch(result, started, deadline):
             """Look at the window until a download, a page, a closed window or the deadline; fill ``result``."""
-            last = None
+            last, stopped = None, False
+
+            def stop_loading():
+                try:
+                    driver.execute_cdp_cmd('Page.stopLoading', {})  # what a person's Stop button does
+                except Exception:
+                    pass
             while True:
                 files = sorted(item for item in downloads.iterdir() if item.is_file())
                 sizes = [(item.name, item.stat().st_size) for item in files]
@@ -451,14 +461,28 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
                         # window had just read. Every error while asking the window how the page arrived was
                         # taken for a closed window; a page that is busy loading does not answer for a moment.
                         # It is asked again until the wait is over, and what it said last is kept.
+                        if not stopped and clock() - started >= min(20, (deadline - started) / 2):
+                            stopped = True
+                            stop_loading()  # the page keeps loading and does not answer: stop it, then ask again
                         if clock() >= deadline:
-                            result['title'] = ('The window did not answer: ' + reason)[:300]
+                            # Whatever of the document had arrived is still worth having: its text and its links.
+                            stop_loading()
+                            try:
+                                arrived = len(str(driver.page_source))
+                            except Exception:
+                                arrived = 0
+                            if arrived > 500:
+                                result.update(kind='page', status=0, content_type='text/html', check=False)
+                            else:
+                                result['title'] = ('The window did not answer: ' + reason)[:300]
                             break
                         sleep(.5)
                         continue
                     status, content_type, ready, current = 0, '', '', ''
-                if (not sizes and ready == 'complete' and current.startswith(('http://', 'https://'))
-                        and clock() - started >= 2):
+                if (not sizes and current.startswith(('http://', 'https://'))
+                        and ((ready == 'complete' and clock() - started >= 2)
+                             # The document is there and the rest is still loading: after a while it is taken as it is.
+                             or (ready == 'interactive' and clock() - started >= 10))):
                     # A page stands in the window and no download began.
                     try:
                         check = is_check(str(driver.title), str(driver.page_source))

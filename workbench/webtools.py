@@ -339,6 +339,29 @@ class _TextHTML(HTMLParser):
         return rows, len(seen) - len(rows)
 
 
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+           "november", "december")
+# The page of one issue of the IMF's World Economic Outlook, and where that issue's full report is kept.
+_IMF_ISSUE = re.compile(r"^/en/publications/weo/issues/(\d{4})/(\d{2})/\d{2}/[^/]+/?$", re.I)
+
+
+def report_address(url: str) -> str:
+    """The address of the full report that belongs to the page of an issue, where a publisher's pattern is known.
+
+    Real-machine case: the newest issue's page could not be read three runs in a row, and the report itself,
+    at an address that follows from the page's own, was never asked for.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return ""
+    match = _IMF_ISSUE.match(parts.path) if (parts.hostname or "").lower() == "www.imf.org" else None
+    if not match or not 1 <= int(match.group(2)) <= 12:
+        return ""
+    return (f"https://www.imf.org/-/media/files/publications/weo/{match.group(1)}/"
+            f"{_MONTHS[int(match.group(2)) - 1]}/english/text.pdf")
+
+
 _SESSION_NAMES = {"jsessionid", "phpsessid", "sessionid", "session_id", "sid", "aspsessionid"}
 
 
@@ -1041,9 +1064,13 @@ class WebTools:
             self._browser_record(url, "failed", detail + (f"; records kept in {records}" if records else ""))
             # This address is done with. Another address of the site is its own try: real-machine case, the
             # issue's page failed and the report's own PDF address was then never tried.
-            raise WebToolError(f"{refused}. A browser window tried once: {detail}. Another address of this site can still "
-                               "be tried in a window: for a report, fetch the address of its PDF itself with web_fetch "
-                               "(search for it on the publisher's site if you do not have it)." + ask)
+            message = (f"{refused}. A browser window tried once: {detail}. Another address of this site can still "
+                       "be tried in a window: for a report, fetch the address of its PDF itself with web_fetch "
+                       "(search for it on the publisher's site if you do not have it).")
+            instead = await self._report_instead(url, message)
+            if instead is not None:
+                return instead
+            raise WebToolError(message + ask)
         status, final = page.get("status") or 0, citable_url(page.get("url") or url)
         title, html_text = page.get("title", ""), page.get("html", "")
         if page.get("check") is True or _words_in(PERSON_CHECK_WORDS, title, html_text):
@@ -1059,13 +1086,21 @@ class WebTools:
             # an older issue's file was refused and the current issue's file was then never tried.
             detail = f"refused (HTTP {status})" if status >= 400 or status == 202 else "the site refused the browser as well"
             self._browser_record(url, "refused", detail)
-            raise WebToolError(f"{refused}. A browser window tried once and was also turned away: {detail}. "
-                               "The application does not solve checks or disguise the browser." + ask)
+            message = (f"{refused}. A browser window tried once and was also turned away: {detail}. "
+                       "The application does not solve checks or disguise the browser.")
+            instead = await self._report_instead(url, message)
+            if instead is not None:
+                return instead
+            raise WebToolError(message + ask)
         if title.startswith("The page could not be read from the window"):
             # The window stopped answering when its content was asked for (a crashed or hung tab).
             self._browser_record(url, "failed", title[:200])
-            raise WebToolError(f"{refused}. A browser window opened the address, but its content could not be read "
-                               f"({title[:200]})." + ask)
+            message = (f"{refused}. A browser window opened the address, but its content could not be read "
+                       f"({title[:200]}).")
+            instead = await self._report_instead(url, message)
+            if instead is not None:
+                return instead
+            raise WebToolError(message + ask)
         if _mime(page.get("content_type", "")) == "application/pdf":
             why = title[:200] if title.startswith("The PDF was shown") else "the PDF was shown in the window but not saved"
             self._browser_record(url, "failed", why)
@@ -1085,8 +1120,33 @@ class WebTools:
         if result.get("pdf_links"):
             result["pdf_links_note"] += (" Where the site refuses one of them, the application opens it from this page in a "
                                          "browser window (the same session); that does not count as a new window.")
+        if "linked_pdf" not in result and report_address(final):
+            # The page was read, and its report was not brought along: say where that report is.
+            result["report_address"] = report_address(final)
+            result["report_address_note"] = "The full report of this issue. Fetch this address with web_fetch next."
         self._browser_results[url] = self._browser_marked(result)
         return copy.deepcopy(self._browser_results[url])
+
+    async def _report_instead(self, url: str, failure: str) -> dict | None:
+        """The page of an issue could not be read: ask for that issue's report at its own address, once.
+
+        Only where the address follows from the page's (see report_address). It is another address: it gets
+        the ordinary request first and, refused, its own try in a window. None when there is no such address
+        or it was tried before; an error that tells of both failures when it fails as well.
+        """
+        candidate = report_address(url)
+        if not candidate or candidate in self._browser_tried or candidate in self._browser_results:
+            return None
+        try:
+            result = await self.execute("web_fetch", {"url": candidate})
+        except BrowserCheck:
+            raise
+        except WebToolError as exc:
+            raise WebToolError(f"{failure} The report's own address ({candidate}) was tried as well: {exc}") from None
+        result["instead_of"] = url
+        result["instead_note"] = ("The page of this issue could not be read in the window. The application asked for the "
+                                  "issue's full report at its own address instead; this is that report.")
+        return result
 
     async def _browser_linked(self, page: dict, final: str, result: dict) -> str:
         """The report a read page links to, which the same window opened next. -> words for the record of the try."""

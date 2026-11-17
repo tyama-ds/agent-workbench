@@ -33,7 +33,8 @@ class Window:
 
     def __init__(self, downloads, *, arrives=None, html=PAGE, status=200, content_type='text/html', closes=False, never=False,
                  title='World Economic Outlook Reports', passes_after=None, clock=None, shown=b'', links=(), files=None,
-                 unreadable=False, busy_until=None, busy_error=None):
+                 unreadable=False, busy_until=None, busy_error=None, ready='complete'):
+        self.ready = ready  # what the page says of itself: 'interactive' while its images and scripts still load
         self.unreadable = unreadable  # the window stops answering when its content is asked for
         # The page does not answer questions about itself until this many seconds have passed (it is busy loading).
         self.busy_until, self.busy_error = busy_until, busy_error or TimeoutError('script timeout')
@@ -94,7 +95,7 @@ class Window:
             raise RuntimeError('no such window')
         if self.busy_until is not None and self.clock() < self.busy_until:
             raise self.busy_error
-        return [200 if self._passed() else self.status, self.content_type, 'complete']
+        return [200 if self._passed() else self.status, self.content_type, self.ready]
 
     @property
     def page_source(self):
@@ -249,6 +250,14 @@ def test_a_window_that_does_not_answer_for_a_moment_is_not_a_closed_window(tmp_p
     # A window that is really gone says so, with what the browser reported.
     result, _, clock = run_fetch(tmp_path, {'closes': True})
     assert result['kind'] == 'closed' and result['title'] == 'The window was closed: RuntimeError: no such window' and clock.now < 2
+    # Real-machine case: an issue's page with many heavy parts ("Timed out receiving message from renderer"). Its
+    # document is taken without waiting for all of them; one that never answers is stopped, and what arrived is read.
+    result, window, clock = run_fetch(tmp_path, {'ready': 'interactive'})
+    assert result['kind'] == 'page' and result['html'] == PAGE and 10 <= clock.now < 13
+    long_page = '<html><body>' + '<p>Outlook, October 2026</p>' * 40 + '<a href="/files/weo.pdf">Full report</a></body></html>'
+    result, window, clock = run_fetch(tmp_path, {'busy_until': 10 ** 6, 'html': long_page}, wait_seconds=30)
+    assert result['kind'] == 'page' and result['html'] == long_page and result['status'] == 0
+    assert ('Page.stopLoading', {}) in window.calls and 'click' not in str(window.calls)
     assert worker.window_gone(RuntimeError('Message: invalid session id\n  (Session info: MicrosoftEdge=157)'))
     assert not worker.window_gone(RuntimeError('Message: javascript error: Execution context was destroyed'))
     assert worker.error_words(RuntimeError('Message: \n  tab crashed\n  (Session info: MicrosoftEdge=157)')) == 'RuntimeError: tab crashed'
@@ -332,6 +341,7 @@ def test_the_window_is_an_ordinary_one_and_nothing_disguises_the_browser(tmp_pat
             self.experimental[name] = value
 
     options = worker._fetch_options(Options(), fetch_job(), tmp_path)
+    assert options.page_load_strategy == 'eager'  # the document, not every image and script
     text = ' '.join(options.arguments).lower()
     assert '--window-position=60,40' in text and f'--user-data-dir={tmp_path / "profile"}'.lower() in text
     for hidden in ('headless', 'user-agent', 'automationcontrolled', 'disable-blink-features', 'excludeswitches', '-2400'):
@@ -628,6 +638,50 @@ async def test_one_try_in_which_the_browser_did_not_run_does_not_end_the_tries(t
         with pytest.raises(WebToolError, match='A browser window cannot be opened here'):
             await tools.execute('web_fetch', {'url': base + '/c.pdf'})
         assert opened == [base + '/a.pdf', base + '/b.pdf']
+
+
+async def test_when_the_page_of_an_issue_fails_its_report_is_asked_for_at_its_own_address(tmp_path, monkeypatch):
+    """Real-machine case: the newest issue's page could not be read three runs in a row ("closed", "nothing arrived",
+    a renderer that did not answer), and the report itself was never asked for."""
+    from workbench import webtools
+    issue = 'https://www.imf.org/en/publications/weo/issues/2026/10/13/world-economic-outlook-october-2026'
+    assert webtools.report_address(issue) == 'https://www.imf.org/-/media/files/publications/weo/2026/october/english/text.pdf'
+    assert webtools.report_address(issue.replace('/10/13/', '/04/14/')).endswith('/weo/2026/april/english/text.pdf')
+    for other in ('https://www.imf.org/en/publications/weo', 'https://www.imf.org/en/publications/weo/issues/2026/13/01/x',
+                  'https://www.iea.org/reports/world-energy-outlook-2025', 'https://example.org/en/publications/weo/issues/2026/10/13/x', 'not a url'):
+        assert webtools.report_address(other) == ''
+    seen = []
+    pin(monkeypatch)
+    async with http_server(refusing(seen)) as port:
+        base = f'http://www.reports.example:{port}'
+        # In the test the report's address follows from the issue's page on the test site.
+        monkeypatch.setattr(webtools, 'report_address', lambda url: base + '/files/text.pdf' if '/issues/' in url else '')
+        saved = {'kind': 'download', 'file': 'shown.pdf', 'bytes': len(REPORT), 'data': REPORT}
+        for failure in ({'kind': 'timeout', 'title': 'The window did not answer: TimeoutException: timeout'}, {'kind': 'closed'},
+                        {'status': 403, 'title': 'Access Denied'}, {'title': 'The page could not be read from the window (TimeoutException)'}):
+            tools, opened = tools_with(tmp_path, {'/issues/october': failure, '/files/text.pdf': saved})
+            report = await tools.execute('web_fetch', {'url': base + '/issues/october'})
+            # What comes back is the report, and it says how it was come by.
+            assert report['pages'] == 2 and report['pdf_id'] in tools.pdf_ids and report['instead_of'] == base + '/issues/october'
+            assert "asked for the issue's full report at its own address instead" in report['instead_note']
+            assert opened == [base + '/issues/october', base + '/files/text.pdf']
+            assert [row['outcome'] for row in tools.browser_log] == ['refused' if failure.get('status') else 'failed', 'success']
+        # The report fails as well: one error tells of both, and neither address is tried again.
+        tools, opened = tools_with(tmp_path, {'/issues/october': {'kind': 'closed'}, '/files/text.pdf': {'status': 403, 'title': 'Access Denied'}})
+        with pytest.raises(WebToolError) as caught:
+            await tools.execute('web_fetch', {'url': base + '/issues/october'})
+        text = str(caught.value)
+        assert 'the window was closed before anything arrived' in text and f"The report's own address ({base}/files/text.pdf) was tried as well" in text
+        assert 'also turned away: refused (HTTP 403)' in text and len(opened) == 2
+        # A page that is read without bringing its report says where the report is.
+        tools, opened = tools_with(tmp_path, {'/issues/october': {'title': 'October issue', 'html': '<html><body>Outlook</body></html>'}})
+        page = await tools.execute('web_fetch', {'url': base + '/issues/october'})
+        assert page['report_address'] == base + '/files/text.pdf' and 'Fetch this address with web_fetch next' in page['report_address_note']
+        # Any other page that fails stays a failure.
+        tools, opened = tools_with(tmp_path, {'/other': {'kind': 'closed'}})
+        with pytest.raises(WebToolError, match='the window was closed before anything arrived'):
+            await tools.execute('web_fetch', {'url': base + '/other'})
+        assert opened == [base + '/other']
 
 
 async def test_a_window_that_cannot_be_opened_says_why_once_and_is_not_tried_again(tmp_path, monkeypatch):
