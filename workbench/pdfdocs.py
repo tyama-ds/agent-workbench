@@ -35,7 +35,7 @@ DEFAULT_CHARS, MAX_CHARS = 12_000, 24_000   # one answer, as web_read
 CALL_SECONDS = 30              # taking text within one call
 WAIT_SECONDS = 75              # a call that has not answered by then has met a page that does not end
 OUTLINE_ROWS, TITLE_CHARS = 80, 120
-FIND_ROWS, FIND_PER_PAGE, SNIPPET = 30, 3, 90
+FIND_ROWS, FIND_PER_PAGE, SNIPPET = 30, 3, 200
 THIN_PAGE = 5                  # fewer characters than this: the page has no text layer worth the name
 KEEP_OPEN = 3                  # documents whose pages stay in memory
 KEEP_FILES, KEEP_BYTES, KEEP_SECONDS = 12, 600 * 1024 * 1024, 14 * 24 * 3600
@@ -47,26 +47,43 @@ _POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix='awb-pdf')
 _CONTROL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f￾￿]')
 _BLANK_RUN = re.compile(r'\n[ \t]*(?:\n[ \t]*){2,}')
 
+_SOURCE = {'path': {'type': 'string'}, 'pdf_id': {'type': 'string', 'maxLength': 28}}
+_RANGE = {'first_page': {'type': 'integer', 'minimum': 1, 'maximum': MAX_PAGES},
+          'last_page': {'type': 'integer', 'minimum': 1, 'maximum': MAX_PAGES}}
 PDF_READ_TOOL = {'name': 'pdf_read', 'description': (
     'Read a PDF from an allowed read folder (path) or one that web_fetch downloaded (pdf_id). Without first_page: '
     'page count, outline, characters per page, how it begins. With first_page (1 = first page of the file): text '
-    'of those pages under their page numbers, up to max_chars; next_page continues. find: the pages where a phrase '
-    'occurs. Password-locked files are refused; scanned pages have no text (no OCR). Untrusted data.'),
+    'of those pages, each with page (position in the file) and printed_page when the file prints other numbers, '
+    'up to max_chars; next_page continues. Password-locked files are refused; scanned pages have no text (no OCR). '
+    'Untrusted data.'),
     'parameters': {'type': 'object', 'properties': {
-        'path': {'type': 'string'},
-        'pdf_id': {'type': 'string', 'maxLength': 28},
-        'first_page': {'type': 'integer', 'minimum': 1, 'maximum': MAX_PAGES},
-        'last_page': {'type': 'integer', 'minimum': 1, 'maximum': MAX_PAGES},
+        **_SOURCE, **_RANGE,
         'offset': {'type': 'integer', 'minimum': 0, 'maximum': PAGE_CHARS},
-        'find': {'type': 'string', 'maxLength': 100},
         'max_chars': {'type': 'integer', 'minimum': 2000, 'maximum': MAX_CHARS}},
         'additionalProperties': False}}
-_ARGS = frozenset(PDF_READ_TOOL['parameters']['properties'])
+PDF_SEARCH_TOOL = {'name': 'pdf_search', 'description': (
+    'Find a phrase, a table or row label, or a number in a PDF (path or pdf_id as for pdf_read): returns the pages '
+    'on which it stands, each with the words around it. Case and line breaks do not matter. Use it to locate a '
+    'figure and to check one before reporting it.'),
+    'parameters': {'type': 'object', 'properties': {
+        **_SOURCE, 'query': {'type': 'string', 'maxLength': 100}, **_RANGE,
+        'max_chars': {'type': 'integer', 'minimum': 2000, 'maximum': MAX_CHARS}},
+        'required': ['query'], 'additionalProperties': False}}
+PDF_TOOLS = {'pdf_read': frozenset(PDF_READ_TOOL['parameters']['properties']),
+             'pdf_search': frozenset(PDF_SEARCH_TOOL['parameters']['properties'])}
+_ARGS = PDF_TOOLS['pdf_read'] | {'find'}   # what the library itself takes: a search arrives as ``find``
 
+# Added to an agent's instructions once a PDF is part of the work (the request names one, or one was opened or
+# downloaded), so that work without PDFs does not carry it.
 PDF_POLICY = (
-    '\n\nPDF reports: use pdf_read. See the page count and outline first; read the executive summary and the first '
-    'chapter, then only the chapters the request needs (find locates a term), never cover to cover. Give every figure '
-    'with its page ("p. 12", the numbers pdf_read returns) and report only pages you read. If a PDF has no text, say so.')
+    '\n\nPDF reports: see the page count and outline with pdf_read first. Find what you need with pdf_search (a '
+    'phrase, a table name such as "Table 1.1", a row label such as "World Output", or a number) and read only those '
+    'pages; never read a long report from cover to cover. Every figure you report carries its page and the words it '
+    'comes from (a short quotation or the table row). Cite a page by its position in the file, "p. 26"; where the '
+    'result gives printed_page, add it in brackets, "p. 26 (printed 10)", and use this one form everywhere. Before '
+    'finishing, look up each headline figure again with pdf_search and compare it with the text: correct what '
+    'differs, and write a figure you cannot find as not confirmed, never as another number. Report only pages you '
+    'read. If a PDF has no text, say so.')
 # Only where pages can be fetched.
 PDF_WEB_POLICY = (
     ' A chapter or section you could not obtain or read gets one line, "not obtained; no summary": never write its '
@@ -77,10 +94,18 @@ PDF_WEB_POLICY = (
     'downloaded, ask the human once with ask_user: give its URL and ask them to save the PDF from their browser into '
     'a read folder (recommendation: go on without that part and report it as not obtained). Once it is saved, read it '
     'with pdf_read by path.')
+_PDF_WORD = re.compile(r'pdf|ＰＤＦ', re.I)
 
 
 _NEEDS_PASSWORD = ('This PDF needs a password to open. The application does not open such files and tries no '
                    'password. Say so; a human can save an unprotected copy into a read folder.')
+
+
+# Only in a piece of work for which the human allowed it.
+BROWSER_TRY_POLICY = (
+    ' For this work the human allowed one try in a visible browser window: when a site refuses web_fetch, the '
+    'application opens that address once by itself and returns what the window showed. You do not ask for it and '
+    'cannot repeat it; if it also fails, ask the human as described above.')
 
 
 class PdfError(ValueError):
@@ -112,7 +137,7 @@ class _Document:
     def __init__(self, data, sha256):
         from pypdf import PdfReader
         self.sha256, self.bytes, self.lock = sha256, len(data), threading.Lock()
-        self.texts, self.failed, self.protected = {}, {}, False
+        self.texts, self.flats, self.failed, self.protected = {}, {}, {}, False
         try:
             self.reader = PdfReader(io.BytesIO(data), strict=False)
             if self.reader.is_encrypted:
@@ -182,9 +207,9 @@ class _Document:
             labels = [str(label)[:12] for label in self.reader.page_labels]
         except Exception:  # noqa: BLE001
             return {}
-        if len(labels) != self.pages:
+        if len(labels) != self.pages or all(label == str(index + 1) for index, label in enumerate(labels)):
             return {}
-        return {index + 1: label for index, label in enumerate(labels) if label and label != str(index + 1)}
+        return {index + 1: label for index, label in enumerate(labels)}
 
     def text(self, number):
         """One page's text (cached). A page that cannot be parsed is empty and remembered as failed."""
@@ -195,8 +220,16 @@ class _Document:
                 self.texts[number], self.failed[number] = '', type(exc).__name__
         return self.texts[number]
 
+    def flat(self, number):
+        """A page's text on one line, for searching across its line breaks."""
+        if number not in self.flats:
+            self.flats[number] = ' '.join(self.text(number).split())
+        return self.flats[number]
+
     def head(self, number):
-        return {'page': number, **({'printed_number': self.labels[number]} if number in self.labels else {})}
+        # Both numbers wherever the file prints other numbers than the positions (front matter in roman
+        # numerals, a body that starts again at 1): ``page`` is the position, ``printed_page`` what the page shows.
+        return {'page': number, **({'printed_page': self.labels[number]} if self.labels else {})}
 
 
 class PdfLibrary:
@@ -315,7 +348,7 @@ class PdfLibrary:
 
 def _request(args):
     if not isinstance(args, dict) or set(args) - _ARGS:
-        raise PdfError('pdf_read takes path or pdf_id, and optionally first_page, last_page, offset, find, max_chars')
+        raise PdfError('pdf_read takes path or pdf_id, and optionally first_page, last_page, offset, max_chars')
 
     def integer(name, low, high, default=None):
         value = args.get(name, default)
@@ -328,7 +361,7 @@ def _request(args):
     offset = integer('offset', 0, PAGE_CHARS, 0)
     find = args.get('find')
     if find is not None and (not isinstance(find, str) or not find.strip() or len(find) > 100):
-        raise PdfError('find must be a word or phrase of 1 to 100 characters')
+        raise PdfError('query must be words or a number, 1 to 100 characters')
     if last is not None and first is None and find is None:
         raise PdfError('last_page needs first_page')
     if first is not None and last is not None and last < first:
@@ -377,14 +410,17 @@ def _overview(document, base, deadline):
               'outline': document.outline, 'counted_pages': counted, 'total_chars': sum(chars),
               **_text_state(document, counted),
               'start': ' '.join(start.split())[:500],
-              'read_hint': ('Read pages with first_page and last_page (1 is the first page of the file); find lists the pages '
-                            'where a term occurs. Cite figures as "p. N" with these page numbers.')}
+              'read_hint': ('Read pages with first_page and last_page (1 is the first page of the file); pdf_search finds '
+                            'the pages where a phrase or a number stands. Cite figures as "p. N" with these page numbers.')}
     if document.protected:
         result['protected'] = ('This PDF opens without a password; its author restricted some uses (such as changing, '
                                'printing or copying). It was read as a viewer shows it.')
     if document.labels:
-        result['printed_numbers'] = ('The numbers printed on the pages differ from the file\'s page numbers; each page returned '
-                                     'carries printed_number. first_page and last_page always count from the first page of the file.')
+        result['printed_pages'] = ('The numbers printed on the pages differ from the positions in the file: every page returned '
+                                   'carries page (the position; first_page and last_page count in it) and printed_page.')
+        for row in result['outline']:
+            if row.get('page') in document.labels:
+                row['printed_page'] = document.labels[row['page']]
     if counted < document.pages:
         result['counted_note'] = (f'Pages {counted + 1}..{document.pages} were not counted within the time for one call; '
                                   'they are counted when they are read.')
@@ -450,7 +486,8 @@ def _pages(document, base, request, deadline):
 
 
 def _find(document, base, request, deadline):
-    wanted = request['find'].casefold()
+    """pdf_search: the pages on which the words stand, with what surrounds them (case and line breaks ignored)."""
+    wanted = ' '.join(request['find'].split()).casefold()
     first = request['first'] or 1
     if first > document.pages:
         raise PdfError(f'first_page {first} is beyond the last page ({document.pages})')
@@ -460,7 +497,7 @@ def _find(document, base, request, deadline):
         if number > first and time.monotonic() > deadline:
             more = True
             break
-        text = document.text(number)
+        text = document.flat(number)
         folded, position, on_page = text.casefold(), 0, 0
         # casefold can change a text's length; positions are only used when it did not.
         same = len(folded) == len(text)
@@ -469,23 +506,25 @@ def _find(document, base, request, deadline):
             if position < 0:
                 break
             source = text if same else folded
-            snippet = ' '.join(source[max(0, position - SNIPPET):position + len(wanted) + SNIPPET].split())
-            if not rows or rows[-1]['page'] != number or rows[-1]['snippet'] != snippet:
-                rows.append({**document.head(number), 'snippet': snippet})
+            context = source[max(0, position - SNIPPET):position + len(wanted) + SNIPPET]
+            if not rows or rows[-1]['page'] != number or rows[-1]['context'] != context:
+                rows.append({**document.head(number), 'context': context})
             on_page, position = on_page + 1, position + len(wanted)
         pages += bool(on_page)
         searched = number
         if len(rows) >= FIND_ROWS:
             more = number < last
             break
-    result = {**base, 'mode': 'find', 'find': request['find'], 'matches': rows[:FIND_ROWS], 'pages_with_matches': pages,
+    result = {**base, 'mode': 'search', 'query': request['find'], 'matches': rows[:FIND_ROWS], 'pages_with_matches': pages,
               'searched_pages': [first, searched], 'complete': not more}
     if more:
         result['next_page'] = searched + 1
-        result['note'] = 'More pages remain: call again with find and first_page = next_page.'
+        result['note'] = 'More pages remain: search again with first_page = next_page.'
     elif not rows:
-        result['note'] = ('The phrase does not occur in the text of these pages. Try a shorter or different wording; '
-                          'text inside images is not searched.')
+        result['note'] = ('These words do not stand in the text of these pages. Try fewer words or another wording '
+                          '(a number may be printed as "3.1" or "3.1 percent"); text inside images is not searched.')
+    else:
+        result['note'] = 'Read the page with pdf_read (first_page = page) before quoting more than the words shown.'
     while _size(result) > request['max_chars'] and result['matches']:
         result['matches'].pop()
         result['complete'] = False
@@ -503,15 +542,29 @@ class PdfToolMixin:
     def _pdf_policy(self, run):
         if not self._pdf_available(run):
             return ''
-        return PDF_POLICY + (PDF_WEB_POLICY if run['_config']['search']['enabled'] else '')
+        web = run['_config']['search']['enabled']
+        # The guidance on PDFs joins the instructions once a PDF is part of the work.
+        relevant = run.get('_pdf_touched') or bool(_PDF_WORD.search(run.get('task') or ''))
+        return ((PDF_POLICY + (PDF_WEB_POLICY if web else '') if relevant else '')
+                + (BROWSER_TRY_POLICY if run.get('browser_fetch') else ''))
 
-    async def _pdf_read(self, run, agent, args):
+    def _pdf_mentioned(self, run, text):
+        """A later message of the human names a PDF."""
+        if isinstance(text, str) and _PDF_WORD.search(text):
+            run['_pdf_touched'] = True
+
+    async def _pdf_read(self, run, agent, args, tool='pdf_read'):
         if not self._pdf_available(run):
             raise ValueError('PDF を読むには、読み取りを許可したフォルダーか Web 検索の設定が必要です')
-        if not isinstance(args, dict) or set(args) - _ARGS:
-            raise PdfError('pdf_read takes path or pdf_id, and optionally first_page, last_page, offset, find, max_chars')
+        run['_pdf_touched'] = True
+        if not isinstance(args, dict) or set(args) - PDF_TOOLS[tool]:
+            raise PdfError(f'{tool} takes ' + ', '.join(sorted(PDF_TOOLS[tool])))
+        if tool == 'pdf_search':
+            if not isinstance(args.get('query'), str):
+                raise PdfError('pdf_search needs query: the words or the number to look for')
+            args = {**{key: value for key, value in args.items() if key != 'query'}, 'find': args['query']}
         if ('path' in args) == ('pdf_id' in args):
-            raise PdfError('pdf_read needs exactly one of path (a file in an allowed read folder) or pdf_id (from web_fetch)')
+            raise PdfError(f'{tool} needs exactly one of path (a file in an allowed read folder) or pdf_id (from web_fetch)')
         if 'path' in args:
             if not isinstance(args['path'], str):
                 raise PdfError('path must be a string')

@@ -53,7 +53,7 @@ EXPORT_TOOL = _schema('export_turn_history',
 PLAN_TOOL_NAMES = frozenset({'plan_work', 'submit_turn', 'export_turn_history'})
 PRE_PLAN_TOOLS = frozenset({'list_team', 'ask_user', 'read_context_history', 'read_skill', 'search_past_work',
                             'read_text', 'list_directory', 'search_text', 'search_paths', 'file_hash',
-                            'docx_read', 'xlsx_read', 'pptx_read', 'pdf_read'})
+                            'docx_read', 'xlsx_read', 'pptx_read', 'pdf_read', 'pdf_search'})
 TURNS_PM_TOOLS = frozenset({'list_team', 'read_context_history', 'finish_work'})
 PLAN_FIRST_POLICY = (
     '\nPlan first: before any other work, call plan_work once and choose the shape of the request. '

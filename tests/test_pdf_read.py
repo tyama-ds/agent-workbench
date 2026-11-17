@@ -33,13 +33,14 @@ async def test_the_first_call_says_how_long_the_document_is_and_what_it_holds():
     result = await read(PdfLibrary(), REPORT)
     assert result['mode'] == 'overview' and result['pages'] == 6 and result['title'] == 'World Outlook (test)'
     assert result['sha256'] == hashlib.sha256(REPORT).hexdigest() and result['untrusted'] is True
-    assert result['outline'] == [{'title': 'Executive summary', 'level': 0, 'page': 3}, {'title': 'Chapter 1', 'level': 0, 'page': 4},
-                                 {'title': 'Trade', 'level': 1, 'page': 4}, {'title': 'Annex', 'level': 0, 'page': 6}]
+    assert [(row['title'], row['level'], row['page']) for row in result['outline']] == [
+        ('Executive summary', 0, 3), ('Chapter 1', 0, 4), ('Trade', 1, 4), ('Annex', 0, 6)]
     assert result['counted_pages'] == 6 and len(result['page_chars']) == 6
     assert result['page_chars'][4] == 0 and result['page_chars'][5] == len(LONG)
     # One page of six is a picture: said, with its number, and the rest is readable.
     assert result['text_layer'] == 'partial' and result['pages_without_text'] == [5] and 'no OCR' in result['note']
-    assert result['start'] == 'World Outlook' and 'printed_number' in result['printed_numbers']
+    assert result['start'] == 'World Outlook' and 'printed_page' in result['printed_pages']
+    assert [row.get('printed_page') for row in result['outline']] == ['1', '2', '2', '4']  # beside the position in the file
     assert len(json.dumps(result)) < pdfdocs.DEFAULT_CHARS
 
 
@@ -48,7 +49,11 @@ async def test_pages_come_back_under_their_numbers_and_a_long_page_continues_whe
     result = await read(library, REPORT, first_page=3, last_page=6, max_chars=2000)
     assert [row['page'] for row in result['content']] == [3, 4, 5, 6]
     assert result['content'][0]['text'].startswith('Executive summary. Global growth is projected at 3.2 percent')
-    assert result['content'][0]['printed_number'] == '1'  # the number printed on the page; "page" counts from the file's first
+    # Both numbers on every page: the position in the file, and what the page prints (front matter in roman numerals).
+    assert [(row['page'], row['printed_page']) for row in result['content']] == [(3, '1'), (4, '2'), (5, '3'), (6, '4')]
+    front = await read(library, REPORT, first_page=1, last_page=2)
+    assert [(row['page'], row['printed_page']) for row in front['content']] == [(1, 'i'), (2, 'ii')]
+    assert 'printed_page' not in (await read(library, make_pdf(['one', 'two']), first_page=1))['content'][0]  # nothing else printed
     assert result['content'][2]['chars'] == 0 and 'no OCR' in result['content'][2]['note']
     assert result['content'][3]['cut'] is True and result['complete'] is False
     assert result['next_page'] == 6 and result['last_page'] == 6 and len(json.dumps(result, ensure_ascii=False)) <= 2000
@@ -65,21 +70,31 @@ async def test_pages_come_back_under_their_numbers_and_a_long_page_continues_whe
     assert result['content'][0]['text'] == 'World Outlook' and result['complete'] is True and result['last_page'] == 6
 
 
-async def test_find_lists_the_pages_on_which_a_phrase_stands():
+async def test_search_lists_the_pages_on_which_words_or_a_number_stand_with_what_surrounds_them():
+    """Real-machine case: asked for the headline figures of a 124-page report, the model read page after page
+    and reported 2.6 % where the text says 3.1 %. The figure is found by its words, on its page."""
     library = PdfLibrary()
     result = await read(library, REPORT, find='PERCENT')
+    assert result['mode'] == 'search' and result['query'] == 'PERCENT'
     assert sorted({row['page'] for row in result['matches']}) == [3, 4, 6] and result['pages_with_matches'] == 3
     assert result['complete'] is True and result['searched_pages'] == [1, 6]
-    assert any('Trade grew 2.9 percent' in row['snippet'] for row in result['matches'])
+    assert any('Trade grew 2.9 percent' in row['context'] for row in result['matches'])
+    assert all(row['printed_page'] for row in result['matches']) and 'pdf_read' in result['note']
+    # A sentence that the page breaks into lines is found, and so is a number.
+    broken = await read(library, REPORT, find='in 2026. inflation   falls')
+    assert [(row['page'], row['printed_page']) for row in broken['matches']] == [(3, '1')]
+    assert 'Global growth is projected at 3.2 percent in 2026. Inflation falls to 4.1 percent.' in broken['matches'][0]['context']
+    assert [row['page'] for row in (await read(library, REPORT, find='4.1 percent'))['matches']] == [3]
+    assert [row['page'] for row in (await read(library, REPORT, find='Table A1'))['matches']] == [6]
     assert (await read(library, REPORT, find='percent', first_page=4, last_page=5))['pages_with_matches'] == 1
     nothing = await read(library, REPORT, find='deflation')
-    assert nothing['matches'] == [] and 'does not occur' in nothing['note']
+    assert nothing['matches'] == [] and 'do not stand in the text' in nothing['note']
 
 
 @pytest.mark.parametrize('args,message', [
     ({'first_page': 0}, 'first_page must be an integer 1'), ({'first_page': 9}, 'beyond the last page'),
     ({'first_page': 3, 'last_page': 2}, 'must not be before'), ({'last_page': 2}, 'needs first_page'),
-    ({'offset': 5}, 'offset continues a page'), ({'find': ' '}, 'find must be'), ({'pages': '1-3'}, 'pdf_read takes'),
+    ({'offset': 5}, 'offset continues a page'), ({'find': ' '}, 'query must be'), ({'pages': '1-3'}, 'pdf_read takes'),
     ({'first_page': 1, 'max_chars': 100}, 'max_chars must be an integer'), ({'first_page': '1'}, 'first_page must be an integer'),
 ])
 async def test_wrong_arguments_say_what_is_accepted(args, message):
@@ -306,8 +321,12 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         run, pm = await start(engine, task='WEO の PDF を読んで要約を summary.md に書いて', max_workers=0)
         names = [tool['name'] for tool in engine._model_tools(run, pm)]
         policy = engine._policy(run, pm)
-        assert 'pdf_read' in names and 'PDF reports:' in policy and 'never cover to cover' in policy
+        assert {'pdf_read', 'pdf_search'} <= set(names) and 'PDF reports:' in policy and 'never read a long report from cover to cover' in policy
         assert 'official distribution site (for the IMF, the IMF eLibrary)' in policy and 'pdf_links' in policy
+        # Figures: found by search, cited with one form of page number and the words they come from, and looked up again.
+        assert 'Find what you need with pdf_search' in policy and '"p. 26 (printed 10)"' in policy
+        assert 'carries its page and the words it comes from' in policy
+        assert 'look up each headline figure again with pdf_search' in policy and 'never as another number' in policy
         (work / 'weo.pdf').write_bytes(REPORT)
         assert len(REPORT) > 2048
         overview = await engine.execute_tool(run, pm, 'pdf_read', {'path': str(work / 'weo.pdf')})
@@ -337,7 +356,15 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         result = await engine.execute_tool(run, pm, 'pdf_read', {'pdf_id': record['pdf_id'], 'first_page': 3, 'last_page': 5})
         assert result['url'] == url and [row['page'] for row in result['content']] == [3, 4, 5]
         await engine.execute_tool(run, pm, 'pdf_read', {'pdf_id': record['pdf_id'], 'first_page': 6, 'max_chars': 2000})
-        await engine.execute_tool(run, pm, 'pdf_read', {'pdf_id': record['pdf_id'], 'find': 'percent'})  # finding is not reading
+        found = await engine.execute_tool(run, pm, 'pdf_search', {'pdf_id': record['pdf_id'], 'query': 'percent'})  # finding is not reading
+        assert found['mode'] == 'search' and found['pages_with_matches'] == 3 and found['url'] == url
+        assert (await engine.execute_tool(run, pm, 'pdf_search', {'path': 'weo.pdf', 'query': 'Global growth'}))['matches'][0]['page'] == 3
+        for bad in ({'pdf_id': record['pdf_id']}, {'pdf_id': record['pdf_id'], 'query': 'x', 'offset': 3},
+                    {'pdf_id': record['pdf_id'], 'find': 'x'}):
+            with pytest.raises(ValueError):
+                await engine.execute_tool(run, pm, 'pdf_search', bad)
+        with pytest.raises(ValueError, match='pdf_read takes'):
+            await engine.execute_tool(run, pm, 'pdf_read', {'path': 'weo.pdf', 'find': 'percent'})
         # Page 5 holds no text, so it does not count as read.
         assert run['_pages'][sources.normalize(url)][1].startswith('6 pages; pages read: 3-4, 6; title')
         text = f'# 要約\n世界の成長率は 3.2%（p. 3）。\n出典: {url}\n'
@@ -359,7 +386,7 @@ async def test_pdf_read_is_offered_only_where_a_pdf_can_come_from(tmp_path):
     engine.kick = lambda agent: None
     try:
         run, pm = await start(engine, max_workers=0)
-        assert 'pdf_read' not in [tool['name'] for tool in engine._model_tools(run, pm)]
+        assert not {'pdf_read', 'pdf_search'} & {tool['name'] for tool in engine._model_tools(run, pm)}
         assert 'PDF reports:' not in engine._policy(run, pm)
         with pytest.raises(ValueError, match='読み取りを許可したフォルダー'):
             await engine.execute_tool(run, pm, 'pdf_read', {'path': 'x.pdf'})
@@ -371,9 +398,19 @@ async def test_pdf_read_is_offered_only_where_a_pdf_can_come_from(tmp_path):
     engine.kick = lambda agent: None
     try:
         run, pm = await start(engine, max_workers=0)
-        policy = engine._policy(run, pm)
         assert 'pdf_read' in [tool['name'] for tool in engine._model_tools(run, pm)]
+        # Work that has nothing to do with a PDF does not carry the guidance; it joins once a PDF is opened.
+        assert 'PDF reports:' not in engine._policy(run, pm)
+        (work / 'report.pdf').write_bytes(REPORT)
+        await engine.execute_tool(run, pm, 'pdf_read', {'path': 'report.pdf'})
+        policy = engine._policy(run, pm)
         assert 'PDF reports:' in policy and 'eLibrary' not in policy and 'web_fetch its PDF address' not in policy
+        # Or once the human names one, at the start or later.
+        named, lead = await start(engine, task='報告書.PDF を要約して', max_workers=0)
+        assert 'PDF reports:' in engine._policy(named, lead)
+        later, lead = await start(engine, max_workers=0)
+        engine._pdf_mentioned(later, 'さっきの pdf も見てください')
+        assert 'PDF reports:' in engine._policy(later, lead)
     finally:
         await engine.close()
 
