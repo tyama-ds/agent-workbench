@@ -269,6 +269,14 @@ _FULL_REPORT = re.compile(r'full[\s-]*(?:report|text|document|publication)|compl
                           r'報告書全体|全文|本文|報告書全文', re.I)
 
 
+# Where the job is, for the record of a failure: "start browser", "open address", ...
+_STEP = ['prepare']
+
+
+def _step(name):
+    _STEP[0] = name
+
+
 def main_pdf_link(rows, page_url):
     """The one link of a read page that is its full report on the page's own site, or ''.
 
@@ -368,12 +376,18 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
     downloads.mkdir(exist_ok=True)
     result = {'kind': 'timeout', 'url': url, 'status': 0, 'content_type': '', 'title': '', 'html': '',
               'truncated': False, 'file': '', 'bytes': 0, 'check': False, 'linked': {}}
+    _step('start browser')
     driver = (driver_factory or create_driver)(job, workspace)
     try:
+        _step('set up window')
         driver.set_page_load_timeout(45)
         driver.set_script_timeout(5)
         driver.implicitly_wait(0)
-        driver.execute_cdp_cmd('Browser.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': str(downloads)})
+        try:
+            driver.execute_cdp_cmd('Browser.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': str(downloads)})
+        except Exception:
+            pass  # the profile's download folder is set as well; a browser without this command still saves there
+        _step('open address')
         if via:
             # The page that links to the file, which a window read before: it is loaded first, and the file is
             # then asked for in the same window, with the session that page set up. Nothing is clicked.
@@ -445,15 +459,27 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
             driver.get(url)
         except Exception:
             pass  # an address that starts a download does not "load"; what arrived is looked at below
+        _step('wait for the address')
         watch(result, started, started + max(wait, person))
         if result['kind'] == 'page':
-            html = str(driver.page_source).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')
+            _step('read the page')
+            try:
+                html = str(driver.page_source).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')
+            except Exception as exc:
+                # The window shows something that cannot be read as a page (it stopped answering, or closed).
+                html = ''
+                result['title'] = result['title'] or f'The page could not be read from the window ({type(exc).__name__})'
             try:
                 result['url'] = validate_url(driver.current_url)
-            except ValueError:
+            except Exception:
                 pass
-            result.update(title=result['title'] or str(driver.title).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')[:500],
+            try:
+                title = str(driver.title)
+            except Exception:
+                title = ''
+            result.update(title=result['title'] or title.replace('\0', '').encode('utf-8', 'replace').decode('utf-8')[:500],
                           html=html[:maximum], truncated=len(html) > maximum)
+            _step('follow the report link')
             if (job.get('follow') is True and not result['check'] and result['status'] in (0, 200)
                     and not result['content_type'].lower().startswith('application/pdf')):
                 # The page is read. Where it links to its full report on its own site, that file is asked for
@@ -547,8 +573,12 @@ def create_driver(job, workspace):
         raise ValueError('Selenium browser must be edge or chrome')
     # Do not create a console host that could exit before the parent Job runner
     # captures its process handle. Pipes still carry the service's standard I/O.
+    arguments = ['--allowed-ips=127.0.0.1']
+    if job.get('mode') == 'fetch':
+        # The driver's own log, in this job's private folder: kept by the application only when the try fails.
+        arguments.append(f'--log-path={workspace / "driver.log"}')
     service = Service(executable_path=job['driver_executable'],
-                      service_args=['--allowed-ips=127.0.0.1'], log_output=subprocess.DEVNULL,
+                      service_args=arguments, log_output=subprocess.DEVNULL,
                       popen_kw={'creation_flags': _DETACHED_PROCESS})
     build = {'page': _page_options, 'fetch': _fetch_options}.get(job.get('mode'), _options)
     return factory(service=service, options=build(options, job, workspace))
@@ -691,9 +721,27 @@ def main():
     (workspace / 'result.json').write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
 
 
+def failure_record(exc, step):
+    """What went wrong, for a person: the kind of error, where the job was, the message and the trace."""
+    import traceback
+    message = str(exc).replace('\0', '')
+    first = next((line.strip() for line in message.splitlines() if line.strip() and line.strip() != 'Message:'), '')
+    return {'type': type(exc).__name__, 'step': step, 'summary': first.removeprefix('Message:').strip()[:300],
+            'message': message[:4000],
+            'traceback': ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-8000:]}
+
+
 if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
-        print(f'Selenium {type(exc).__name__}: {str(exc)[:2000]}', file=sys.stderr)
+        record = failure_record(exc, _STEP[0])
+        try:
+            # Beside the job file, in the private folder: the application keeps it when the job failed.
+            (Path(sys.argv[1]).parent / 'error.json').write_text(json.dumps(record, ensure_ascii=False), encoding='utf-8')
+        except Exception:
+            pass
+        # One line that says it all comes first: the kind of error, the step, the first words of the message.
+        print(f'Selenium {record["type"]} at step "{record["step"]}": {record["summary"]}', file=sys.stderr)
+        print(str(exc)[:2000], file=sys.stderr)
         raise SystemExit(1)

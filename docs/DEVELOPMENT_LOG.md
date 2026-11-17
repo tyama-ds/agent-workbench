@@ -4,7 +4,32 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev79 — A refusal names the argument; one table is one table; the same PDF twice (2026-11-17)
+## 0.1.1.dev80 — What failed in the window; the PDF that was read; quotations looked up (2026-11-17)
+
+At dev79 the energy outlook run produced its three files with figures that
+matched, and the economic outlook run had no window at all.
+
+- "The browser could not be started or did not finish: (Session info:
+  MicrosoftEdge=157…)": the last line of the error. The kind of error and
+  its message were cut away, and the private folder with everything else
+  was deleted. A failed job now reports the kind of error, the step and
+  the first words of the message, and its records (error, trace, the
+  driver's log) are kept in a folder of their own. A page that cannot be
+  read from the window ends the try with an answer instead of an error.
+  One failed try no longer ends the window for the whole piece of work.
+- The report quoted one copy of the document and an older copy was saved,
+  twice, under two names; read by its path, the saved file was reported as
+  "not downloaded in this work". `pdf_save` now asks for the copy that was
+  read, saves a file once, and a saved download read by path is a download.
+- "5,600 bcm by 2050 (p.119)" stood on pages 151 and 161, and one figure
+  was not in the PDF. Before the coordinator finishes, the application
+  looks up every quotation that stands with a page number in the saved
+  files, sends back once what does not match, and says in the result what
+  is still wrong.
+
+Not known: why the browser failed. The next failure will say.
+
+A refusal names the argument; one table is one table; the same PDF twice (2026-11-17)
 
 The energy outlook run at dev77 chose the newest copy of the report and
 read it, and produced no file.

@@ -562,6 +562,7 @@ class WebTools:
         self._browser_results = {}
         # PDF links of a page that a browser window read -> that page; and the links opened from their page.
         self._browser_from, self._browser_followed = {}, set()
+        self._browser_failures = 0  # tries in which the browser itself did not run
         # PDFs this run downloaded (pdf_id -> its record); the library that keeps them is the application's.
         self._pdf_library, self._pdf_bytes, self.pdf_ids = None, 0, {}
         if type(self.timeout) not in {int, float} or not 1 <= self.timeout <= 60:
@@ -925,8 +926,24 @@ class WebTools:
             page = await self._browser_fetch(url, self._pdf_bytes or self.max_bytes, person_seconds, list(PERSON_CHECK_WORDS),
                                              **({"via": via} if via else {}), **({"follow": True} if self._pdf_library is not None else {}))
         except ValueError as exc:
-            # Not Windows, no browser or driver set, or the browser did not start: said once, never tried again.
-            self._browser_unavailable = str(exc)[:300]
+            text = str(exc)[:700]
+            if text.startswith("The browser could not be started or did not finish"):
+                # This try failed (real-machine case: once, after the browser had updated itself). That is not
+                # "no browser here": the next address is still tried, and only a second failure ends the tries.
+                self._browser_failures += 1
+                self._browser_record(url, "failed", text)  # for the human: with where the records are kept
+                short = text.split("; records kept in")[0][:300]
+                if 'at step "start browser"' in text:
+                    # The address was never loaded: it does not count as tried.
+                    self._browser_tried.pop(url, None)
+                    self._browser_followed.discard(url)
+                if self._browser_failures >= 2:
+                    self._browser_unavailable = short
+                raise WebToolError(f"{refused}. A browser window was to try once, but the browser did not run: {short}. "
+                                   + ("It is not tried again in this work." if self._browser_unavailable else
+                                      "Go on with other sources; another address may still be tried in a window.") + ask) from None
+            # Not Windows, or no browser or driver set: said once, never tried again.
+            self._browser_unavailable = text[:300]
             self._browser_record(url, "failed", "the browser could not be opened: " + self._browser_unavailable)
             raise WebToolError(f"{refused}. A browser window was to try once, but could not be opened: {self._browser_unavailable}." + ask) from None
         kind = page.get("kind")
@@ -968,6 +985,11 @@ class WebTools:
             self._browser_record(url, "refused", detail)
             raise WebToolError(f"{refused}. A browser window tried once and was also turned away: {detail}. "
                                "The application does not solve checks or disguise the browser." + ask)
+        if title.startswith("The page could not be read from the window"):
+            # The window stopped answering when its content was asked for (a crashed or hung tab).
+            self._browser_record(url, "failed", title[:200])
+            raise WebToolError(f"{refused}. A browser window opened the address, but its content could not be read "
+                               f"({title[:200]})." + ask)
         if _mime(page.get("content_type", "")) == "application/pdf":
             why = title[:200] if title.startswith("The PDF was shown") else "the PDF was shown in the window but not saved"
             self._browser_record(url, "failed", why)

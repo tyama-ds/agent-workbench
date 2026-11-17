@@ -142,8 +142,14 @@ async def test_a_downloaded_pdf_is_saved_as_a_new_file_in_a_write_folder(tmp_pat
         assert pm.output_receipts[-1]['tool'] == 'pdf_save' and pm.output_receipts[-1]['sha256'] == saved['sha256']
         assert run['output_check']['missing'] == []
         # New files only, .pdf only, write folders only.
+        other = engine.pdf_library.put(make_pdf(['Another report.'], title='Other'), 'https://example.org/other.pdf')
+        run['_web'].pdf_ids[other['pdf_id']] = other
         with pytest.raises(ValueError, match='already exists'):
-            await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': 'WorldEnergyOutlook.pdf'})
+            await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': other['pdf_id'], 'path': 'WorldEnergyOutlook.pdf'})
+        assert (work / 'WorldEnergyOutlook.pdf').read_bytes() == REPORT
+        # And the same file is not saved a second time, under this name or another.
+        with pytest.raises(ValueError, match='already saved in this work'):
+            await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': 'copy.pdf'})
         with pytest.raises(ValueError, match='must end in .pdf'):
             await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': 'report.docx'})
         with pytest.raises(ValueError):
@@ -520,5 +526,99 @@ async def test_a_file_whose_save_failed_is_not_listed_as_a_cited_source(tmp_path
         assert run['_cited'] and engine._citation_rows(run, 10) == [] and engine._citations_footer(run) == ''
         await engine.execute_tool(run, pm, 'docx_write', args)
         assert [row[:2] for row in engine._citation_rows(run, 10)] == [(args['path'], source)]
+    finally:
+        await engine.close()
+
+
+def test_page_and_quotation_pairs_are_read_from_what_a_document_states():
+    from workbench.verification import page_quotes
+    args = {'path': 'report.docx', 'expected_sha256': 'missing',
+            'paragraphs': ['天然ガス需要は増える（p.119 「5,600 bcm by 2050」）。', 'Coal use: "Coal use starts to decline globally before 2030" (p. 123).',
+                           '電力需要は 2035 年に 37,800 TWh（p.31）。', '「引用だけでページのない文」', 'Figure 1.2 shows "a quotation far from any page"'],
+            'tables': [[['指標', '値', '出典ページ', '原文の短い引用'], ['蓄電池', '77 GW', 'p.65', 'battery storage additions of 77 GW'],
+                        ['石油需要', '105 mb/d', '123', 'oil demand reaches 105 mb/d']]]}
+    assert page_quotes(args) == [(119, '5,600 bcm by 2050'), (123, 'Coal use starts to decline globally before 2030'),
+                                 (65, 'battery storage additions of 77 GW'), (123, 'oil demand reaches 105 mb/d')]
+    assert page_quotes({'slides': [{'title': 'x', 'body': ['p. 12 “growth of 3.1 percent”', 'app.12 "not a page"']}]}) == [
+        (12, 'growth of 3.1 percent')]
+    assert page_quotes({'text': 'no page here'}) == [] and page_quotes(None) == []
+
+
+async def test_quotations_are_looked_up_in_the_pdf_and_a_wrong_page_is_sent_back_once(tmp_path):
+    """Real-machine case: "5,600 bcm by 2050 (p.119)" stood on pages 151 and 161, and one figure was not in the PDF."""
+    from workbench.pdfdocs import PdfLibrary
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        pdf = make_pdf(['Overview. Electricity demand reaches 37 800 TWh by 2035.', 'Natural gas. Demand rises to\n5,600 bcm by 2050 in this scenario.',
+                        'Coal. Coal use starts to decline globally before 2030.'], title='Outlook (test)')
+        (work / 'outlook.pdf').write_bytes(pdf)
+        run, pm = await start(engine, max_workers=0, task='outlook.pdf を読んで要約を summary.docx に保存して')
+        pm.pending.clear()
+        await engine.execute_tool(run, pm, 'pdf_read', {'path': str(work / 'outlook.pdf'), 'first_page': 1, 'last_page': 1})
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing', 'paragraphs': [
+            '電力需要: 「Electricity demand reaches 37 800 TWh by 2035」（p.1）',
+            '天然ガス: 「5,600 bcm by 2050」（p.3）',                       # stands on page 2, across a line break
+            'STEPS: 「demand rises by about 55 EJ」（p.2）']})              # not in the PDF
+        refused = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert refused['ok'] is False and refused['code'] == 'quotations_review'
+        assert '- p. 3 「5,600 bcm by 2050」 → PDF では p. 2' in refused['error']
+        assert '- p. 2 「demand rises by about 55 EJ」 → PDF の本文に見つかりません' in refused['error']
+        assert 'Electricity demand' not in refused['error'] and 'write ページ未確認' in refused['error']
+        # Said once. What is still wrong when the work ends stands in the result, for the human.
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert 'ページ番号つきの引用 3 件' in done['summary'] and '一致 1 件、不一致 2 件' in done['summary']
+        assert 'p. 3 「5,600 bcm by 2050」 → PDF では p. 2' in done['summary']
+        # Corrected and saved again: nothing is left to say.
+        sha = (await engine.execute_tool(run, pm, 'file_hash', {'path': str(work / 'summary.docx')}))['sha256']
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': sha, 'paragraphs': [
+            '電力需要: 「Electricity demand reaches 37 800 TWh by 2035」（p.1）', '天然ガス: 「5,600 bcm by 2050」（p.2）',
+            'STEPS の増加幅はページ未確認。']})
+        await engine._quotes_verify(run)
+        assert [row['status'] for row in run['_quote_results']] == ['ok', 'ok'] and '不一致 0 件' in engine._quotes_footer(run)
+    finally:
+        await engine.close()
+
+
+async def test_the_saved_pdf_is_the_one_that_was_read_and_it_is_saved_once(tmp_path):
+    """Real-machine case: the report quoted one copy of a document; an older copy was saved, twice, under two names;
+    and the saved file, read by its path, was reported as "not downloaded in this work"."""
+    from workbench.pdfdocs import PdfLibrary
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0, task='報告書の PDF を読んで要約し、PDF も保存して')
+        pm.pending.clear()
+        newer = make_pdf(['Outlook 2025, edition of March.', 'Demand rises.'], title='Outlook (newer)')
+        older = make_pdf(['Outlook 2025, edition of November.', 'Demand rises.'], title='Outlook (older)')
+        records = {}
+        for name, data in (('newer', newer), ('older', older)):
+            records[name] = engine.pdf_library.put(data, f'https://files.iea.org/{name}/WorldEnergyOutlook2025.pdf')
+        class Web:
+            pdf_ids = {record['pdf_id']: record for record in records.values()}
+        run['_web'] = Web()
+        read = await engine._pdf_read(run, pm, {'pdf_id': records['newer']['pdf_id'], 'first_page': 1})
+        assert read['pages'] == 2
+        # The other copy: refused once, with the id of the one that was read.
+        with pytest.raises(ValueError) as caught:
+            await engine._pdf_save(run, pm, {'pdf_id': records['older']['pdf_id'], 'path': str(work / 'WorldEnergyOutlook2025.pdf')})
+        assert 'This is not the PDF this work read' in str(caught.value) and records['newer']['pdf_id'] in str(caught.value)
+        saved = await engine._pdf_save(run, pm, {'pdf_id': records['newer']['pdf_id'], 'path': str(work / 'WorldEnergyOutlook2025.pdf')})
+        assert (work / 'WorldEnergyOutlook2025.pdf').read_bytes() == newer and saved['operation'] == 'created'
+        # The same file under a second name: not saved again.
+        with pytest.raises(ValueError, match='already saved in this work as .*WorldEnergyOutlook2025.pdf'):
+            await engine._pdf_save(run, pm, {'pdf_id': records['newer']['pdf_id'], 'path': str(work / 'WorldEnergyOutlook2025_latest.pdf')})
+        assert not (work / 'WorldEnergyOutlook2025_latest.pdf').exists()
+        # Asked for a second time, the other copy is saved: the choice is the coordinator's.
+        await engine._pdf_save(run, pm, {'pdf_id': records['older']['pdf_id'], 'path': str(work / 'older.pdf')})
+        # Read by its path, the saved file is what it is: the PDF downloaded in this work.
+        by_path = await engine._pdf_from_file(run, {'path': str(work / 'WorldEnergyOutlook2025.pdf'), 'first_page': 2})
+        assert 'the PDF this work downloaded from https://files.iea.org/newer/WorldEnergyOutlook2025.pdf' in by_path['origin']
+        assert 'was not downloaded' not in by_path['origin']
+        assert run['_pdf_sources'] == {'https://files.iea.org/newer/WorldEnergyOutlook2025.pdf': 'downloaded'}
+        # A file the work did not download stays what it was.
+        (work / 'own.pdf').write_bytes(make_pdf(['A file of the human.'], title='Own'))
+        own = await engine._pdf_from_file(run, {'path': str(work / 'own.pdf'), 'first_page': 1})
+        assert 'it was not downloaded in this work' in own['origin']
     finally:
         await engine.close()

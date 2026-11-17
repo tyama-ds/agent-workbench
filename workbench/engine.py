@@ -1109,7 +1109,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         while log:
             row = log.pop(0)
             outcome = {'success': '成功', 'refused': '拒否'}.get(row['outcome'], '失敗')
-            text = f"ブラウザで試行 → {outcome}（{self.redact(row['detail'])[:200]}）: {self.redact(row['url'])[:200]}"
+            text = f"ブラウザで試行 → {outcome}（{self.redact(row['detail'])[:600]}）: {self.redact(row['url'])[:200]}"
             self.log(agent, 'notice', text)
             self.event(run['id'], agent.id, 'browser_fetch', f'{agent.name}: {text}')
 
@@ -2613,6 +2613,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                             self.log(agent, 'notice', PLAN_NUDGE)
                             self._append_context(agent, {'role': 'user', 'content': PLAN_NUDGE}, human=False)
                             continue
+                        if agent.parent_id is None and not agent.pending:
+                            await self._quotes_verify(run)
                         completion_notice = (None if agent.pending or run['model_calls'] + 1 >= limits['max_model_calls']
                                              else self._completion_notice(run, agent))
                         if completion_notice:
@@ -2866,7 +2868,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 if terminal_response:
                     if agent.parent_id is None:
                         terminal_response += (self._outputs_footer(run) + self._tests_footer(run)
-                                              + self._source_footer(run) + self._citations_footer(run) + self._pdf_footer(run))
+                                              + self._source_footer(run) + self._citations_footer(run)
+                                              + self._quotes_footer(run) + self._pdf_footer(run))
                     self.record_result(agent, 'assistant_response', terminal_response, revision=turn_revision)
                 if agent.parent_id and not ordered_report_sent:
                     parent = self.agents[agent.parent_id]
@@ -3398,6 +3401,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 if any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
                         for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
                     raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
+                if agent.parent_id is None:
+                    await self._quotes_verify(run)  # the quotations of the saved files, looked up in the PDF
                 completion_notice = self._completion_notice(run, agent)
                 if completion_notice:
                     return {'ok': False, 'code': completion_notice[0], 'error': completion_notice[1]}
@@ -3405,7 +3410,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 summary += self._turn_footer(run, agent)
                 if agent.parent_id is None:
                     summary += (self._outputs_footer(run) + self._tests_footer(run) + self._source_footer(run)
-                                + self._citations_footer(run) + self._pdf_footer(run))
+                                + self._citations_footer(run) + self._quotes_footer(run) + self._pdf_footer(run))
                 self.log(agent, 'result', summary)
                 self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
                 agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)
@@ -3464,6 +3469,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         if name.startswith('pptx_'):
             run['_slides_touched'] = True
         self._source_check(run, agent, name, args)
+        if name in WRITE_TOOLS:
+            self._quotes_note(run, name, args)
         if self._approval_needed(run, name, args):
             await self._await_approval(run, agent, name, args)
         if name in READ_ONLY_FILE_TOOLS and not self._formation_reviewer(run, agent):

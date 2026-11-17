@@ -53,6 +53,55 @@ class _Workspace:
 
 
 _RETAINED_SECONDS = 6 * 3600
+_DIAGNOSTICS, _DIAGNOSTICS_KEPT = 'awb-browser-diagnostics', 10
+_CREDENTIALS = re.compile(r'(://)[^/@\s:]+:[^/@\s]+@')
+
+
+def _failure(workspace, result):
+    """Why a browser job failed, in one line, and where its records are kept.
+
+    Real-machine case: the report was "(Session info: MicrosoftEdge=157…)": the last line of the error, with
+    the kind of error and its message cut away, and nothing left to look at. The worker's own record, its
+    error output and the driver's log are copied out of the private folder (which is deleted) into a folder
+    of their own under the temporary directory; the ten newest are kept.
+    """
+    stderr = (result.get('stderr') or '').strip()
+    record = {}
+    # Read like the result file: through the path checks, since the browser could write into this folder.
+    local = PathHarness([str(workspace)], [], max_file_bytes=64 * 1024 * 1024)
+    try:
+        loaded = json.loads(local.read_bytes(str(workspace / 'error.json')))
+        if isinstance(loaded, dict):
+            record = {key: str(loaded.get(key, ''))[:8000] for key in ('type', 'step', 'summary', 'message', 'traceback')}
+    except (OSError, ValueError):
+        pass
+    first = next((line.strip() for line in stderr.splitlines() if line.strip()), '')
+    if record.get('type'):
+        summary = f"{record['type']} at step \"{record['step']}\": {record['summary'] or 'no message'}"
+    else:
+        summary = first or str(result['termination_reason'] or 'the browser worker failed')
+    if result['termination_reason']:
+        summary += f" (stopped: {result['termination_reason']})"
+    summary = _CREDENTIALS.sub(r'\1', summary)[:400]
+    try:
+        root = Path(tempfile.gettempdir()) / _DIAGNOSTICS
+        root.mkdir(exist_ok=True)
+        kept = root / (time.strftime('%Y%m%d-%H%M%S') + f'-{os.getpid()}-{threading.get_ident() % 100000}')
+        kept.mkdir()
+        lines = [summary, '', f"exit code: {result['exit_code']}", f"stopped: {result['termination_reason'] or '-'}",
+                 '', '--- error output of the worker ---', stderr[-8000:],
+                 '', '--- the worker\'s record ---', record.get('message', ''), '', record.get('traceback', '')]
+        (kept / 'error.txt').write_text(_CREDENTIALS.sub(r'\1', '\n'.join(lines)), encoding='utf-8')
+        try:
+            text = local.read_bytes(str(workspace / 'driver.log'))[-512 * 1024:].decode('utf-8', 'replace')
+            (kept / 'driver.log').write_text(_CREDENTIALS.sub(r'\1', text), encoding='utf-8')
+        except (OSError, ValueError):
+            pass  # the driver did not get as far as writing a log
+        for old in sorted((item for item in root.iterdir() if item.is_dir()), key=lambda item: item.name)[:-_DIAGNOSTICS_KEPT]:
+            shutil.rmtree(old, ignore_errors=True)
+        return f'{summary}; records kept in {kept}'
+    except OSError:
+        return summary
 
 
 def _sweep_retained(now=None):
@@ -397,8 +446,7 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
             if cancel.is_set():
                 raise HarnessError('The browser try was cancelled')
             if result['exit_code'] != 0 or result['termination_reason']:
-                detail = (result.get('stderr') or '').strip().splitlines()[-1:] or [str(result['termination_reason'] or 'the browser worker failed')]
-                raise HarnessError('The browser could not be started or did not finish: ' + detail[0][:300])
+                raise HarnessError('The browser could not be started or did not finish: ' + _failure(workspace, result))
             local = PathHarness([str(workspace)], [], max_file_bytes=max(max_download_bytes, 32 * 1024 * 1024))
             try:
                 page = json.loads(local.read_bytes(str(workspace / 'result.json')))

@@ -912,6 +912,20 @@ the human turned it on (0.1.1.dev61; off by default).
 - `WebTools._copy_seen` keeps what servers stated about addresses of one
   file name and returns them newest first.
 
+## Quotations and the saved copy (0.1.1.dev80)
+
+- `verification.page_quotes` reads (page, quotation) pairs from a write's
+  arguments; `_quotes_note` keeps them per file; `_quotes_verify` (awaited
+  before the completion notice) asks `PdfLibrary.locate` where each
+  quotation stands; `_quotes_gate` and `_quotes_footer` say what does not
+  match.
+- `run['_pdf_read_ids']` and `run['_pdf_read_paths']` name the PDFs whose
+  pages were read; `_pdf_save` goes by them, and `run['_pdf_saved']` keeps
+  what was saved by content.
+- `selenium_worker.failure_record` and `_STEP` describe a failed job;
+  `selenium_runner._failure` turns that into one line and copies the
+  records out of the private folder.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),
