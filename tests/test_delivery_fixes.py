@@ -361,3 +361,31 @@ async def test_a_worker_that_answers_in_prose_is_reminded_and_the_coordinator_ge
         assert not any(row['kind'] == 'stall_notice' for row in engine.events)
     finally:
         await asyncio.wait_for(engine.close(), 20)
+
+
+async def test_a_missing_pdf_is_sent_back_once_more_with_the_tool_that_saves_it(tmp_path):
+    """Real-machine case: report, slides and the downloaded PDF were asked for. Document and slides were saved, the
+    PDF was not, pdf_save was never called, and the run ended incomplete without the coordinator being told."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='要約を report.docx に保存し、ダウンロードした PDF も WEO2025.pdf として同じフォルダーに保存して',
+                              max_workers=0)
+        pm.pending.clear()
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '完了しました。'})
+        assert first['code'] == 'outputs_missing' and 'report.docx (save with docx_write)' in first['error']
+        assert 'WEO2025.pdf (save with pdf_save)' in first['error'] and 'pdf_id from the web_fetch result' in first['error']
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'report.docx'), 'expected_sha256': 'missing',
+                                                           'paragraphs': ['要約']})
+        # What is still missing is said once more, for that file alone.
+        second = await engine.execute_tool(run, pm, 'finish_work', {'summary': '完了しました。'})
+        assert second['code'] == 'outputs_missing' and 'report.docx' not in second['error']
+        assert 'WEO2025.pdf (save with pdf_save)' in second['error'] and 'docx_write' not in second['error']
+        # Said for this set; a third completion is let through and reported as what it is.
+        third = await engine.execute_tool(run, pm, 'finish_work', {'summary': 'PDF は保存できませんでした。'})
+        assert 'WEO2025.pdf' in third['summary'] and '成果物は作られていません' in third['summary']
+        pm.status = 'done'
+        engine._run_status(run)
+        assert run['status'] == 'incomplete' and run['output_check']['missing'] == ['WEO2025.pdf']
+    finally:
+        await engine.close()

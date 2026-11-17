@@ -549,6 +549,8 @@ class WebTools:
         # human allowed it for this work (the engine then supplies the opener). What was tried, and how it ended.
         self._browser_fetch, self._browser_tried, self._browser_refused_hosts = None, {}, set()
         self._browser_unavailable, self.browser_log = "", []
+        # What servers stated about files of one name at several addresses: name -> {url: (date, text, bytes)}.
+        self._copies = {}
         # PDF links of a page that a browser window read -> that page; and the links opened from their page.
         self._browser_from, self._browser_followed = {}, set()
         # PDFs this run downloaded (pdf_id -> its record); the library that keeps them is the application's.
@@ -735,8 +737,17 @@ class WebTools:
                     result["headers_only_note"] = (f"The site refused the question about the file's size and date (HTTP {refused.status}), "
                                                    "so the address itself was fetched instead; this is its content.")
                     return result
-                return {"url": final_url, "headers_only": True, "content_type": _mime(content_type), **facts, "untrusted": True,
-                        "note": "Only what the server states: the size (bytes) and date (last_modified) of the file. Nothing was downloaded."}
+                result = {"url": final_url, "headers_only": True, "content_type": _mime(content_type), **facts, "untrusted": True,
+                          "note": "Only what the server states: the size (bytes) and date (last_modified) of the file. Nothing was downloaded."}
+                copies = self._copy_seen(args["url"], facts)
+                if copies:
+                    # The comparison is the application's, not the model's: sorted by the date the servers state.
+                    result["same_name_copies"] = copies
+                    result["newest_copy"] = copies[0]["url"]
+                    result["copies_note"] = (f"{len(copies)} addresses with this file name were compared in this work, newest first by "
+                                             "last_modified. Fetch newest_copy (not the first one found), and write this list and the "
+                                             "choice in the report. Check any further candidate with headers_only before you choose.")
+                return result
             try:
                 data, content_type, final_url = await (self._request(args["url"], pdf=(self._pdf_bytes, PDF_SECONDS), facts=facts)
                                                        if wants_pdf else self._request(args["url"]))
@@ -750,6 +761,14 @@ class WebTools:
                 result = await self._pdf_fetched(data, final_url)
                 if facts.get("last_modified"):
                     result["last_modified"] = facts["last_modified"]  # the date the server gives the file
+                copies = self._copy_seen(args["url"], facts)
+                if copies and copies[0]["url"] != args["url"]:
+                    # Real-machine case: of several copies of one report the coordinator took one from November
+                    # although it had seen one from March of the next year.
+                    result["newer_copy"] = copies[0]
+                    result["newer_copy_note"] = ("Another address with the same file name that was checked in this work is newer by "
+                                                 "last_modified. Fetch and use newer_copy unless the request names this edition; "
+                                                 "say in the report which copy was used and why.")
                 return result
             if mime not in {"text/plain", "text/html", "application/xhtml+xml", "application/json", "text/markdown", "text/csv"}:
                 # Echo the remote type only when it is a short plain MIME token.
@@ -801,6 +820,33 @@ class WebTools:
             result["pdf_links_note"] = ("PDF files this page links to" + (f" ({left_out} more not listed)" if left_out else "")
                                         + ". Fetch one with web_fetch, then read it with pdf_read.")
         return result
+
+    def _copy_seen(self, url: str, facts: dict) -> list[dict] | None:
+        """Remember the date a server states for this address; -> the addresses with the same file name, newest first.
+
+        None while there is nothing to compare (one address, or no date).
+        """
+        from email.utils import parsedate_to_datetime
+        from datetime import timezone
+        name = urllib.parse.unquote(_url(url).path).rsplit("/", 1)[-1].casefold()
+        stated = facts.get("last_modified")
+        if not name or not stated:
+            return None
+        try:
+            when = parsedate_to_datetime(stated)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if name not in self._copies and len(self._copies) >= 50:
+            return None
+        rows = self._copies.setdefault(name, {})
+        if url in rows or len(rows) < 20:
+            rows[url] = (when, stated, facts.get("bytes"))
+        if len(rows) < 2:
+            return None
+        return [{"url": address, "last_modified": text, **({"bytes": size} if size is not None else {})}
+                for address, (_, text, size) in sorted(rows.items(), key=lambda item: item[1][0], reverse=True)]
 
     # --- one try in a browser window, when the human allowed it for this work ------------------
     BROWSER_TRIES = 5  # windows one piece of work may open

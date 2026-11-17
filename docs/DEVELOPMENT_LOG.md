@@ -4,7 +4,23 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev77 — The report behind a read page; a worker without a report; 520 sent again (2026-11-17)
+## 0.1.1.dev78 — The newest of several copies is the application's to say; a missing PDF is named again (2026-11-17)
+
+The energy outlook run at dev76 ended `incomplete`, as it should: the
+downloaded PDF was to be saved in the folder and was not. But `pdf_save`
+was never called, and of five copies of the report the coordinator took one
+dated November although it had looked at one from March of the next year.
+
+- `web_fetch` `headers_only` returns the copies of one file name compared
+  so far, newest first, and names the one to fetch; a download of an older
+  copy says that a newer one was seen. The policy gives the choice as
+  numbered steps.
+- A completion without a requested file is sent back once for each set of
+  missing files: after the document and slides were saved, the PDF alone is
+  named once more, with `pdf_save` and the ids downloaded. The policy says
+  to use `pdf_save` when the request asks to keep the PDF.
+
+The report behind a read page; a worker without a report; 520 sent again (2026-11-17)
 
 - One `HTTP 520` from the provider's front end ended an agent's turn, and the
   run then waited for a person for seven minutes without a question. 520-524

@@ -72,7 +72,7 @@ _LINK = re.compile(r'https?://\S+', re.I)
 _MAX_OUTPUTS = 10
 
 
-_WRITER_TOOLS = {'.docx': 'docx_write', '.xlsx': 'xlsx_write', '.pptx': 'pptx_write'}
+_WRITER_TOOLS = {'.docx': 'docx_write', '.xlsx': 'xlsx_write', '.pptx': 'pptx_write', '.pdf': 'pdf_save'}
 
 
 def _writer_tool(name):
@@ -454,20 +454,33 @@ class VerificationMixin:
             run['output_check'] = self._redact_tree({'expected': expected, 'missing': self._outputs_missing(run)})
 
     def _outputs_gate(self, run, agent):
-        """Once per request: text sending the root PM back when a named deliverable was never saved."""
-        if agent.parent_id is not None or run.get('_outputs_gated') or not run.get('_expected_outputs'):
+        """Text sending the root PM back when a named deliverable was never saved: once for each set of missing files.
+
+        Real-machine case: the report, the slides and "the downloaded PDF" were asked for. The coordinator was sent
+        back once, saved the first two, and finished; nothing told it that the PDF was still missing or that
+        pdf_save is the tool for it. A smaller set of missing files is said once more (three times at most).
+        """
+        if agent.parent_id is not None or not run.get('_expected_outputs'):
             return None
         if not run['_harness'].write_roots or self._others_active(run, agent):
             return None
         missing = self._outputs_missing(run)
-        if not missing:
+        told = run.get('_outputs_gated')
+        if not missing or told is True or (isinstance(told, list) and (told[0] >= 3 or told[1] == sorted(missing))):
             return None
-        run['_outputs_gated'] = True
+        run['_outputs_gated'] = [(told[0] if isinstance(told, list) else 0) + 1, sorted(missing)]
+        pdfs = [name for name in missing if _writer_tool(name) == 'pdf_save']
+        others = [name for name in missing if name not in pdfs]
+        ids = list(getattr(run.get('_web'), 'pdf_ids', None) or {})[-3:]
         return ('[application notice] The human asked for these files, but the application has no record that they were '
                 'saved in this work and they do not exist: '
                 + ', '.join(f'{self.redact(name)} (save with {_writer_tool(name)})' for name in missing) + '. '
-                'Use that tool directly with the file name as path and expected_sha256 "missing"; do not build Office files '
-                'through python_execute. Create and save them now, using the results you already have; where a value could '
+                + ('For docx_write, xlsx_write, pptx_write and write_text use the tool directly with the file name as path and '
+                   'expected_sha256 "missing"; do not build Office files through python_execute. ' if others else '')
+                + (('A PDF this work downloaded is saved with pdf_save: pdf_id from the web_fetch result'
+                    + (' (downloaded in this work: ' + ', '.join(ids) + ')' if ids else '')
+                    + ' and the file name as path. If no PDF was downloaded, say so in your result. ') if pdfs else '')
+                + 'Create and save them now, using the results you already have; where a value could '
                 'not be confirmed, write 未確認 in its place rather than leaving the file out. Finish only after the files '
                 'are saved. If a file truly cannot be produced, say so plainly in your result instead of reporting completion.')
 

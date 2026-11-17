@@ -319,9 +319,20 @@ async def test_size_and_date_alone_tell_several_copies_of_a_report_apart(tmp_pat
         assert all(row['headers_only'] is True and row['content_type'] == 'application/pdf' and 'Nothing was downloaded' in row['note']
                    for row in facts)
         assert [method for method, _ in asked] == ['HEAD', 'HEAD'] and not tools.pdf_ids and not (tmp_path / 'pdf-cache').exists()
+        # The comparison is made by the application: once two addresses of one file name were asked about,
+        # the answer lists them newest first and names the one to fetch.
+        newest_url, older_url = (base + path for path in copies)
+        assert 'same_name_copies' not in facts[0]
+        assert facts[1]['newest_copy'] == newest_url and 'not the first one found' in facts[1]['copies_note']
+        assert facts[1]['same_name_copies'] == [
+            {'url': newest_url, 'last_modified': 'Fri, 27 Nov 2025 09:12:00 GMT', 'bytes': len(REPORT)},
+            {'url': older_url, 'last_modified': 'Wed, 12 Nov 2025 08:00:00 GMT', 'bytes': len(REPORT) + 4}]
         # The one chosen is then downloaded, and its date stays with it.
         newest = await tools.execute('web_fetch', {'url': base + '/assets/1438d3a5/WorldEnergyOutlook2025.pdf'})
-        assert newest['pages'] == 6 and newest['last_modified'] == 'Fri, 27 Nov 2025 09:12:00 GMT'
+        assert newest['pages'] == 6 and newest['last_modified'] == 'Fri, 27 Nov 2025 09:12:00 GMT' and 'newer_copy' not in newest
+        # Real-machine case: the older of the copies it had looked at was taken. The download then says so.
+        older = await tools.execute('web_fetch', {'url': older_url})
+        assert older['newer_copy']['url'] == newest_url and 'Fetch and use newer_copy' in older['newer_copy_note']
         with pytest.raises(WebToolError, match='HTTP 404'):
             await tools.execute('web_fetch', {'url': base + '/assets/none.pdf', 'headers_only': True})
         with pytest.raises(WebToolError, match='headers_only must be true or false'):
@@ -357,7 +368,11 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         assert 'official distribution site (for the IMF, the IMF eLibrary)' in policy and 'pdf_links' in policy
         # A refused report page: the publisher's own file is searched for, the newest of several copies chosen and said.
         assert 'filetype:pdf' in policy and "site:<the publisher's domain>" in policy and 'its content network or file storage counts' in policy
-        assert 'web_fetch headers_only' in policy and 'newest by last_modified and size' in policy
+        # The choice among copies is a procedure, and the application does the sorting.
+        for step in ('(1) web_fetch every candidate with headers_only', '(2) read same_name_copies', '(3) fetch newest_copy',
+                     'not the first one found', '(4) write the candidates with their dates and sizes'):
+            assert step in policy, step
+        assert 'save it with pdf_save (its pdf_id and a path ending in .pdf) before you finish' in policy
         assert 'only when no official one can be had, and say so' in policy
         # Real-machine cases: April and a July update were taken for "this year's latest" although October was out;
         # the browser window was spent on a report's summary, chapter and tables one after another.
