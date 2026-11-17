@@ -33,8 +33,10 @@ class Window:
 
     def __init__(self, downloads, *, arrives=None, html=PAGE, status=200, content_type='text/html', closes=False, never=False,
                  title='World Economic Outlook Reports', passes_after=None, clock=None, shown=b'', links=(), files=None,
-                 unreadable=False):
+                 unreadable=False, busy_until=None, busy_error=None):
         self.unreadable = unreadable  # the window stops answering when its content is asked for
+        # The page does not answer questions about itself until this many seconds have passed (it is busy loading).
+        self.busy_until, self.busy_error = busy_until, busy_error or TimeoutError('script timeout')
         self.links, self.files = [list(row) for row in links], files or {}  # the page's links; address -> PDF it shows
         self.downloads, self.arrives, self.html, self.status = downloads, arrives, html, status
         self.content_type, self.closes, self.never = content_type, closes, never
@@ -90,6 +92,8 @@ class Window:
         assert 'responseStatus' in script and 'click' not in script  # only reads how the page arrived
         if self.closes:
             raise RuntimeError('no such window')
+        if self.busy_until is not None and self.clock() < self.busy_until:
+            raise self.busy_error
         return [200 if self._passed() else self.status, self.content_type, 'complete']
 
     @property
@@ -230,6 +234,24 @@ def test_a_read_page_is_followed_by_its_full_report_in_the_same_window(tmp_path)
                          ({'links': links, 'status': 403}, {'follow': True})):
         other, window, _ = run_fetch(tmp_path, options, url=page, **job)
         assert other['linked'] == {} and [call for call in window.calls if call[0] == 'get'] == [('get', page)]
+
+
+def test_a_window_that_does_not_answer_for_a_moment_is_not_a_closed_window(tmp_path):
+    """Real-machine case: "the window was closed before anything arrived" for an issue's page, right after a window had
+    read the list of issues. Every error while asking the window how the page arrived was taken for a closed window."""
+    # A page that is busy for a while and then answers: it is read.
+    result, window, clock = run_fetch(tmp_path, {'busy_until': 8})
+    assert result['kind'] == 'page' and result['html'] == PAGE and 8 <= clock.now < 12 and window.calls[-1] == ('quit',)
+    # A page that never answers: the wait ends, and the last thing the window said is kept. It was not "closed".
+    result, window, clock = run_fetch(tmp_path, {'busy_until': 10 ** 6}, wait_seconds=20)
+    assert result['kind'] == 'timeout' and result['title'] == 'The window did not answer: TimeoutError: script timeout'
+    assert 20 <= clock.now < 23
+    # A window that is really gone says so, with what the browser reported.
+    result, _, clock = run_fetch(tmp_path, {'closes': True})
+    assert result['kind'] == 'closed' and result['title'] == 'The window was closed: RuntimeError: no such window' and clock.now < 2
+    assert worker.window_gone(RuntimeError('Message: invalid session id\n  (Session info: MicrosoftEdge=157)'))
+    assert not worker.window_gone(RuntimeError('Message: javascript error: Execution context was destroyed'))
+    assert worker.error_words(RuntimeError('Message: \n  tab crashed\n  (Session info: MicrosoftEdge=157)')) == 'RuntimeError: tab crashed'
 
 
 def test_a_failed_browser_job_says_what_failed_and_keeps_its_records(tmp_path, monkeypatch):
@@ -544,14 +566,17 @@ async def test_a_refusal_or_a_check_in_the_window_is_final_and_the_human_is_aske
         check = f'http://www.check.example:{port}'
         tmp_path = tmp_path / 'second'
         tools, opened = tools_with(tmp_path, {'/doc.pdf': {'title': 'Just a moment...', 'html': '<html>Verify you are human</html>'},
-                                              '/gone.pdf': {'kind': 'closed'}, '/slow.pdf': {'kind': 'timeout'},
+                                              '/gone.pdf': {'kind': 'closed'},
+                                              '/slow.pdf': {'kind': 'timeout', 'title': 'The window did not answer: TimeoutException: script timeout',
+                                                            'records': 'C:\\Temp\\awb-browser-diagnostics\\20261117-2'},
                                               '/big.pdf': {'kind': 'too_large', 'bytes': 80 * 1024 * 1024},
                                               '/shown.pdf': {'content_type': 'application/pdf', 'html': '<html><embed></html>'}})
         with pytest.raises(BrowserCheck, match='the site showed a check meant for a person') as caught:
             await tools.execute('web_fetch', {'url': check + '/doc.pdf'})
         assert caught.value.url == check + '/doc.pdf' and 'does not solve it' in str(caught.value)
         other = f'http://files.example:{port}'
-        for path, problem in (('/gone.pdf', 'the window was closed before anything arrived'), ('/slow.pdf', 'nothing arrived in time'),
+        for path, problem in (('/gone.pdf', r'the window was closed before anything arrived\. Another address of this site can still be tried'),
+                              ('/slow.pdf', r'nothing arrived in time \(The window did not answer: TimeoutException: script timeout\)'),
                               ('/big.pdf', r'larger than the limit in the settings \(80\.0 MB; limit 50\.0 MB\)'),
                               ('/shown.pdf', r'showed the PDF but did not save it \(the PDF was shown in the window but not saved\)')):
             with pytest.raises(WebToolError, match=problem):

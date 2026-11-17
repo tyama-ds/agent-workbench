@@ -92,6 +92,17 @@ def asks_to_keep_pdf(text):
     return isinstance(text, str) and _PDF_KEEP.search(_LINK.sub(' ', text)) is not None
 
 
+_TABLE_ASKED = re.compile(
+    r'(?<![発代公図年別])表(?:に(?:する|して|し、|まとめ|整理)|で(?:示|まとめ|整理|比較)|形式|として|を(?:作|入れ|付け|含め|載せ|掲載))'
+    r'|一覧表|比較表|対照表'
+    r'|\b(?:in|as|into|with|include|including)\s+(?:an?\s+|the\s+)?(?:summary\s+|comparison\s+)?tables?\b|\btabulate', re.I)
+
+
+def asks_for_table(text):
+    """The request asks for figures in a table ("主要な数値は表にする", "in a table")."""
+    return isinstance(text, str) and _TABLE_ASKED.search(_LINK.sub(' ', text)) is not None
+
+
 def _writer_tool(name):
     """The file tool that creates a file of this kind."""
     if name == PDF_COPY:
@@ -164,6 +175,7 @@ def output_names(text):
 _PAGE_REF = re.compile(r'(?<![A-Za-z0-9])pp?\.?\s*(\d{1,4})(?:\s*[-–—〜~]\s*(\d{1,4}))?(?![\d,.]\d)', re.I)
 _CJK = re.compile(r'[\u3040-\u30ff\u3400-\u9fff]')
 UNCONFIRMED = '（ページ未確認）'
+NOT_IN_PDF = '（PDF に原文なし・数値未確認）'
 
 
 def _page_of(match):
@@ -440,6 +452,54 @@ class VerificationMixin:
                     return rows
         return rows
 
+    # --- "…in a table": does the document have one? ------------------------------
+    # Real-machine case: "the main figures in a table" was asked for; the document had every figure in its
+    # paragraphs and no table, and the run was done.
+
+    async def _tables_check(self, run):
+        """Which Word documents saved in this work have no table, where the request asks for one."""
+        if not run.get('_tables_wanted'):
+            return
+        missing = []
+        for name, path in list((run.get('_saved_paths') or {}).items()):
+            if not name.endswith('.docx'):
+                continue
+            try:
+                data = await asyncio.to_thread(run['_harness'].read_bytes, path)
+                count = await asyncio.to_thread(self._table_count, data)
+            except Exception:  # noqa: BLE001 - a file that cannot be looked at is not judged
+                continue
+            if count == 0:
+                missing.append(path)
+        run['_tables_missing'] = missing
+
+    @staticmethod
+    def _table_count(data):
+        import io
+        from docx import Document
+        return len(Document(io.BytesIO(data)).tables)
+
+    def _tables_gate(self, run, agent):
+        """Once per request: the request asks for a table and the saved document has none."""
+        if agent.parent_id is not None or run.get('_tables_gated') or self._others_active(run, agent):
+            return None
+        missing = run.get('_tables_missing') or []
+        if not missing:
+            return None
+        run['_tables_gated'] = True
+        return ('[application notice] The request asks for figures in a table, but these documents have no table: '
+                + ', '.join(self.redact(path) for path in missing[:5]) + '. Put the main figures into a real table now: '
+                'docx_edit with append_table (rows of cells; the first row is the header), or docx_write with tables. Do not '
+                'write the table as text in a paragraph. Then finish. If the request does not mean this document, say so in '
+                'your result.')
+
+    def _tables_footer(self, run):
+        missing = run.get('_tables_missing') or []
+        if not missing:
+            return ''
+        return ('\n\n【アプリの確認】依頼文は数値を表にするよう求めていますが、次の文書に表はありません: '
+                + '、'.join(self.redact(path) for path in missing[:5]) + '。')
+
     # --- "p. 119 「…」": is the quotation on that page? ---------------------------
     # Real-machine case: of nine cited passages seven stood on the page given; "5,600 bcm by 2050 (p.119)" stood
     # on pages 151 and 161, and one figure was not in the PDF at all. The application has the PDF and the
@@ -529,7 +589,7 @@ class VerificationMixin:
                 + '\nDo exactly that for every line: where a page is given after "PDF では", write that page in place of the '
                   'old one; where the words are not in the PDF, they are not a quotation, and a figure that cannot be found '
                   'is not kept. Save the corrected files, then finish. Whatever still does not match after that, the '
-                  'application marks in the file as ' + UNCONFIRMED + '.')
+                  'application marks in the file as ' + UNCONFIRMED + ' or ' + NOT_IN_PDF + '.')
 
     def _quotes_footer(self, run):
         rows = run.get('_quote_results') or []
@@ -540,96 +600,182 @@ class VerificationMixin:
         text = (f'\n\n【アプリの確認】ページ番号つきの引用 {len(rows)} 件を、この作業で読んだ PDF の本文と照合しました: '
                 f'一致 {sum(row["status"] == "ok" for row in rows)} 件、不一致 {len(wrong)} 件'
                 + (f'、照合できず {unknown} 件' if unknown else '') + '。')
+        corrected = run.get('_quotes_corrected') or []
+        if corrected:
+            # What the application changed in the files, said in full: the page it found, in place of the page given.
+            text += ('\nアプリがページ表記を訂正しました（引用が PDF の 1 ページだけにあったもの）:\n' + '\n'.join(
+                self.redact(f"- p.{self._page_text(row['from'])}→p.{row['to']} に訂正: 「{row['quote'][:90]}」"
+                            f"（{PureWindowsPath(row['path']).name}）") for row in corrected[:20]))
         if wrong:
             marked = run.get('_quotes_marked') or []
-            text += ('次の引用は、書かれたページにありません（ページ未確認として扱ってください）。'
-                     + (f'アプリが次のファイルの該当箇所に「{UNCONFIRMED}」を付けました: '
+            text += ('\n次の引用は、書かれたページにありません（ページ未確認として扱ってください）。'
+                     + (f'アプリが次のファイルの該当箇所に「{UNCONFIRMED}」または「{NOT_IN_PDF}」を付けました: '
                         + '、'.join(self.redact(path) for path in marked[:5]) + '。' if marked else '') + '\n'
                      + '\n'.join(self.redact(line) for line in self._quote_lines(wrong, 10)))
         return text
 
-    async def _quotes_mark(self, run, agent):
-        """After the one send-back: write （ページ未確認） behind the page of each quotation that still does not match.
+    async def _quotes_correct(self, run, agent):
+        """Write the right page where the PDF leaves no doubt: a quotation that stands on exactly one page.
 
-        The application has shown the right pages once. What the coordinator leaves wrong would otherwise go
-        out as a checked citation; the mark says in the document itself that the page was not confirmed.
-        Word documents and text files; other kinds are only listed in the result.
+        Real-machine case: "…105 mb/d in 2035 (p.153)" stood on p. 123 and "…peaks at 102 mb/d (p.123)" on p. 171;
+        the coordinator was shown both and changed neither. Which page a passage stands on is a fact the
+        application has: it writes it, and says so. A passage on several pages, or on none, is not decided here.
+        """
+        if agent.parent_id is not None:
+            return
+        fixes = {}
+        for row in run.get('_quote_results') or []:
+            if row['status'] == 'elsewhere' and len(row['pages']) == 1:
+                fixes.setdefault(row['path'], []).append((row['page'], row['quote'], row['pages'][0]))
+        done = await self._quotes_rewrite(run, agent, fixes, 'page_reference_fix')
+        if not done:
+            return
+        ledger = run.get('_page_quotes') or {}
+        for path, page, quote, new in done:
+            entry = ledger.get(path.casefold())
+            if entry:
+                entry['pairs'] = [(new, words) if (number, words) == (page, quote) else (number, words)
+                                  for number, words in entry['pairs']]
+            run.setdefault('_quotes_corrected', []).append({'path': path, 'from': page, 'to': new, 'quote': quote})
+        await self._quotes_verify(run)  # with the pages as they now stand in the files
+
+    async def _quotes_mark(self, run, agent):
+        """After the one send-back: mark in the file each quotation that still does not match.
+
+        Behind the page reference: （ページ未確認） where the words stand on several other pages, and
+        （PDF に原文なし・数値未確認） where they are not in the PDF at all, which also marks the sentence or the
+        row whose figure rests on them.
         """
         if agent.parent_id is not None or not run.get('_quotes_gated') or run.get('_quotes_marked') is not None:
             return
         wrong = {}
         for row in run.get('_quote_results') or []:
             if row['status'] in {'elsewhere', 'missing'}:
-                wrong.setdefault(row['path'], []).append((row['page'], row['quote']))
-        run['_quotes_marked'] = []
-        for path, pairs in wrong.items():
+                wrong.setdefault(row['path'], []).append(
+                    (row['page'], row['quote'], UNCONFIRMED if row['status'] == 'elsewhere' else NOT_IN_PDF))
+        done = await self._quotes_rewrite(run, agent, wrong, 'page_unconfirmed_mark')
+        run['_quotes_marked'] = list(dict.fromkeys(path for path, _, _, _ in done))
+
+    async def _quotes_rewrite(self, run, agent, changes, tool):
+        """Apply {path: [(page, quote, new page or mark)]} to Word documents, slides and text files. -> what was applied."""
+        applied = []
+        for path, items in changes.items():
             suffix = PureWindowsPath(path).suffix.lower()
-            if suffix not in {'.docx', '.md', '.txt'}:
+            if suffix not in {'.docx', '.pptx', '.md', '.txt'}:
                 continue
             try:
                 async with self.lock:
-                    result = await asyncio.to_thread(self._quotes_mark_file, run, path, pairs, suffix)
-            except Exception:  # noqa: BLE001 - a mark that cannot be written leaves the file as the coordinator saved it
+                    result, done = await asyncio.to_thread(self._quotes_rewrite_file, run, path, items, suffix)
+            except Exception:  # noqa: BLE001 - a change that cannot be written leaves the file as the coordinator saved it
                 continue
             if result:
-                self.record_receipt(agent, 'page_unconfirmed_mark', result)
-                run['_quotes_marked'].append(path)
+                self.record_receipt(agent, tool, result)
+                applied += [(path, page, quote, change) for page, quote, change in done]
+        return applied
 
     @staticmethod
-    def _quotes_mark_text(text, pairs):
-        """``text`` with the mark behind the page reference of each pair it holds, or None when nothing changed."""
+    def _quotes_rewrite_text(text, items, done):
+        """``text`` with each item's page reference rewritten or marked, or None when nothing changed."""
         from .pdfdocs import fold_quote
         folded, changed = fold_quote(text), False
-        for page, quote in pairs:
+        for item in items:
+            page, quote, change = item
             if fold_quote(quote) not in folded:
                 continue
             low = page[0] if isinstance(page, tuple) else page
             for match in _PAGE_REF.finditer(text):
-                if int(match.group(1)) == low and not text[match.end():].lstrip().startswith(UNCONFIRMED):
-                    text, changed = text[:match.end()] + UNCONFIRMED + text[match.end():], True
-                    break
+                if int(match.group(1)) != low:
+                    continue
+                if isinstance(change, int):
+                    text = text[:match.start(1)] + str(change) + text[match.end(2) if match.group(2) else match.end(1):]
+                elif text[match.end():].lstrip().startswith('（'):
+                    break  # already marked
+                else:
+                    text = text[:match.end()] + change + text[match.end():]
+                changed = True
+                if item not in done:
+                    done.append(item)
+                break
         return text if changed else None
 
-    def _quotes_mark_file(self, run, path, pairs, suffix):
-        harness = run['_harness']
+    def _quotes_rewrite_file(self, run, path, items, suffix):
+        from .pdfdocs import fold_quote
+        harness, done = run['_harness'], []
         data = harness.read_bytes(path)
         before = hashlib.sha256(data).hexdigest()
-        if suffix != '.docx':
-            lines, changed = data.decode('utf-8').split('\n'), False
+        if suffix in {'.md', '.txt'}:
+            lines = data.decode('utf-8').split('\n')
             for index, line in enumerate(lines):
-                marked = self._quotes_mark_text(line, pairs)
-                if marked is not None:
-                    lines[index], changed = marked, True
-            return harness.write_bytes(path, '\n'.join(lines).encode('utf-8'), before) if changed else None
+                rewritten = self._quotes_rewrite_text(line, items, done)
+                if rewritten is not None:
+                    lines[index] = rewritten
+            return (harness.write_bytes(path, '\n'.join(lines).encode('utf-8'), before) if done else None), done
         import io
-        from docx import Document
-        from .harness import _paragraph_text
-        document, changed = Document(io.BytesIO(data)), False
-        for paragraph in document.paragraphs:
-            marked = self._quotes_mark_text(paragraph.text, pairs)
-            if marked is not None:
-                _paragraph_text(paragraph, marked)
-                changed = True
-        for table in document.tables:
-            for row in table.rows:
-                cells = list(dict.fromkeys(row.cells))  # merged cells appear more than once
-                joined = ' | '.join(cell.text for cell in cells)
-                for page, quote in pairs:
-                    from .pdfdocs import fold_quote
-                    if fold_quote(quote) not in fold_quote(joined):
+
+        def paragraphs_and_rows(document):
+            """(paragraphs, rows of cells) of a Word document or of every slide."""
+            if suffix == '.docx':
+                return list(document.paragraphs), [list(dict.fromkeys(row.cells)) for table in document.tables for row in table.rows]
+            paragraphs, rows = [], []
+            for slide in document.slides:
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        paragraphs += list(shape.text_frame.paragraphs)
+                    elif shape.has_table:
+                        rows += [list(row.cells) for row in shape.table.rows]
+            return paragraphs, rows
+
+        def put(paragraph, text):
+            # The first run keeps its formatting and takes the text; the others are emptied.
+            if paragraph.runs:
+                paragraph.runs[0].text = text
+                for run_ in paragraph.runs[1:]:
+                    run_.text = ''
+            else:
+                paragraph.add_run().text = text
+
+        def first_paragraph(cell):
+            return (cell.paragraphs if suffix == '.docx' else cell.text_frame.paragraphs)[0]
+
+        if suffix == '.docx':
+            from docx import Document
+            document = Document(io.BytesIO(data))
+        else:
+            from pptx import Presentation
+            document = Presentation(io.BytesIO(data))
+        paragraphs, rows = paragraphs_and_rows(document)
+        for paragraph in paragraphs:
+            text = ''.join(run_.text for run_ in paragraph.runs) if paragraph.runs else paragraph.text
+            rewritten = self._quotes_rewrite_text(text, items, done)
+            if rewritten is not None:
+                put(paragraph, rewritten)
+        for cells in rows:
+            joined = fold_quote(' | '.join(cell.text for cell in cells))
+            for item in items:
+                page, quote, change = item
+                if fold_quote(quote) not in joined:
+                    continue
+                low = page[0] if isinstance(page, tuple) else page
+                for cell in cells:
+                    text = cell.text
+                    number = _PAGE_REF.search(text) or re.fullmatch(r'\s*(\d{1,4})(?:\s*[-–—〜~]\s*(\d{1,4}))?\s*', text)
+                    if not number or int(number.group(1)) != low:
                         continue
-                    low = page[0] if isinstance(page, tuple) else page
-                    for cell in cells:
-                        number = _PAGE_REF.search(cell.text) or re.fullmatch(r'\s*(\d{1,4})(?:\s*[-–—〜~]\s*(\d{1,4}))?\s*', cell.text)
-                        if number and int(number.group(1)) == low and UNCONFIRMED not in cell.text and cell.paragraphs:
-                            _paragraph_text(cell.paragraphs[0], cell.paragraphs[0].text + UNCONFIRMED)
-                            changed = True
-                            break
-        if not changed:
-            return None
+                    if isinstance(change, int):
+                        text = text[:number.start(1)] + str(change) + text[number.end(2) if number.group(2) else number.end(1):]
+                    elif '（' in text[number.end():]:
+                        break
+                    else:
+                        text = text.rstrip() + change
+                    put(first_paragraph(cell), text)
+                    if item not in done:
+                        done.append(item)
+                    break
+        if not done:
+            return None, done
         stream = io.BytesIO()
         document.save(stream)
-        return harness.write_bytes(path, stream.getvalue(), before)
+        return harness.write_bytes(path, stream.getvalue(), before), done
 
     @staticmethod
     def _was_saved(run, path):
@@ -704,6 +850,8 @@ class VerificationMixin:
                     continue
             expected[key], added = name, True
             run.setdefault('_output_before', {})[key] = {path: state for path, (_, state) in there.items()}
+        if asks_for_table(text):
+            run['_tables_wanted'], run['_tables_gated'] = True, False
         if (asks_to_keep_pdf(text) and PDF_COPY_KEY not in expected and len(expected) < _MAX_OUTPUTS
                 and not any(key.endswith('.pdf') for key in expected)):
             # Real-machine case: "…and save the downloaded PDF in the same folder", without a name. No PDF was
@@ -740,6 +888,7 @@ class VerificationMixin:
         """A successful save: remember the file's name, its content hash and who wrote it."""
         name = PureWindowsPath(str(path)).name.casefold()
         run.setdefault('_saved_names', set()).add(name)
+        run.setdefault('_saved_paths', {})[name] = str(path)
         if agent is not None and isinstance(sha256, str):
             record = run.setdefault('_output_writes', {}).setdefault(name, {'writers': {}})
             record['sha256'] = sha256
@@ -876,5 +1025,8 @@ class VerificationMixin:
         text = self._citations_gate(run, agent)
         if text:
             return 'sources_review', text
+        text = self._tables_gate(run, agent)
+        if text:
+            return 'table_missing', text
         text = self._quotes_gate(run, agent)
         return ('quotations_review', text) if text else None

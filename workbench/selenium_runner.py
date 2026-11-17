@@ -470,6 +470,12 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
                 if linked:
                     linked['url'] = validate_url(linked['url'])
                 page['data'] = saved(page['file']) if page['kind'] == 'download' else None
+                page['records'] = ''
+                if page['kind'] in {'closed', 'timeout'}:
+                    # Nothing came. What the window and the driver said is kept, like after a failed job.
+                    kept = _failure(workspace, {'exit_code': 0, 'termination_reason': '',
+                                                'stderr': f"{page['kind']}: {page['title'] or 'no reason given'}"})
+                    page['records'] = kept.split('; records kept in ', 1)[1] if '; records kept in ' in kept else ''
                 # The report that the page links to, which the same window opened next.
                 page['linked_data'] = saved(linked['file']) if linked and linked['kind'] == 'download' else None
             except (ValueError, TypeError, UnicodeError) as exc:

@@ -4,7 +4,31 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev82 — An id is not a hash; the issue after its list; a quotation is a passage (2026-11-17)
+## 0.1.1.dev83 — The page is written by the one who knows it; a busy window is not a closed one (2026-11-17)
+
+At dev82 the newest copy was fetched and saved, the marks were written
+(17 of them), and the coordinator, shown the right pages, changed none:
+"…105 mb/d in 2035 (p.153)" stood on p. 123, "…peaks at 102 mb/d (p.123)"
+on p. 171.
+
+- Which page a passage stands on is a fact the application has. Where a
+  quotation stands on exactly one page, the application writes that page
+  into the document, the slides or the text file, and reports
+  "p.153→p.123". Only a passage on several pages, or on none, is left to
+  the coordinator and then marked; one that is not in the PDF at all is
+  marked as such, in the sentence or row whose figure rests on it.
+- "The window was closed before anything arrived" for an issue's page,
+  right after a window had read the list. Every error while asking the
+  window how the page arrived had been taken for a closed window. A page
+  that is busy is now asked again until the wait ends; the reason is kept
+  either way, with the job's records. No records of that run existed to
+  look at: they were kept only for failed jobs.
+- After a failed page the refusal now says that the report's own PDF
+  address is still to be tried, and the policy says how to find it.
+- A document without the table the request asks for is sent back once.
+- Addresses in results lose their session values ("?t:state:client=…").
+
+An id is not a hash; the issue after its list; a quotation is a passage (2026-11-17)
 
 At dev81 the newest issue was found from the publisher's list, with its
 dates, and the energy report's three files were saved and reported as

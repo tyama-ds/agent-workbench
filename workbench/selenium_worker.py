@@ -269,6 +269,22 @@ _FULL_REPORT = re.compile(r'full[\s-]*(?:report|text|document|publication)|compl
                           r'報告書全体|全文|本文|報告書全文', re.I)
 
 
+_GONE = ('no such window', 'target window already closed', 'web view not found', 'invalid session id',
+         'not connected to devtools', 'chrome not reachable', 'session deleted', 'disconnected')
+
+
+def error_words(exc):
+    """The kind of an error and the first words of its message, on one line."""
+    first = next((line.strip() for line in str(exc).splitlines() if line.strip() and line.strip() != 'Message:'), '')
+    return f'{type(exc).__name__}: {first.removeprefix("Message:").strip()}'[:200]
+
+
+def window_gone(exc):
+    """The error says that the window or the browser is no longer there (not that it did not answer)."""
+    text = str(exc).lower()
+    return type(exc).__name__ in {'NoSuchWindowException', 'InvalidSessionIdException'} or any(words in text for words in _GONE)
+
+
 # Where the job is, for the record of a failure: "start browser", "open address", ...
 _STEP = ['prepare']
 
@@ -424,10 +440,22 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
                 try:
                     status, content_type, ready = driver.execute_script(_STATUS)
                     current = str(driver.current_url)
-                except Exception:
+                except Exception as exc:
                     if not sizes:
-                        result['kind'] = 'closed'  # the person closed the window
-                        break
+                        reason = error_words(exc)
+                        if window_gone(exc):
+                            # The person closed the window, or the browser went away.
+                            result.update(kind='closed', title=('The window was closed: ' + reason)[:300])
+                            break
+                        # Real-machine case: "the window was closed before anything arrived" for a page that a
+                        # window had just read. Every error while asking the window how the page arrived was
+                        # taken for a closed window; a page that is busy loading does not answer for a moment.
+                        # It is asked again until the wait is over, and what it said last is kept.
+                        if clock() >= deadline:
+                            result['title'] = ('The window did not answer: ' + reason)[:300]
+                            break
+                        sleep(.5)
+                        continue
                     status, content_type, ready, current = 0, '', '', ''
                 if (not sizes and ready == 'complete' and current.startswith(('http://', 'https://'))
                         and clock() - started >= 2):

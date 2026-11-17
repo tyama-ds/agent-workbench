@@ -544,48 +544,52 @@ def test_page_and_quotation_pairs_are_read_from_what_a_document_states():
     assert page_quotes({'text': 'no page here'}) == [] and page_quotes(None) == []
 
 
-async def test_quotations_are_looked_up_in_the_pdf_and_a_wrong_page_is_sent_back_once(tmp_path):
-    """Real-machine case: "5,600 bcm by 2050 (p.119)" stood on pages 151 and 161, and one figure was not in the PDF."""
-    from workbench.pdfdocs import PdfLibrary
+async def test_quotations_are_looked_up_in_the_pdf_and_a_wrong_page_is_corrected_or_sent_back(tmp_path):
+    """Real-machine cases: "5,600 bcm by 2050 (p.119)" stood on pages 151 and 161 and one figure was not in the PDF;
+    later "…105 mb/d in 2035 (p.153)" stood on p. 123 alone, the coordinator was shown it and did not change it."""
     engine, work = configured(tmp_path, None)
     engine.kick = lambda agent: None
     try:
         pdf = make_pdf(['Overview. Electricity demand reaches 37 800 TWh by 2035.', 'Natural gas. Demand rises to\n5,600 bcm by 2050 in this scenario.',
-                        'Coal. Coal use starts to decline globally before 2030.'], title='Outlook (test)')
+                        'Coal. Coal use starts to decline globally before 2030. Oil demand plateaus in the 2030s.',
+                        'Annex. Oil demand plateaus in the 2030s.'], title='Outlook (test)')
         (work / 'outlook.pdf').write_bytes(pdf)
         run, pm = await start(engine, max_workers=0, task='outlook.pdf を読んで要約を summary.docx に保存して')
         pm.pending.clear()
         await engine.execute_tool(run, pm, 'pdf_read', {'path': str(work / 'outlook.pdf'), 'first_page': 1, 'last_page': 1})
         await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing', 'paragraphs': [
             '電力需要: 「Electricity demand reaches 37 800 TWh by 2035」（p.1）',
-            '天然ガス: 「5,600 bcm by 2050」（p.3）',                       # stands on page 2, across a line break
-            'STEPS: 「demand rises by about 55 EJ」（p.2）']})              # not in the PDF
+            '天然ガス: 「5,600 bcm by 2050」（p.3）',                       # stands on page 2 alone, across a line break
+            '石油: 「Oil demand plateaus in the 2030s」（p.1）',             # stands on pages 3 and 4
+            'STEPS: 約 55 EJ 増（p.2 「demand rises by about 55 EJ」）']})   # not in the PDF
         refused = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
-        assert refused['ok'] is False and refused['code'] == 'quotations_review'
-        assert '- p. 3 「5,600 bcm by 2050」 → PDF では p. 2' in refused['error']
-        assert '- p. 2 「demand rises by about 55 EJ」 → PDF の本文に見つかりません' in refused['error']
-        assert 'Electricity demand' not in refused['error']
-        # Each line says what to do, with the page to write.
-        assert '→ PDF では p. 2。ページを p. 2 に直すか、引用を外してください' in refused['error']
-        assert '→ PDF の本文に見つかりません。引用符とページを外すか、「ページ未確認」と書いてください' in refused['error']
-        # Said once. What is still wrong when the work ends stands in the result, for the human.
+        # The page the PDF leaves no doubt about was written by the application, before anything was sent back.
+        paragraphs = [paragraph.text for paragraph in Document(str(work / 'summary.docx')).paragraphs]
+        assert paragraphs[1] == '天然ガス: 「5,600 bcm by 2050」（p.2）' and paragraphs[0].endswith('（p.1）')
+        assert pm.output_receipts[-1]['tool'] == 'page_reference_fix'
+        assert run['_quotes_corrected'] == [{'path': str(work / 'summary.docx'), 'from': 3, 'to': 2, 'quote': '5,600 bcm by 2050'}]
+        # Sent back once: only what the application could not decide.
+        assert refused['ok'] is False and refused['code'] == 'quotations_review' and '5,600 bcm' not in refused['error']
+        assert '- p. 1 「Oil demand plateaus in the 2030s」 → PDF では p. 3, 4。ページを p. 3 に直すか、引用を外してください' in refused['error']
+        assert ('- p. 2 「demand rises by about 55 EJ」 → PDF の本文に見つかりません。引用符とページを外すか、「ページ未確認」と書いてください'
+                in refused['error'])
+        # Left as it was: the file says so itself, and the result says what the application did.
         done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
-        assert 'ページ番号つきの引用 3 件' in done['summary'] and '一致 1 件、不一致 2 件' in done['summary']
-        assert 'p. 3 「5,600 bcm by 2050」 → PDF では p. 2' in done['summary']
-        # Real-machine case: the pages were shown and left as they were. What still does not match after the one
-        # send-back is marked in the document itself, behind the page.
-        assert 'アプリが次のファイルの該当箇所に「（ページ未確認）」を付けました' in done['summary'] and 'summary.docx' in done['summary']
-        marked = [paragraph.text for paragraph in Document(str(work / 'summary.docx')).paragraphs]
-        assert marked == ['電力需要: 「Electricity demand reaches 37 800 TWh by 2035」（p.1）',
-                          '天然ガス: 「5,600 bcm by 2050」（p.3（ページ未確認））', 'STEPS: 「demand rises by about 55 EJ」（p.2（ページ未確認））']
+        assert 'ページ番号つきの引用 4 件' in done['summary'] and '一致 2 件、不一致 2 件' in done['summary']
+        assert '- p.3→p.2 に訂正: 「5,600 bcm by 2050」（summary.docx）' in done['summary']
+        assert '「（ページ未確認）」または「（PDF に原文なし・数値未確認）」を付けました' in done['summary']
+        assert [paragraph.text for paragraph in Document(str(work / 'summary.docx')).paragraphs] == [
+            '電力需要: 「Electricity demand reaches 37 800 TWh by 2035」（p.1）', '天然ガス: 「5,600 bcm by 2050」（p.2）',
+            '石油: 「Oil demand plateaus in the 2030s」（p.1（ページ未確認））',
+            'STEPS: 約 55 EJ 増（p.2（PDF に原文なし・数値未確認） 「demand rises by about 55 EJ」）']
         assert pm.output_receipts[-1]['tool'] == 'page_unconfirmed_mark'
-        # Corrected and saved again: nothing is left to say.
+        # Corrected and saved again by the coordinator: nothing is left to say.
         sha = (await engine.execute_tool(run, pm, 'file_hash', {'path': str(work / 'summary.docx')}))['sha256']
         await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': sha, 'paragraphs': [
             '電力需要: 「Electricity demand reaches 37 800 TWh by 2035」（p.1）', '天然ガス: 「5,600 bcm by 2050」（p.2）',
-            'STEPS の増加幅はページ未確認。']})
+            '石油: 「Oil demand plateaus in the 2030s」（p.3）', 'STEPS の増加幅はページ未確認。']})
         await engine._quotes_verify(run)
-        assert [row['status'] for row in run['_quote_results']] == ['ok', 'ok'] and '不一致 0 件' in engine._quotes_footer(run)
+        assert [row['status'] for row in run['_quote_results']] == ['ok', 'ok', 'ok'] and '不一致 0 件' in engine._quotes_footer(run)
     finally:
         await engine.close()
 
@@ -692,32 +696,39 @@ def test_which_words_are_looked_up_and_a_range_of_pages():
         (423, 'around 37 800 TWh'), ((17, 19), 'solar and wind lead the growth in supply'), ((5, 7), 'demand rises steadily to 2050')]
 
 
-async def test_a_range_of_pages_matches_any_page_in_it_and_marks_reach_tables_and_text_files(tmp_path):
+async def test_pages_are_corrected_in_tables_slides_and_text_files_and_a_range_matches_any_page_in_it(tmp_path):
     engine, work = configured(tmp_path, None)
     engine.kick = lambda agent: None
     try:
         pdf = make_pdf(['Overview of the outlook.', 'Supply. Solar and wind lead the growth in supply to 2035.',
                         'Demand. Electricity demand reaches 37 800 TWh by 2035.', 'Annex.'], title='Outlook (test)')
         (work / 'outlook.pdf').write_bytes(pdf)
-        run, pm = await start(engine, max_workers=0, task='outlook.pdf を読んで要約を summary.docx と notes.md に保存して')
+        run, pm = await start(engine, max_workers=0, task='outlook.pdf を読んで要約を summary.docx と slides.pptx と notes.md に保存して')
         pm.pending.clear()
         await engine.execute_tool(run, pm, 'pdf_read', {'path': str(work / 'outlook.pdf'), 'first_page': 1, 'last_page': 1})
         await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing', 'paragraphs': [
             '供給: 「solar and wind lead the growth in supply」（pp. 1-3）'],                                   # page 2: inside the range
             'tables': [[['指標', '値', '出典ページ', '原文の引用'], ['電力需要', '37,800 TWh', 'p.4', 'Electricity demand reaches 37 800 TWh by 2035']]]})
+        await engine.execute_tool(run, pm, 'pptx_write', {'path': str(work / 'slides.pptx'), 'expected_sha256': 'missing', 'slides': [
+            {'title': '需要', 'body': ['電力需要は 37,800 TWh（p. 1 「Electricity demand reaches 37 800 TWh by 2035」）', '供給は別紙']}]})
         await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'notes.md'), 'expected_sha256': 'missing',
                                                            'text': '# メモ\n- 電力: "Electricity demand reaches 37 800 TWh" (p. 2)\n- 供給は p. 2 を参照\n'})
-        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
-        assert first['code'] == 'quotations_review' and 'solar and wind' not in first['error']
-        assert first['error'].count('ページを p. 3 に直すか、引用を外してください') == 2
         done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
-        assert '引用 3 件' in done['summary'] and '一致 1 件、不一致 2 件' in done['summary']
-        # The table's page cell and the line of the text file carry the mark; the rest is as it was.
-        table = Document(str(work / 'summary.docx')).tables[0]
-        assert [cell.text for cell in table.rows[1].cells] == ['電力需要', '37,800 TWh', 'p.4（ページ未確認）', 'Electricity demand reaches 37 800 TWh by 2035']
+        # Every wrong page stood for a passage on one page: all are written by the application, nothing is sent back.
+        assert done.get('ok') is not False and '引用 4 件' in done['summary'] and '一致 4 件、不一致 0 件' in done['summary']
+        for line in ('- p.4→p.3 に訂正: 「Electricity demand reaches 37 800 TWh by 2035」（summary.docx）',
+                     '- p.1→p.3 に訂正: 「Electricity demand reaches 37 800 TWh by 2035」（slides.pptx）',
+                     '- p.2→p.3 に訂正: 「Electricity demand reaches 37 800 TWh」（notes.md）'):
+            assert line in done['summary'], line
+        document = Document(str(work / 'summary.docx'))
+        assert [cell.text for cell in document.tables[0].rows[1].cells] == ['電力需要', '37,800 TWh', 'p.3', 'Electricity demand reaches 37 800 TWh by 2035']
+        assert document.paragraphs[0].text == '供給: 「solar and wind lead the growth in supply」（pp. 1-3）'   # the range was right
+        texts = [paragraph.text for shape in Presentation(str(work / 'slides.pptx')).slides[0].shapes if shape.has_text_frame
+                 for paragraph in shape.text_frame.paragraphs]
+        assert '電力需要は 37,800 TWh（p. 3 「Electricity demand reaches 37 800 TWh by 2035」）' in texts and '供給は別紙' in texts
         assert (work / 'notes.md').read_text(encoding='utf-8') == (
-            '# メモ\n- 電力: "Electricity demand reaches 37 800 TWh" (p. 2（ページ未確認）)\n- 供給は p. 2 を参照\n')
-        assert sorted(Path(path).name for path in run['_quotes_marked']) == ['notes.md', 'summary.docx']
+            '# メモ\n- 電力: "Electricity demand reaches 37 800 TWh" (p. 3)\n- 供給は p. 2 を参照\n')
+        assert [receipt['tool'] for receipt in list(pm.output_receipts)[-3:]] == ['page_reference_fix'] * 3
     finally:
         await engine.close()
 
@@ -752,5 +763,46 @@ async def test_a_pdf_id_written_longer_or_as_the_hash_is_that_pdf_and_a_wrong_on
         run['_web'] = type('Web', (), {'pdf_ids': {}})()
         with pytest.raises(ValueError, match='This work has downloaded no PDF yet'):
             await engine._pdf_read(run, pm, {'pdf_id': record['pdf_id'], 'first_page': 1})
+    finally:
+        await engine.close()
+
+
+def test_a_request_for_a_table_is_recognised_and_an_address_loses_its_session_values():
+    from workbench.verification import asks_for_table
+    from workbench.webtools import citable_url
+    for text in ('主要な数値は表にする', '結果を表にまとめて report.docx に保存', '国別の比較表を付けてください', '数値は表形式で',
+                 'Put the main figures in a table', 'Summarise it with a comparison table'):
+        assert asks_for_table(text), text
+    for text in ('表紙を付けて発表用にまとめて', '代表で示す値を書いて', '年表示は西暦で', 'report.docx に保存して', None):
+        assert not asks_for_table(text), text
+    state = 'H4sI' + 'A' * 300
+    assert citable_url(f'https://www.elibrary.imf.org/downloadpdf/book/9798400/CH001.pdf?t:state:client={state}&page=2') == (
+        'https://www.elibrary.imf.org/downloadpdf/book/9798400/CH001.pdf?page=2')
+    assert citable_url('https://example.org/doc;jsessionid=ABC123?id=7&PHPSESSID=xyz') == 'https://example.org/doc?id=7'
+    for same in ('https://www.imf.org/en/publications/weo', 'https://api.worldbank.org/v2/country/JPN?format=json&date=2020:2024',
+                 'https://example.org/search?q=world+energy+outlook'):
+        assert citable_url(same) == same
+
+
+async def test_a_document_without_the_table_the_request_asks_for_is_sent_back_once(tmp_path):
+    """Real-machine case: "the main figures in a table" was asked for; the document had no table, and the run was done."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0, task='要約を summary.docx に保存して。主要な数値は表にする。')
+        pm.pending.clear()
+        saved = await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing',
+                                                                  'paragraphs': ['需要は 654 EJ、供給は 744 EJ。']})
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert first['ok'] is False and first['code'] == 'table_missing'
+        assert 'summary.docx' in first['error'] and 'docx_edit with append_table' in first['error']
+        # Said once; a document that still has no table is named in the result.
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert '依頼文は数値を表にするよう求めていますが、次の文書に表はありません' in done['summary']
+        # With a table, nothing is said.
+        await engine.execute_tool(run, pm, 'docx_edit', {'path': str(work / 'summary.docx'), 'expected_sha256': saved['sha256'],
+                                                          'operations': [{'type': 'append_table', 'rows': [['指標', '値'], ['需要', '654 EJ']]}]})
+        await engine._tables_check(run)
+        assert run['_tables_missing'] == [] and engine._tables_footer(run) == ''
     finally:
         await engine.close()
