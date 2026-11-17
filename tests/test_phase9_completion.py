@@ -892,6 +892,9 @@ async def test_what_a_pm_wrote_itself_or_already_read_needs_no_second_look_but_a
         worker.pending.append(('more', False))
         assert asked() is None                                             # while a teammate still has work, it is too early to ask
         worker.pending.clear()
+        run['adaptive_team'] = True
+        assert asked() is None                                             # there an independent reviewer has read and accepted the file
+        del run['adaptive_team']
         assert engine._completion_notice(run, pm)[0] == 'outputs_missing'  # notes.docx was never saved: that check still comes first
     finally:
         await engine.close()

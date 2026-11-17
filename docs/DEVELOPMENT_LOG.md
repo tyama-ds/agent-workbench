@@ -26,7 +26,10 @@ spreadsheet of numbers only). Two things went wrong in the agent tasks.
   - Before the root PM finishes, a requested file that teammates wrote and
     that the PM has not read since its last save sends the PM back once to
     read it and compare it with the request (as with tests that were asked
-    for and not run). What the PM wrote itself needs no second look.
+    for and not run). What the PM wrote itself needs no second look. An
+    automatically formed team is left out: there an independent reviewer
+    has read the saved file and accepted it before the PM may finish (the
+    Edge acceptance of that flow failed until this was excluded).
   - Policy: one file has one writer; workers report their values and one
     agent writes the file and reads it back.
 

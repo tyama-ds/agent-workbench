@@ -362,6 +362,10 @@ class VerificationMixin:
         """
         if agent.parent_id is not None or run.get('_readback_gated') or not run.get('_expected_outputs'):
             return None
+        if run.get('adaptive_team'):
+            # An automatically formed team already has an independent reviewer read the saved
+            # file and accept it before the coordinator may finish.
+            return None
         if self._others_active(run, agent):
             return None
         reads, unread = run.get('_output_reads') or {}, []
