@@ -314,10 +314,12 @@ class PathHarness:
         else:
             yield
 
-    def _read(self, path: Path) -> bytes:
+    def _read(self, path: Path, limit: int | None = None) -> bytes:
+        # ``limit`` replaces the general file limit for a kind of file that has its own (a PDF report).
+        limit = self.max_file_bytes if limit is None else limit
         self._ancestors(path, require_leaf=True)
         info = _inspect(path)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > self.max_file_bytes:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             raise HarnessError("File is not regular or exceeds the size limit")
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         with self._parents_held(path):
@@ -327,14 +329,14 @@ class PathHarness:
                 if not stat.S_ISREG(actual.st_mode) or actual.st_nlink != 1 or (actual.st_dev, actual.st_ino) != (info.st_dev, info.st_ino):
                     raise HarnessError("File changed while opening")
                 self._ancestors(path, require_leaf=True)
-                data = stream.read(self.max_file_bytes + 1)
-        if len(data) > self.max_file_bytes:
+                data = stream.read(limit + 1)
+        if len(data) > limit:
             raise HarnessError("File exceeds the size limit")
         return data
 
-    def read_bytes(self, value: str) -> bytes:
+    def read_bytes(self, value: str, limit: int | None = None) -> bytes:
         with self._lock:
-            return self._read(self.resolve(value))
+            return self._read(self.resolve(value), limit)
 
     def directory_creation_paths(self, value: str) -> list[Path]:
         """Validate the request and list affected directories in creation order.

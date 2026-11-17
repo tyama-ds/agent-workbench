@@ -38,6 +38,7 @@ from .browser_search import SearchCache, SearchChallenge
 from .resources import ResourceGate
 from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .webtools import WebTools
+from .pdfdocs import PdfLibrary, PdfToolMixin, PDF_READ_TOOL, MAX_PDF_BYTES
 from .history import HistoryStore, HistoryError, ArchivedReadOnly, public_document, archived_view, redact_tree as redact_history_tree
 from .securestore import CredentialStore, CredentialStorageError, SEARCH_BINDING
 from .ordered_engine import OrderedCollaborationMixin, ORDERED_NAMES
@@ -422,7 +423,7 @@ class Agent:
                 }
 
 
-class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
+class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin, AdaptiveTeamMixin, QuestionFallbackMixin, AgentHierarchyMixin, WorkerDependenciesMixin, OrderedCollaborationMixin):
     def __init__(self, settings: Settings, client=None):
         self.settings = settings
         self.gate = ResourceGate()
@@ -462,6 +463,8 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         self.search_cache = SearchCache(settings.directory / 'search-cache.json')
         # World Bank indicator files, kept for a day so statistics cost one small download per indicator.
         self.stat_store = statdata.IndicatorStore(settings.directory / 'stat-cache')
+        # PDFs that web_fetch downloaded (the application's own folder, never a work folder) and opened documents.
+        self.pdf_library = PdfLibrary(settings.directory / 'pdf-cache', MAX_PDF_BYTES)
         self._search_check_lock, self._search_check_passed_at = asyncio.Lock(), 0.0
         self.memo_proposals = {}  # id -> PM proposal waiting for the human
         self.credentials = CredentialStore(settings.directory, settings.value['providers'], lease=self.history._lease)
@@ -1066,6 +1069,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         web_tools.use_search_key(self.settings.search_key)
         web_tools.use_search_cache(self.search_cache)
         web_tools.use_stat_store(self.stat_store)
+        web_tools.use_pdf_library(self.pdf_library, config['limits']['max_pdf_bytes'])
         if config['search']['provider'] == 'browser':
             web_tools.use_browser(self._browser_page(config, harness))
         return task, config, pms, workers, count, harness, web_tools
@@ -2042,7 +2046,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         recovery_policy = RECOVERY_POLICY if not self._ordered_for(run, agent) and any(
             child.status == 'error' and child.stop_reason == 'provider_output_limit'
             for child in self._owned_workers(run, agent)) else ''
-        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + self._memo_policy(run) + self._tests_policy(run) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy
+        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + self._memo_policy(run) + self._tests_policy(run) + self._pdf_policy(run) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy
 
     def _contextual_team_tool(self, run, agent, tool):
         """One provider/validation contract without enlarging unrelated requests."""
@@ -2115,6 +2119,8 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
             tools.append(SELENIUM_TOOL)
         if run['_config']['search']['enabled']:
             tools += run['_web'].schemas()
+        if self._pdf_available(run):
+            tools.append(PDF_READ_TOOL)
         if agent.parent_id:
             excluded = {'start_ordered_work', 'review_work_step', 'rollback_work_step'}
             if self._hierarchy_spawn_issue(run, agent):
@@ -3304,6 +3310,10 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 return result
         if name in {'propose_memo', 'search_past_work'}:
             return await self._memo_or_history_tool(run, agent, name, args)
+        if name == 'pdf_read':
+            result = await self._pdf_read(run, agent, args)
+            self._outputs_read(run, agent, args, result)
+            return self._urls_seen(run, result)
         self._source_check(run, agent, name, args)
         if self._approval_needed(run, name, args):
             await self._await_approval(run, agent, name, args)
@@ -3409,7 +3419,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
             self._file_readers += 1
             self._file_readers_idle.clear()
         try:
-            result = await run['_executor'].execute(name, args)
+            result = await (self._pdf_from_file(run, args) if name == 'pdf_read' else run['_executor'].execute(name, args))
         finally:
             self._file_readers -= 1
             if not self._file_readers:

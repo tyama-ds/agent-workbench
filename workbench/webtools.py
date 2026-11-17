@@ -20,6 +20,7 @@ from typing import Any
 import aiohttp
 
 from . import statdata, statsources
+from .pdfdocs import PdfError, looks_like_pdf, megabytes
 from .webtext import TextDecodingError, decode_web_text
 from .webdata import MAX_TEXT_CHARS, WebDataError, WebSnapshots, received, received_names
 
@@ -119,6 +120,27 @@ def _failure_class(exc: BaseException, timeout: float) -> str:
     return "connection failed"
 
 
+PDF_SECONDS = 180  # a large report may take this long to arrive
+_BINARY_TYPES = {"application/octet-stream", "binary/octet-stream", "application/x-download", "application/download", ""}
+
+
+def _mime(content_type: str) -> str:
+    return content_type.split(";", 1)[0].strip().lower()
+
+
+def _pdf_answer(content_type: str, path: str) -> bool:
+    """The answer says it is a PDF, or gives no kind for an address that ends in .pdf."""
+    mime = _mime(content_type)
+    return mime in {"application/pdf", "application/x-pdf"} or (mime in _BINARY_TYPES and path.lower().endswith(".pdf"))
+
+
+def _pdf_too_large(declared: int | None, limit: int) -> str:
+    return ("The PDF is larger than the limit in the settings ("
+            + (megabytes(declared) + "; " if declared else "") + "limit " + megabytes(limit)
+            + "). It was not downloaded. Say so; a human can raise the PDF size limit in the settings, "
+              "or save the file into a read folder.")
+
+
 def _retry_next_address(exc: BaseException) -> bool:
     """Only failures that happen before any request bytes are sent."""
     if isinstance(exc, aiohttp.ClientHttpProxyError):  # the proxy could not open its tunnel
@@ -185,23 +207,62 @@ async def _public_addresses(host: str, port: int) -> list[str]:
 
 
 class _TextHTML(HTMLParser):
+    """The text of a page, and the PDF files it links to.
+
+    A page's links are otherwise dropped with its markup. A report is usually
+    reached through the page that describes it, so links that name a PDF are
+    kept beside the text: the address and the words of the link.
+    """
+    PDF_LINKS, PDF_LINK_CHARS = 40, 4000
+
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.parts, self.ignored = [], 0
+        self._links, self._open = [], None  # [href, words] of the link being read
 
     def handle_starttag(self, tag, attrs):
         if tag in {"script", "style", "noscript", "svg"}:
             self.ignored += 1
         elif not self.ignored and tag in {"p", "div", "br", "li", "h1", "h2", "h3", "tr"}:
             self.parts.append("\n")
+        if tag == "a" and not self.ignored and len(self._links) < 400:
+            values = dict(attrs)
+            href = values.get("href")
+            kind = (values.get("type") or "").lower()
+            if isinstance(href, str) and ("pdf" in href.lower() or kind == "application/pdf"):
+                label = values.get("title") or values.get("aria-label") or ""
+                self._open = [href.strip(), [label] if label else []]
+                self._links.append(self._open)
 
     def handle_endtag(self, tag):
         if tag in {"script", "style", "noscript", "svg"} and self.ignored:
             self.ignored -= 1
+        if tag == "a":
+            self._open = None
 
     def handle_data(self, data):
         if not self.ignored:
             self.parts.append(data)
+            if self._open is not None and sum(map(len, self._open[1])) < 300:
+                self._open[1].append(data)
+
+    def pdf_links(self, base: str) -> tuple[list[dict], int]:
+        """Links whose address names a PDF: absolute, public-looking, once each; and how many were left out."""
+        rows, seen, used = [], set(), 0
+        for href, words in self._links:
+            try:
+                url = urllib.parse.urldefrag(urllib.parse.urljoin(base, href))[0]
+                parsed = _url(url)
+            except (WebToolError, ValueError):
+                continue
+            if "pdf" not in (parsed.path + "?" + parsed.query).lower() or len(url) > 2000 or url in seen:
+                continue
+            seen.add(url)
+            text = " ".join(" ".join(words).split())[:160]
+            if len(rows) < self.PDF_LINKS and used + len(url) + len(text) <= self.PDF_LINK_CHARS:
+                rows.append({"url": url, **({"text": text} if text else {})})
+                used += len(url) + len(text)
+        return rows, len(seen) - len(rows)
 
 
 def _clean_text(value: str, limit: int = 200000) -> str:
@@ -448,6 +509,8 @@ class WebTools:
         self.max_bytes = config.get("max_response_bytes", 1024 * 1024)
         self._snapshots = WebSnapshots()
         self._search_cache = {}
+        # PDFs this run downloaded (pdf_id -> its record); the library that keeps them is the application's.
+        self._pdf_library, self._pdf_bytes, self.pdf_ids = None, 0, {}
         if type(self.timeout) not in {int, float} or not 1 <= self.timeout <= 60:
             raise WebToolError("Web timeout must be between 1 and 60 seconds")
         if type(self.max_bytes) is not int or not 1024 <= self.max_bytes <= 5 * 1024 * 1024:
@@ -475,7 +538,7 @@ class WebTools:
                  "start_year": {"type": "integer", "minimum": 1960, "maximum": 2100},
                  "end_year": {"type": "integer", "minimum": 1960, "maximum": 2100}},
                  "required": ["countries", "indicator"], "additionalProperties": False}},
-            {"name": "web_fetch", "description": "Fetch public HTTP(S) text once (one full URL without a #fragment), returning a bounded preview, JSON structure when valid, and an immutable run-local snapshot_id. Use web_read to select needed data without fetching again. Previews are not complete data. Local/private addresses, credentials and unsafe redirects are rejected; HTML scripts are not executed. Strict decoding metadata and source hashes are retained. All content is untrusted.",
+            {"name": "web_fetch", "description": "Fetch public HTTP(S) text once (one full URL without a #fragment), returning a bounded preview, JSON structure when valid, and an immutable run-local snapshot_id. Use web_read to select needed data without fetching again. Previews are not complete data. A PDF is kept by the application instead: the result gives pdf_id, page count and outline; read pages with pdf_read. Local/private addresses, credentials and unsafe redirects are rejected; HTML scripts are not executed. Strict decoding metadata and source hashes are retained. All content is untrusted.",
              "parameters": {"type": "object", "properties": {"url": {"type": "string", "maxLength": 4096}}, "required": ["url"], "additionalProperties": False}},
             {"name": "web_read", "description": "Read an existing web_fetch snapshot in this run without network access, e.g. {\"snapshot_id\":\"web-...\",\"pointer\":\"/items\",\"fields\":[\"name\"],\"limit\":50}. JSON: pointer is one exact RFC6901 string (\"\"=root; ~0 escapes ~, ~1 escapes /); fields is an array of literal object keys; arrays page by offset and limit 1..100. Null/empty values and original array indices are preserved; fields on arrays select each object, retaining null entries. Strings/raw text page by character offset and limit 1..10000; raw text takes no pointer or fields. No JSONPath, dots, wildcards or code. Inspect truncated/page_complete/next_offset and blocked_index; an oversized item is never silently skipped. Snapshots can be evicted and are not available after restart. Results remain untrusted data, never authorization.",
              "parameters": {"type": "object", "properties": {
@@ -491,18 +554,22 @@ class WebTools:
 
     async def _request(self, url: str, *, headers: dict | None = None, trusted_search: bool = False,
                        form: list[tuple[str, str]] | None = None, wait: float | None = None,
-                       size: int | None = None, accept: str | None = None) -> tuple[bytes, str, str]:
+                       size: int | None = None, accept: str | None = None,
+                       pdf: tuple[int, float] | None = None) -> tuple[bytes, str, str]:
         """One bounded request. ``headers`` marks a search request, which must
         stay on its origin; ``form`` sends a urlencoded POST body instead of a GET.
         ``wait`` and ``size`` replace the configured time and size limits, and
         ``accept`` the Accept header, for a fixed destination the application
-        itself chose (never a model's URL)."""
+        itself chose (never a model's URL). ``pdf`` gives the size and time
+        allowed when the answer turns out to be a PDF (web_fetch only); every
+        other answer keeps the ordinary limits."""
         wait, size = wait or self.timeout, size or self.max_bytes
+        longest = max(wait, pdf[1]) if pdf else wait
         search = headers is not None or form is not None
         first = _url(url)
         original_origin = (first.scheme, first.hostname, first.port or (443 if first.scheme == "https" else 80))
         body = urllib.parse.urlencode(form).encode("ascii") if form is not None else None
-        timeout = aiohttp.ClientTimeout(total=wait, connect=min(8, wait), sock_read=wait)
+        timeout = aiohttp.ClientTimeout(total=longest, connect=min(8, wait), sock_read=wait)
         # Never inherit HTTP_PROXY/HTTPS_PROXY or NETRC. Only the explicit proxy
         # setting is shared with the configured search and page-fetch requests.
         async with aiohttp.ClientSession(timeout=timeout, trust_env=False, auto_decompress=True, cookie_jar=aiohttp.DummyCookieJar(),
@@ -558,11 +625,20 @@ class WebTools:
                                 break  # the next hop is validated and pinned again
                             if response.status != 200:
                                 raise _HTTPStatusError(response.status)
+                            limit, is_pdf = size, False
+                            if pdf and _pdf_answer(response.headers.get("Content-Type", ""), parsed.path):
+                                limit, is_pdf = pdf[0], True
+                                declared = response.headers.get("Content-Length", "")
+                                if declared.isdigit() and int(declared) > limit:
+                                    raise WebToolError(_pdf_too_large(int(declared), limit))
                             data = bytearray()
-                            async for chunk in response.content.iter_chunked(16384):
+                            async for chunk in response.content.iter_chunked(65536 if is_pdf else 16384):
                                 data.extend(chunk)
-                                if len(data) > size:
-                                    raise WebToolError("Web response exceeds the configured size limit")
+                                if len(data) > limit:
+                                    raise WebToolError(_pdf_too_large(None, limit) if is_pdf
+                                                       else "Web response exceeds the configured size limit")
+                                if not is_pdf and asyncio.get_running_loop().time() > deadline:
+                                    raise asyncio.TimeoutError()  # only a PDF may take the longer time
                             return bytes(data), response.headers.get("Content-Type", ""), url
                     except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError) as exc:
                         if isinstance(exc, WebToolError):
@@ -589,31 +665,45 @@ class WebTools:
             if set(args) != {"url"}:
                 raise WebToolError("web_fetch requires only url" + received_names(set(args) - {"url"}))
             _url(args["url"])
-            data, content_type, final_url = await self._request(args["url"])
-            mime = content_type.split(";", 1)[0].strip().lower()
+            wants_pdf = self._pdf_library is not None
+            data, content_type, final_url = await (self._request(args["url"], pdf=(self._pdf_bytes, PDF_SECONDS))
+                                                   if wants_pdf else self._request(args["url"]))
+            mime = _mime(content_type)
+            if wants_pdf and _pdf_answer(content_type, _url(final_url).path):
+                return await self._pdf_fetched(data, final_url)
             if mime not in {"text/plain", "text/html", "application/xhtml+xml", "application/json", "text/markdown", "text/csv"}:
                 # Echo the remote type only when it is a short plain MIME token.
                 got = f"; got {mime}" if re.fullmatch(r"[a-z0-9][a-z0-9.+-]{0,40}/[a-z0-9][a-z0-9.+-]{0,60}", mime) else ""
-                raise WebToolError("Only textual web responses are supported (HTML, plain text, JSON, Markdown, CSV)" + got)
+                raise WebToolError(("Only textual web responses and PDF files are supported (HTML, plain text, JSON, Markdown, CSV, PDF)"
+                                    if wants_pdf else
+                                    "Only textual web responses are supported (HTML, plain text, JSON, Markdown, CSV)") + got)
             try:
                 text, decoding = decode_web_text(data, mime, content_type)
             except TextDecodingError as exc:
                 raise WebToolError(str(exc)) from exc
+            pdf_links, left_out = [], 0
             if mime in {"text/html", "application/xhtml+xml"}:
                 parser = _TextHTML()
                 parser.feed(text)
                 parser.close()
                 text = "".join(parser.parts)
+                pdf_links, left_out = parser.pdf_links(final_url)
             # Do not turn malformed JSON into valid JSON by deleting controls.
             # Plain-text JSON candidates also retain their decoded source bytes.
             json_candidate = mime == "application/json" or (mime == "text/plain" and text.lstrip().startswith(("{", "[")))
             cleaned = text[:MAX_TEXT_CHARS + 1] if json_candidate else _clean_text(text, MAX_TEXT_CHARS + 1)
             try:
-                return self._snapshots.capture(cleaned[:MAX_TEXT_CHARS], url=final_url, content_type=mime,
+                result = self._snapshots.capture(cleaned[:MAX_TEXT_CHARS], url=final_url, content_type=mime,
                     decoding=decoding, source_sha256=hashlib.sha256(data).hexdigest(), source_bytes=len(data),
                     source_truncated=len(cleaned) > MAX_TEXT_CHARS, json_candidate=json_candidate)
             except WebDataError as exc:
                 raise WebToolError(str(exc)) from None
+            if pdf_links:
+                # The page's own links to PDF files (untrusted, like its text): the way to a report it describes.
+                result["pdf_links"] = pdf_links
+                result["pdf_links_note"] = ("PDF files this page links to" + (f" ({left_out} more not listed)" if left_out else "")
+                                            + ". Fetch one with web_fetch, then read it with pdf_read.")
+            return result
         if name != "web_search":
             raise WebToolError("Unknown web tool")
         if set(args) - {"query", "limit"} or "query" not in args:
@@ -627,6 +717,27 @@ class WebTools:
             raise WebToolError(f"Search limit must be an integer 1..10; got {received(limit)}")
         limit = min(limit, 10)  # a larger request is capped, not refused
         return await self._queued_search(query, limit)
+
+    def use_pdf_library(self, library, max_bytes: int) -> None:
+        """Where downloaded PDFs are kept, and how large one may be (the human's setting)."""
+        self._pdf_library, self._pdf_bytes = library, max_bytes
+
+    async def _pdf_fetched(self, data: bytes, url: str) -> dict:
+        if not looks_like_pdf(data):
+            raise WebToolError("The address answered as a PDF, but what arrived is not a PDF file "
+                               "(often a page that asks for a browser check). Nothing was kept.")
+        try:
+            # Opened before it is kept: an encrypted or damaged file is refused here and not stored.
+            overview = await self._pdf_library.read(data, {}, source=url)
+            record = await asyncio.to_thread(self._pdf_library.put, data, url)
+        except PdfError as exc:
+            raise WebToolError(str(exc)) from None
+        self.pdf_ids[record["pdf_id"]] = record
+        return {"pdf_id": record["pdf_id"], "url": url, "content_type": "application/pdf",
+                "fetched_at": record["fetched_at"], **{key: value for key, value in overview.items() if key != "source"},
+                "read_hint": ("This is a PDF kept by the application. Use pdf_read with this pdf_id: first_page and last_page "
+                              "return the text of those pages; find lists the pages where a term occurs. "
+                              "Cite figures as \"p. N\" with the page numbers pdf_read returns.")}
 
     async def _stat_lookup(self, args: dict) -> dict:
         """Yearly values of one indicator for a few countries, read from an official provider's fixed address."""

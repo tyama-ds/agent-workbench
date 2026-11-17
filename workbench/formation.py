@@ -18,7 +18,7 @@ from .config import text
 
 COUNTS = {'low': 1, 'medium': 2, 'high': 3}
 CONTENT_READS = frozenset({'read_text', 'docx_read', 'xlsx_read', 'pptx_read'})
-LOCAL_READS = CONTENT_READS | {'list_directory', 'search_text', 'search_paths', 'file_hash'}
+LOCAL_READS = CONTENT_READS | {'list_directory', 'search_text', 'search_paths', 'file_hash', 'pdf_read'}
 REVIEWER_TOOLS = LOCAL_READS | {'list_team', 'read_context_history', 'read_skill', 'submit_independent_review'}
 FROZEN_TOOLS = LOCAL_READS | {'list_team', 'read_context_history', 'read_skill', 'finish_work'}
 FORMATION_NAMES = frozenset({'plan_team', 'request_independent_review', 'submit_independent_review'})

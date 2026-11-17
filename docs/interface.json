@@ -126,6 +126,7 @@
       "max_context_chars": 100000,
       "max_output_tokens": 8192,
       "max_file_bytes": 10485760,
+      "max_pdf_bytes": 52428800,
       "auto_compact": true,
       "context_trigger_percent": 75,
       "context_recent_groups": 4,

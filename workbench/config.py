@@ -309,6 +309,8 @@ def validate_settings(raw, *, check_paths=True):
               'max_turns_per_agent': (1, 100), 'max_run_seconds': (10, 86400),
               'max_context_chars': (4000, 2000000), 'max_output_tokens': (128, 65536),
               'max_file_bytes': (1024, 50 * 1024 * 1024),
+              # A PDF report (downloaded by web_fetch, or read from an allowed folder) has its own, larger limit.
+              'max_pdf_bytes': (1024 * 1024, 200 * 1024 * 1024),
               'context_trigger_percent': (50, 90), 'context_recent_groups': (2, 32),
               'context_summary_chars': (512, 16000), 'context_reserve_tokens': (256, 65536),
               'max_history_chars': (4000, 4000000)}
