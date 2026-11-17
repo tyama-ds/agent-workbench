@@ -54,7 +54,12 @@ async function retainedRedactionAcceptance({page,context,origin,workspace,stateD
     assertMasked(response.text,keys,method+' '+url);
     const data=JSON.parse(response.text);if(['GET','HEAD'].includes(method)&&data.instance_id){assert.equal(typeof data.instance_id,'string');observedInstance=data.instance_id;}return data;
   };
-  const waitForRun=(runId,status)=>waitForRunState(()=>api('/api/state'),runId,status);
+  // How long a synthetic run may take to reach a state. The run itself needs well under a second; the bound is
+  // for the machine. On a hosted Windows runner the history database's commits (each one waits for the disk)
+  // took 6.2 s, 2.2 s and 2.2 s within one run, which used up the former 10 s (recorded by the fixture's
+  // watchdog). What is asserted is the state reached, not how fast.
+  const RUN_WAIT_MS=60000;
+  const waitForRun=(runId,status)=>waitForRunState(()=>api('/api/state'),runId,status,{timeoutMs:RUN_WAIT_MS});
   const select=async(runId,agentId,requireOutput=true)=>{
     await page.locator(`#runList .run-link[data-focus-key="run:${runId}"]`).click();
     await page.locator(`#agentCards [data-agent-id="${agentId}"]`).click();

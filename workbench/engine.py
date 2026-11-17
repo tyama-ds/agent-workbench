@@ -3305,11 +3305,6 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                     result = await self._search_human_check(run, agent, args, challenge)
                 finally:
                     self._search_use(run)
-                if name == 'web_fetch' and isinstance(result, dict) and result.get('fetched_as'):
-                    # The human chose this in the settings; each use is shown where they follow the work.
-                    self.log(agent, 'notice', '通常の取得をサイトが拒否したため、ブラウザ相当の通信（'
-                             + str(result['fetched_as']) + '）で取得しました: ' + self.redact(str(result.get('url', '')))[:200]
-                             + '（設定「ブラウザ相当の通信で再試行する」）')
                 result = self._urls_seen(run, result, args)
                 self._pages_note(run, name, args, result)
                 return result

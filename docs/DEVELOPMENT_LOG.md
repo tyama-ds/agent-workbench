@@ -4,12 +4,12 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev70 — PDF reports are read by page, and a refused page is asked for again as a browser (2026-11-17)
+## 0.1.1.dev70 — PDF reports are read by page (2026-11-17)
 
 The request: download the IMF's World Economic Outlook, read it and report a
 summary; and the same for any long PDF report. On the real machine nothing of
-this worked: `web_fetch` took text kinds only and stopped at 1 MiB, no file
-tool opened a PDF, and www.imf.org answered 403 to every HTTP library.
+this worked: `web_fetch` took text kinds only and stopped at 1 MiB, and no
+file tool opened a PDF.
 
 - `pdf_read` reads a PDF in an allowed read folder or one `web_fetch`
   downloaded. The first call gives the page count, the outline, characters
@@ -30,34 +30,28 @@ tool opened a PDF, and www.imf.org answered 403 to every HTTP library.
   chapter, then only what the request needs; every figure with its page; a
   refused site's own official distribution site (the IMF eLibrary) instead
   of repeating the request.
-- `search.browser_tls_retry`, on by default: the owner asked for refused
-  pages to be fetched all the same. An https page or PDF answered with 403
-  or 202 is requested again with a browser's TLS and HTTP/2 handshake
-  (curl_cffi), as Safari, then Chrome, then Edge. On the real machine only
-  Safari passed the IMF's filter, and the 8 MB report came whole. This gets
-  around a bot filter and can be against a site's terms; the setting says
-  so. It replaces an earlier decision of this project (nothing hides that a
-  request is automated) for page fetches only: search engines are not asked
-  this way, and a check meant for a person is still never solved.
-- The retry keeps the ordinary request's rules: public addresses only,
-  pinned per hop, redirects checked one by one, the explicit proxy only, the
-  system's certificate authorities (written to a file once, because curl
-  would otherwise use its own list and fail behind an inspecting proxy), the
-  same size limits. One request at a time per site with three seconds
-  between them; a site that refused all three kinds is left alone for ten
-  minutes.
-- Dependencies, pinned with hashes: pypdf 6.21.4 (pure Python; 7.x was days
-  old), curl_cffi 0.17.0 with cffi, pycparser and certifi. None has a known
-  advisory in PyPI's records today. pypdf has had many advisories about
-  files that exhaust time or memory, which is why reading has a time budget
-  and a file that does not end is not tried again.
+- Dependency, pinned with hashes: pypdf 6.21.4 (pure Python; 7.x was days
+  old). It has no known advisory in PyPI's records today, and has had many
+  about files that exhaust time or memory, which is why reading has a time
+  budget and a file that does not end is not tried again.
 - Two tests fixed their context budget as a number and broke when the tool
   list grew; they now measure it, as the one fixed in dev69.
 
+Built and taken out again within this version: a second request with a
+browser's TLS handshake (curl_cffi) for a site that answers 403 to an HTTP
+library, as www.imf.org does. The owner first asked for it and then decided
+against getting past a site's filter with a library. Nothing of it is in the
+product or the lock. The standing rule is unchanged: the application does not
+hide that a request is automated. What the owner asked for instead: anything
+that operates a browser or the screen is a separate switch, off by default,
+and is also chosen per piece of work on the start screen. Selenium page
+operation (off by default) and browser search (only when chosen as the search
+method) already are; a later "download through the browser" will follow the
+same rule.
+
 Not verified here: this environment reaches neither www.imf.org nor the
-eLibrary, and a local server cannot tell a TLS handshake, so the tests tell
-the two requests apart by their headers. A Japanese PDF made here with a
-CID font reads correctly; the ministries' own files were not tried.
+eLibrary. A Japanese PDF made here with a CID font reads correctly; the
+ministries' own files were not tried.
 
 ## 0.1.1.dev69 — A change that cannot be formed is said, and a coordinator reads what its workers wrote (2026-11-17)
 
