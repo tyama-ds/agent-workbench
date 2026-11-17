@@ -4,7 +4,24 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev80 — What failed in the window; the PDF that was read; quotations looked up (2026-11-17)
+## 0.1.1.dev81 — The day it is; a PDF to keep without a name (2026-11-17)
+
+At dev80 the window saved the report from the publisher's site (180
+pages), and the quotations were looked up (11 of 13 on their pages, two
+named as on other pages).
+
+- The report was the April issue, taken in November with an October issue
+  out. The search had shown only April, and nothing had told the agents
+  what day it was. The PDF guidance now gives the date the work began, and
+  choosing the latest issue is four steps that start at the publisher's
+  list of issues and do not end with the first search.
+- "…and save the downloaded PDF in the same folder" named no file, so no
+  file was missed: the folder had no PDF, the document said "obtained and
+  saved in this work", and the run was done. A request to keep the PDF is
+  a deliverable without a name, and the result says, from the
+  application's own record, which PDF was saved or that none was.
+
+What failed in the window; the PDF that was read; quotations looked up (2026-11-17)
 
 At dev79 the energy outlook run produced its three files with figures that
 matched, and the economic outlook run had no window at all.

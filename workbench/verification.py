@@ -77,8 +77,24 @@ _MAX_OUTPUTS = 10
 _WRITER_TOOLS = {'.docx': 'docx_write', '.xlsx': 'xlsx_write', '.pptx': 'pptx_write', '.pdf': 'pdf_save'}
 
 
+# "…ダウンロードした PDF も同じフォルダーに保存": the request asks to keep the PDF and gives it no name.
+PDF_COPY_KEY, PDF_COPY = '\0pdf-copy', 'ダウンロードした PDF（保存する名前は任意）'
+_PDF_KEEP = re.compile(
+    r'(?:ダウンロード|取得|入手)した\s*(?:PDF|ＰＤＦ)\s*(?:ファイル)?\s*(?:も|を|は)[^。\n、を]{0,30}(?:保存|保管|残し|置い)'
+    r'|(?:PDF|ＰＤＦ)\s*(?:ファイル)?\s*(?:自体|本体|そのもの)?\s*も[^。\n、を]{0,30}(?:保存|保管|残し|置い)'
+    r'|(?:PDF|ＰＤＦ)\s*(?:ファイル)?\s*を[^。\n、を読開参]{0,24}(?:保存|保管)'
+    r'|\b(?:save|keep|store)\s+(?:a\s+copy\s+of\s+)?(?:the\s+)?(?:downloaded\s+|original\s+|source\s+)?pdf\b', re.I)
+
+
+def asks_to_keep_pdf(text):
+    """The request asks to save the PDF itself ("PDF も保存", "save the PDF"), not only something made from it."""
+    return isinstance(text, str) and _PDF_KEEP.search(_LINK.sub(' ', text)) is not None
+
+
 def _writer_tool(name):
     """The file tool that creates a file of this kind."""
+    if name == PDF_COPY:
+        return 'pdf_save'
     return _WRITER_TOOLS.get(PureWindowsPath(name).suffix.lower(), 'write_text')
 
 
@@ -566,6 +582,11 @@ class VerificationMixin:
                     continue
             expected[key], added = name, True
             run.setdefault('_output_before', {})[key] = {path: state for path, (_, state) in there.items()}
+        if (asks_to_keep_pdf(text) and PDF_COPY_KEY not in expected and len(expected) < _MAX_OUTPUTS
+                and not any(key.endswith('.pdf') for key in expected)):
+            # Real-machine case: "…and save the downloaded PDF in the same folder", without a name. No PDF was
+            # saved, the document said it had been, and the run was "done". The copy is a deliverable too.
+            expected[PDF_COPY_KEY], added = PDF_COPY, True
         if added:
             run['_outputs_gated'] = False
             self._outputs_publish(run)
@@ -646,7 +667,8 @@ class VerificationMixin:
     def _outputs_missing(self, run):
         saved = run.get('_saved_names') or set()
         return [name for key, name in (run.get('_expected_outputs') or {}).items()
-                if key not in saved and not self._file_present(run, name)]
+                if (not any(item.endswith('.pdf') for item in saved) if key == PDF_COPY_KEY
+                    else key not in saved and not self._file_present(run, name))]
 
     def _outputs_incomplete(self, run):
         """The work has ended and a file the request names is still not there.
