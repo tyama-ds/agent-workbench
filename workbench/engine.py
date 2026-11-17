@@ -33,12 +33,12 @@ from .questions import QuestionFallbackMixin
 from .providers import (ProviderClient, ProviderContextOverflowError, ProviderError, ProviderOutputLimitError,
                         ProviderTimeoutError)
 from .python_runner import execute_python
-from .selenium_runner import execute_page, execute_selenium
+from .selenium_runner import execute_fetch, execute_page, execute_selenium
 from .browser_search import SearchCache, SearchChallenge
 from .resources import ResourceGate
 from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .webtools import WebTools
-from .pdfdocs import PdfLibrary, PdfToolMixin, PDF_READ_TOOL, MAX_PDF_BYTES
+from .pdfdocs import PdfLibrary, PdfToolMixin, PDF_READ_TOOL, PDF_SEARCH_TOOL, MAX_PDF_BYTES
 from .history import HistoryStore, HistoryError, ArchivedReadOnly, public_document, archived_view, redact_tree as redact_history_tree
 from .securestore import CredentialStore, CredentialStorageError, SEARCH_BINDING
 from .ordered_engine import OrderedCollaborationMixin, ORDERED_NAMES
@@ -1013,10 +1013,12 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 '保存済み設定のパスを確認し、現在のPCに合わせて保存してから作業を開始してください。', field='settings')
         if len(self.runs) >= 20:
             raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動後も保存済み履歴は閲覧専用で残ります。今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます')
-        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team', 'approval_mode'}:
+        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team', 'approval_mode', 'browser_fetch'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
         if type(payload.get('adaptive_team', False)) is not bool:
             raise AdmissionError('invalid_adaptive_team', 'adaptive_teamは真偽値です。', field='adaptive_team')
+        if type(payload.get('browser_fetch', False)) is not bool:
+            raise AdmissionError('invalid_browser_fetch', 'browser_fetch は真偽値です。', field='browser_fetch')
         if payload.get('approval_mode', 'ask') not in {'ask', 'always_allow'}:
             raise AdmissionError('invalid_approval_mode', '承認の扱いは ask または always_allow です。', field='approval_mode')
         if 'ordered_reference' in payload:
@@ -1072,7 +1074,34 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         web_tools.use_pdf_library(self.pdf_library, config['limits']['max_pdf_bytes'])
         if config['search']['provider'] == 'browser':
             web_tools.use_browser(self._browser_page(config, harness))
+        if self._browser_fetch_chosen(config, payload):
+            web_tools.use_browser_fetch(self._browser_fetcher(config, harness))
         return task, config, pms, workers, count, harness, web_tools
+
+    @staticmethod
+    def _browser_fetch_chosen(config, payload):
+        """This work may open a browser window once for a refused address: the human's choice at start, else the setting."""
+        return bool(config['search']['enabled'] and payload.get('browser_fetch', config['search']['browser_fetch']))
+
+    def _browser_fetcher(self, config, harness):
+        """Opens one address once in a visible window of the configured browser (a fresh profile, deleted afterwards)."""
+        async def fetch(url, max_download_bytes):
+            try:
+                return await execute_fetch(config['selenium'], config['python'], harness, url,
+                                           proxy_url=config['search']['proxy_url'], max_download_bytes=max_download_bytes)
+            except HarnessError as exc:
+                raise ValueError(str(exc)) from None
+        return fetch
+
+    def _browser_tries_publish(self, run, agent):
+        """Each try in a browser window is recorded where the human follows the work: the event list and the agent's log."""
+        log = getattr(run.get('_web'), 'browser_log', None)
+        while log:
+            row = log.pop(0)
+            outcome = {'success': '成功', 'refused': '拒否'}.get(row['outcome'], '失敗')
+            text = f"ブラウザで試行 → {outcome}（{self.redact(row['detail'])[:200]}）: {self.redact(row['url'])[:200]}"
+            self.log(agent, 'notice', text)
+            self.event(run['id'], agent.id, 'browser_fetch', f'{agent.name}: {text}')
 
     def _browser_page(self, config, harness):
         """Browser search opens pages only through this: the configured browser, the application's own profile."""
@@ -1155,6 +1184,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                # Phase 7: the human's approval choice for this run (settings
                # default, or always_allow chosen at start) and the memo snapshot.
                'approval_mode': payload.get('approval_mode', config['approvals']['mode']),
+               # Whether this work may open a browser window once for a refused address (off unless chosen).
+               'browser_fetch': self._browser_fetch_chosen(config, payload),
                '_memo': self.redact(self.memo.text)}
         if payload.get('adaptive_team'):
             run['adaptive_team'] = True
@@ -1363,6 +1394,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             raise ValueError(eligibility['message'])
         self.enqueue(agent, content, human=True)
         run.setdefault('_known_urls', set()).update(sources.extract(content))
+        self._pdf_mentioned(run, content)
         self._tests_note_request(run, content)
         self._outputs_note_request(run, content)
         run['status'] = 'running'
@@ -2120,7 +2152,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         if run['_config']['search']['enabled']:
             tools += run['_web'].schemas()
         if self._pdf_available(run):
-            tools.append(PDF_READ_TOOL)
+            tools += [PDF_READ_TOOL, PDF_SEARCH_TOOL]
         if agent.parent_id:
             excluded = {'start_ordered_work', 'review_work_step', 'rollback_work_step'}
             if self._hierarchy_spawn_issue(run, agent):
@@ -3305,13 +3337,16 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                     result = await self._search_human_check(run, agent, args, challenge)
                 finally:
                     self._search_use(run)
+                    self._browser_tries_publish(run, agent)
                 result = self._urls_seen(run, result, args)
                 self._pages_note(run, name, args, result)
+                if isinstance(result, dict) and (result.get('pdf_id') or result.get('pdf_links')):
+                    run['_pdf_touched'] = True  # from the next turn the guidance on PDFs is part of the instructions
                 return result
         if name in {'propose_memo', 'search_past_work'}:
             return await self._memo_or_history_tool(run, agent, name, args)
-        if name == 'pdf_read':
-            result = await self._pdf_read(run, agent, args)
+        if name in {'pdf_read', 'pdf_search'}:
+            result = await self._pdf_read(run, agent, args, name)
             self._outputs_read(run, agent, args, result)
             return self._urls_seen(run, result)
         self._source_check(run, agent, name, args)

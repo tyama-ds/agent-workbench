@@ -141,6 +141,21 @@ def _pdf_too_large(declared: int | None, limit: int) -> str:
               "or save the file into a read folder.")
 
 
+BROWSER_TRY_STATUSES = frozenset({403, 202})  # a filter's answers; a missing page or a rate limit is not retried
+_CHECK_WORDS = ("access denied", "captcha", "are you a robot", "are you human", "verify you are human", "verifying you are human",
+                "unusual traffic", "just a moment", "attention required", "request blocked", "bot detection",
+                "security check", "アクセスが拒否", "ロボットではありません", "人間であることを確認")
+
+
+def _person_check(title: str, html_text: str) -> bool:
+    """The page is a refusal or a check meant for a person, not the content asked for (by its title or its short text)."""
+    title = title.casefold()
+    if any(word in title for word in _CHECK_WORDS):
+        return True
+    start = html_text[:6000].casefold()
+    return len(html_text) < 6000 and any(word in start for word in _CHECK_WORDS)
+
+
 def _retry_next_address(exc: BaseException) -> bool:
     """Only failures that happen before any request bytes are sent."""
     if isinstance(exc, aiohttp.ClientHttpProxyError):  # the proxy could not open its tunnel
@@ -509,6 +524,10 @@ class WebTools:
         self.max_bytes = config.get("max_response_bytes", 1024 * 1024)
         self._snapshots = WebSnapshots()
         self._search_cache = {}
+        # One try in a visible browser window for an address that refused the ordinary request: only when the
+        # human allowed it for this work (the engine then supplies the opener). What was tried, and how it ended.
+        self._browser_fetch, self._browser_tried, self._browser_refused_hosts = None, {}, set()
+        self._browser_unavailable, self.browser_log = "", []
         # PDFs this run downloaded (pdf_id -> its record); the library that keeps them is the application's.
         self._pdf_library, self._pdf_bytes, self.pdf_ids = None, 0, {}
         if type(self.timeout) not in {int, float} or not 1 <= self.timeout <= 60:
@@ -666,8 +685,14 @@ class WebTools:
                 raise WebToolError("web_fetch requires only url" + received_names(set(args) - {"url"}))
             _url(args["url"])
             wants_pdf = self._pdf_library is not None
-            data, content_type, final_url = await (self._request(args["url"], pdf=(self._pdf_bytes, PDF_SECONDS))
-                                                   if wants_pdf else self._request(args["url"]))
+            try:
+                data, content_type, final_url = await (self._request(args["url"], pdf=(self._pdf_bytes, PDF_SECONDS))
+                                                       if wants_pdf else self._request(args["url"]))
+            except _HTTPStatusError as refused:
+                if self._browser_fetch is None or refused.status not in BROWSER_TRY_STATUSES:
+                    raise
+                # The human allowed one try in a browser window for this work.
+                return await self._browser_once(args["url"], refused)
             mime = _mime(content_type)
             if wants_pdf and _pdf_answer(content_type, _url(final_url).path):
                 return await self._pdf_fetched(data, final_url)
@@ -681,29 +706,7 @@ class WebTools:
                 text, decoding = decode_web_text(data, mime, content_type)
             except TextDecodingError as exc:
                 raise WebToolError(str(exc)) from exc
-            pdf_links, left_out = [], 0
-            if mime in {"text/html", "application/xhtml+xml"}:
-                parser = _TextHTML()
-                parser.feed(text)
-                parser.close()
-                text = "".join(parser.parts)
-                pdf_links, left_out = parser.pdf_links(final_url)
-            # Do not turn malformed JSON into valid JSON by deleting controls.
-            # Plain-text JSON candidates also retain their decoded source bytes.
-            json_candidate = mime == "application/json" or (mime == "text/plain" and text.lstrip().startswith(("{", "[")))
-            cleaned = text[:MAX_TEXT_CHARS + 1] if json_candidate else _clean_text(text, MAX_TEXT_CHARS + 1)
-            try:
-                result = self._snapshots.capture(cleaned[:MAX_TEXT_CHARS], url=final_url, content_type=mime,
-                    decoding=decoding, source_sha256=hashlib.sha256(data).hexdigest(), source_bytes=len(data),
-                    source_truncated=len(cleaned) > MAX_TEXT_CHARS, json_candidate=json_candidate)
-            except WebDataError as exc:
-                raise WebToolError(str(exc)) from None
-            if pdf_links:
-                # The page's own links to PDF files (untrusted, like its text): the way to a report it describes.
-                result["pdf_links"] = pdf_links
-                result["pdf_links_note"] = ("PDF files this page links to" + (f" ({left_out} more not listed)" if left_out else "")
-                                            + ". Fetch one with web_fetch, then read it with pdf_read.")
-            return result
+            return self._text_result(text, mime, final_url, decoding, data)
         if name != "web_search":
             raise WebToolError("Unknown web tool")
         if set(args) - {"query", "limit"} or "query" not in args:
@@ -717,6 +720,116 @@ class WebTools:
             raise WebToolError(f"Search limit must be an integer 1..10; got {received(limit)}")
         limit = min(limit, 10)  # a larger request is capped, not refused
         return await self._queued_search(query, limit)
+
+    def _text_result(self, text: str, mime: str, final_url: str, decoding: dict, data: bytes, truncated: bool = False) -> dict:
+        """The snapshot and preview of a decoded text answer (HTML is reduced to its text and its PDF links)."""
+        pdf_links, left_out = [], 0
+        if mime in {"text/html", "application/xhtml+xml"}:
+            parser = _TextHTML()
+            parser.feed(text)
+            parser.close()
+            text = "".join(parser.parts)
+            pdf_links, left_out = parser.pdf_links(final_url)
+        # Do not turn malformed JSON into valid JSON by deleting controls.
+        # Plain-text JSON candidates also retain their decoded source bytes.
+        json_candidate = mime == "application/json" or (mime == "text/plain" and text.lstrip().startswith(("{", "[")))
+        cleaned = text[:MAX_TEXT_CHARS + 1] if json_candidate else _clean_text(text, MAX_TEXT_CHARS + 1)
+        try:
+            result = self._snapshots.capture(cleaned[:MAX_TEXT_CHARS], url=final_url, content_type=mime,
+                decoding=decoding, source_sha256=hashlib.sha256(data).hexdigest(), source_bytes=len(data),
+                source_truncated=truncated or len(cleaned) > MAX_TEXT_CHARS, json_candidate=json_candidate)
+        except WebDataError as exc:
+            raise WebToolError(str(exc)) from None
+        if pdf_links:
+            # The page's own links to PDF files (untrusted, like its text): the way to a report it describes.
+            result["pdf_links"] = pdf_links
+            result["pdf_links_note"] = ("PDF files this page links to" + (f" ({left_out} more not listed)" if left_out else "")
+                                        + ". Fetch one with web_fetch, then read it with pdf_read.")
+        return result
+
+    # --- one try in a browser window, when the human allowed it for this work ------------------
+    BROWSER_TRIES = 5  # windows one piece of work may open
+
+    def use_browser_fetch(self, fetcher) -> None:
+        """fetcher(url, max_download_bytes) opens the address once in a visible window (see selenium_runner.execute_fetch)."""
+        self._browser_fetch = fetcher
+
+    def _browser_record(self, url: str, outcome: str, detail: str) -> None:
+        self._browser_tried[url] = detail
+        self.browser_log.append({"url": url, "outcome": outcome, "detail": detail})
+
+    async def _browser_once(self, url: str, refused: _HTTPStatusError) -> dict:
+        ask = (" Do not fetch this address again. Ask the human with ask_user to open it in their own browser and save the "
+               "file into a read folder (then read it by path), or use another official source.")
+        parsed = _url(url)
+        host = parsed.hostname
+        if url in self._browser_tried:
+            raise WebToolError(f"{refused}. A browser window already tried this address once in this work ({self._browser_tried[url]})." + ask)
+        if self._browser_unavailable:
+            raise WebToolError(f"{refused}. A browser window cannot be opened here ({self._browser_unavailable})." + ask)
+        if host in self._browser_refused_hosts:
+            raise WebToolError(f"{refused}. This site also refused the browser window earlier in this work; it is not opened there again." + ask)
+        if len(self._browser_tried) >= self.BROWSER_TRIES:
+            raise WebToolError(f"{refused}. A browser window was opened {self.BROWSER_TRIES} times in this work, which is the most it may." + ask)
+        # The same address rule as every fetch: public addresses only.
+        await _public_addresses(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+        self._browser_tried[url] = "started"
+        try:
+            page = await self._browser_fetch(url, self._pdf_bytes or self.max_bytes)
+        except ValueError as exc:
+            # Not Windows, no browser or driver set, or the browser did not start: said once, never tried again.
+            self._browser_unavailable = str(exc)[:300]
+            self._browser_record(url, "failed", "the browser could not be opened: " + self._browser_unavailable)
+            raise WebToolError(f"{refused}. A browser window was to try once, but could not be opened: {self._browser_unavailable}." + ask) from None
+        kind = page.get("kind")
+        if kind == "download":
+            data = page.get("data") or b""
+            if self._pdf_library is None or not looks_like_pdf(data):
+                self._browser_record(url, "failed", "a file was saved that is not a PDF; nothing was kept")
+                raise WebToolError(f"{refused}. The browser window saved a file, but it is not a PDF; nothing was kept." + ask)
+            try:
+                result = await self._pdf_fetched(data, url)
+            except WebToolError as exc:
+                self._browser_record(url, "failed", "the PDF was saved but could not be read")
+                raise WebToolError(f"The browser window saved the PDF, but it could not be read: {exc}") from None
+            self._browser_record(url, "success", f"PDF saved, {result.get('pages')} pages")
+            return self._browser_marked(result)
+        if kind == "too_large":
+            self._browser_record(url, "failed", "the file is larger than the PDF size limit")
+            raise WebToolError(_pdf_too_large(page.get("bytes") or None, self._pdf_bytes or self.max_bytes))
+        if kind in {"closed", "timeout"}:
+            detail = "the window was closed before anything arrived" if kind == "closed" else "nothing arrived in time"
+            self._browser_record(url, "failed", detail)
+            raise WebToolError(f"{refused}. A browser window tried once: {detail}." + ask)
+        status, final = page.get("status") or 0, page.get("url") or url
+        check = _person_check(page.get("title", ""), page.get("html", ""))
+        if status >= 400 or status == 202 or check:
+            self._browser_refused_hosts.add(host)
+            detail = (f"refused (HTTP {status})" if status >= 400 or status == 202 else "the site showed a check meant for a person")
+            self._browser_record(url, "refused", detail)
+            raise WebToolError(f"{refused}. A browser window tried once and was also turned away: {detail}. "
+                               "The application does not solve such checks or disguise the browser." + ask)
+        if _mime(page.get("content_type", "")) == "application/pdf":
+            self._browser_record(url, "failed", "the PDF was shown in the window but not saved")
+            raise WebToolError(f"{refused}. The browser window showed the PDF but did not save it." + ask)
+        try:
+            final_parsed = _url(final)
+            await _public_addresses(final_parsed.hostname, final_parsed.port or (443 if final_parsed.scheme == "https" else 80))
+        except WebToolError:
+            self._browser_record(url, "failed", "the page led to an address that is not allowed")
+            raise WebToolError(f"{refused}. The browser window was led to an address that is not allowed; nothing was kept." + ask) from None
+        html_text = page.get("html", "")
+        result = self._text_result(html_text, "text/html", final, {"encoding": "utf-8", "encoding_source": "browser", "encoding_assumed": False},
+                                   html_text.encode("utf-8"), truncated=page.get("truncated") is True)
+        self._browser_record(url, "success", "page read")
+        return self._browser_marked(result)
+
+    @staticmethod
+    def _browser_marked(result: dict) -> dict:
+        result["fetched_with"] = "browser window"
+        result["fetched_note"] = ("The site refused the ordinary request; the human allowed one try in a visible browser window "
+                                  "for this work, and this is what it showed.")
+        return result
 
     def use_pdf_library(self, library, max_bytes: int) -> None:
         """Where downloaded PDFs are kept, and how large one may be (the human's setting)."""

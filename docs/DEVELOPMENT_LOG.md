@@ -4,6 +4,44 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev72 — A figure is found by its words and checked before it is reported; one try in a browser window (2026-11-17)
+
+dev71 on the real machine: the 124-page World Economic Outlook, saved by the
+human, was summarised into a document and slides in five minutes, and the
+headline figures were wrong. World growth was given as 2.6 % and 2.7 % where
+the text says 3.1 % and 3.4 %; the table had a third set of numbers; world
+inflation was "not confirmed" although it stands on the same page; the
+table's source was given as pages 39 to 44 instead of page 26 (printed 10).
+The country figures were right. The request had asked for a check against
+the PDF before finishing.
+
+- `pdf_search` finds words, a table or row label or a number and returns the
+  pages with what stands around the match (case and line breaks ignored).
+  Reading a long report page after page is how the numbers were mixed up;
+  `find` inside `pdf_read` was not used and is gone.
+- Every page returned carries its position in the file and, where the file
+  prints other numbers, the printed one (`page` 26, `printed_page` 10), and
+  so does the outline.
+- Policy for work with a PDF: find by search, read only those pages; each
+  figure with its page and the words it comes from; one form of page
+  citation; before finishing, look each headline figure up again and
+  correct what differs, and never replace a figure that cannot be found.
+  This guidance now joins the instructions only once a PDF is part of the
+  work, which keeps other work's instructions shorter than before.
+- `search.browser_fetch`, off by default, and the same choice per piece of
+  work on the start screen: the owner wants to see, once, what an ordinary
+  browser gets where `web_fetch` is refused. The address is loaded once in a
+  visible window of the configured browser with a new profile; a PDF is
+  saved into the job's private folder and taken in; the window is closed
+  whatever happens. Nothing is clicked, nothing disguises the browser, and
+  a check meant for a person ends the try. One try per address, five
+  windows per piece of work, none for a site that turned the window away;
+  each try is an event the human sees.
+
+Not verified here: no browser is started in the tests (the worker runs
+against a fake driver, the engine against a fake opener); whether Edge
+saves the PDF with these preferences is for the real machine.
+
 ## 0.1.1.dev71 — Protected PDFs that open for anyone are read; nothing a PDF raises stops a turn (2026-11-17)
 
 dev70 on the real machine (`7aa3e18`): the WEO's executive summary was

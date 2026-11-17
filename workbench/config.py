@@ -290,6 +290,10 @@ def validate_settings(raw, *, check_paths=True):
         if search['endpoint'] != DUCKDUCKGO_ENDPOINT.rstrip('/'):
             raise ValueError('DuckDuckGo の接続先は固定です')
         search['endpoint'] = DUCKDUCKGO_ENDPOINT
+    # A refused page or PDF may be opened once in a visible browser window: only when the human turns this on
+    # (it is also chosen per piece of work on the start screen).
+    if type(search['browser_fetch']) is not bool:
+        raise ValueError('取得が拒否されたときにブラウザで試すかどうかは true / false で指定してください')
     # Kept as an empty compatibility field; search never reads a key from the environment.
     search['api_key_env'] = ''
     local = value['local']

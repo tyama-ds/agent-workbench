@@ -849,3 +849,18 @@ the human turned it on (0.1.1.dev61; off by default).
   the links of a page that name a PDF (`pdf_links`).
 - `VerificationMixin._pdf_note` records, per downloaded PDF, the pages read;
   `_citation_rows` shows them beside a citation (kind `pdf`).
+
+## Figures out of a PDF, and one try in a browser window (0.1.1.dev72)
+
+- `pdfdocs._find` answers `pdf_search` on each page's text flattened to one
+  line (`_Document.flat`). `_Document.head` gives every returned page its
+  position and, where the file prints other numbers, `printed_page`.
+  `PdfToolMixin._pdf_policy` adds the PDF guidance only when
+  `run['_pdf_touched']` is set or the request names a PDF.
+- `selenium_worker.run_fetch_job` (mode `fetch`) loads one address in a
+  visible window with a new profile and reports a download, a page, a closed
+  window, a timeout or an oversized file; `selenium_runner.execute_fetch`
+  starts it in the browser Job and reads the result and the file back.
+  `WebTools._browser_once` decides whether a window is opened at all (the
+  opener is set only when the run has `browser_fetch`), and what its result
+  means; `Engine._browser_tries_publish` turns each try into an event.

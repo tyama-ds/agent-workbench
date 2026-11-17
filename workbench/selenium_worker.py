@@ -217,6 +217,114 @@ def _page_options(options, job, workspace):
     return options
 
 
+def _fetch_options(options, job, workspace):
+    """One try of a refused address: an ordinary window on the screen, a fresh profile that is deleted afterwards.
+
+    Nothing here hides that the browser is driven by a program: no changed
+    User-Agent, no removed automation marks, no headless mode. A PDF is saved
+    into this job's private folder instead of being shown in the viewer.
+    """
+    options.binary_location = job['browser_executable']
+    for value in ('--disable-extensions', '--no-first-run', '--no-default-browser-check',
+                  '--disable-component-update', '--disable-sync', '--remote-debugging-pipe',
+                  '--window-size=1180,860', '--window-position=60,40', f'--user-data-dir={workspace / "profile"}'):
+        options.add_argument(value)
+    proxy = validate_proxy(job.get('proxy_url', ''))
+    options.add_argument(f'--proxy-server={proxy}' if proxy else '--no-proxy-server')
+    options.add_experimental_option('prefs', {
+        'credentials_enable_service': False,
+        'profile.password_manager_enabled': False,
+        'autofill.profile_enabled': False,
+        'autofill.credit_card_enabled': False,
+        'download.default_directory': str(workspace / 'downloads'),
+        'download.prompt_for_download': False,
+        'plugins.always_open_pdf_externally': True,
+        'profile.default_content_setting_values.automatic_downloads': 2,
+    })
+    return options
+
+
+_PARTIAL = ('.crdownload', '.tmp', '.partial')
+_STATUS = ("const e = performance.getEntriesByType('navigation')[0];"
+           "return [e && typeof e.responseStatus === 'number' ? e.responseStatus : 0, String(document.contentType || ''),"
+           " String(document.readyState || '')];")
+
+
+def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, sleep=time.sleep):
+    """Load one address once in a visible window and report what came: a saved file, a page, or neither.
+
+    Nothing is clicked, typed or solved. The window is closed whatever happens.
+    Returns {kind: download|page|closed|timeout|too_large, url, status, content_type, title, html, truncated, file, bytes}.
+    """
+    url = validate_url(job['url'])
+    wait, maximum, largest = job['wait_seconds'], job['max_page_chars'], job['max_download_bytes']
+    if type(wait) is not int or not 5 <= wait <= 300:
+        raise ValueError('Invalid fetch wait')
+    if type(maximum) is not int or not 10000 <= maximum <= 4000000:
+        raise ValueError('Invalid page size limit')
+    if type(largest) is not int or not 1024 <= largest <= 1024 * 1024 * 1024:
+        raise ValueError('Invalid download size limit')
+    downloads = workspace / 'downloads'
+    downloads.mkdir(exist_ok=True)
+    result = {'kind': 'timeout', 'url': url, 'status': 0, 'content_type': '', 'title': '', 'html': '',
+              'truncated': False, 'file': '', 'bytes': 0}
+    driver = (driver_factory or create_driver)(job, workspace)
+    try:
+        driver.set_page_load_timeout(45)
+        driver.set_script_timeout(5)
+        driver.implicitly_wait(0)
+        driver.execute_cdp_cmd('Browser.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': str(downloads)})
+        started = clock()
+        try:
+            driver.get(url)
+        except Exception:
+            pass  # an address that starts a download does not "load"; what arrived is looked at below
+        deadline, last = started + wait, None
+        while True:
+            files = sorted(item for item in downloads.iterdir() if item.is_file())
+            sizes = [(item.name, item.stat().st_size) for item in files]
+            if any(size > largest for _, size in sizes):
+                result.update(kind='too_large', bytes=max(size for _, size in sizes))
+                break
+            whole = [row for row in sizes if not row[0].lower().endswith(_PARTIAL)]
+            if whole and len(whole) == len(sizes) and sizes == last:
+                # Present and unchanged since the last look: the download is finished.
+                result.update(kind='download', file=whole[0][0], bytes=whole[0][1])
+                break
+            last = sizes
+            try:
+                status, content_type, ready = driver.execute_script(_STATUS)
+                current = str(driver.current_url)
+            except Exception:
+                if not sizes:
+                    result['kind'] = 'closed'  # the person closed the window
+                    break
+                status, content_type, ready, current = 0, '', '', ''
+            if (not sizes and ready == 'complete' and current.startswith(('http://', 'https://'))
+                    and clock() - started >= 2):
+                # A page stands in the window and no download began.
+                result.update(kind='page', status=status if type(status) is int and 0 <= status <= 599 else 0,
+                              content_type=str(content_type)[:80])
+                break
+            if clock() >= deadline:
+                break
+            sleep(.5)
+        if result['kind'] == 'page':
+            html = str(driver.page_source).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')
+            try:
+                result['url'] = validate_url(driver.current_url)
+            except ValueError:
+                pass
+            result.update(title=str(driver.title).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')[:500],
+                          html=html[:maximum], truncated=len(html) > maximum)
+        return result
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass  # the parent Job stops every descendant either way
+
+
 def run_page_job(job, workspace, *, driver_factory=None):
     """Open one page and return its HTML once ``ready_selector`` matches or the wait ends.
 
@@ -287,7 +395,7 @@ def create_driver(job, workspace):
     service = Service(executable_path=job['driver_executable'],
                       service_args=['--allowed-ips=127.0.0.1'], log_output=subprocess.DEVNULL,
                       popen_kw={'creation_flags': _DETACHED_PROCESS})
-    build = _page_options if job.get('mode') == 'page' else _options
+    build = {'page': _page_options, 'fetch': _fetch_options}.get(job.get('mode'), _options)
     return factory(service=service, options=build(options, job, workspace))
 
 
@@ -423,7 +531,8 @@ def main():
     if not isinstance(libraries, list) or len(libraries) > 32 or not all(isinstance(x, str) for x in libraries):
         raise ValueError('Invalid Selenium library folders')
     sys.path.extend(libraries)
-    result = run_page_job(job, workspace) if job.get('mode') == 'page' else run_job(job, workspace)
+    run = {'page': run_page_job, 'fetch': run_fetch_job}.get(job.get('mode'), run_job)
+    result = run(job, workspace)
     (workspace / 'result.json').write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
 
 
