@@ -80,6 +80,11 @@ def _writer_tool(name):
     return _WRITER_TOOLS.get(PureWindowsPath(name).suffix.lower(), 'write_text')
 
 
+def _reader_tool(name):
+    """The file tool that reads a file of this kind."""
+    return {'.docx': 'docx_read', '.xlsx': 'xlsx_read', '.pptx': 'pptx_read'}.get(PureWindowsPath(name).suffix.lower(), 'read_text')
+
+
 def named_files(text):
     """File names a request mentions (base names, in order, without those inside URLs)."""
     if not isinstance(text, str):
@@ -328,12 +333,55 @@ class VerificationMixin:
                 continue
         return False
 
-    def _outputs_saved(self, run, path):
-        """A successful save: remember the file's name for the deliverable check."""
+    def _outputs_saved(self, run, path, agent=None, sha256=None):
+        """A successful save: remember the file's name, its content hash and who wrote it."""
         name = PureWindowsPath(str(path)).name.casefold()
         run.setdefault('_saved_names', set()).add(name)
+        if agent is not None and isinstance(sha256, str):
+            record = run.setdefault('_output_writes', {}).setdefault(name, {'writers': {}})
+            record['sha256'] = sha256
+            record['writers'][agent.id] = agent.name
+            record['last'] = agent.name
         if name in (run.get('_expected_outputs') or {}):
             self._outputs_publish(run)
+
+    def _outputs_read(self, run, agent, args, result):
+        """The root coordinator read a file: remember which content it saw."""
+        if (agent.parent_id is None and isinstance(args, dict) and isinstance(args.get('path'), str)
+                and isinstance(result, dict) and isinstance(result.get('sha256'), str)):
+            run.setdefault('_output_reads', {})[PureWindowsPath(args['path']).name.casefold()] = result['sha256']
+
+    def _readback_gate(self, run, agent):
+        """Once per request: the root coordinator reports on a requested file that teammates wrote and it has not read since.
+
+        Real-machine case: three workers were to fill one workbook. One could
+        not reserve it and wrote nothing, two wrote into different sheets, and
+        the coordinator reported "three countries, two indicators" without
+        having looked. What a coordinator wrote itself it knows; what others
+        wrote it has to read before it vouches for it.
+        """
+        if agent.parent_id is not None or run.get('_readback_gated') or not run.get('_expected_outputs'):
+            return None
+        if run.get('adaptive_team'):
+            # An automatically formed team already has an independent reviewer read the saved
+            # file and accept it before the coordinator may finish.
+            return None
+        if self._others_active(run, agent):
+            return None
+        reads, unread = run.get('_output_reads') or {}, []
+        for key, name in run['_expected_outputs'].items():
+            record = (run.get('_output_writes') or {}).get(key)
+            if record and set(record['writers']) - {agent.id} and reads.get(key) != record.get('sha256'):
+                unread.append(f"{self.redact(name)} (last saved by {self.redact(record['last'])}; read it with {_reader_tool(name)})")
+        if not unread:
+            return None
+        run['_readback_gated'] = True
+        return ('[application notice] You are reporting completion, but teammates wrote these requested files and you have not '
+                'read them since they were last saved: ' + '; '.join(unread) + '. Read each one now and compare it with the request: '
+                'is every item that was asked for there (every country, every row), in one place, with nothing left over from an '
+                'earlier attempt? For a workbook, look at the sheets the result lists and read every sheet that holds data. '
+                'If something is missing or scattered, write the file yourself from the values your workers reported, read it '
+                'once more, and only then finish. Report what the file really contains, not what was planned.')
 
     def _outputs_missing(self, run):
         saved = run.get('_saved_names') or set()
@@ -380,6 +428,9 @@ class VerificationMixin:
         text = self._outputs_gate(run, agent)
         if text:
             return 'outputs_missing', text
+        text = self._readback_gate(run, agent)
+        if text:
+            return 'outputs_unread', text
         text = self._tests_gate(run, agent)
         if text:
             return 'tests_not_passed', text

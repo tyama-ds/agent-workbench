@@ -773,3 +773,128 @@ async def test_a_worker_that_asked_its_coordinator_something_may_wait_for_the_an
         assert client.refusals == [] and client.asked and run['status'] == 'done'
     finally:
         await engine.close()
+
+
+# --- several workers and one file: who may write, and whether the coordinator has looked ---------------
+
+@pytest.mark.asyncio
+async def test_a_refused_reservation_says_who_holds_it_and_what_to_do_and_its_end_is_announced(tmp_path):
+    """Real-machine case: three workers were to fill stats.xlsx. One reserved it, one was refused with
+    「別の作業者がこの範囲を予約中」 and wrote nothing, one wrote into another sheet."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='日米独の統計を stats.xlsx にまとめる', max_workers=3)
+        first, second = [engine.agents[(await engine.execute_tool(run, pm, 'spawn_worker', {
+            'role': role, 'task': f'{role}の値を調べる', 'profile_id': 'local'}))['agent_id']] for role in ('米国', '日本')]
+        first.pending.clear()
+        await engine.execute_tool(run, first, 'reserve_paths', {'paths': ['stats.xlsx']})
+        with pytest.raises(ValueError) as refused:
+            await engine.execute_tool(run, second, 'reserve_paths', {'paths': ['stats.xlsx']})
+        text = str(refused.value)
+        assert text.startswith(f'別の作業者がこの範囲を予約中です（{first.name}）')
+        for phrase in ('finish_work の報告に値ごと書いて PM に渡し', '別のファイル名や別のシートに書いて済ませないでください',
+                       '外れたらアプリが知らせる', 'wait_for_message'):
+            assert phrase in text, phrase
+        with pytest.raises(ValueError, match='予約中'):       # writing without a reservation is refused the same way
+            await engine.execute_tool(run, second, 'write_text', {'path': 'stats.xlsx', 'text': 'x', 'expected_sha256': 'missing'})
+        second.pending.clear()
+        # The holder lets go: the worker that was turned away is told, once, and nobody else is.
+        await engine.execute_tool(run, first, 'release_paths', {})
+        told = [str(content) for content, _human in second.pending]
+        assert len(told) == 1 and 'stats.xlsx の予約が外れました' in told[0] and 'reserve_paths からやり直して' in told[0]
+        assert not any('予約が外れました' in str(content) for content, _human in pm.pending)
+        await engine.execute_tool(run, second, 'reserve_paths', {'paths': ['stats.xlsx']})
+        second.pending.clear()
+        await engine.execute_tool(run, second, 'release_paths', {})
+        assert not second.pending and not first.pending and engine._reservation_waiters == {}
+        # A worker that has already finished is not woken for it.
+        await engine.execute_tool(run, first, 'reserve_paths', {'paths': ['stats.xlsx']})
+        with pytest.raises(ValueError, match='予約中'):
+            await engine.execute_tool(run, second, 'reserve_paths', {'paths': ['stats.xlsx']})
+        second.status = 'done'
+        second.pending.clear()
+        await engine.execute_tool(run, first, 'release_paths', {})
+        assert not second.pending
+        assert 'One file has one writer' in engine._policy(run, pm)
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_a_pm_reads_a_requested_file_its_workers_wrote_before_it_reports_on_it(tmp_path):
+    """Real-machine case: the workbook held two of three countries and the PM reported all three."""
+    class Team:
+        notices, reads = [], 0
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            last = str(messages[-1]['content'])
+            if '"assigned_role"' in system:
+                return reply(calls=[('write_text', {'path': 'table.txt', 'text': '米国 2.8\nドイツ 0.2\n', 'expected_sha256': 'missing'}),
+                                    ('finish_work', {'summary': 'table.txt に米国とドイツを書きました。日本は書けませんでした。'})])
+            workers = [agent for agent in engine.agents.values() if agent.parent_id]
+            if not workers:
+                return reply(calls=[('spawn_worker', {'role': '集計', 'task': '表を書く', 'profile_id': 'local'}), ('wait_for_workers', {})])
+            if 'outputs_unread' in last:
+                self.notices.append(last)
+                return reply(calls=[('read_text', {'path': 'table.txt'})])
+            if '"text": "米国 2.8' in last or '米国 2.8\\n' in last:
+                self.reads += 1
+                return reply(calls=[('finish_work', {'summary': 'table.txt は米国とドイツの2か国です。日本は未記入です。'})])
+            return reply(calls=[('review_worker_report', {'worker_id': workers[0].id, 'result_revision': workers[0].result_revision,
+                                                          'decision': 'accept'}),
+                                ('finish_work', {'summary': '3か国の表 table.txt を作成しました。'})])   # without having looked
+    client = Team()
+    engine, work = configured(tmp_path, client)
+    try:
+        run, pm = await start(engine, task='日米独の成長率を table.txt にまとめる')
+        await asyncio.wait_for(settled(engine), 20)
+        assert len(client.notices) == 1 and client.reads == 1 and run['status'] == 'done'
+        notice = client.notices[0]
+        worker = next(agent for agent in engine.agents.values() if agent.parent_id)
+        assert f'table.txt (last saved by {worker.name}; read it with read_text)' in notice
+        for phrase in ('teammates wrote these requested files and you have not read them', 'every country', 'Report what the file really contains'):
+            assert phrase in notice, phrase
+        assert pm.results[-1]['text'].startswith('table.txt は米国とドイツの2か国です')
+        assert run['_output_reads']['table.txt'] == run['_output_writes']['table.txt']['sha256']
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_what_a_pm_wrote_itself_or_already_read_needs_no_second_look_but_a_later_save_does(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='結果を table.txt と notes.docx にまとめる', max_workers=1)
+        worker = engine.agents[(await engine.execute_tool(run, pm, 'spawn_worker', {
+            'role': '集計', 'task': '表を書く', 'profile_id': 'local'}))['agent_id']]
+        worker.status = 'done'
+        worker.pending.clear()
+
+        def asked():
+            """Whether the coordinator would be sent back now (the check itself speaks only once per request)."""
+            run['_readback_gated'] = False
+            return engine._readback_gate(run, pm)
+        assert asked() is None                                             # nothing written yet (the missing-file check says so)
+        mine = await engine.execute_tool(run, pm, 'write_text', {'path': 'table.txt', 'text': 'a', 'expected_sha256': 'missing'})
+        assert asked() is None                                             # its own work
+        theirs = await engine.execute_tool(run, worker, 'write_text', {'path': 'table.txt', 'text': 'b', 'expected_sha256': mine['sha256']})
+        assert 'table.txt' in asked() and engine._readback_gate(run, worker) is None   # only the root coordinator is asked
+        await engine.execute_tool(run, worker, 'read_text', {'path': 'table.txt'})
+        assert asked()                                                     # a worker's look is not the coordinator's
+        await engine.execute_tool(run, pm, 'read_text', {'path': 'table.txt'})
+        assert asked() is None                                             # read after the last save
+        await engine.execute_tool(run, worker, 'write_text', {'path': 'table.txt', 'text': 'c', 'expected_sha256': theirs['sha256']})
+        text = asked()                                                     # saved again since: the earlier look is out of date
+        assert text and 'table.txt' in text and 'notes.docx' not in text
+        assert engine._readback_gate(run, pm) is None                      # said once per request
+        worker.pending.append(('more', False))
+        assert asked() is None                                             # while a teammate still has work, it is too early to ask
+        worker.pending.clear()
+        run['adaptive_team'] = True
+        assert asked() is None                                             # there an independent reviewer has read and accepted the file
+        del run['adaptive_team']
+        assert engine._completion_notice(run, pm)[0] == 'outputs_missing'  # notes.docx was never saved: that check still comes first
+    finally:
+        await engine.close()

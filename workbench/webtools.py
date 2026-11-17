@@ -706,9 +706,29 @@ class WebTools:
             if len(unread) == len(codes):
                 raise WebToolError(f"{name} could not be read: {problems[0]}. Do not repeat the same call now: "
                                    "try another source (for example worldbank), or report the figure as unconfirmed")
+            notes = []
+            # More of the same series from another file of the agency (the BEA's latest quarter). Its failure
+            # costs only that addition.
+            for url, role in plan.get("extras", []):
+                try:
+                    more, _said, _when, told, _at = await self._stat_answer(provider, url, {**plan, "role": role}, codes)
+                except ValueError as exc:
+                    notes.append(f"The latest {role} could not be read ({str(exc)[:160]}).")
+                    continue
+                remarks += told
+                for code, entry in more.items():
+                    if code in rows:
+                        rows[code] = (rows[code][0], rows[code][1], {**(rows[code][2] if len(rows[code]) > 2 else {}), **entry[2]})
+            if provider == "imf":
+                # The World Economic Outlook mixes observed years with projections; the current year is one.
+                for _name, values, *_extra in rows.values():
+                    for value in values:
+                        if value["year"] >= time.gmtime().tm_year:
+                            value["status"] = "forecast"
             series = [{"country": rows[code][0] or statdata.COUNTRIES.get(code, ("", code))[1], "code": code,
-                       "values": rows[code][1], "latest": rows[code][1][-1]} for code in codes if code in rows]
-            missing = [code for code in codes if code not in rows and code not in unread]
+                       "values": rows[code][1], "latest": rows[code][1][-1], **(rows[code][2] if len(rows[code]) > 2 else {})}
+                      for code in codes if code in rows and rows[code][1]]
+            missing = [code for code in codes if code not in unread and not (code in rows and rows[code][1])]
             urls = [url for url, _asked in plan["requests"]]
             result = {"source": provider, "source_name": name,
                       "indicator": {"id": plan["spec"][0], "name": label or plan["label"] or plan["key"], "key": plan["key"]},
@@ -717,9 +737,9 @@ class WebTools:
                       "url": urls[0], "page_url": plan["page"], "read_from": urls[0], "untrusted": True}
             if len(urls) > 1:
                 result["urls"] = urls
-            notes = []
             if provider == "imf":
-                notes.append("IMF World Economic Outlook figures for the latest years are IMF staff estimates or projections.")
+                notes.append("IMF World Economic Outlook figures for the current year and later are projections (marked status "
+                             "\"forecast\"); the years just before may still be IMF staff estimates.")
             notes += remarks[:6]
             if unread:
                 notes.append("Not read (" + problems[0][:160] + "): " + ", ".join(unread) + ". Report these as unconfirmed or try another source.")

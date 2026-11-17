@@ -313,7 +313,8 @@ def test_stat_lookup_reads_the_imf_one_country_at_a_time_and_says_what_the_figur
         assert result['as_of_basis'] == 'retrieved' and result['as_of'] == time.strftime('%Y-%m-%d', time.gmtime())
         assert result['url'] == base + 'JPN.NGDP_RPCH.A' and len(result['urls']) == 3 and result['untrusted'] is True
         assert result['page_url'] == 'https://www.imf.org/external/datamapper/NGDP_RPCH@WEO' and result['no_values'] == []
-        assert 'estimates or projections' in result['note'] and 'Not read (Web service returned HTTP 404' in result['note'] and 'DEU' in result['note']
+        assert 'are projections (marked status "forecast")' in result['note'] and 'Not read (Web service returned HTTP 404' in result['note']
+        assert 'DEU' in result['note'] and all('status' not in value for row in result['series'] for value in row['values'])   # 2022-2024: past years
         # The same question again costs nothing, and a second run the same day reads the kept answers.
         assert await tools.execute('stat_lookup', {'source': 'IMF', 'countries': ['JPN', 'USA', 'DEU'], 'indicator': 'gdp_growth',
                                                    'start_year': 2022, 'end_year': 2024}) is result and len(sent) == 3
@@ -426,4 +427,18 @@ def test_a_failed_request_is_tried_once_more_then_an_old_copy_serves_and_a_bad_a
             assert store.get_answer(odd) is None
             store.put_answer(odd, b'x')
         assert list((tmp_path / 'stat-cache').iterdir()) == []
+    asyncio.run(run())
+
+
+def test_the_imf_marks_the_current_year_and_later_as_forecast():
+    async def run():
+        this_year = time.gmtime().tm_year
+        years = ((this_year - 2, '1.0'), (this_year - 1, '1.2'), (this_year, '1.4'), (this_year + 1, '1.6'), (this_year + 3, '1.9'))
+        tools, _sent = tools_with({'api.imf.org': imf_json(values=years)})
+        result = await tools.execute('stat_lookup', {'source': 'imf', 'countries': ['JPN'], 'indicator': 'gdp_growth',
+                                                     'start_year': this_year - 2, 'end_year': this_year + 1})
+        assert [(row['year'], row.get('status')) for row in result['series'][0]['values']] == [
+            (this_year - 2, None), (this_year - 1, None), (this_year, 'forecast'), (this_year + 1, 'forecast')]
+        assert result['series'][0]['latest'] == {'year': this_year + 1, 'value': 1.6, 'status': 'forecast'}
+        assert 'current year and later are projections' in result['note']
     asyncio.run(run())

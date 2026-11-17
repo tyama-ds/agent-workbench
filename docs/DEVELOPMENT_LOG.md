@@ -4,6 +4,81 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev69 — A change that cannot be formed is said, and a coordinator reads what its workers wrote (2026-11-17)
+
+dev68 passed on the real machine at `f07437a` (latest month and quarter,
+changes of an index for a quarter, forecasts marked, six suites done, a
+spreadsheet of numbers only). Two things went wrong in the agent tasks.
+
+- The lookup gave no change from a year earlier for the latest month of the
+  consumer price index, because BLS never published October 2025. The model
+  formed one itself, "1.0 % (2026-10 against 2025-10)", from a base that
+  does not exist. Now `latest_period.change_percent` is always there for an
+  index: a number, or null with `comparable`, the newest period that does
+  have a change, and a remark naming the missing period. The policy says to
+  use the change the lookup returns and not to compute one.
+- Three workers were to fill one workbook. One reserved it; one was refused
+  ("別の作業者がこの範囲を予約中") and wrote nothing; one wrote into another
+  sheet. The file held two of three countries and the PM reported all three.
+  - A refused reservation now names its holder and says what to do: report
+    the values to the PM (preferred), or wait. When the reservation ends,
+    the agents it turned away are told, so waiting is possible.
+  - Before the root PM finishes, a requested file that teammates wrote and
+    that the PM has not read since its last save sends the PM back once to
+    read it and compare it with the request (as with tests that were asked
+    for and not run). What the PM wrote itself needs no second look. An
+    automatically formed team is left out: there an independent reviewer
+    has read the saved file and accepted it before the PM may finish (the
+    Edge acceptance of that flow failed until this was excluded).
+  - Policy: one file has one writer; workers report their values and one
+    agent writes the file and reads it back.
+
+## 0.1.1.dev68 — The latest month and quarter, changes of an index, forecasts marked, and spreadsheet units (2026-11-17)
+
+dev67 passed on the real machine (BEA six of six, BLS four, EIA five, the
+Treasury two). In the agent task that collected five United States figures
+and compared them with the World Bank, the workers went to the web for the
+newest month and quarter, the change of consumer prices over the year stayed
+"unconfirmed" because only the index came back, a crude oil forecast for the
+current year carried no mark, and the spreadsheet mixed "94.37 USD/bbl" as
+text, 0.034 for 3.4 % and 0.02793.
+
+- `latest_period` beside the yearly values: the newest month for BLS, the
+  newest quarter for the BEA (from `NipaDataQ.txt`, seasonally adjusted at
+  annual rates). If the quarterly file cannot be read, the yearly figures
+  still come back and `note` says so.
+- BLS: a year with fewer than twelve published months has no yearly figure,
+  and `note` now says how many months there are and which are missing.
+- Index series (consumer prices, the PCE and GDP price indexes) carry
+  `change_percent`, the change from a year earlier to one decimal, for each
+  year and for the latest month or quarter, with the remark that the
+  application computed it. A test compares it with BLS's published figures
+  for the CPI-U: 8.0, 4.1 and 2.9 for 2022 to 2024 and 3.0 for September
+  2025, from the published monthly indexes.
+- EIA Short-Term Energy Outlook series: every year has `status` `actual` or
+  `forecast`. The file's own last observed period decides where it gives
+  one; the file read on the real machine gave none, so then the current year
+  and later are forecasts, and `note` says which rule was used. IMF values
+  of the current year and later have `status: forecast`.
+- `xlsx_write`: every cell that holds a number with a unit as text is
+  listed (it was the first of each column), also "3.4% (2026Q3)"; a year
+  with a remark stays a label. Two or more values far below 1 under a
+  heading about a rate or percent are pointed out as probable fractions.
+- Policy: the unit once in the heading, bare numbers in the cells, the same
+  form for every source compared; what `latest_period` and
+  `status: forecast` mean.
+- Python sandbox (Windows): while a script runs, its workspace is scanned
+  every 50 ms for size and for hidden streams. A scan that met a file in the
+  moment it was saved, renamed or deleted failed, and the run was ended as
+  `workspace_changed` with nothing wrong. CI hit this in the real sandbox
+  test, with a script that saves a .docx, an .xlsx and a .pptx. The scan is
+  now made again up to five times (about 0.15 s) before its failure is taken
+  as real, as the browser job has done since dev56; the scan after the
+  script has ended stays strict.
+- **Not seen answering**: `NipaDataQ.txt` (assumed beside `NipaDataA.txt`,
+  same columns, periods like 2026Q3) and the name of the field in the EIA
+  file that gives the last observed period.
+
 ## 0.1.1.dev67 — United States government statistics: BEA, BLS, EIA and the Treasury (2026-11-17)
 
 dev66 was confirmed on the real machine for all five providers (IMF 3 to 4

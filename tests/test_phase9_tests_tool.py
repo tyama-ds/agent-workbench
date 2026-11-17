@@ -353,3 +353,37 @@ async def test_a_sheet_left_by_an_earlier_write_is_pointed_out_and_can_be_remove
         with pytest.raises(ValueError, match=problem):
             await tools.execute('xlsx_write', {'path': path, 'expected_sha256': both['sha256'], 'cells': [], **bad})
     assert openpyxl.load_workbook(path).sheetnames == ['stats', 'notes']
+
+
+@pytest.mark.asyncio
+async def test_percentages_written_as_fractions_and_every_unit_string_are_pointed_out(tmp_path):
+    """Real-machine case (us.xlsx): '94.37 USD/bbl' and '40,616,678,827,092.07 USD' as text, growth and
+    unemployment as 0.034 / 0.041, and the World Bank's figure as 0.02793."""
+    from workbench.harness import _unit_text
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    rows = [('A1', '指標'), ('B1', '政府統計'), ('C1', '世界銀行'),
+            ('A2', '実質GDP成長率'), ('B2', 0.034), ('C2', 0.02793),
+            ('A3', '失業率'), ('B3', 0.041), ('C3', 0.0411),
+            ('A4', 'WTI'), ('B4', '94.37 USD/bbl'), ('A5', '債務'), ('B5', '40,616,678,827,092.07 USD'),
+            ('A6', 'CPI 前年比'), ('B6', '3.0% (2026-10)')]
+    result = await tools.execute('xlsx_write', {'path': str(tmp_path / 'us.xlsx'), 'expected_sha256': 'missing',
+                                                'cells': [{'sheet': 'Sheet', 'cell': cell, 'value': value} for cell, value in rows]})
+    warning = result['warning']
+    for cell in ("Sheet!B4 ('94.37 USD/bbl')", "Sheet!B5 ('40,616,678,827,092.07 USD')", "Sheet!B6 ('3.0% (2026-10)')"):
+        assert cell in warning, cell                     # every such cell, not only the first of a column
+    for cell in ('Sheet!B2 (0.034)', 'Sheet!C2 (0.02793)', 'Sheet!B3 (0.041)', 'Sheet!C3 (0.0411)'):
+        assert cell in warning, cell
+    assert 'write the percent number itself (3.4)' in warning and 'same form for every source' in warning
+    # Written as asked, nothing is said: bare numbers, the unit in the heading.
+    good = [('A1', '指標'), ('B1', '政府統計'), ('A2', '実質GDP成長率（%）'), ('B2', 3.4), ('A3', '失業率（%）'), ('B3', 4.1),
+            ('A4', 'WTI（ドル/バレル）'), ('B4', 94.37), ('A5', '債務（ドル）'), ('B5', 40616678827092.07),
+            ('A6', '為替レート'), ('B6', 0.0065), ('A7', '年'), ('B7', '2025 (予測)')]
+    clean = await tools.execute('xlsx_write', {'path': str(tmp_path / 'good.xlsx'), 'expected_sha256': 'missing',
+                                               'cells': [{'sheet': 'Sheet', 'cell': cell, 'value': value} for cell, value in good]})
+    assert 'warning' not in clean                        # one small value under a rate heading is not a pattern; a year with a remark is a label
+    # Small numbers that are not under a rate or percent heading are left alone, however many.
+    small = [('A1', '物質'), ('B1', '濃度 mg/L'), ('A2', '鉛'), ('B2', 0.004), ('A3', 'ヒ素'), ('B3', 0.007)]
+    quiet = await tools.execute('xlsx_write', {'path': str(tmp_path / 'small.xlsx'), 'expected_sha256': 'missing',
+                                               'cells': [{'sheet': 'Sheet', 'cell': cell, 'value': value} for cell, value in small]})
+    assert 'warning' not in quiet
+    assert _unit_text('3.4% (速報)') and _unit_text('94.37 (USD/bbl)') and not _unit_text('2025 (予測)') and not _unit_text('1998 [改定]')

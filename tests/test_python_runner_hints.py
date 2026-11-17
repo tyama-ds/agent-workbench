@@ -200,3 +200,66 @@ def test_a_rejected_file_mapping_names_the_argument_and_the_value():
     with pytest.raises(HarnessError, match=r"inputs\[0\]\.path 'missing\.csv': .* \(path is the existing host file"):
         python_runner._located("inputs[0].path", 'missing.csv', lambda: (_ for _ in ()).throw(HarnessError('Path does not exist')),
                                'path is the existing host file to copy in')
+
+
+def test_a_scan_that_meets_a_file_being_saved_is_made_again_before_the_run_is_ended(tmp_path, monkeypatch):
+    """CI case (real Windows sandbox): a script saved a .docx, an .xlsx and a .pptx; one scan of the
+    workspace met a file in the moment it was written and the run ended as 'workspace_changed'."""
+    import contextlib
+    import os
+    from workbench import windows_sandbox
+    from workbench.windows_sandbox import SandboxError, _live_scan
+    pauses = []
+    monkeypatch.setattr(windows_sandbox.time, 'sleep', pauses.append)
+
+    # A real scan over a folder in which a file vanishes between being listed and being looked at.
+    (tmp_path / 'kept.txt').write_text('x' * 10)
+    (tmp_path / 'sample.docx.tmp').write_text('y')
+    real_scandir, vanished = os.scandir, []
+
+    def scandir(path):
+        entries = list(real_scandir(path))
+        if not vanished:
+            vanished.append(True)
+            (tmp_path / 'sample.docx.tmp').unlink()        # listed, then gone
+        return contextlib.nullcontext(iter(entries))
+    monkeypatch.setattr(windows_sandbox.os, 'scandir', scandir)
+
+    def streams(path):
+        # As the real check does for a file that is gone (FindFirstStreamW fails): an error, not "no streams".
+        if not os.path.lexists(path):
+            raise SandboxError('Cannot inspect private storage streams')
+        return False
+    # One scan alone does fail. Where the listing keeps each entry's details (Windows) it is the
+    # stream check that fails; elsewhere looking at the vanished entry already does.
+    with pytest.raises((OSError, SandboxError)):
+        _workspace_size(tmp_path, 1000, named_stream=streams)
+    vanished.clear()
+    (tmp_path / 'sample.docx.tmp').write_text('y')
+    assert _live_scan(lambda: _workspace_size(tmp_path, 1000, named_stream=streams)) is True and pauses == [.005]
+    assert _live_scan(lambda: _workspace_size(tmp_path, 5, named_stream=streams)) is False   # over the limit is an answer, not a failure
+
+    # Transient failures of either kind are retried; a failure that stays is still reported.
+    attempts = []
+
+    def flaky():
+        attempts.append(1)
+        if len(attempts) < 4:
+            raise (PermissionError('sharing violation') if len(attempts) % 2 else SandboxError('Cannot inspect private storage streams'))
+        return True
+    pauses.clear()
+    assert _live_scan(flaky) is True and len(attempts) == 4 and pauses == [.005, .01, .02]
+
+    def broken():
+        attempts.append(1)
+        raise SandboxError('Private sandbox root was replaced')
+    attempts.clear()
+    pauses.clear()
+    with pytest.raises(SandboxError, match='root was replaced'):
+        _live_scan(broken)
+    assert len(attempts) == len(windows_sandbox._LIVE_SCAN_PAUSES) == 6 and sum(pauses) == pytest.approx(.155)
+    with pytest.raises(ValueError):                         # anything else is not a storage race
+        _live_scan(lambda: (_ for _ in ()).throw(ValueError('bug')))
+    # The loop that watches a running script uses it; the scan after the script has ended does not.
+    source = inspect.getsource(windows_sandbox)
+    assert source.count('_live_scan(lambda:') == 1 and source.count('_workspace_size(workspace, workspace_limit') == 2

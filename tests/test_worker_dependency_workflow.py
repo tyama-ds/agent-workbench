@@ -93,7 +93,9 @@ async def test_pm_accepted_dependency_handoff_runs_real_file_workflow(tmp_path, 
                     return reply(calls=[('review_worker_report', args), ('wait_for_workers', {})])
                 if step == 4:
                     args = self.formal_report(messages, self.downstream_id, agent)
+                    # The coordinator reads what its workers saved before it vouches for it.
                     return reply(calls=[('review_worker_report', args),
+                                        ('read_text', {'path': 'upstream.txt'}), ('read_text', {'path': 'derived.txt'}),
                                         ('finish_work', {'summary': 'Integrated the accepted current reports; derived.txt is saved.'})])
                 raise AssertionError('Unexpected PM turn')
 
@@ -136,7 +138,7 @@ async def test_pm_accepted_dependency_handoff_runs_real_file_workflow(tmp_path, 
         assert (work / 'upstream.txt').read_text(encoding='utf-8') == source_text
         assert (work / 'derived.txt').read_text(encoding='utf-8') == 'VERIFIED: ' + source_text
         assert len(client.calls) == run['model_calls'] == 8
-        assert run['tool_calls'] == 12 and run['auto_collaborations'] == 4
+        assert run['tool_calls'] == 14 and run['auto_collaborations'] == 4
         assert (pm.turns, upstream.turns, downstream.turns) == (3, 1, 1)
         assert run['status'] == 'done'
         for agent in (pm, upstream, downstream):

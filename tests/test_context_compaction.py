@@ -157,8 +157,16 @@ async def test_incoming_human_and_peer_queues_are_not_lost_during_summary(tmp_pa
 
 async def test_budget_exhaustion_and_oversize_pins_fail_without_call(tmp_path):
     client = ScriptClient([])
-    engine, run, agent = await seeded(tmp_path, client, context=31000)
+    engine, run, agent = await seeded(tmp_path, client)
     try:
+        # The budget is measured, not a fixed number: room for the fixed part
+        # (policy, tools, the assignment) plus the excerpt marker, and not for
+        # the eighteen observations. The policy names the work folder, so its
+        # length differs between machines (a Windows temporary path is longer).
+        profile, tools, _ = call_args(engine, run, agent)
+        system, limits = engine._policy(run, agent), run['_config']['limits']
+        limits['max_context_chars'] = pressure(profile, agent.conversation[:1], tools, system, limits)[1] + 4000
+        assert pressure(profile, agent.conversation, tools, system, limits)[0] > 1
         run['model_calls'] = run['_config']['limits']['max_model_calls'] - 1
         before = copy.deepcopy(agent.original_history)
         await engine._ensure_context(run, agent, *call_args(engine, run, agent))

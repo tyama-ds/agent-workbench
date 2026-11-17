@@ -609,10 +609,15 @@ def _numeric_text(value: str):
 # A number followed by a unit, written as one string ("2.8 percent", "1億2269万人", "¥1,200").
 # Labels that merely start with digits (a year, a date, a rank, a count of times) are not values.
 _UNIT_TEXT = re.compile(r"[-+]?[¥$€£]\s*[0-9][0-9,]*(?:\.[0-9]+)?[^\n]{0,24}"
-                        r"|[-+]?[0-9][0-9,]*(?:\.[0-9]+)?\s*%?\s*[^\W\d_][^\n]{0,24}")
+                        r"|[-+]?[0-9][0-9,]*(?:\.[0-9]+)?\s*%?\s*(?:[^\W\d_]|[(（\[])[^\n]{0,24}")
 _LABEL_TEXT = re.compile(
     r"[0-9]{1,4}\s*(?:年度?|月|日|時|分|秒|世紀|位|番目?|回目?|章|節|階|号|期|版|代|歳|st|nd|rd|th)(?:[0-9]{1,2}\s*(?:月|日|時|分|秒))*(?:\s*[^\W\d_].*)?"
-    r"|[0-9]{4}[-/][0-9]{1,2}(?:[-/][0-9]{1,2})?.*|[0-9]+[a-z]?(?:[-–~〜][0-9]+.*)?|[0-9]+\s*[x×*:/][^\n]*", re.I)
+    r"|[0-9]{4}[-/][0-9]{1,2}(?:[-/][0-9]{1,2})?.*|[0-9]+[a-z]?(?:[-–~〜][0-9]+.*)?|[0-9]+\s*[x×*:/][^\n]*"
+    r"|(?:1[5-9]|20)[0-9]{2}\s*[(（\[].*", re.I)  # the last: a year with a remark, "2025 (予測)"
+
+
+# Headings under which a value far below 1 is probably a percentage written as a fraction.
+_RATE_HEADING = re.compile(r"%|percent|\brate\b|growth|inflation|unemployment|率|成長|インフレ|失業|パーセント", re.I)
 
 
 def _unit_text(value: str) -> bool:
@@ -937,7 +942,7 @@ class ToolExecutor:
                     raise HarnessError("Invalid worksheet title")
                 if title not in workbook.sheetnames:
                     workbook.create_sheet(title)
-            converted, kinds, with_units = 0, {}, {}
+            converted, kinds, with_units, plain = 0, {}, [], []
             for item in cells:
                 if not isinstance(item, dict) or set(item) != {"sheet", "cell", "value"} or item["sheet"] not in workbook.sheetnames:
                     raise HarnessError("Each cell requires an existing sheet, cell and value")
@@ -973,7 +978,9 @@ class ToolExecutor:
                     percent = bool(number_format and number_format.endswith("%"))
                     kinds.setdefault(column, {}).setdefault(percent, ref)
                 elif isinstance(cell.value, str) and _unit_text(cell.value):
-                    with_units.setdefault(column, (ref, cell.value[:40]))
+                    with_units.append((item["sheet"], ref, cell.value[:40]))
+                if type(cell.value) is float and not (number_format and number_format.endswith("%")) and 0 < abs(cell.value) < 0.2:
+                    plain.append((item["sheet"], ref, cell.value))
             if (fresh and "Sheet" in workbook.sheetnames and len(workbook.sheetnames) > 1 and "Sheet" not in sheets
                     and all(item["sheet"] != "Sheet" for item in cells)):
                 # A new workbook's automatic empty sheet is not part of the request.
@@ -1007,8 +1014,21 @@ class ToolExecutor:
             if with_units:
                 # "2.8 percent" or "1億2269万人" is text: it cannot be summed, sorted or charted.
                 warnings.append("Numbers saved as text because a unit is attached: "
-                                + "; ".join(f"{sheet}!{ref} ({text!r})" for (sheet, _), (ref, text) in list(with_units.items())[:5])
+                                + "; ".join(f"{sheet}!{ref} ({text!r})" for sheet, ref, text in with_units[:6])
+                                + (f" and {len(with_units) - 6} more" if len(with_units) > 6 else "")
                                 + ". Put the bare number in the cell (2.8, 122690000) and name the unit in the column header, then save again.")
+            # 0.034 under a heading that speaks of a rate or of percent is most likely 3.4 % written as a fraction.
+            fractions = []
+            for sheet, ref, number in plain:
+                column, row, _, _ = range_boundaries(ref)
+                headings = " ".join(str(value) for value in (workbook[sheet].cell(row=1, column=column).value,
+                                                             workbook[sheet].cell(row=row, column=1).value) if isinstance(value, str))
+                if _RATE_HEADING.search(unicodedata.normalize("NFKC", headings)):
+                    fractions.append(f"{sheet}!{ref} ({number})")
+            if len(fractions) >= 2:
+                warnings.append("These values stand under a heading about a rate or percent and are far below 1: " + "; ".join(fractions[:6])
+                                + ". If they are percentages written as fractions (0.034 for 3.4 %), write the percent number itself (3.4), "
+                                "name the unit in the heading, use the same form for every source, and save again; if they really are that small, leave them.")
             if warnings:
                 result = {**result, "warning": " ".join(warnings)}
             return {**result, "numeric_strings_converted": converted} if converted else result

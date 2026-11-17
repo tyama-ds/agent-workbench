@@ -275,6 +275,8 @@ mutations, including any missing parent directories; use create_directory for mi
 subfolders, then write_text or the appropriate Office write tool. For a new file use
 expected_sha256="missing"; for an existing file read its current hash before editing.
 Read back the result when read access permits. Release reservations when finished.
+One file has one writer: workers report their values in finish_work, and one agent,
+normally the PM, writes the file once and reads it back before reporting on it.
 Only successful tool results establish a completed operation; report the actual path
 and distinguish saved files from proposals or failed/unverified operations. Directory
 creation appears in tool logs; saved-file receipts are only for actual file writes.
@@ -429,6 +431,8 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         self.agents: dict[str, Agent] = {}
         self.events = deque(maxlen=1000)
         self.reservations: dict[str, str] = {}
+        # Agents that were turned away from a reserved path, by that path: they are told when it is free.
+        self._reservation_waiters: dict[str, set] = {}
         self.sequence = 0
         self._questions = {}
         self._question_tasks = {}
@@ -811,7 +815,7 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                 'agent_id': agent.id, 'path': result['path'], 'sha256': result['sha256'], 'previous_sha256': previous}
         agent.output_receipts.append(receipt)
         agent.output_receipt_count += 1
-        self._outputs_saved(self.runs[agent.run_id], result['path'])
+        self._outputs_saved(self.runs[agent.run_id], result['path'], agent, result.get('sha256'))
         self._persist_run(agent.run_id)
 
     def active(self):
@@ -1992,7 +1996,13 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                                   'Compare countries with figures from one source; for one country\'s own statistics prefer its '
                                   'national statistical office when you can retrieve it (United States: bea, bls, eia, treasury). When two sources give different values, '
                                   'report both with their source and date instead of choosing one silently, and never mix units '
-                                  '(the IMF gives population in millions).\n'
+                                  '(the IMF gives population in millions). In a spreadsheet, name the unit once in the heading and put bare '
+                                  'numbers in the cells: 3.4 for 3.4 %, not 0.034 and not "3.4 %" or "94.37 USD/bbl"; use the same form for '
+                                  'every source you compare. Where a result carries latest_period, that is the newest month or quarter. '
+                                  'Changes from a year earlier and growth rates: use the change_percent that stat_lookup returns and do '
+                                  'not compute one yourself from index levels; where it is null the base period is missing, so say '
+                                  'that it cannot be stated (a "comparable" entry gives the newest period that has one); '
+                                  'status "forecast" marks a figure that is not observed.\n'
                                   + (f'Search guide: this whole work (all agents together) is expected to need about {guide} searches. '
                                      'Past half of that, go on with the results already returned and web_fetch.\n' if guide else ''))
                 if run.get('_search_check_declined'):
@@ -2946,9 +2956,13 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         raise CollaborationLimitError(message)
 
     def _release(self, agent, selected=None):
+        ended = []
         for path, owner in list(self.reservations.items()):
             if owner == agent.id and (selected is None or path in selected):
                 del self.reservations[path]
+                ended.append(path)
+        if ended and self._reservation_waiters:
+            self._reservations_ended(ended)
 
     async def execute_tool(self, run, agent, name, args):
         if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
@@ -3296,7 +3310,9 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
         if name in READ_ONLY_FILE_TOOLS and not self._formation_reviewer(run, agent):
             # An independent reviewer's read and its evidence recheck stay one
             # exclusive operation (the original path below).
-            return self._urls_seen(run, await self._execute_read_tool(run, agent, name, args))
+            result = await self._execute_read_tool(run, agent, name, args)
+            self._outputs_read(run, agent, args, result)
+            return self._urls_seen(run, result)
         # Serialize file tool operations to make optimistic hashes + reservations
         # meaningful for cooperating agents; no arbitrary shell is available.
         async with self.lock:
@@ -3406,7 +3422,34 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
     def _check_reservation(self, agent, candidate):
         for reserved, owner in self.reservations.items():
             if owner != agent.id and (candidate.is_relative_to(Path(reserved)) or Path(reserved).is_relative_to(candidate)):
-                raise ValueError('別の作業者がこの範囲を予約中です')
+                holder = self.agents.get(owner)
+                # Told when the reservation ends, so that waiting for it is possible.
+                self._reservation_waiters.setdefault(reserved, set()).add(agent.id)
+                raise ValueError(
+                    '別の作業者がこの範囲を予約中です' + (f'（{self.redact(holder.name)}）' if holder else '') + '。いまは読み書きできません。'
+                    '次のどちらかにしてください。'
+                    '1.（推奨）自分の結果を finish_work の報告に値ごと書いて PM に渡し、ファイルへの書き込みは PM か予約している担当に'
+                    'まとめて任せる。同じ内容を別のファイル名や別のシートに書いて済ませないでください。'
+                    '2. 自分で書く必要があるなら、予約が外れるのを待つ: 外れたらアプリが知らせるので、wait_for_message を呼んで待ち、'
+                    '通知が届いてからもう一度試す。')
+
+    def _reservations_ended(self, paths):
+        """Tell the agents that were turned away from these reservations that they are free now."""
+        for path in paths:
+            for ident in self._reservation_waiters.pop(path, ()):
+                waiter = self.agents.get(ident)
+                if (waiter is None or waiter.closing or waiter.status in {'done', 'stopped', 'error'}
+                        or any(self._overlaps(path, other) for other in self.reservations)):
+                    continue
+                try:
+                    self.enqueue(waiter, f'アプリからの通知: {self.redact(Path(path).name)} の予約が外れました。'
+                                         'まだ書き込む必要があれば、reserve_paths からやり直してください。')
+                except ValueError:
+                    pass
+
+    @staticmethod
+    def _overlaps(first, second):
+        return Path(first).is_relative_to(Path(second)) or Path(second).is_relative_to(Path(first))
 
     async def stop_run(self, ident):
         if isinstance(ident, str) and ident in self._archives:
