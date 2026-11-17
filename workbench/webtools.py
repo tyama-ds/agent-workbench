@@ -339,6 +339,36 @@ class _TextHTML(HTMLParser):
         return rows, len(seen) - len(rows)
 
 
+_SESSION_NAMES = {"jsessionid", "phpsessid", "sessionid", "session_id", "sid", "aspsessionid"}
+
+
+def citable_url(url: str) -> str:
+    """The address without what belongs to one visit: session ids and long state values in its query.
+
+    Real-machine case: a document cited "…?t:state:client=H4sI…", several hundred characters of a site's
+    one-time state. A query name that starts with "t:", a session id, or a value of more than 120 characters
+    is left out; everything else stays, in its order.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.query and ";" not in parts.path:
+        return url
+    def visit(piece: str) -> bool:
+        name, _, value = piece.partition("=")
+        name, value = urllib.parse.unquote_plus(name).lower(), urllib.parse.unquote_plus(value)
+        return name.startswith("t:") or name in _SESSION_NAMES or len(value) > 120
+
+    # The pieces that stay are kept exactly as they were written (no re-encoding).
+    pieces = [piece for piece in parts.query.split("&") if piece]
+    kept = [piece for piece in pieces if not visit(piece)]
+    path = re.sub(r";jsessionid=[^/?#;]*", "", parts.path, flags=re.I)
+    if len(kept) == len(pieces) and path == parts.path:
+        return url
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, "&".join(kept), ""))
+
+
 def _clean_text(value: str, limit: int = 200000) -> str:
     return "".join(c for c in value if c in "\n\t" or (ord(c) >= 32 and not 127 <= ord(c) <= 159))[:limit]
 
@@ -797,6 +827,7 @@ class WebTools:
                     raise
                 # The human allowed one try in a browser window for this work.
                 return await self._browser_once(args["url"], refused)
+            final_url = citable_url(final_url)  # what results show and documents cite: without session values
             mime = _mime(content_type)
             if wants_pdf and _pdf_answer(content_type, _url(final_url).path):
                 result = await self._pdf_fetched(data, final_url)
@@ -990,7 +1021,7 @@ class WebTools:
                 self._browser_record(url, "failed", "a file was saved that is not a PDF; nothing was kept")
                 raise WebToolError(f"{refused}. The browser window saved a file, but it is not a PDF; nothing was kept." + ask)
             try:
-                result = await self._pdf_fetched(data, url)
+                result = await self._pdf_fetched(data, citable_url(url))
             except WebToolError as exc:
                 self._browser_record(url, "failed", "the PDF was saved but could not be read")
                 raise WebToolError(f"The browser window saved the PDF, but it could not be read: {exc}") from None
@@ -1003,9 +1034,17 @@ class WebTools:
             raise WebToolError(_pdf_too_large(page.get("bytes") or None, self._pdf_bytes or self.max_bytes))
         if kind in {"closed", "timeout"}:
             detail = "the window was closed before anything arrived" if kind == "closed" else "nothing arrived in time"
-            self._browser_record(url, "failed", detail)
-            raise WebToolError(f"{refused}. A browser window tried once: {detail}." + ask)
-        status, final = page.get("status") or 0, page.get("url") or url
+            said = " ".join(str(page.get("title") or "").split())[:200]
+            if said:
+                detail += f" ({said})"
+            records = str(page.get("records") or "")
+            self._browser_record(url, "failed", detail + (f"; records kept in {records}" if records else ""))
+            # This address is done with. Another address of the site is its own try: real-machine case, the
+            # issue's page failed and the report's own PDF address was then never tried.
+            raise WebToolError(f"{refused}. A browser window tried once: {detail}. Another address of this site can still "
+                               "be tried in a window: for a report, fetch the address of its PDF itself with web_fetch "
+                               "(search for it on the publisher's site if you do not have it)." + ask)
+        status, final = page.get("status") or 0, citable_url(page.get("url") or url)
         title, html_text = page.get("title", ""), page.get("html", "")
         if page.get("check") is True or _words_in(PERSON_CHECK_WORDS, title, html_text):
             if not person_seconds:

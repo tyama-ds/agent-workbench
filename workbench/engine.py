@@ -2614,7 +2614,9 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                             self._append_context(agent, {'role': 'user', 'content': PLAN_NUDGE}, human=False)
                             continue
                         if agent.parent_id is None and not agent.pending:
+                            await self._tables_check(run)
                             await self._quotes_verify(run)
+                            await self._quotes_correct(run, agent)
                         completion_notice = (None if agent.pending or run['model_calls'] + 1 >= limits['max_model_calls']
                                              else self._completion_notice(run, agent))
                         if completion_notice:
@@ -2869,7 +2871,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                     if agent.parent_id is None:
                         terminal_response += (self._outputs_footer(run) + self._tests_footer(run)
                                               + self._source_footer(run) + self._citations_footer(run)
-                                              + self._quotes_footer(run) + self._pdf_footer(run))
+                                              + self._tables_footer(run) + self._quotes_footer(run) + self._pdf_footer(run))
                     self.record_result(agent, 'assistant_response', terminal_response, revision=turn_revision)
                 if agent.parent_id and not ordered_report_sent:
                     parent = self.agents[agent.parent_id]
@@ -3402,7 +3404,9 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                         for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
                     raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
                 if agent.parent_id is None:
+                    await self._tables_check(run)   # a table the request asks for
                     await self._quotes_verify(run)  # the quotations of the saved files, looked up in the PDF
+                    await self._quotes_correct(run, agent)  # a page the PDF leaves no doubt about is written
                 completion_notice = self._completion_notice(run, agent)
                 if completion_notice:
                     return {'ok': False, 'code': completion_notice[0], 'error': completion_notice[1]}
@@ -3412,7 +3416,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 summary += self._turn_footer(run, agent)
                 if agent.parent_id is None:
                     summary += (self._outputs_footer(run) + self._tests_footer(run) + self._source_footer(run)
-                                + self._citations_footer(run) + self._quotes_footer(run) + self._pdf_footer(run))
+                                + self._citations_footer(run) + self._tables_footer(run) + self._quotes_footer(run)
+                                + self._pdf_footer(run))
                 self.log(agent, 'result', summary)
                 self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
                 agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)

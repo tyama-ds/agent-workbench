@@ -935,6 +935,16 @@ the human turned it on (0.1.1.dev61; off by default).
   reads a page or a range; `_quotes_mark` (after the one send-back) writes
   the mark through `_quotes_mark_file` and records a receipt.
 
+## Corrections, tables, addresses (0.1.1.dev83)
+
+- `VerificationMixin._quotes_correct` (before the completion notice)
+  rewrites page references through `_quotes_rewrite` /
+  `_quotes_rewrite_file`, which `_quotes_mark` also uses for its marks.
+- `_tables_check`, `_tables_gate`, `_tables_footer`: a requested table.
+- `webtools.citable_url` cleans the address a result shows.
+- `selenium_worker.window_gone` / `error_words` classify an error of the
+  fetch window; `selenium_runner` keeps records for `closed` and `timeout`.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),
