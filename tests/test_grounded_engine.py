@@ -10,6 +10,12 @@ import json
 
 import pytest
 
+# The longest any single wait here may take. It only tells a hang from progress. The engine saves the history
+# (a database commit) on every event; the last wait of the rollback test covers eleven such saves, which take
+# 0.08 s together on an ordinary disk and went past the earlier ten seconds on a shared Windows runner (the
+# awaited turn had finished with its result when the wait gave up).
+GUARD = 60
+
 from workbench.config import DEFAULT, Settings
 from workbench.context import groups, pressure
 from workbench.engine import Engine
@@ -323,12 +329,12 @@ async def test_caller_catalogue_is_frozen_before_bridge_admission_await(tmp_path
                'max_workers': 3, 'ordered_reference': copy.deepcopy(original)}
     pending = asyncio.create_task(engine.start_run(payload))
     try:
-        await asyncio.wait_for(entered.wait(), 10)
+        await asyncio.wait_for(entered.wait(), GUARD)
         payload['ordered_reference']['entries'][1]['meaning'] = 'Changed while awaiting admission.'
         payload['ordered_reference']['entries'].clear()
         payload['ordered_reference']['source_note'] = 'Caller replacement'
         release.set()
-        started = await asyncio.wait_for(pending, 10)
+        started = await asyncio.wait_for(pending, GUARD)
         run = engine.runs[started['run']['id']]
         assert run['_ordered_reference'].view() == ReferenceCatalog.from_payload(original).view()
         assert started['run']['ordered_reference'] == ReferenceCatalog.from_payload(original).descriptor()
@@ -336,7 +342,7 @@ async def test_caller_catalogue_is_frozen_before_bridge_admission_await(tmp_path
     finally:
         release.set()
         if not pending.done():
-            await asyncio.wait_for(pending, 10)
+            await asyncio.wait_for(pending, GUARD)
         await engine.close()
 
 
@@ -426,7 +432,7 @@ async def test_reference_revision_then_rollback_rejects_old_inflight_dependency(
 
         client.handlers[workers['B'].id] = stale
         Engine.kick(engine, workers['B'])
-        await asyncio.wait_for(entered.wait(), 10)
+        await asyncio.wait_for(entered.wait(), GUARD)
         client.handlers[pm.id] = rollback
         engine._mail(workers['A'], pm, 'Please re-audit the accepted supporting reference.')
         await drive(pm)
@@ -434,7 +440,7 @@ async def test_reference_revision_then_rollback_rejects_old_inflight_dependency(
         assert not rolled['accepted'] and rolled['current']['actor_id'] == workers['A'].id
         assert rolled['generation'] > revised['generation']
         release.set()
-        await asyncio.wait_for(asyncio.shield(workers['B'].task), 10)
+        await asyncio.wait_for(asyncio.shield(workers['B'].task), GUARD)
         assert tool_results(workers['B'], 'submit_work_step')[-1]['ok'] is False
         assert await view(engine, run, pm) == rolled and not workers['B'].results
         assert not pm.worker_report_reviews
