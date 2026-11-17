@@ -865,6 +865,25 @@ the human turned it on (0.1.1.dev61; off by default).
   opener is set only when the run has `browser_fetch`), and what its result
   means; `Engine._browser_tries_publish` turns each try into an event.
 
+## Unfinished runs, growing documents, handed-over reports (0.1.1.dev76)
+
+- `VerificationMixin._outputs_incomplete(run)` is true while a file the
+  request names is neither saved in this run nor present; `Engine._run_status`
+  then answers `incomplete` where it would answer `done`. `history.TERMINAL`,
+  the hierarchy, ordered work and recovery treat it like `done`.
+- `selenium_worker._save_shown_pdf` reads a PDF that the window shows in its
+  viewer through the page's own `fetch` (the window's session and cache) in
+  pieces of 512 KiB and writes it into the job's download folder.
+- `PdfToolMixin._pdf_save` writes a library PDF through
+  `harness.write_bytes(..., 'missing', limit=max_pdf_bytes)`, so the path
+  rules, the "new file only" rule and the receipt are the ordinary ones.
+- `WorkerDependenciesMixin._dependency_attach_reports` appends, once per
+  accepted revision vector, the accepted `finish_work` texts of the workers
+  an agent depends on to that agent's context.
+- `harness` `docx_edit`: `insert_paragraph`, `delete_paragraph`;
+  `_paragraph_index` words the refusal. `slides._lines` takes one text as
+  its lines.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),

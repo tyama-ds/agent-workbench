@@ -92,10 +92,24 @@ def _text(value, label, limit, *, empty=True):
     return ''.join(char for char in value if char in '\n\t' or unicodedata.category(char)[0] != 'C')
 
 
-def _lines(value, label, most=100, limit=10000):
+def _lines(value, label, most=300, limit=10000):
+    """A list of lines. One text with line breaks is taken as its lines, and numbers as their text: a model that
+    sent body as a single string was refused four times with a message that did not say what it had sent."""
+    if isinstance(value, str):
+        value = [line for line in value.split('\n') if line.strip()]
     if not isinstance(value, list) or len(value) > most:
-        raise SlideError(f'{label} must be a list of at most {most} texts')
-    return [_text(item, label, limit) for item in value]
+        got = f'{len(value)} items' if isinstance(value, list) else type(value).__name__
+        raise SlideError(f'{label} must be a list of at most {most} short texts, such as ["first point", "second point"]; '
+                         f'got {got}. Put more than that on further slides.')
+    lines = []
+    for item in value:
+        if type(item) in (int, float) and math.isfinite(item):
+            item = f'{item:g}'
+        if not isinstance(item, str):
+            raise SlideError(f'{label} must be a list of texts, such as ["first point", "second point"]; '
+                             f'one item is {type(item).__name__}. A table goes into "table", a chart into "chart".')
+        lines.append(_text(item, label, limit))
+    return lines
 
 
 def _color(value, label):
@@ -176,7 +190,7 @@ def slide(item, index):
     for key in ('subtitle', 'value', 'label', 'left_title', 'right_title'):
         result[key] = _text(item.get(key, ''), f'{where} {key}', 300)
     for key in ('left', 'right'):
-        result[key] = _lines(item.get(key, []), f'{where} {key}', 30, 2000)
+        result[key] = _lines(item.get(key, []), f'{where} {key}', 60, 2000)
     if layout == 'kpi' and not result['value'].strip():
         raise SlideError(f'{where}: a kpi slide needs value, the one figure it shows (for example "3.1%")')
     if layout == 'two_column' and not (result['left'] and result['right']):

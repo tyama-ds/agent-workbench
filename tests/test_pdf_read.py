@@ -359,6 +359,10 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         assert 'filetype:pdf' in policy and "site:<the publisher's domain>" in policy and 'its content network or file storage counts' in policy
         assert 'web_fetch headers_only' in policy and 'newest by last_modified and size' in policy
         assert 'only when no official one can be had, and say so' in policy
+        # Real-machine cases: April and a July update were taken for "this year's latest" although October was out;
+        # the browser window was spent on a report's summary, chapter and tables one after another.
+        assert 'take the newest issue, not the first one found; state its date' in policy
+        assert 'fetch the full report first, not its parts' in policy
         # Figures: found by search, cited with one form of page number and the words they come from, and looked up again.
         assert 'Find what you need with pdf_search' in policy and '"p. 26 (printed 10)"' in policy
         assert 'carries its page and the words it comes from' in policy

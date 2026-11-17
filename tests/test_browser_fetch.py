@@ -32,12 +32,13 @@ class Window:
     address is loaded; otherwise ``html`` stands in the window."""
 
     def __init__(self, downloads, *, arrives=None, html=PAGE, status=200, content_type='text/html', closes=False, never=False,
-                 title='World Economic Outlook Reports', passes_after=None, clock=None):
+                 title='World Economic Outlook Reports', passes_after=None, clock=None, shown=b''):
         self.downloads, self.arrives, self.html, self.status = downloads, arrives, html, status
         self.content_type, self.closes, self.never = content_type, closes, never
         self.calls, self.current_url, self._title = [], 'data:,', title
         # A person passes the site's check after this many seconds: the page then turns into the real one.
         self.passes_after, self.clock = passes_after, clock
+        self.shown = shown  # the bytes of a PDF the window shows in its viewer, or the page's error text
 
     def _passed(self):
         return self.passes_after is not None and self.clock() >= self.passes_after
@@ -66,7 +67,17 @@ class Window:
         elif not self.never:
             self.current_url = url
 
-    def execute_script(self, script):
+    def execute_async_script(self, script):
+        # The page's own fetch of the document it shows: its session, its cache, no other address.
+        assert "fetch(window.location.href, {credentials: 'include', cache: 'force-cache'})" in script and 'click' not in script
+        self.calls.append(('fetch_shown',))
+        return self.shown if isinstance(self.shown, str) else len(self.shown)
+
+    def execute_script(self, script, *args):
+        if '__awbPdf' in script:
+            import base64
+            self.calls.append(('chunk', *args))
+            return base64.b64encode(self.shown[args[0]:args[1]]).decode('ascii')
         assert 'responseStatus' in script and 'click' not in script  # only reads how the page arrived
         if self.closes:
             raise RuntimeError('no such window')
@@ -140,6 +151,32 @@ def test_a_page_a_refusal_a_closed_window_and_nothing_at_all_are_told_apart(tmp_
     for bad in ({'wait_seconds': 1}, {'wait_seconds': 3000}, {'url': 'file:///C:/secret'}, {'max_download_bytes': 5}):
         with pytest.raises(ValueError):
             worker.run_fetch_job(fetch_job(**bad), tmp_path, driver_factory=lambda *_: Window(tmp_path))
+
+
+def test_a_pdf_that_the_window_shows_instead_of_saving_is_read_from_the_page_and_saved(tmp_path, monkeypatch):
+    """Real-machine case (Edge 141): five tries, each 'the PDF was shown in the window but not saved'. The
+    preference to download PDFs did not take; the window had the document all the same."""
+    for name in 'abcd':
+        (tmp_path / name).mkdir()
+    viewer = {'content_type': 'application/pdf', 'html': '<html><body><embed type="application/pdf"></body></html>'}
+    monkeypatch.setattr(worker, '_SHOWN_STEP', 2048)  # several pieces
+    large = REPORT + b'%' * 5000
+    shown, window, _ = run_fetch(tmp_path / 'a', {**viewer, 'shown': large})
+    assert shown['kind'] == 'download' and shown['file'] == 'shown.pdf' and shown['bytes'] == len(large)
+    assert (tmp_path / 'a' / 'downloads' / 'shown.pdf').read_bytes() == large
+    chunks = [call for call in window.calls if call[0] == 'chunk']
+    assert len(chunks) == -(-len(large) // 2048) and chunks[0] == ('chunk', 0, 2048) and window.calls[-1] == ('quit',)
+    assert ('script_timeout', 120) in window.calls and window.calls.count(('get', fetch_job()['url'])) == 1
+    # Too large for the limit, or the page cannot give the data: said, and nothing is saved.
+    big, _, _ = run_fetch(tmp_path / 'b', {**viewer, 'shown': b'%PDF' + b'0' * 5000}, max_download_bytes=2048)
+    assert big['kind'] == 'too_large' and big['bytes'] == 5004 and not list((tmp_path / 'b' / 'downloads').iterdir())
+    failed, window, _ = run_fetch(tmp_path / 'c', {**viewer, 'shown': 'error: TypeError: Failed to fetch'})
+    assert failed['kind'] == 'page' and failed['content_type'] == 'application/pdf'
+    assert failed['title'] == 'The PDF was shown but could not be read from the page: error: TypeError: Failed to fetch'
+    assert window.calls[-1] == ('quit',)
+    # An ordinary page is not fetched again.
+    page, window, _ = run_fetch(tmp_path / 'd', {})
+    assert page['kind'] == 'page' and ('fetch_shown',) not in window.calls
 
 
 CHECK = {'html': '<html><title>Just a moment...</title><body>Verify you are human</body></html>', 'title': 'Just a moment...', 'status': 403}
@@ -309,7 +346,7 @@ async def test_a_refusal_or_a_check_in_the_window_is_final_and_the_human_is_aske
         other = f'http://files.example:{port}'
         for path, problem in (('/gone.pdf', 'the window was closed before anything arrived'), ('/slow.pdf', 'nothing arrived in time'),
                               ('/big.pdf', r'larger than the limit in the settings \(80\.0 MB; limit 50\.0 MB\)'),
-                              ('/shown.pdf', 'showed the PDF but did not save it')):
+                              ('/shown.pdf', r'showed the PDF but did not save it \(the PDF was shown in the window but not saved\)')):
             with pytest.raises(WebToolError, match=problem):
                 await tools.execute('web_fetch', {'url': other + path})
         assert len(opened) == 5 and not (tmp_path / 'pdf-cache').exists()

@@ -146,7 +146,7 @@ class AgentHierarchyMixin:
         if self._formation_reviewer(run, agent):
             return '独立reviewerは委任できません'
         lineage = self._hierarchy_lineage(run, agent)
-        if self.closed or agent.closing or agent.question or run['status'] in {'stopped', 'stopping', 'error', 'done'}:
+        if self.closed or agent.closing or agent.question or run['status'] in {'stopped', 'stopping', 'error', 'done', 'incomplete'}:
             return '停止中・質問待ちの担当は増員できません'
         if len(lineage) - 1 >= run.get('max_delegation_depth', 1):
             return 'この仕事の委任の深さ上限のため増員できません'

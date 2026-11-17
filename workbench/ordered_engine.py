@@ -159,7 +159,7 @@ class OrderedCollaborationMixin:
     def _ordered_check_actor(self, run, agent):
         if (self.runs.get(run['id']) is not run or self.agents.get(agent.id) is not agent
                 or agent.id not in run['agent_ids'] or agent.run_id != run['id'] or agent.question
-                or agent.status == 'error' or agent.closing or run['status'] in {'done', 'stopped', 'stopping'}):
+                or agent.status == 'error' or agent.closing or run['status'] in {'done', 'incomplete', 'stopped', 'stopping'}):
             raise ValueError('この作業の実行可能な担当だけが手順を操作できます。人の質問・停止・エラーは解除しません')
 
     def _ordered_notice(self, run, actor, kind, payload):

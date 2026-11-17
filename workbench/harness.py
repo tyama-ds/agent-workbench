@@ -394,8 +394,9 @@ class PathHarness:
                     _inspect(component, directory=True)
             return {"path": str(path), "kind": "directory", "operation": "created" if created else "existing"}
 
-    def write_bytes(self, value: str, data: bytes, expected_sha256: str, *, text_only: bool = False) -> dict:
-        if not isinstance(data, bytes) or len(data) > self.max_file_bytes:
+    def write_bytes(self, value: str, data: bytes, expected_sha256: str, *, text_only: bool = False, limit: int | None = None) -> dict:
+        # ``limit`` replaces the general file limit for a kind of file that has its own (a downloaded PDF).
+        if not isinstance(data, bytes) or len(data) > (self.max_file_bytes if limit is None else limit):
             raise HarnessError("Output exceeds the file size limit")
         if expected_sha256 != "missing" and (not isinstance(expected_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None):
             raise HarnessError("expected_sha256 must be the current hash or 'missing' for a new file")
@@ -406,10 +407,11 @@ class PathHarness:
             if text_only and path.suffix.lower() in _TEXT_MUTATION_DENIED_SUFFIXES:
                 tool = {".xlsx": "xlsx_write", ".docx": "docx_write (or docx_edit)", ".pptx": "pptx_write (or pptx_edit)"}.get(path.suffix.lower())
                 raise HarnessError("Known document or binary extension cannot be modified with text tools; "
-                                   + (f"use {tool} for {path.suffix.lower()} files" if tool else "use a dedicated format tool"))
+                                   + (f"use {tool} for {path.suffix.lower()} files (to replace an existing file, pass "
+                                      "expected_sha256 = its current hash from file_hash)" if tool else "use a dedicated format tool"))
             _inspect(path.parent, directory=True)
             with self._parents_held(path):
-                original = self._read(path) if path.exists() else None
+                original = self._read(path, limit) if path.exists() else None
                 before = hashlib.sha256(original).hexdigest() if original is not None else "missing"
                 if before != expected_sha256:
                     raise _stale_hash_error(expected_sha256, before)
@@ -425,7 +427,7 @@ class PathHarness:
                         stream.flush()
                         os.fsync(stream.fileno())
                     self.resolve(str(path), write=True, must_exist=False)
-                    latest = hashlib.sha256(self._read(path)).hexdigest() if path.exists() else "missing"
+                    latest = hashlib.sha256(self._read(path, limit)).hexdigest() if path.exists() else "missing"
                     if latest != before:
                         raise HarnessError("File changed before replacement")
                     if before == "missing":
@@ -804,7 +806,7 @@ class ToolExecutor:
         # array items while rendering tool definitions.
         rows = {"type": "array", "items": {"type": "array", "items": text}}
         docx_operation = _schema({
-            "type": {"type": "string", "enum": ["append_paragraph", "replace_paragraph", "replace_cell", "append_table"]},
+            "type": {"type": "string", "enum": ["append_paragraph", "insert_paragraph", "replace_paragraph", "delete_paragraph", "replace_cell", "append_table"]},
             "text": text, "index": integer, "table": integer, "row": integer, "column": integer, "rows": rows,
         }, ("type",))
         cell = _schema({"sheet": text, "cell": text, "value": {"type": ["string", "number", "boolean", "null"]}},
@@ -823,7 +825,7 @@ class ToolExecutor:
             ("patch_text", "Edit UTF-8 text: one unique exact find/replace, or edits applied together, each {find,replace} or {start_line,end_line,replace} (1-based, inclusive, non-overlapping). Same protection as write_text; needs read+write access.", {**common, "find": text, "replace": text, "edits": {"type": "array", "items": edit}}, ("path", "expected_sha256")),
             ("docx_read", "Read paragraphs and tables from a safe DOCX package without opening Word.", {"path": path}, ("path",)),
             ("docx_write", "Create or explicitly replace a DOCX from paragraphs and tables (each table as rows of cells; do not write a table as Markdown or tab-separated text).", {**common, "paragraphs": {"type": "array", "items": text}, "tables": {"type": "array", "items": rows}}, ("path", "expected_sha256")),
-            ("docx_edit", "Edit DOCX with operations: append_paragraph(text), replace_paragraph(index,text), replace_cell(table,row,column,text), append_table(rows). Zero-based indices; edited paragraphs retain first-run formatting.", {**common, "operations": {"type": "array", "items": docx_operation}}, ("path", "operations", "expected_sha256")),
+            ("docx_edit", "Edit DOCX with operations: append_paragraph(text), insert_paragraph(index,text) before that paragraph, replace_paragraph(index,text), delete_paragraph(index), replace_cell(table,row,column,text), append_table(rows). To rewrite the whole document use docx_write with expected_sha256 = its current hash. Zero-based indices; edited paragraphs retain first-run formatting.", {**common, "operations": {"type": "array", "items": docx_operation}}, ("path", "operations", "expected_sha256")),
             ("xlsx_read", "Read bounded cells from XLSX; formulas are returned as text and never evaluated.", {"path": path, "sheet": text, "range": text}, ("path",)),
             ("xlsx_write", "Set explicit XLSX cells [{sheet,cell,value}]. Creates a workbook when missing; create_sheets explicitly adds sheets and remove_sheets deletes sheets that an earlier write left and are no longer wanted. Pass numbers as JSON numbers; a numeric string such as '1,234' or '12.5%' is stored as a number (prefix an apostrophe to keep it text). Formula-like strings are rejected unless allow_formulas is true; external-data formulas remain disabled.", {**common, "cells": {"type": "array", "items": cell}, "create_sheets": {"type": "array", "items": text}, "remove_sheets": {"type": "array", "items": text}, "allow_formulas": {"type": "boolean"}}, ("path", "cells", "expected_sha256")),
             ("pptx_read", "Read slide text from a safe PPTX without launching PowerPoint.", {"path": path}, ("path",)),
@@ -976,8 +978,18 @@ class ToolExecutor:
             if kind == "append_paragraph" and set(operation) == {"type", "text"}:
                 document.add_paragraph(_string(operation["text"], "text", 10000, empty=True))
             elif kind == "replace_paragraph" and set(operation) == {"type", "index", "text"}:
-                index = _integer(operation["index"], "index", 0, len(document.paragraphs) - 1)
+                index = self._paragraph_index(document, operation["index"], "replace_paragraph")
                 _paragraph_text(document.paragraphs[index], operation["text"])
+            elif kind == "insert_paragraph" and set(operation) == {"type", "index", "text"}:
+                text = _string(operation["text"], "text", 10000, empty=True)
+                count = len(document.paragraphs)
+                if type(operation["index"]) is int and operation["index"] == count:
+                    document.add_paragraph(text)  # after the last one
+                else:
+                    document.paragraphs[self._paragraph_index(document, operation["index"], "insert_paragraph", extra=1)].insert_paragraph_before(text)
+            elif kind == "delete_paragraph" and set(operation) == {"type", "index"}:
+                element = document.paragraphs[self._paragraph_index(document, operation["index"], "delete_paragraph")]._p
+                element.getparent().remove(element)
             elif kind == "replace_cell" and set(operation) == {"type", "table", "row", "column", "text"}:
                 table = document.tables[_integer(operation["table"], "table", 0, len(document.tables) - 1)]
                 row = _integer(operation["row"], "row", 0, len(table.rows) - 1)
@@ -1000,6 +1012,19 @@ class ToolExecutor:
                                      "real tables" + ("; a text copy of a table that is also in the tables argument was left out" if dropped else "")
                                      + ". Pass tables in the tables argument only, as rows of cells.")
         return result
+
+    @staticmethod
+    def _paragraph_index(document, value, operation, extra=0):
+        """A paragraph's index, or an error that says what the document holds and what to do instead."""
+        count = len(document.paragraphs)
+        if type(value) is int and 0 <= value < count:
+            return value
+        got = str(value) if type(value) is int else f"{type(value).__name__} {str(value)[:40]!r}"
+        raise HarnessError(
+            f"{operation}: index must be 0..{count - 1 + extra} (the document has {count} paragraph(s)); got {got}. "
+            "To add text after the last paragraph use append_paragraph; to put it elsewhere use insert_paragraph. "
+            "To rewrite the whole document, call docx_write with all paragraphs and tables and expected_sha256 set to "
+            "the file's current hash (from file_hash or the last write's result).")
 
     @staticmethod
     def _docx_table(document, rows, *, header=False):

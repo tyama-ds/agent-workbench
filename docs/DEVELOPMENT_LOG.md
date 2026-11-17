@@ -4,6 +4,41 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev76 — A run without its files is not "done"; the window saves the PDF it shows; documents can grow (2026-11-17)
+
+Two runs on the real machine. The IEA's World Energy Outlook (PM and five
+workers, 432 s): the PDF was found on the IEA's own storage and two workers
+gathered figures with pages, but the document stayed three placeholder
+paragraphs, there were no slides and no saved PDF, and the run said "done".
+The IMF's outlook at dev75: the browser window now opened and showed the
+PDF, five times, and saved none.
+
+- The window: Edge showed the PDF in its viewer although the preference to
+  download PDFs was set. The document the window shows is now read through
+  the page's own fetch, with the window's session and from its cache, and
+  saved as the download. Nothing else is requested.
+- A run whose requested file was never saved ends as `incomplete`
+  ("未完了（成果物なし）"), not `done`, in the list, the team view and the
+  history; it becomes `done` when the file arrives.
+- `docx_edit` could only replace the paragraphs that were there, so a
+  document saved as a placeholder could not grow ("index must be an integer
+  between 0 and 2", four times). It can now insert and delete paragraphs,
+  and an index outside the document is answered with the paragraph count
+  and the two ways on. Policy: no placeholder is saved first.
+- `pptx_write` refused a body given as one text, four times, with "must be
+  a list of at most 100 texts". A text is taken as its lines, numbers as
+  their text, long lists continue on further slides, and a refusal says what
+  was received and shows an example.
+- `pdf_save` writes a downloaded PDF into a write folder as a new file.
+- A worker that depends on others gets their accepted reports, copied by
+  the application. The writer had answered that no confirmed evidence was
+  in its conversation.
+- Policy: the newest issue of a periodical is chosen by its publication
+  date; of a report in several files the full report is fetched first.
+
+Not verified here: the page's fetch of a shown PDF runs against a fake
+driver; whether Edge's viewer page allows it is for the real machine.
+
 ## 0.1.1.dev75 — The browser window no longer fails on a helper that came and went; confirmed figures are taken over (2026-11-17)
 
 dev73 on the real machine (`0903a73`): the headline figures were right and

@@ -876,8 +876,9 @@ class WebTools:
             raise WebToolError(f"{refused}. A browser window tried once and was also turned away: {detail}. "
                                "The application does not solve checks or disguise the browser." + ask)
         if _mime(page.get("content_type", "")) == "application/pdf":
-            self._browser_record(url, "failed", "the PDF was shown in the window but not saved")
-            raise WebToolError(f"{refused}. The browser window showed the PDF but did not save it." + ask)
+            why = title[:200] if title.startswith("The PDF was shown") else "the PDF was shown in the window but not saved"
+            self._browser_record(url, "failed", why)
+            raise WebToolError(f"{refused}. The browser window showed the PDF but did not save it ({why})." + ask)
         try:
             final_parsed = _url(final)
             await _public_addresses(final_parsed.hostname, final_parsed.port or (443 if final_parsed.scheme == "https" else 80))

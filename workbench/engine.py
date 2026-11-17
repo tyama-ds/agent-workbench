@@ -38,7 +38,7 @@ from .browser_search import SearchCache, SearchChallenge
 from .resources import ResourceGate
 from .redaction import SecretRedactor, RedactionCapacityError, REDACTION_CAPACITY_MESSAGE
 from .webtools import BrowserCheck, WebTools
-from .pdfdocs import PdfLibrary, PdfToolMixin, PDF_READ_TOOL, PDF_SEARCH_TOOL, MAX_PDF_BYTES
+from .pdfdocs import PdfLibrary, PdfToolMixin, PDF_READ_TOOL, PDF_SAVE_TOOL, PDF_SEARCH_TOOL, MAX_PDF_BYTES
 from .history import HistoryStore, HistoryError, ArchivedReadOnly, public_document, archived_view, redact_tree as redact_history_tree
 from .securestore import CredentialStore, CredentialStorageError, SEARCH_BINDING
 from .ordered_engine import OrderedCollaborationMixin, ORDERED_NAMES
@@ -257,7 +257,7 @@ SELENIUM_TOOL = schema('selenium_browse',
                     'required': ['path', 'expected_sha256'], 'additionalProperties': False}}, ('url',))
 READ_ONLY_FILE_TOOLS = frozenset({'read_text', 'list_directory', 'search_text', 'search_paths', 'file_hash',
                                   'docx_read', 'xlsx_read', 'pptx_read'})
-WRITE_TOOLS = frozenset({'write_text', 'patch_text', 'docx_write', 'docx_edit', 'xlsx_write', 'pptx_write', 'pptx_edit'})
+WRITE_TOOLS = frozenset({'write_text', 'patch_text', 'docx_write', 'docx_edit', 'xlsx_write', 'pptx_write', 'pptx_edit', 'pdf_save'})
 DIRECTORY_TOOLS = frozenset({'create_directory'})
 WORKER_ONLY_TOOLS = frozenset({'spawn_worker', 'start_ordered_work', 'wait_for_workers', 'review_worker_report'})
 # A read-only worker (chosen by its PM at spawn) can inspect but never change
@@ -278,6 +278,7 @@ expected_sha256="missing"; for an existing file read its current hash before edi
 Read back the result when read access permits. Release reservations when finished.
 One file has one writer: workers report their values in finish_work, and one agent,
 normally the PM, writes the file once and reads it back before reporting on it.
+Do not save a draft or placeholder first: save a file when its content is ready.
 Only successful tool results establish a completed operation; report the actual path
 and distinguish saved files from proposals or failed/unverified operations. Directory
 creation appears in tool logs; saved-file receipts are only for actual file writes.
@@ -2174,6 +2175,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             tools += run['_web'].schemas()
         if self._pdf_available(run):
             tools += [PDF_READ_TOOL, PDF_SEARCH_TOOL]
+            if run['_config']['search']['enabled'] and paths['write_roots']:
+                tools.append(PDF_SAVE_TOOL)  # only a downloaded PDF can be saved, and only where files may be written
         if agent.parent_id:
             excluded = {'start_ordered_work', 'review_work_step', 'rollback_work_step'}
             if self._hierarchy_spawn_issue(run, agent):
@@ -2383,6 +2386,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 if not human:
                     self.log(agent, 'mail', content)
                 self._append_context(agent, {'role': 'user', 'content': content}, human=human)
+                self._dependency_attach_reports(run, agent)
                 self._consume_worker_report(agent, content, human)
                 self._consume_mail(agent, content, human)
                 self._formation_consume_control(run, agent, content, human, queued_item)
@@ -2856,7 +2860,10 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             run['status'] = 'done'
         if run.get('adaptive_team') and run['status'] == 'done' and not self._formation_complete(run):
             run['status'] = 'waiting'
-        if run['status'] == 'done':
+        if run['status'] == 'done' and self._outputs_incomplete(run):
+            # Everyone has finished, but a file the request names was never saved: that is not "done".
+            run['status'] = 'incomplete'
+        if run['status'] in {'done', 'incomplete'}:
             run.setdefault('_budget_finished_at', time.time())
         else:
             run.pop('_budget_finished_at', None)
@@ -3447,6 +3454,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 else:
                     candidate = run['_harness'].resolve(args['path'], write=name in WRITE_TOOLS, must_exist=False)
                     self._check_reservation(agent, candidate)
+            if name == 'pdf_save':
+                return await self._pdf_save(run, agent, args)
             if name in WRITE_TOOLS:
                 result = await run['_executor'].execute(name, args, on_complete=lambda result: self.record_receipt(agent, name, result))
                 # The replaced content's hash is for the human restore record only.
@@ -3680,7 +3689,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             return False
         return ((name in {'python_execute', 'run_tests'} and settings['python'])
                 or (name == 'selenium_browse' and settings['selenium'])
-                or (name in WRITE_TOOLS and settings['overwrite'] and args.get('expected_sha256') != 'missing'))
+                or (name in WRITE_TOOLS and name != 'pdf_save'  # pdf_save only ever creates a new file
+                    and settings['overwrite'] and args.get('expected_sha256') != 'missing'))
 
     SEARCH_UNAVAILABLE = ('この作業では Web 検索は使えません: 検索サービスが人による確認（ボット確認）を求めており、確認が行われませんでした。'
                           '検索を繰り返さず、分かっている URL の web_fetch、国別統計の stat_lookup で進めるか、検索できなかったことを報告してください')
@@ -3962,7 +3972,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         try:
             timers = self._question_stop()
             stopping = asyncio.gather(*(self.stop_run(ident) for ident, run in self.runs.items()
-                                       if run['status'] not in {'done', 'stopped', 'error'}),
+                                       if run['status'] not in {'done', 'incomplete', 'stopped', 'error'}),
                                       *timers, return_exceptions=True)
             interrupted = None
             while not stopping.done():

@@ -34,7 +34,7 @@ RECEIPT_FIELDS = frozenset(('id', 'tool', 'at', 'turn', 'path', 'bytes', 'sha256
 EVENT_FIELDS = frozenset(('id', 'run_id', 'agent_id', 'kind', 'text', 'at', 'mail_id', 'from_agent_id',
     'to_agent_id', 'from', 'to', 'subject', 'message_type', 'delivery_state'))
 POST_FIELDS = frozenset(('seq', 'run_id', 'author_kind', 'author_id', 'author_name', 'body', 'reply_to', 'created_at'))
-TERMINAL = frozenset(('done', 'stopped', 'error', 'interrupted'))
+TERMINAL = frozenset(('done', 'incomplete', 'stopped', 'error', 'interrupted'))
 STOP_REASONS = frozenset(('time_limit', 'model_limit', 'tool_limit', 'turn_limit', 'provider_timeout', 'provider_output_limit'))
 # Agent-only: a human stopped this worker. Never a run-level budget reason.
 AGENT_STOP_REASONS = STOP_REASONS | {'human_stop'}
@@ -86,7 +86,7 @@ def redact_document(document, redact):
     def enum(before, after, key, allowed):
         if isinstance(before.get(key), str) and before[key] in allowed:
             after[key] = before[key]
-    statuses = {'idle', 'queued', 'working', 'running', 'waiting', 'stopping', 'stopped', 'done', 'error', 'interrupted'}
+    statuses = {'idle', 'queued', 'working', 'running', 'waiting', 'stopping', 'stopped', 'done', 'incomplete', 'error', 'interrupted'}
     restore(document['run'], result['run'], ('id', 'agent_ids', 'pm_agent_ids'))
     enum(document['run'], result['run'], 'status', statuses)
     enum(document['run'], result['run'], 'approval_mode', {'ask', 'always_allow'})
@@ -130,7 +130,7 @@ def redact_document(document, redact):
         restore(before, after, ('run_id', 'agent_id', 'from_agent_id', 'to_agent_id'))
         if isinstance(before.get('mail_id'), str) and re.fullmatch(r'm-[0-9a-f]{32}', before['mail_id']):
             after['mail_id'] = before['mail_id']
-        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped', 'restored', 'approval', 'approval_resolved', 'memo_proposal', 'model_fallback', 'plan', 'turn', 'turn_rejected', 'turn_pass', 'turns_complete', 'team_settled', 'stall_notice', 'tests_run', 'browser_fetch'})
+        enum(before, after, 'kind', {'created', 'context_compaction', 'inference', 'error', 'mail', 'mail_consumed', 'collaboration_limit', 'question', 'question_resolved', 'stopped', 'restored', 'approval', 'approval_resolved', 'memo_proposal', 'model_fallback', 'plan', 'turn', 'turn_rejected', 'turn_pass', 'turns_complete', 'team_settled', 'stall_notice', 'tests_run', 'browser_fetch', 'incomplete'})
         enum(before, after, 'message_type', {'worker_report', 'worker_error', 'worker_notice', 'peer_message'})
         enum(before, after, 'delivery_state', {'queued', 'context_consumed'})
     for before, after in zip(document['board'], result['board']):
