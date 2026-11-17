@@ -832,3 +832,26 @@ statement that search is unavailable.
 The engine list a run uses comes from `chosen_engines(search.browser_bing)`:
 duckduckgo.com and DuckDuckGo's HTML page always, Bing between them only when
 the human turned it on (0.1.1.dev61; off by default).
+
+## PDF reports and refused pages (0.1.1.dev70)
+
+- `workbench/pdfdocs.py`: `PdfLibrary` keeps PDFs that `web_fetch` downloaded
+  (`<settings>/pdf-cache`, named by content hash) and up to three opened
+  documents with the text of the pages read so far. `read` answers one
+  `pdf_read` call in a two-thread pool with a time budget (`_overview`,
+  `_pages`, `_find`). `PdfToolMixin` is the engine's side: a `path` goes
+  through `_execute_read_tool` (reservations, reader count, the harness's
+  path rules with `limits.max_pdf_bytes`), a `pdf_id` must be one this run's
+  `WebTools.pdf_ids` holds.
+- `WebTools._request(..., pdf=(bytes, seconds))` lets a PDF answer use its own
+  size and time limits; `_pdf_fetched` opens the file before it is kept, so
+  an encrypted or damaged one is refused and not stored. `_TextHTML` keeps
+  the links of a page that name a PDF (`pdf_links`).
+- `VerificationMixin._pdf_note` records, per downloaded PDF, the pages read;
+  `_citation_rows` shows them beside a citation (kind `pdf`).
+- `workbench/browserfetch.py`: `get` makes one GET with curl_cffi's
+  `impersonate`, following redirects itself and asking `WebTools` for the
+  checked addresses of each hop (`CURLOPT_RESOLVE`). `WebTools._page` calls
+  it only after `_request` raised 403 or 202, when
+  `search.browser_tls_retry` is on; `_browser_like` holds the per-site lock,
+  pause, accepted kind and refusal memory.

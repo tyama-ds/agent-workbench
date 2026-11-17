@@ -4,6 +4,61 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev70 — PDF reports are read by page, and a refused page is asked for again as a browser (2026-11-17)
+
+The request: download the IMF's World Economic Outlook, read it and report a
+summary; and the same for any long PDF report. On the real machine nothing of
+this worked: `web_fetch` took text kinds only and stopped at 1 MiB, no file
+tool opened a PDF, and www.imf.org answered 403 to every HTTP library.
+
+- `pdf_read` reads a PDF in an allowed read folder or one `web_fetch`
+  downloaded. The first call gives the page count, the outline, characters
+  per page and how the document begins; then pages by number, each under its
+  page number, as far as the answer's size allows, with where to go on;
+  `find` lists the pages on which a phrase stands. An encrypted file is
+  refused. Pages without a text layer are named, and a file with none says
+  that nothing could be read (there is no OCR).
+- `web_fetch` keeps a PDF answer in the application's own folder under
+  `limits.max_pdf_bytes` (50 MiB by default) and returns `pdf_id` with the
+  overview. A page's links to PDF files are returned beside its text, which
+  is how a report is reached from the page that describes it (the IMF
+  eLibrary's book page links to the chapters' files).
+- The run remembers which pages of a downloaded PDF were read. When sources
+  are checked, a cited PDF is shown with them, and the PM is told that only
+  pages read can be cited, each figure with its page.
+- Policy: page count and outline first, the executive summary and the first
+  chapter, then only what the request needs; every figure with its page; a
+  refused site's own official distribution site (the IMF eLibrary) instead
+  of repeating the request.
+- `search.browser_tls_retry`, on by default: the owner asked for refused
+  pages to be fetched all the same. An https page or PDF answered with 403
+  or 202 is requested again with a browser's TLS and HTTP/2 handshake
+  (curl_cffi), as Safari, then Chrome, then Edge. On the real machine only
+  Safari passed the IMF's filter, and the 8 MB report came whole. This gets
+  around a bot filter and can be against a site's terms; the setting says
+  so. It replaces an earlier decision of this project (nothing hides that a
+  request is automated) for page fetches only: search engines are not asked
+  this way, and a check meant for a person is still never solved.
+- The retry keeps the ordinary request's rules: public addresses only,
+  pinned per hop, redirects checked one by one, the explicit proxy only, the
+  system's certificate authorities (written to a file once, because curl
+  would otherwise use its own list and fail behind an inspecting proxy), the
+  same size limits. One request at a time per site with three seconds
+  between them; a site that refused all three kinds is left alone for ten
+  minutes.
+- Dependencies, pinned with hashes: pypdf 6.21.4 (pure Python; 7.x was days
+  old), curl_cffi 0.17.0 with cffi, pycparser and certifi. None has a known
+  advisory in PyPI's records today. pypdf has had many advisories about
+  files that exhaust time or memory, which is why reading has a time budget
+  and a file that does not end is not tried again.
+- Two tests fixed their context budget as a number and broke when the tool
+  list grew; they now measure it, as the one fixed in dev69.
+
+Not verified here: this environment reaches neither www.imf.org nor the
+eLibrary, and a local server cannot tell a TLS handshake, so the tests tell
+the two requests apart by their headers. A Japanese PDF made here with a
+CID font reads correctly; the ministries' own files were not tried.
+
 ## 0.1.1.dev69 — A change that cannot be formed is said, and a coordinator reads what its workers wrote (2026-11-17)
 
 dev68 passed on the real machine at `f07437a` (latest month and quarter,

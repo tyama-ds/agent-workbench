@@ -279,6 +279,9 @@ def validate_settings(raw, *, check_paths=True):
     # Browser search: Bing as a second engine only when the human turned it on.
     if type(search['browser_bing']) is not bool:
         raise ValueError('ブラウザー検索で Bing も使うかどうかは true / false で指定してください')
+    # A page that refused the ordinary request is asked again with a browser's TLS handshake (the human's choice).
+    if type(search['browser_tls_retry']) is not bool:
+        raise ValueError('ブラウザ相当の通信で再試行するかどうかは true / false で指定してください')
     if search['provider'] == 'brave' and search['endpoint'].rstrip('/') == BRAVE_ENDPOINT:
         # The key-based option. Its key is never part of settings: it lives in
         # the session or the encrypted store, like a model provider's key.

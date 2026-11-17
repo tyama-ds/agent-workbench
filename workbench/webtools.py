@@ -19,7 +19,7 @@ from typing import Any
 
 import aiohttp
 
-from . import statdata, statsources
+from . import browserfetch, statdata, statsources
 from .pdfdocs import PdfError, looks_like_pdf, megabytes
 from .webtext import TextDecodingError, decode_web_text
 from .webdata import MAX_TEXT_CHARS, WebDataError, WebSnapshots, received, received_names
@@ -509,6 +509,13 @@ class WebTools:
         self.max_bytes = config.get("max_response_bytes", 1024 * 1024)
         self._snapshots = WebSnapshots()
         self._search_cache = {}
+        # A site that refuses the ordinary request (HTTP 403, 202) is asked once more with a browser's TLS and
+        # HTTP/2 handshake when the human left this on. Per site: which kind it accepted, when the last such
+        # request was sent, and sites that refused every kind (not asked again for a while).
+        self.browser_tls_retry = config.get("browser_tls_retry", False)
+        if type(self.browser_tls_retry) is not bool:
+            raise WebToolError("Search browser_tls_retry must be true or false")
+        self._tls_kind, self._tls_sent, self._tls_refused, self._tls_locks = {}, {}, {}, {}
         # PDFs this run downloaded (pdf_id -> its record); the library that keeps them is the application's.
         self._pdf_library, self._pdf_bytes, self.pdf_ids = None, 0, {}
         if type(self.timeout) not in {int, float} or not 1 <= self.timeout <= 60:
@@ -666,11 +673,10 @@ class WebTools:
                 raise WebToolError("web_fetch requires only url" + received_names(set(args) - {"url"}))
             _url(args["url"])
             wants_pdf = self._pdf_library is not None
-            data, content_type, final_url = await (self._request(args["url"], pdf=(self._pdf_bytes, PDF_SECONDS))
-                                                   if wants_pdf else self._request(args["url"]))
+            data, content_type, final_url, browser_kind = await self._page(args["url"], wants_pdf)
             mime = _mime(content_type)
             if wants_pdf and _pdf_answer(content_type, _url(final_url).path):
-                return await self._pdf_fetched(data, final_url)
+                return self._browser_noted(await self._pdf_fetched(data, final_url), browser_kind)
             if mime not in {"text/plain", "text/html", "application/xhtml+xml", "application/json", "text/markdown", "text/csv"}:
                 # Echo the remote type only when it is a short plain MIME token.
                 got = f"; got {mime}" if re.fullmatch(r"[a-z0-9][a-z0-9.+-]{0,40}/[a-z0-9][a-z0-9.+-]{0,60}", mime) else ""
@@ -703,7 +709,7 @@ class WebTools:
                 result["pdf_links"] = pdf_links
                 result["pdf_links_note"] = ("PDF files this page links to" + (f" ({left_out} more not listed)" if left_out else "")
                                             + ". Fetch one with web_fetch, then read it with pdf_read.")
-            return result
+            return self._browser_noted(result, browser_kind)
         if name != "web_search":
             raise WebToolError("Unknown web tool")
         if set(args) - {"query", "limit"} or "query" not in args:
@@ -717,6 +723,94 @@ class WebTools:
             raise WebToolError(f"Search limit must be an integer 1..10; got {received(limit)}")
         limit = min(limit, 10)  # a larger request is capped, not refused
         return await self._queued_search(query, limit)
+
+    # --- a site that refuses the ordinary request ------------------------------------------
+    TLS_PAUSE, TLS_REFUSED_SECONDS = 3.0, 600
+    _TLS_SCHEMES = frozenset({"https"})  # a browser's handshake means nothing without TLS
+
+    async def _page(self, url: str, wants_pdf: bool):
+        """The answer for web_fetch: (data, content type, final URL, browser kind or None)."""
+        host = _url(url).hostname
+        pdf = (self._pdf_bytes, PDF_SECONDS) if wants_pdf else None
+        if host in self._tls_kind:
+            # This site refused the ordinary request earlier in this work and accepted this kind: do not
+            # collect another refusal first.
+            return await self._browser_like(url, pdf, None)
+        try:
+            return (*await (self._request(url, pdf=pdf) if wants_pdf else self._request(url)), None)
+        except _HTTPStatusError as refused:
+            if (refused.status not in browserfetch.REFUSALS or not self.browser_tls_retry
+                    or _url(url).scheme not in self._TLS_SCHEMES or not browserfetch.available()):
+                raise
+            return await self._browser_like(url, pdf, refused)
+
+    async def _browser_like(self, url: str, pdf, refused):
+        host = _url(url).hostname
+        loop = asyncio.get_running_loop()
+        again = ("Do not retry this URL: use the same institution's other official site, another source, "
+                 "or ask the human to save the file into a read folder")
+        # One request at a time to a site, a pause between them, and no further tries once every kind was refused.
+        async with self._tls_locks.setdefault(host, asyncio.Lock()):
+            if loop.time() - self._tls_refused.get(host, -1e9) < self.TLS_REFUSED_SECONDS:
+                raise WebToolError("This site refused the ordinary request and every browser-like one a moment ago. " + again)
+            kinds = [self._tls_kind[host]] if host in self._tls_kind else list(browserfetch.KINDS)
+            last = refused
+            for kind in kinds:
+                pause = self._tls_sent.get(host, -1e9) + self.TLS_PAUSE - loop.time()
+                if pause > 0:
+                    await asyncio.sleep(pause)
+                try:
+                    data, content_type, final_url = await self._browser_request(url, kind, pdf)
+                except browserfetch.Refused as exc:
+                    last = _HTTPStatusError(exc.status)
+                    if exc.status not in browserfetch.REFUSALS:
+                        raise last from None  # a missing page or a rate limit is the site's answer, not its filter
+                    continue
+                finally:
+                    self._tls_sent[host] = loop.time()
+                self._tls_kind[host] = kind
+                return data, content_type, final_url, kind
+            self._tls_kind.pop(host, None)
+            self._tls_refused[host] = loop.time()
+            raise WebToolError(str(last) + ". The site also refused a request with a browser's TLS ("
+                               + ", ".join(kinds) + "). " + again)
+
+    async def _browser_request(self, url: str, kind: str, pdf):
+        loop = asyncio.get_running_loop()
+
+        async def pins(target: str):
+            parsed = _url(target)
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            return [(parsed.hostname, port, address) for address in _attempt_order(await _public_addresses(parsed.hostname, port))]
+
+        def on_redirect(current: str, target: str):
+            # Called in the request's thread: the same rules as the ordinary request, checked on the event loop.
+            if _url(current).scheme == "https" and _url(target).scheme != "https":
+                raise WebToolError("HTTPS downgrade redirects are forbidden")
+            return asyncio.run_coroutine_threadsafe(pins(target), loop).result(30)
+
+        def limit_for(content_type: str, path: str):
+            is_pdf = bool(pdf and _pdf_answer(content_type, path))
+            return (pdf[0] if is_pdf else self.max_bytes), is_pdf
+
+        try:
+            return await asyncio.to_thread(
+                browserfetch.get, url, kind=kind, pins=await pins(url), proxy=self.proxy, wait=self.timeout,
+                longest=max(self.timeout, pdf[1]) if pdf else self.timeout, limit_for=limit_for, on_redirect=on_redirect)
+        except browserfetch.TooLarge as exc:
+            raise WebToolError(_pdf_too_large(exc.declared, exc.limit) if exc.is_pdf
+                               else "Web response exceeds the configured size limit") from None
+        except (browserfetch.Failed, TimeoutError) as exc:
+            reason = str(exc) if isinstance(exc, browserfetch.Failed) else "timeout"
+            raise WebToolError(f"Web request failed: {reason} (browser-like request, {kind})") from None
+
+    @staticmethod
+    def _browser_noted(result: dict, kind) -> dict:
+        if kind:
+            result["fetched_as"] = kind
+            result["fetched_note"] = ("The site refused the ordinary request; this was fetched with a browser-like "
+                                      "connection, as the human's settings allow.")
+        return result
 
     def use_pdf_library(self, library, max_bytes: int) -> None:
         """Where downloaded PDFs are kept, and how large one may be (the human's setting)."""
