@@ -8,6 +8,7 @@
 """
 import asyncio
 import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -215,3 +216,148 @@ async def test_the_file_policy_says_not_to_save_a_placeholder_first(tmp_path):
         assert 'Do not save a draft or placeholder first: save a file when its content is ready.' in engine._policy(run, pm)
     finally:
         await engine.close()
+
+
+async def test_a_worker_that_finished_without_a_formal_report_can_be_reopened_or_accepted(tmp_path):
+    """Real-machine case: a worker answered a re-request in prose and was "done" with no finish_work report.
+    The coordinator's finish_work said "no formal report yet (state done)", review_worker_report was refused each
+    time, and after three notices the run stopped as a deadlock."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=3)
+        first = engine.agents[(await engine.execute_tool(run, pm, 'spawn_worker', {
+            'profile_id': 'local', 'role': 'researcher', 'task': 'Find the report.'}))['agent_id']]
+        second = engine.agents[(await engine.execute_tool(run, pm, 'spawn_worker', {
+            'profile_id': 'local', 'role': 'researcher', 'depends_on': [first.id], 'task': 'Collect the figures.'}))['agent_id']]
+        pm.pending.clear()
+        # The first worker reported formally and was accepted.
+        first.pending.clear()
+        first.status, first.finished_revision = 'done', first.result_revision
+        engine.record_result(first, 'finish_work', 'The report is at https://example.org/weo.pdf', revision=first.result_revision)
+        pm.worker_report_deliveries[first.id] = pm.worker_report_consumed[first.id] = first.result_revision
+        pm.worker_report_reviews[first.id] = {'result_revision': first.result_revision, 'decision': 'accept'}
+
+        def answered_in_prose(text):
+            second.pending.clear()
+            second.pending_mail_metadata.clear()
+            second.dependency_revisions = {first.id: first.result_revision}
+            second.dependency_stale, second.status, second.turns = False, 'done', second.turns + 1
+            engine.record_result(second, 'assistant_response', text, revision=second.result_revision)
+
+        answered_in_prose('世界成長率は 3.1%（p. 12）。報告は以上です。')
+        assert engine._formal_report_expected(run, second) and not engine._formal_report_expected(run, pm)
+        # The coordinator is told what this state is and the two ways on.
+        refused = await engine.execute_tool(run, pm, 'finish_work', {'summary': '完了しました。'})
+        assert refused['ok'] is False
+        for words in ('finish_work の報告を出さずに終了しています', '待っても報告は届きません', f'worker_id {second.id}',
+                      f'result_revision {second.result_revision}', 'decision "revise"', 'decision "accept"'):
+            assert words in refused['error'], words
+        # A wrong revision names the right one.
+        with pytest.raises(ValueError, match=f'現在の result_revision は {second.result_revision} です'):
+            await engine.execute_tool(run, pm, 'review_worker_report', {
+                'worker_id': second.id, 'result_revision': 99, 'decision': 'accept', 'feedback': 'ok'})
+        # "revise" reopens the worker: it gets the request and will run again.
+        before = second.result_revision
+        reopened = await engine.execute_tool(run, pm, 'review_worker_report', {
+            'worker_id': second.id, 'result_revision': before, 'decision': 'revise', 'feedback': 'ページ番号も付けてください。'})
+        assert reopened['ok'] and reopened['reopened'] and reopened['accepted'] is False and 'wait_for_workers' in reopened['note']
+        assert second.result_revision == before + 1 and len(second.pending) == 1
+        request = second.pending[0][0]
+        assert 'not given with finish_work' in request and 'ページ番号も付けてください。' in request
+        # It answers in prose once more. "accept" takes that answer as the report, on the coordinator's word.
+        answered_in_prose('世界成長率は 3.1%（p. 12、"growth of 3.1 percent"）。')
+        taken = await engine.execute_tool(run, pm, 'review_worker_report', {
+            'worker_id': second.id, 'result_revision': second.result_revision, 'decision': 'accept', 'feedback': '数値を PDF で確認した。'})
+        assert taken['accepted'] and taken['informal_report'] and 'did not pass the checks of a formal report' in taken['note']
+        assert engine._dependency_current_report(run, second) and engine._dependency_pm_issue(run, pm) is None
+        reviews = [json.loads(row['text']) for row in engine.events if row['kind'] == 'worker_report_review']
+        assert [(row['decision'], row.get('informal_report')) for row in reviews] == [('revise', True), ('accept', True)]
+        # A later worker that depends on it receives the accepted answer.
+        third = engine.agents[(await engine.execute_tool(run, pm, 'spawn_worker', {
+            'profile_id': 'local', 'role': 'writer', 'depends_on': [second.id], 'task': 'Write the report.'}))['agent_id']]
+        third.dependency_revisions = {second.id: second.result_revision}
+        engine._dependency_attach_reports(run, third)
+        assert 'growth of 3.1 percent' in third.conversation[-1]['content']
+        # A worker that is still at work is not such a case: the refusal says to wait.
+        third.status = 'working'
+        with pytest.raises(ValueError, match='wait_for_workers で待ってください'):
+            await engine.execute_tool(run, pm, 'review_worker_report', {
+                'worker_id': third.id, 'result_revision': third.result_revision, 'decision': 'accept', 'feedback': 'ok'})
+        third.status = 'idle'
+    finally:
+        await engine.close()
+
+
+async def test_a_worker_that_answers_in_prose_is_reminded_and_the_coordinator_gets_it_to_report(tmp_path):
+    """The whole way with scripted models: the second worker answers in prose twice; the coordinator's finish_work
+    is refused with the way on, "revise" reopens the worker, its finish_work report arrives and the run ends."""
+    from workbench.engine import CONTINUATION_NUDGE
+
+    class Client:
+        def __init__(self):
+            self.engine, self.steps, self.seen, self.ids, self.refusal = None, {}, [], {}, ''
+
+        @staticmethod
+        def last_tool(messages, name):
+            return json.loads(next(item for item in reversed(messages)
+                                   if item.get('role') == 'tool' and item.get('name') == name)['content'])
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            agent = self.engine.agents[conversation_id.rsplit('/', 1)[1]]
+            step = self.steps.get(agent.id, 0)
+            self.steps[agent.id] = step + 1
+            self.seen.append((agent.role, step, messages[-1].get('content') if messages else ''))
+            assert len(self.seen) <= 14, 'the run does not end'
+            if agent.parent_id is None:
+                if step == 0:
+                    return reply(calls=[('spawn_worker', {'profile_id': 'local', 'role': 'finder', 'task': 'Find the report.'})])
+                if step == 1:
+                    self.ids['finder'] = self.last_tool(messages, 'spawn_worker')['agent_id']
+                    return reply(calls=[('spawn_worker', {'profile_id': 'local', 'role': 'reader', 'depends_on': [self.ids['finder']],
+                                                          'task': 'Collect the figures with pages.'})])
+                if step == 2:
+                    self.ids['reader'] = self.last_tool(messages, 'spawn_worker')['agent_id']
+                    return reply(calls=[('wait_for_workers', {})])
+                if step == 3:
+                    finder = self.engine.agents[self.ids['finder']]
+                    return reply(calls=[('review_worker_report', {'worker_id': finder.id, 'result_revision': finder.result_revision,
+                                                                  'decision': 'accept', 'feedback': 'Checked.'}),
+                                        ('wait_for_workers', {})])
+                if step == 4:
+                    return reply(calls=[('finish_work', {'summary': 'Both workers are done.'})])
+                if step == 5:
+                    self.refusal = self.last_tool(messages, 'finish_work')['error']
+                    reader = self.engine.agents[self.ids['reader']]
+                    return reply(calls=[('review_worker_report', {'worker_id': reader.id, 'result_revision': reader.result_revision,
+                                                                  'decision': 'revise', 'feedback': 'Report with finish_work.'}),
+                                        ('wait_for_workers', {})])
+                reader = self.engine.agents[self.ids['reader']]
+                return reply(calls=[('review_worker_report', {'worker_id': reader.id, 'result_revision': reader.result_revision,
+                                                              'decision': 'accept', 'feedback': 'Checked.'}),
+                                    ('finish_work', {'summary': 'Integrated both accepted reports.'})])
+            if agent.role == 'finder':
+                return reply(calls=[('finish_work', {'summary': 'The report is weo.pdf.'})])
+            if step < 2:
+                return reply(text='Growth is 3.1 percent (p. 12). That is my report.')   # prose, no tool, twice
+            return reply(calls=[('finish_work', {'summary': 'Growth is 3.1 percent (p. 12).'})])
+
+    client = Client()
+    engine, work = configured(tmp_path, client)
+    client.engine = engine
+    try:
+        run, pm = await asyncio.wait_for(start(engine, max_workers=2, delegation_level=1), 20)
+        await asyncio.wait_for(settled(engine), 20)
+        reader = engine.agents[client.ids['reader']]
+        # Reminded once after its first answer in prose; the second answer in prose ended its turn without a report.
+        reader_turns = [content for role, _, content in client.seen if role == 'reader']
+        assert len(reader_turns) == 3 and reader_turns[1] == CONTINUATION_NUDGE
+        assert 'not given with finish_work' in reader_turns[2] and 'Report with finish_work.' in reader_turns[2]
+        # The coordinator's refusal named the state and the way on; "revise" then brought the formal report.
+        assert 'finish_work の報告を出さずに終了しています' in client.refusal and 'decision "revise"' in client.refusal
+        assert run['status'] == 'done' and pm.status == 'done' and reader.status == 'done'
+        assert reader.finished_revision == reader.result_revision and reader.results[-1]['source'] == 'finish_work'
+        assert pm.worker_report_reviews[reader.id] == {'result_revision': reader.result_revision, 'decision': 'accept'}
+        assert not any(row['kind'] == 'stall_notice' for row in engine.events)
+    finally:
+        await asyncio.wait_for(engine.close(), 20)

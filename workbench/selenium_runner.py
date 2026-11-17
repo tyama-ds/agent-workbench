@@ -353,11 +353,12 @@ _FETCH_KINDS = {'download', 'page', 'closed', 'timeout', 'too_large'}
 
 
 def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url, max_page_chars, max_download_bytes, cancel,
-                   person_seconds=0, check_words=()):
+                   person_seconds=0, check_words=(), via=''):
     if os.name != 'nt':
         raise HarnessError('Opening a browser window for a refused page currently requires Windows')
     try:
         url, proxy = validate_url(url), validate_proxy(proxy_url or '')
+        via = validate_url(via) if via else ''
     except (ValueError, UnicodeError) as exc:
         raise HarnessError(str(exc)) from exc
     wait_seconds = _integer(wait_seconds, 'fetch wait', 5, 300)
@@ -373,7 +374,7 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
                    'driver_executable': str(driver_path), 'library_paths': [str(path) for path in libraries],
                    'proxy_url': proxy, 'url': url, 'wait_seconds': wait_seconds, 'max_page_chars': max_page_chars,
                    'max_download_bytes': max_download_bytes, 'person_seconds': person_seconds,
-                   'check_words': [str(word)[:80] for word in list(check_words)[:60]]}
+                   'check_words': [str(word)[:80] for word in list(check_words)[:60]], 'via': via}
             job_path, worker = workspace / 'job.json', workspace / 'worker.py'
             job_path.write_text(json.dumps(job, ensure_ascii=False), encoding='utf-8')
             worker.write_bytes(Path(__file__).with_name('selenium_worker.py').read_bytes())
@@ -381,8 +382,8 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
                 # The profile and the download both live in the private folder and are deleted with it.
                 result = run_browser_job([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8',
                                           str(worker), str(job_path)], workspace,
-                                         timeout=max(wait_seconds, person_seconds) + 75, memory_mb=memory, output_limit=16384,
-                                         workspace_limit=max_download_bytes + 512 * 1024 * 1024, cancel=cancel)
+                                         timeout=max(wait_seconds, person_seconds) + (135 if via else 75), memory_mb=memory,
+                                         output_limit=16384, workspace_limit=max_download_bytes + 512 * 1024 * 1024, cancel=cancel)
             except SandboxError as exc:
                 private.preserve = exc.preserve_private
                 suffix = f'; private storage retained at {workspace}' if exc.preserve_private else ''
@@ -416,8 +417,11 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
 
 
 async def execute_fetch(config, python_config, harness, url, *, wait_seconds=60, proxy_url='', max_page_chars=1500000,
-                        max_download_bytes=50 * 1024 * 1024, person_seconds=0, check_words=()):
+                        max_download_bytes=50 * 1024 * 1024, person_seconds=0, check_words=(), via=''):
     """Load one address once in a visible browser window; return what came, with a downloaded file's bytes in ``data``.
+
+    With ``via`` (the page that links to the address, read in a window before) that page is loaded first and
+    the address then, in the same window.
 
     The human turned this on for the run. Nothing is clicked or typed, the
     browser is not disguised, and the window is closed whatever happens.
@@ -426,7 +430,7 @@ async def execute_fetch(config, python_config, harness, url, *, wait_seconds=60,
     cancel = threading.Event()
     task = asyncio.create_task(asyncio.to_thread(_execute_fetch, config, python_config, harness, url, wait_seconds,
                                                 proxy_url, max_page_chars, max_download_bytes, cancel,
-                                                person_seconds, tuple(check_words)))
+                                                person_seconds, tuple(check_words), via))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

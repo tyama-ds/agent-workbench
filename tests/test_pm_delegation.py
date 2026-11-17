@@ -379,7 +379,8 @@ async def test_actual_loops_require_formal_current_worker_report_before_pm_compl
         pm = engine.agents[run['pm_agent_ids'][0]]
         worker = next(agent for agent in engine.agents.values() if agent.parent_id == pm.id)
         assert len({ident for ident, _ in client.calls}) == 2
-        assert run['model_calls'] == 3 and run['auto_collaborations'] == 2
+        # A worker that answers in prose where its coordinator needs a formal report is reminded once (one more call).
+        assert run['model_calls'] == (4 if worker_result == 'text' else 3) and run['auto_collaborations'] == 2
         if worker_result == 'formal':
             assert run['status'] == pm.status == 'done'
             assert pm.worker_report_consumed == {worker.id: worker.result_revision}

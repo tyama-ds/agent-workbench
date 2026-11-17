@@ -549,6 +549,8 @@ class WebTools:
         # human allowed it for this work (the engine then supplies the opener). What was tried, and how it ended.
         self._browser_fetch, self._browser_tried, self._browser_refused_hosts = None, {}, set()
         self._browser_unavailable, self.browser_log = "", []
+        # PDF links of a page that a browser window read -> that page; and the links opened from their page.
+        self._browser_from, self._browser_followed = {}, set()
         # PDFs this run downloaded (pdf_id -> its record); the library that keeps them is the application's.
         self._pdf_library, self._pdf_bytes, self.pdf_ids = None, 0, {}
         if type(self.timeout) not in {int, float} or not 1 <= self.timeout <= 60:
@@ -721,7 +723,18 @@ class WebTools:
             facts = {}
             if args.get("headers_only"):
                 # What the server states about the file, without its content: to choose among several copies.
-                _, content_type, final_url = await self._request(args["url"], facts=facts, head=True)
+                try:
+                    _, content_type, final_url = await self._request(args["url"], facts=facts, head=True)
+                except _HTTPStatusError as refused:
+                    if refused.status not in BROWSER_TRY_STATUSES:
+                        raise
+                    # Real-machine case: the question about a report's size and date was refused (HTTP 403), the
+                    # worker took that for the file's answer and went to a two-page summary instead. A refused
+                    # question is not a try at the file: the file itself is fetched now, as web_fetch would.
+                    result = await self.execute("web_fetch", {"url": args["url"]})
+                    result["headers_only_note"] = (f"The site refused the question about the file's size and date (HTTP {refused.status}), "
+                                                   "so the address itself was fetched instead; this is its content.")
+                    return result
                 return {"url": final_url, "headers_only": True, "content_type": _mime(content_type), **facts, "untrusted": True,
                         "note": "Only what the server states: the size (bytes) and date (last_modified) of the file. Nothing was downloaded."}
             try:
@@ -791,6 +804,7 @@ class WebTools:
 
     # --- one try in a browser window, when the human allowed it for this work ------------------
     BROWSER_TRIES = 5  # windows one piece of work may open
+    BROWSER_FOLLOWS = 5  # and PDF links opened from a page that a window read, in the same window as that page
 
     def use_browser_fetch(self, fetcher) -> None:
         """fetcher(url, max_download_bytes) opens the address once in a visible window (see selenium_runner.execute_fetch)."""
@@ -814,10 +828,20 @@ class WebTools:
             raise WebToolError(f"{refused}. A browser window cannot be opened here ({self._browser_unavailable})." + ask)
         if host in self._browser_refused_hosts:
             raise WebToolError(f"{refused}. This site also refused the browser window earlier in this work; it is not opened there again." + ask)
-        if len(self._browser_tried) >= self.BROWSER_TRIES:
+        via = self._browser_from.get(url, "")
+        if via:
+            # A PDF that a page read in a window links to: the continuation of that try, not a new one.
+            if len(self._browser_followed) >= self.BROWSER_FOLLOWS:
+                raise WebToolError(f"{refused}. {self.BROWSER_FOLLOWS} PDF links were already opened from pages read in a browser window, "
+                                   "which is the most this work may." + ask)
+        elif len(self._browser_tried) - len(self._browser_followed) >= self.BROWSER_TRIES:
             raise WebToolError(f"{refused}. A browser window was opened {self.BROWSER_TRIES} times in this work, which is the most it may." + ask)
         # The same address rule as every fetch: public addresses only.
         await _public_addresses(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+        if via:
+            via_parsed = _url(via)
+            await _public_addresses(via_parsed.hostname, via_parsed.port or (443 if via_parsed.scheme == "https" else 80))
+            self._browser_followed.add(url)
         self._browser_tried[url] = "started"
         return await self._browser_window(url, refused, 0)
 
@@ -832,8 +856,12 @@ class WebTools:
     async def _browser_window(self, url: str, refused: _HTTPStatusError, person_seconds: int) -> dict:
         ask = self._BROWSER_ASK
         host = _url(url).hostname
+        # The page that links to this file, read in a window earlier in this work: the window opens that page
+        # first and then the file, in the same session, as a person following the link would.
+        via = self._browser_from.get(url, "") if url in self._browser_followed else ""
         try:
-            page = await self._browser_fetch(url, self._pdf_bytes or self.max_bytes, person_seconds, list(PERSON_CHECK_WORDS))
+            page = await self._browser_fetch(url, self._pdf_bytes or self.max_bytes, person_seconds, list(PERSON_CHECK_WORDS),
+                                             **({"via": via} if via else {}))
         except ValueError as exc:
             # Not Windows, no browser or driver set, or the browser did not start: said once, never tried again.
             self._browser_unavailable = str(exc)[:300]
@@ -850,7 +878,8 @@ class WebTools:
             except WebToolError as exc:
                 self._browser_record(url, "failed", "the PDF was saved but could not be read")
                 raise WebToolError(f"The browser window saved the PDF, but it could not be read: {exc}") from None
-            self._browser_record(url, "success", f"PDF saved, {result.get('pages')} pages" + (" after a person passed the check" if person_seconds else ""))
+            self._browser_record(url, "success", f"PDF saved, {result.get('pages')} pages" + (" after a person passed the check" if person_seconds else "")
+                                 + (", opened from the page that links to it" if via else ""))
             return self._browser_marked(result)
         if kind == "too_large":
             self._browser_record(url, "failed", "the file is larger than the PDF size limit")
@@ -888,6 +917,11 @@ class WebTools:
         result = self._text_result(html_text, "text/html", final, {"encoding": "utf-8", "encoding_source": "browser", "encoding_assumed": False},
                                    html_text.encode("utf-8"), truncated=page.get("truncated") is True)
         self._browser_record(url, "success", "page read" + (" after a person passed the check" if person_seconds else ""))
+        for row in result.get("pdf_links", []):
+            self._browser_from.setdefault(row["url"], final)
+        if result.get("pdf_links"):
+            result["pdf_links_note"] += (" Where the site refuses one of them, the application opens it from this page in a "
+                                         "browser window (the same session); that does not count as a new window.")
         return self._browser_marked(result)
 
     @staticmethod

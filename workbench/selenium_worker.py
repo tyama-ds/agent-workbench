@@ -294,6 +294,7 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
 
     Nothing is clicked, typed or solved. The window is closed whatever happens. A PDF that the window shows
     in its viewer is read through the page's own fetch (its session and cache) and saved like a download.
+    With ``via`` the page that links to the address is loaded first, in the same window.
     With ``person_seconds`` a person has agreed to pass the site's check in this window: while the page is
     such a check (one of ``check_words`` in its title or its short text), the window stays open and is
     looked at again, until the page or a download arrives, the window is closed, or that time is over.
@@ -308,6 +309,7 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
     if not isinstance(words, list) or len(words) > 60 or not all(isinstance(word, str) and 0 < len(word) <= 80 for word in words):
         raise ValueError('Invalid check words')
     words = [word.casefold() for word in words]
+    via = validate_url(job['via']) if job.get('via') else ''
 
     def is_check(title, text):
         title, text = title.casefold(), text[:6000].casefold()
@@ -328,6 +330,24 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
         driver.set_script_timeout(5)
         driver.implicitly_wait(0)
         driver.execute_cdp_cmd('Browser.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': str(downloads)})
+        if via:
+            # The page that links to the file, which a window read before: it is loaded first, and the file is
+            # then asked for in the same window, with the session that page set up. Nothing is clicked.
+            try:
+                driver.get(via)
+            except Exception:
+                pass
+            settled = clock() + 15
+            while clock() < settled:
+                try:
+                    if driver.execute_script(_STATUS)[2] == 'complete':
+                        break
+                except Exception:
+                    break
+                sleep(.5)
+            for item in downloads.iterdir():  # only what the address itself brings counts as its download
+                if item.is_file():
+                    item.unlink()
         started = clock()
         try:
             driver.get(url)
