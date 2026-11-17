@@ -41,6 +41,19 @@ answered; the BEA, Census and EIA APIs need a key; FRED timed out.
   that is not in a file is an error naming it, never another series.
 - Not in this change: Census, and optional keys (BEA, Census, EIA, BLS).
 
+Two small things from the agent runs at `920dee1` (all passed: 18 of 18
+lookups in a three-provider comparison, 2 of 2 for Eurostat):
+
+- The OECD `page_url` was the Data Explorer's front page. It now opens the
+  table and selection that were read
+  (`…/vis?df[ds]=dsDisseminateFinalDMZ&df[id]=<table>&df[ag]=<agency>&dq=<key>`,
+  with brackets, `@` and `+` encoded).
+- A statistics task rewrote its table under a new sheet name and the file
+  kept the old sheet beside the new one. `xlsx_write` only sets cells, so
+  nothing could delete a sheet. It now takes `remove_sheets`, and a write
+  that adds a sheet while an earlier sheet with content is left untouched
+  says so and names the way to remove it.
+
 ## 0.1.1.dev66 — The IMF's periods, several records of one ILO series, a refusal that is temporary, and the OECD (2026-11-17)
 
 dev65 was tried on the real machine for Japan, the United States and

@@ -323,3 +323,33 @@ async def test_numbers_saved_as_text_with_a_unit_are_reported_but_labels_are_not
     clean = await tools.execute('xlsx_write', {'path': str(tmp_path / 'clean.xlsx'), 'expected_sha256': 'missing', 'cells': [
         {'sheet': 'Sheet', 'cell': 'A1', 'value': '成長率（%）'}, {'sheet': 'Sheet', 'cell': 'A2', 'value': 2.8}]})
     assert 'warning' not in clean
+
+
+@pytest.mark.asyncio
+async def test_a_sheet_left_by_an_earlier_write_is_pointed_out_and_can_be_removed(tmp_path):
+    """Real-machine case: a statistics task rewrote its table under a new sheet name and the file kept
+    the old sheet (Sheet1) beside the new one (stats)."""
+    import openpyxl
+    tools = ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+    path = str(tmp_path / 'stats.xlsx')
+    first = await tools.execute('xlsx_write', {'path': path, 'expected_sha256': 'missing', 'create_sheets': ['Sheet1'], 'cells': [
+        {'sheet': 'Sheet1', 'cell': 'A1', 'value': '国'}, {'sheet': 'Sheet1', 'cell': 'A2', 'value': '日本'}]})
+    assert 'warning' not in first and openpyxl.load_workbook(path).sheetnames == ['Sheet1']   # the automatic empty sheet is not kept
+    second = await tools.execute('xlsx_write', {'path': path, 'expected_sha256': first['sha256'], 'create_sheets': ['stats'], 'cells': [
+        {'sheet': 'stats', 'cell': 'A1', 'value': '国'}, {'sheet': 'stats', 'cell': 'A2', 'value': 'ドイツ'}]})
+    assert "still holds the sheet(s) 'Sheet1' from an earlier write, beside the new 'stats'" in second['warning']
+    assert 'remove_sheets' in second['warning'] and openpyxl.load_workbook(path).sheetnames == ['Sheet1', 'stats']
+    third = await tools.execute('xlsx_write', {'path': path, 'expected_sha256': second['sha256'], 'cells': [], 'remove_sheets': ['Sheet1']})
+    assert 'warning' not in third and openpyxl.load_workbook(path).sheetnames == ['stats']
+    assert openpyxl.load_workbook(path)['stats']['A2'].value == 'ドイツ'
+    # Writing into the earlier sheet as well, or adding a sheet to an empty one, is not a leftover.
+    both = await tools.execute('xlsx_write', {'path': path, 'expected_sha256': third['sha256'], 'create_sheets': ['notes'], 'cells': [
+        {'sheet': 'stats', 'cell': 'B1', 'value': '人口'}, {'sheet': 'notes', 'cell': 'A1', 'value': '出典'}]})
+    assert 'warning' not in both
+    for bad, problem in (({'remove_sheets': ['nope']}, 'does not exist; existing sheets: stats, notes'),
+                         ({'remove_sheets': ['stats', 'notes']}, 'keeps at least one sheet'),
+                         ({'remove_sheets': ['notes'], 'cells': [{'sheet': 'notes', 'cell': 'A2', 'value': 'x'}]}, 'written or created and removed'),
+                         ({'remove_sheets': 'stats'}, 'Too many cells or sheets')):
+        with pytest.raises(ValueError, match=problem):
+            await tools.execute('xlsx_write', {'path': path, 'expected_sha256': both['sha256'], 'cells': [], **bad})
+    assert openpyxl.load_workbook(path).sheetnames == ['stats', 'notes']

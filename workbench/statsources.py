@@ -157,9 +157,13 @@ def plan(provider, indicator_name, countries, start_year, end_year, this_year):
     elif provider == 'oecd':
         flow, key_shape, unit, _wanted = spec
         label = ''
-        requests = [('https://sdmx.oecd.org/public/rest/data/' + flow + '/' + key_shape.format(countries='+'.join(codes))
+        asked = key_shape.format(countries='+'.join(codes))
+        requests = [('https://sdmx.oecd.org/public/rest/data/' + flow + '/' + asked
                      + f'?startPeriod={start}&format=csvfilewithlabels', codes)]
-        page = 'https://data-explorer.oecd.org/'
+        # The Data Explorer page of the same table and selection (a person can open it; brackets and '+' are encoded).
+        agency, table = flow.split(',')[:2]
+        page = ('https://data-explorer.oecd.org/vis?df%5Bds%5D=dsDisseminateFinalDMZ&df%5Bid%5D=' + table.replace('@', '%40')
+                + '&df%5Bag%5D=' + agency + '&dq=' + asked.replace('+', '%2B'))
     else:
         flow, rest, unit = spec
         label = ''
