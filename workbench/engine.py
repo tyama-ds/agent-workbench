@@ -2781,7 +2781,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 if terminal_response:
                     if agent.parent_id is None:
                         terminal_response += (self._outputs_footer(run) + self._tests_footer(run)
-                                              + self._source_footer(run) + self._citations_footer(run))
+                                              + self._source_footer(run) + self._citations_footer(run) + self._pdf_footer(run))
                     self.record_result(agent, 'assistant_response', terminal_response, revision=turn_revision)
                 if agent.parent_id and not ordered_report_sent:
                     parent = self.agents[agent.parent_id]
@@ -3317,7 +3317,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 summary += self._turn_footer(run, agent)
                 if agent.parent_id is None:
                     summary += (self._outputs_footer(run) + self._tests_footer(run) + self._source_footer(run)
-                                + self._citations_footer(run))
+                                + self._citations_footer(run) + self._pdf_footer(run))
                 self.log(agent, 'result', summary)
                 self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
                 agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)

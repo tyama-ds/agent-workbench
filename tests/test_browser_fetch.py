@@ -487,3 +487,22 @@ def test_the_setting_is_off_by_default_and_must_be_true_or_false():
     page = (Path(__file__).resolve().parents[1] / 'static' / 'index.html').read_text(encoding='utf-8')
     assert 'id="browserFetchAllow" type="checkbox"' in page and 'この作業でブラウザ操作を許可' in page
     assert 'id="browserFetchAllow" type="checkbox" checked' not in page
+
+
+def test_old_folders_that_a_run_had_to_leave_behind_are_removed_later(tmp_path, monkeypatch):
+    """Real-machine case: after "Browser process history is incomplete" a whole browser profile stayed in
+    the temporary folder (awb-selenium-...), and nothing ever removed it."""
+    import os
+    import time
+    monkeypatch.setattr(selenium_runner.tempfile, 'gettempdir', lambda: str(tmp_path))
+    old, fresh, other, plain = tmp_path / 'awb-selenium-old', tmp_path / 'awb-selenium-fresh', tmp_path / 'someone-elses', tmp_path / 'awb-selenium-file'
+    for folder in (old, fresh, other):
+        (folder / 'profile' / 'Default').mkdir(parents=True)
+        (folder / 'profile' / 'Default' / 'Cookies').write_bytes(b'x')
+    plain.write_bytes(b'not a folder')
+    long_ago = time.time() - 7 * 3600
+    for path in (old, other, plain):
+        os.utime(path, (long_ago, long_ago))
+    assert selenium_runner._sweep_retained() == 1
+    assert not old.exists() and fresh.exists() and other.exists() and plain.exists()
+    assert selenium_runner._sweep_retained() == 0

@@ -13,8 +13,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 import threading
+import time
 
 from .harness import HarnessError, PathHarness, _inspect, _integer, _string
 from .python_runner import _runtime_path
@@ -50,6 +52,39 @@ class _Workspace:
             raise HarnessError(f'Private Selenium cleanup failed; storage retained at {self.path}') from exc
 
 
+_RETAINED_SECONDS = 6 * 3600
+
+
+def _sweep_retained(now=None):
+    """Remove private folders that an earlier run had to leave behind, once they are old.
+
+    A folder is retained when the end of every browser process could not be
+    confirmed: deleting it then could pull storage from under a live process.
+    Hours later nothing of that run is alive, and the folders (a whole browser
+    profile each) would otherwise stay in the temporary folder for good.
+    Only this application's own folders are touched, and a failure to remove
+    one is not an error.
+    """
+    now = time.time() if now is None else now
+    try:
+        candidates = list(Path(tempfile.gettempdir()).glob('awb-selenium-*'))
+    except OSError:
+        return 0
+    removed = 0
+    for path in candidates[:200]:
+        try:
+            info = path.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400
+                    or now - info.st_mtime < _RETAINED_SECONDS):
+                continue
+            _prune_private_links(path)
+            shutil.rmtree(path)
+            removed += 1
+        except (OSError, SandboxError):
+            continue
+    return removed
+
+
 @contextlib.contextmanager
 def _execution_lock(cancel):
     while not _RUN_LOCK.acquire(timeout=.1):
@@ -57,6 +92,7 @@ def _execution_lock(cancel):
             yield False
             return
     try:
+        _sweep_retained()  # only one browser job runs at a time; older leftovers are no one's
         yield True
     finally:
         _RUN_LOCK.release()

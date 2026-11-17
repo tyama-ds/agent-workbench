@@ -4,6 +4,43 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev75 — The browser window no longer fails on a helper that came and went; confirmed figures are taken over (2026-11-17)
+
+dev73 on the real machine (`0903a73`): the headline figures were right and
+came with page and quotation, and the slides were 16:9 with a chart and a
+table. Four things were not.
+
+- The browser window never came to be used: "Browser process history is
+  incomplete (total=16, held=15, active=0)". The Job that holds the browser
+  is looked at every 50 ms and a handle is kept for each process seen; at
+  the end the number of handles had to equal the number of processes the
+  Job ever had. A headed Edge with a new profile starts helpers that live
+  for a few milliseconds, and one of them was never seen. That process was
+  over. What has to be certain is that nothing still running is unknown:
+  once the Job is sealed its running set can only shrink, so it is compared
+  with the held handles that have not signalled. A running process that is
+  not held still fails as before.
+- The profile of that run stayed in the temporary folder. A retained folder
+  is now removed at the next browser job once it is six hours old.
+- A worker had read Table 1.1; the PM's table still said "not confirmed"
+  for the countries, and one row held numbers that are in no table. Policy:
+  a worker reports each figure with value, unit, page and quotation, the
+  coordinator takes them over as they stand, and a table or chart holds no
+  figure that nobody confirmed.
+- The Markdown table stood in the document again, this time as one
+  paragraph holding the whole table, above the real table from the same
+  call. A table written on one line is recognised, and a text copy of a
+  table that is also given in `tables` is left out.
+- Asked to download the report, a worker read a copy that an earlier test
+  had left in the folder, and nothing said so. `pdf_read` on a path now
+  says that the file was not downloaded in this work, the policy asks for
+  that to be stated in the deliverable, and the application lists under
+  the report which PDFs were read and which of them it downloaded.
+
+Not verified here: the Job logic runs against a fake of the Windows calls;
+whether the window now opens, loads the address and saves the PDF is for
+the real machine.
+
 ## 0.1.1.dev74 — The publisher's own copy of a report; a person passes a check in the window; tables in DOCX (2026-11-17)
 
 The next goal on the real machine is the IEA's World Energy Outlook. Its

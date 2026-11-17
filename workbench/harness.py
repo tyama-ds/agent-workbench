@@ -711,9 +711,40 @@ def _table_cells(line: str):
     return None
 
 
+_RULE_INSIDE = re.compile(r"\|\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|")
+
+
+def _unfolded_table(line: str):
+    """The rows of a whole Markdown table that was written on one line, or None.
+
+    "| a | b | | --- | --- | | 1 | 2 |": the rule between header and body says
+    how many cells a row has; the cells after it are dealt out in rows of that many.
+    """
+    stripped = line.strip()
+    match = _RULE_INSIDE.search(stripped)
+    if not (match and stripped.startswith("|") and stripped.endswith("|") and match.start() > 0):
+        return None
+    width = match.group(0).count("|") - 1
+    header = [cell.strip() for cell in stripped[:match.start()].strip().strip("|").split("|")]
+    body = [cell.strip() for cell in stripped[match.end():].strip().strip("|").split("|")] if stripped[match.end():].strip() else []
+    # Between two rows written on one line stands an empty cell ("| 2 | | 3 |"): it is the join, not a value.
+    cells, rows = [cell for cell in body], []
+    while cells:
+        row, cells = cells[:width], cells[width:]
+        if cells and cells[0] == "":
+            cells = cells[1:]
+        rows.append(row)
+    if width < 2 or len(header) != width or not rows or any(len(row) != width for row in rows):
+        return None
+    return ["| " + " | ".join(row) + " |" for row in (header, *rows)]
+
+
 def _table_blocks(paragraphs: list[str]) -> list:
     """Paragraphs in order, with each run of table rows (two or more of equal width) gathered into one list of rows."""
-    lines = [line for text in paragraphs for line in (text.split("\n") if _table_cells(text.split("\n")[0]) else [text])]
+    lines = []
+    for text in paragraphs:
+        unfolded = _unfolded_table(text) if "\n" not in text else None
+        lines.extend(unfolded if unfolded else text.split("\n") if _table_cells(text.split("\n")[0]) else [text])
     blocks, rows, held = [], [], []
 
     def close():
@@ -926,10 +957,14 @@ class ToolExecutor:
                 raise HarnessError("Too many paragraphs or tables")
             # A table written as text (Markdown rows, or cells separated by tabs) becomes a real table where it
             # stands: left as paragraphs it is neither readable as a table nor editable as one.
-            converted = 0
+            converted = dropped = 0
+            given = [[[str(cell).strip() for cell in row] for row in table] for table in tables
+                     if isinstance(table, list) and all(isinstance(row, list) for row in table)]
             for block in _table_blocks([_string(text, "paragraph", 10000, empty=True) for text in paragraphs]):
                 if isinstance(block, str):
                     document.add_paragraph(block)
+                elif block in given:
+                    dropped += 1  # the same table is also given as a table: it is written once, as that
                 else:
                     self._docx_table(document, block, header=True)
                     converted += 1
@@ -957,10 +992,13 @@ class ToolExecutor:
                 raise HarnessError("Unsupported DOCX edit operation")
         result = self._save(document, args, ".docx")
         result["formatting_note"] = "Edited paragraphs retain first-run formatting; mixed run formatting may change."
-        if name == "docx_write" and converted:
+        if name == "docx_write" and (converted or dropped):
             result["tables_converted"] = converted
+            if dropped:
+                result["text_tables_dropped"] = dropped
             result["tables_note"] = ("Paragraphs that held a table as text (Markdown rows or tab-separated cells) were written as "
-                                     "real tables. Pass tables in the tables argument, as rows of cells.")
+                                     "real tables" + ("; a text copy of a table that is also in the tables argument was left out" if dropped else "")
+                                     + ". Pass tables in the tables argument only, as rows of cells.")
         return result
 
     @staticmethod

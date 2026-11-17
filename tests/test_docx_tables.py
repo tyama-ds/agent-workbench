@@ -45,3 +45,23 @@ def test_what_is_not_a_table_stays_as_written(tmp_path):
     blocks = _table_blocks(['前文', '| a | b |\n|:--|--:|\n| 1 | 2 |', '後文'])
     assert blocks == ['前文', [['a', 'b'], ['1', '2']], '後文']
     assert _table_blocks(['x\ty', '1\t2', '3\t4\t5']) == [[['x', 'y'], ['1', '2']], '3\t4\t5']
+
+
+def test_a_table_on_one_line_and_a_text_copy_of_a_given_table(tmp_path):
+    """Real-machine case: "| 対象 | 2026 | 2027 | | --- | --- | --- | | 世界 | 3.1 | 3.4 |" stood in the document as one
+    paragraph, above the real table that the same call had also given in tables."""
+    one_line = '| 対象 | 2026 | 2027 | | --- | --- | --- | | 世界 | 3.1 | 3.4 | | 先進国 | 2.1 | 1.8 |'
+    rows = [['対象', '2026', '2027'], ['世界', '3.1', '3.4'], ['先進国', '2.1', '1.8']]
+    assert _table_blocks(['前文', one_line]) == ['前文', rows]
+    assert _table_blocks(['|a|b||--|--||1|2|']) == [[['a', 'b'], ['1', '2']]]
+    assert _table_blocks(['| a | b | --- | c |']) == ['| a | b | --- | c |']                 # no rule of cells: left as written
+    assert _table_blocks(['| a | b | | --- | --- | | 1 | 2 | 3 |']) == ['| a | b | | --- | --- | | 1 | 2 | 3 |']  # rows do not add up
+    # Given both as text and as a table: written once.
+    result, document, _, _ = write(tmp_path, paragraphs=['成長率の見通し', one_line, '出典: Table 1.1'], tables=[rows])
+    assert len(document.tables) == 1 and [[cell.text for cell in row.cells] for row in document.tables[0].rows] == rows
+    assert [paragraph.text for paragraph in document.paragraphs] == ['成長率の見通し', '出典: Table 1.1']
+    assert result['tables_converted'] == 0 and result['text_tables_dropped'] == 1 and 'tables argument only' in result['tables_note']
+    # Given only as text: written as a table where it stands.
+    (tmp_path / 'b').mkdir()
+    result, document, _, _ = write(tmp_path / 'b', paragraphs=['成長率の見通し', one_line])
+    assert result['tables_converted'] == 1 and 'text_tables_dropped' not in result and len(document.tables) == 1
