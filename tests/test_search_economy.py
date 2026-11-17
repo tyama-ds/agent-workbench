@@ -181,7 +181,9 @@ def test_stat_lookup_reads_one_small_file_per_indicator_without_a_search():
         assert 'stat_lookup' in {item['name'] for item in tools.schemas()}
         result = await tools.execute('stat_lookup', {'countries': ['日本', '米国', 'ドイツ'], 'indicator': 'GDP成長率', 'start_year': 2022, 'end_year': 2024})
         assert sent == [(BULK, {'wait': 20, 'size': statdata.MAX_ZIP_BYTES})]
-        assert result['source'] == 'World Bank Open Data' and result['untrusted'] is True and result['years'] == [2022, 2024]
+        assert result['source'] == 'worldbank' and result['source_name'] == 'World Bank Open Data' and result['unit'] == 'annual %'
+        assert result['as_of'] == '2026-07-01' and result['as_of_basis'] == 'provider_updated'
+        assert result['untrusted'] is True and result['years'] == [2022, 2024]
         assert result['read_from'] == BULK and result['last_updated'] == '2026-07-01'
         assert result['url'] == 'https://api.worldbank.org/v2/country/JPN;USA;DEU/indicator/NY.GDP.MKTP.KD.ZG?format=json&date=2022:2024&per_page=1000'
         assert result['page_url'] == 'https://data.worldbank.org/indicator/NY.GDP.MKTP.KD.ZG?locations=JP-US-DE'

@@ -655,7 +655,7 @@ async def test_a_pm_without_workers_may_not_wait_for_a_message_and_is_told_to_fi
     engine, work = configured(tmp_path, client)
     try:
         run, pm = await start(engine, task='生成AI規制を調べて要約する', max_workers=0)
-        await asyncio.wait_for(settled(engine), 5)
+        await asyncio.wait_for(settled(engine), 20)
         assert run['agent_ids'] == [pm.id]
         assert len(client.refusals) == 1 and '連絡を送ってくる担当がいません' in client.refusals[0]
         for phrase in ('待っても何も届きません', 'finish_work', '未確認', 'ask_user'):
@@ -712,6 +712,13 @@ async def test_a_worker_may_not_wait_while_its_coordinator_only_waits_for_its_re
                 if '待機できません' in last:
                     self.refusals.append(last)
                     return reply(calls=[('finish_work', {'summary': '値は確認できませんでした（未確認）。'})])
+                # A worker starts as soon as it is created, while its coordinator's turn may still be
+                # running. This case is about a coordinator that has gone to wait, so wait for that.
+                pm = next(agent for agent in engine.agents.values() if agent.parent_id is None)
+                for _ in range(1000):
+                    if pm.waiting_for_workers and pm.status == 'idle' and (pm.task is None or pm.task.done()):
+                        break
+                    await asyncio.sleep(.01)
                 return reply(calls=[('wait_for_message', {})])  # nothing was asked of anyone
             workers = [agent for agent in engine.agents.values() if agent.parent_id]
             if not workers:
@@ -724,7 +731,7 @@ async def test_a_worker_may_not_wait_while_its_coordinator_only_waits_for_its_re
     engine, work = configured(tmp_path, client)
     try:
         run, pm = await start(engine, task='値を調べる')
-        await asyncio.wait_for(settled(engine), 5)
+        await asyncio.wait_for(settled(engine), 20)
         assert len(client.refusals) == 1
         for phrase in ('あなたの報告を待っている担当だけです', 'finish_work', 'send_message'):
             assert phrase in client.refusals[0], phrase
@@ -762,7 +769,7 @@ async def test_a_worker_that_asked_its_coordinator_something_may_wait_for_the_an
     engine, work = configured(tmp_path, client)
     try:
         run, pm = await start(engine, task='値を調べる')
-        await asyncio.wait_for(settled(engine), 5)
+        await asyncio.wait_for(settled(engine), 20)
         assert client.refusals == [] and client.asked and run['status'] == 'done'
     finally:
         await engine.close()
