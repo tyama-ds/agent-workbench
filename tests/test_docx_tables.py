@@ -6,7 +6,7 @@ from pathlib import Path
 from docx import Document
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from workbench.harness import PathHarness, ToolExecutor, _table_blocks
+from workbench.harness import PathHarness, ToolExecutor, _comma_tables, _table_blocks
 
 
 def write(tmp_path, **args):
@@ -65,3 +65,43 @@ def test_a_table_on_one_line_and_a_text_copy_of_a_given_table(tmp_path):
     (tmp_path / 'b').mkdir()
     result, document, _, _ = write(tmp_path / 'b', paragraphs=['成長率の見通し', one_line])
     assert result['tables_converted'] == 1 and 'text_tables_dropped' not in result and len(document.tables) == 1
+
+
+def test_comma_separated_rows_do_not_stay_in_the_text(tmp_path):
+    """Real-machine case: "項目,CPS,STEPS,NZE" and its rows stood in the document as text above the real table."""
+    rows = [['項目', 'CPS', 'STEPS', 'NZE'], ['一次エネルギー供給 (EJ)', '838', '744', '654'],
+            ['電力需要 (TWh)', '48,118', '45,109', '44,274']]
+    copy = '項目,CPS,STEPS,NZE\n一次エネルギー供給 (EJ),838,744,654\n電力需要 (TWh),48,118,45,109,44,274'
+    # A copy of the given table, in one paragraph or in several, is left out; thousands separators do not hide it.
+    result, document, _, _ = write(tmp_path, paragraphs=['シナリオ別の見通し', copy, '出典: Annex A'], tables=[rows])
+    assert [paragraph.text for paragraph in document.paragraphs] == ['シナリオ別の見通し', '出典: Annex A']
+    assert len(document.tables) == 1 and result['text_tables_dropped'] == 1 and result['tables_converted'] == 0
+    (tmp_path / 'b').mkdir()
+    result, document, _, _ = write(tmp_path / 'b', paragraphs=['前文', *copy.split('\n'), '後文'], tables=[rows])
+    assert [paragraph.text for paragraph in document.paragraphs] == ['前文', '後文'] and len(document.tables) == 1
+    # The copy inside a paragraph: the text around it stays.
+    assert _comma_tables(['表 1\n' + copy + '\n注: 2050 年'], [rows]) == (['表 1\n注: 2050 年'], 1)
+    # Given only as text: three or more rows of equal width with figures become a table where they stand.
+    (tmp_path / 'c').mkdir()
+    text = '項目,2024,2035,2050\n石炭,"8,900",7200,4100\n再生可能,9800,17000,29000'
+    result, document, _, _ = write(tmp_path / 'c', paragraphs=['前文', text, '後文'])
+    assert [paragraph.text for paragraph in document.paragraphs] == ['前文', '後文']
+    assert [[cell.text for cell in row.cells] for row in document.tables[0].rows] == [
+        ['項目', '2024', '2035', '2050'], ['石炭', '8,900', '7200', '4100'], ['再生可能', '9800', '17000', '29000']]
+    assert result['tables_converted'] == 1
+    # The table stands between the paragraphs, not at the end.
+    body = [child.tag.rsplit('}', 1)[1] for child in document.element.body if child.tag.endswith(('}p', '}tbl'))]
+    assert body == ['p', 'tbl', 'p']
+
+
+def test_text_with_commas_that_is_not_a_table_stays_as_written():
+    for paragraphs in (
+            ['First, we looked at coal, oil, and gas.', 'Then, in 2035, demand falls, slowly, everywhere.',
+             'Finally, by 2050, the mix changes, a lot, in Asia.'],                    # sentences
+            ['東京,大阪,名古屋', '札幌,仙台,福岡', '那覇,広島,神戸'],                      # equal rows, but no figures
+            ['項目,CPS,STEPS', '供給,838,744'],                                          # two lines only
+            ['項目,2035,2050', '供給,48,118,45,109', '需要,31,229,44,274'],              # thousands separators: rows do not add up
+            ['a,b,c\nd,e,f', '1,2']):
+        assert _comma_tables(paragraphs, []) == (paragraphs, 0), paragraphs
+    # One line that happens to equal one row of a given table is not taken for a copy.
+    assert _comma_tables(['項目,CPS,STEPS'], [[['項目', 'CPS', 'STEPS'], ['供給', '1', '2']]]) == (['項目,CPS,STEPS'], 0)

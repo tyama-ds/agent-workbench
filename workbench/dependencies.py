@@ -128,8 +128,9 @@ class WorkerDependenciesMixin:
             revision = agent.dependency_revisions.get(ident)
             if upstream is None or revision is None:
                 continue
-            text = next((row['text'] for row in reversed(upstream.results)
-                         if row.get('revision') == revision and row.get('source') == 'finish_work'), '')
+            # The formal report; or, where the coordinator accepted an answer given without finish_work, that answer.
+            text = next((row['text'] for source in ('finish_work', 'assistant_response') for row in reversed(upstream.results)
+                         if row.get('revision') == revision and row.get('source') == source), '')
             if not text:
                 continue
             room = min(self.REPORT_ATTACH_EACH, self.REPORT_ATTACH_ALL - used)

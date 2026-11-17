@@ -780,6 +780,85 @@ def _table_blocks(paragraphs: list[str]) -> list:
     return blocks
 
 
+def _comma_cells(line: str):
+    """The cells of a line written as comma-separated values (three or more short cells), or None."""
+    import csv
+    stripped = line.strip()
+    if stripped.count(",") < 2 or len(stripped) > 2000 or stripped[-1] in ".。:：、,":
+        return None
+    try:
+        cells = [cell.strip() for cell in next(csv.reader([stripped]))]
+    except (csv.Error, StopIteration):
+        return None
+    return cells if len(cells) >= 3 and cells[0] and all(len(cell) <= 60 for cell in cells) else None
+
+
+def _comma_tables(paragraphs: list[str], given: list) -> tuple[list, int]:
+    """Paragraphs in order, without the comma-separated copies of given tables. -> (blocks, copies left out).
+
+    Real-machine case: "項目,CPS,STEPS,NZE" and the rows under it stood in the document as text, above the
+    real table with the same cells. Lines that repeat rows of a table given in ``tables`` (two or more in a
+    row) are left out. Lines that form a table of their own (three or more of equal width, with figures)
+    become a list of rows where they stand. Anything else stays as written: values with unquoted thousands
+    separators do not add up to equal rows and are not guessed at.
+    """
+    copies = {"".join(",".join(row).split()) for table in given for row in table if len(row) >= 2}
+    rows_given = {tuple(row) for table in given for row in table if len(row) >= 2}
+    lines = [(index, line) for index, text in enumerate(paragraphs) for line in text.split("\n")]
+    cells = [_comma_cells(line) for _, line in lines]
+    copy = [("".join(line.split()) in copies and "," in line) or (cell is not None and tuple(cell) in rows_given)
+            for (_, line), cell in zip(lines, cells)]
+    action, dropped, start = {}, 0, 0   # line number -> "drop" | rows (a table starts here) | "inside"
+    while start < len(lines):
+        if not (copy[start] or cells[start] is not None):
+            start += 1
+            continue
+        end = start
+        while end < len(lines) and (copy[end] or cells[end] is not None):
+            end += 1
+        run = range(start, end)
+        table = [cells[i] for i in run]
+        if len(run) >= 2 and all(copy[i] for i in run):
+            action.update({i: "drop" for i in run})
+            dropped += 1
+        elif (3 <= len(run) <= 200 and all(row is not None and len(row) == len(table[0]) for row in table)
+              and 2 * sum(any(any(ch.isdigit() for ch in cell) for cell in row) for row in table[1:]) >= len(table) - 1):
+            action[start] = table
+            action.update({i: "inside" for i in run[1:]})
+        else:
+            first = start
+            while first < end:   # copies inside a run that is otherwise not a table
+                last = first
+                while last < end and copy[last]:
+                    last += 1
+                if last - first >= 2:
+                    action.update({i: "drop" for i in range(first, last)})
+                    dropped += 1
+                first = max(last, first + 1)
+        start = end
+    if not action:
+        return list(paragraphs), 0
+    blocks, kept, current = [], [], None
+
+    def flush():
+        if kept:
+            blocks.append("\n".join(kept))
+            kept.clear()
+
+    for number, (index, line) in enumerate(lines):
+        if index != current:
+            flush()
+            current = index
+        step = action.get(number)
+        if step is None:
+            kept.append(line)
+        elif isinstance(step, list):
+            flush()
+            blocks.append(step)
+    flush()
+    return blocks, dropped
+
+
 def _paragraph_text(paragraph, text: str) -> None:
     text = _string(text, "text", MAX_OUTPUT, empty=True)
     if paragraph.runs:
@@ -962,7 +1041,16 @@ class ToolExecutor:
             converted = dropped = 0
             given = [[[str(cell).strip() for cell in row] for row in table] for table in tables
                      if isinstance(table, list) and all(isinstance(row, list) for row in table)]
-            for block in _table_blocks([_string(text, "paragraph", 10000, empty=True) for text in paragraphs]):
+            blocks, dropped = _comma_tables([_string(text, "paragraph", 10000, empty=True) for text in paragraphs], given)
+            texts = []
+
+            def written_as_text():
+                for block in _table_blocks(texts):
+                    yield block
+                texts.clear()
+
+            def place(block):
+                nonlocal converted, dropped
                 if isinstance(block, str):
                     document.add_paragraph(block)
                 elif block in given:
@@ -970,6 +1058,16 @@ class ToolExecutor:
                 else:
                     self._docx_table(document, block, header=True)
                     converted += 1
+
+            for block in blocks:
+                if isinstance(block, str):
+                    texts.append(block)
+                    continue
+                for earlier in written_as_text():
+                    place(earlier)
+                place(block)
+            for earlier in written_as_text():
+                place(earlier)
             operations = [{"type": "append_table", "rows": table} for table in tables]
         else:
             operations = self._operations(args)

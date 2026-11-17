@@ -4,7 +4,32 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev76 — A run without its files is not "done"; the window saves the PDF it shows; documents can grow (2026-11-17)
+## 0.1.1.dev77 — The report behind a read page; a worker without a report; 520 sent again (2026-11-17)
+
+- One `HTTP 520` from the provider's front end ended an agent's turn, and the
+  run then waited for a person for seven minutes without a question. 520-524
+  join the statuses that are sent again (three times for a cloud profile,
+  with backoff); when the re-sends are used up the message says how many
+  there were.
+- `docx_write`: "項目,CPS,STEPS,NZE" and its rows stood in a document as
+  text above the real table. Comma-separated lines that repeat a given
+  table are left out; a block that is a table of its own becomes one.
+- The IMF run at dev76 read the issue's page in the window, then asked
+  only for the size and date of the report it links to (`headers_only`),
+  got HTTP 403 and took a two-page summary from elsewhere. A refused
+  question now goes on to the file itself, and a PDF link of a page read
+  in the window is opened from that page, in the same window, as the
+  continuation of that try.
+- The same run could not end: a worker had answered a re-request in prose
+  and was "done" without a `finish_work` report; the coordinator could
+  neither accept nor return what was not a report, and after three notices
+  the run stopped as a deadlock. The coordinator's refusal now names the
+  state and the way on; `review_worker_report` reopens such a worker
+  (`revise`) or takes its last answer as the report (`accept`); a worker
+  whose coordinator needs a formal report is reminded once; a deadlock's
+  error says what was still open.
+
+A run without its files is not "done"; the window saves the PDF it shows; documents can grow (2026-11-17)
 
 Two runs on the real machine. The IEA's World Energy Outlook (PM and five
 workers, 432 s): the PDF was found on the IEA's own storage and two workers

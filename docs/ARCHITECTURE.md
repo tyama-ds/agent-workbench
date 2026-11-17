@@ -884,6 +884,21 @@ the human turned it on (0.1.1.dev61; off by default).
   `_paragraph_index` words the refusal. `slides._lines` takes one text as
   its lines.
 
+## The link behind a page, and a worker without a report (0.1.1.dev77)
+
+- `WebTools._browser_from` maps the PDF links of a page read in a window to
+  that page; `_browser_once` passes it as `via`, and
+  `selenium_worker.run_fetch_job` loads `via` before the address in the
+  same window. Such links are counted in `_browser_followed`
+  (`BROWSER_FOLLOWS`), not among `BROWSER_TRIES`.
+- `Engine._report_informal(child)`: done, nothing pending, and no
+  `finish_work` report for the current revision. `_review_gaps` words it,
+  `_review_informal` handles `review_worker_report` for it, and
+  `_formal_report_expected` decides whether a worker that replied without a
+  tool call is reminded.
+- `providers.RETRYABLE_STATUSES` holds 520-524; `harness._comma_tables`
+  runs before `_table_blocks` in `docx_write`.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),

@@ -1094,11 +1094,11 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
 
     def _browser_fetcher(self, config, harness):
         """Opens one address once in a visible window of the configured browser (a fresh profile, deleted afterwards)."""
-        async def fetch(url, max_download_bytes, person_seconds=0, check_words=()):
+        async def fetch(url, max_download_bytes, person_seconds=0, check_words=(), via=''):
             try:
                 return await execute_fetch(config['selenium'], config['python'], harness, url,
                                            proxy_url=config['search']['proxy_url'], max_download_bytes=max_download_bytes,
-                                           person_seconds=person_seconds, check_words=check_words)
+                                           person_seconds=person_seconds, check_words=check_words, via=via)
             except HarnessError as exc:
                 raise ValueError(str(exc)) from None
         return fetch
@@ -1639,6 +1639,13 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 pm.last_error = (('行き詰まり: 連絡を送ってくる担当がいないまま待機を続けたため、停止しました。' if alone else
                                   '行き詰まり: チームの全員が互いの連絡を待ったまま進まなかったため、停止しました。')
                                  + 'この担当にメッセージを送ると再開できます。')
+                try:
+                    issue = self._delegation_issue(run, pm, finishing=True)
+                except Exception:
+                    issue = None
+                if issue:
+                    # What was still open when it stopped: the human sees what to ask for.
+                    pm.last_error += ' 残っていた操作: ' + self.redact(issue[1])[:700]
                 self.log(pm, 'error', pm.last_error)
                 self.event(run['id'], pm.id, 'error', pm.last_error)
                 continue
@@ -1708,6 +1715,12 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             if child.status in {'stopped', 'error'}:
                 rows.append(f'{child.name}（worker_id {child.id}）: 停止していて、報告は届きません（状態 {child.status}）。'
                             'この担当の分が必要なら、新しい担当に依頼し直してください')
+            elif self._report_informal(child):
+                # Finished with an answer in prose, never with finish_work: nothing will arrive by waiting.
+                rows.append(f'{child.name}（worker_id {child.id}, result_revision {revision}）: finish_work の報告を出さずに終了しています。'
+                            '待っても報告は届きません。review_worker_report にこの worker_id と result_revision を指定して、'
+                            'decision "revise"（この担当を再開し、finish_work で報告を出し直させる）か、'
+                            'decision "accept"（最後の回答をそのまま報告として受け取る）を記録してください')
             elif child.status != 'done' or child.pending or child.question or child.finished_revision != revision or revision < 1:
                 rows.append(f'{child.name}（worker_id {child.id}）: 正式な報告がまだありません（状態 {child.status}）')
             elif agent.worker_report_reviews.get(child.id) != {'result_revision': revision, 'decision': 'accept'}:
@@ -1716,6 +1729,62 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             return ''
         return (' 対象: ' + '、'.join(rows[:12]) + '。未承認の報告は review_worker_report に上の worker_id と result_revision を'
                 '指定して、accept か具体的な revise を記録してください。')
+
+    @staticmethod
+    def _report_informal(child):
+        """The worker ended its current revision with an answer in prose and no finish_work report.
+
+        ``finished_revision`` is cleared by every new input; a number that is not the current revision is
+        not this case and stays refused.
+        """
+        return (not child.closing and child.status == 'done' and not child.pending and not child.question
+                and not child.last_error and child.result_revision >= 1 and child.finished_revision is None)
+
+    def _formal_report_expected(self, run, agent):
+        """This worker's coordinator can finish only with every worker's finish_work report."""
+        parent = self.agents.get(agent.parent_id)
+        if parent is None or run.get('_ordered_work') or run.get('adaptive_team') or run.get('_turns') is not None:
+            return False
+        return (any(child.depends_on for child in self._owned_workers(run, parent))
+                or self._orchestration(run['_config'], run)['delegation_level'] == 2)
+
+    def _review_informal(self, run, agent, child, decision, feedback):
+        """review_worker_report for a worker that finished without a formal report.
+
+        Real-machine case: a worker answered a re-request in prose and was "done" with no finish_work
+        report. The coordinator could neither accept nor return what was not a report, tried
+        review_worker_report several times, and the run stopped as a deadlock. Now "revise" reopens the
+        worker to report again, and "accept" takes its last answer as the report, on the coordinator's word.
+        """
+        revision = child.result_revision
+        audit = {'worker_id': child.id, 'result_revision': revision, 'decision': decision,
+                 'feedback': self.redact(feedback), 'informal_report': True}
+        if decision == 'revise':
+            receipt = self._mail(agent, child, 'Your coordinator cannot use your last answer: it was not given with finish_work, '
+                                 'so it is not a report. Do what is asked below if anything is, then call finish_work with your '
+                                 f'complete result (values, pages, files), also when nothing changed.\n{feedback}',
+                                 subject='Report requested')
+            child._revise_pending, child._revise_wait_refused = True, False
+            audit['mail_id'] = receipt['mail_id']
+            self.event(run['id'], agent.id, 'worker_report_review', json.dumps(audit, ensure_ascii=False))
+            return {**receipt, 'ok': True, 'worker_id': child.id, 'result_revision': revision, 'decision': 'revise',
+                    'accepted': False, 'reopened': True, 'current_result_revision': child.result_revision,
+                    'note': 'The worker was reopened and asked to report with finish_work. Call wait_for_workers; '
+                            'its report will arrive with a new result_revision.'}
+        answer = next((row['text'] for row in reversed(child.results)
+                       if row.get('revision') == revision and row.get('source') in {'assistant_response', 'finish_work'}), '')
+        if not answer:
+            raise ValueError('この担当には、受け取れる回答が残っていません。decision "revise" で再開し、finish_work で報告を出し直させてください')
+        child.finished_revision = revision
+        agent.worker_report_deliveries[child.id] = agent.worker_report_consumed[child.id] = revision
+        agent.worker_report_reviews[child.id] = {'result_revision': revision, 'decision': 'accept'}
+        self.event(run['id'], agent.id, 'worker_report_review', json.dumps(audit, ensure_ascii=False))
+        self.log(agent, 'notice', f'{child.name} は finish_work の報告を出さずに終了していたため、最後の回答を報告として受け取りました')
+        self._dependency_wake(run, agent)
+        return {'ok': True, 'worker_id': child.id, 'result_revision': revision, 'decision': 'accept', 'accepted': True,
+                'informal_report': True, 'current_result_revision': revision,
+                'note': 'This worker ended without finish_work; its last answer was taken as its report on your decision. '
+                        'It did not pass the checks of a formal report: verify what you use from it.'}
 
     def _active_workers(self, run, agent):
         """Owned workers minus those a human stopped; those no longer report."""
@@ -1752,7 +1821,10 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         if any(child.finished_revision != child.result_revision
                or agent.worker_report_deliveries.get(child.id) != child.result_revision
                or agent.worker_report_consumed.get(child.id) != child.result_revision for child in children):
-            return ('worker_reports_pending', '全workerの現在のfinish_work報告を受領・確認する必要があります。文章回答やエラー通知は完了報告ではありません。')
+            # Where a worker ended without a report, waiting brings nothing: say which one and the way on.
+            informal = [child for child in children if self._report_informal(child)]
+            return ('worker_reports_pending', '全workerの現在のfinish_work報告を受領・確認する必要があります。文章回答やエラー通知は完了報告ではありません。'
+                    + (self._review_gaps(agent, informal) if informal and not ordered else ''))
         if unit and not all(self._hierarchy_report_ready(run, child) for child in children):
             return ('worker_review_pending', '下位ユニットの現在の報告と承認が不足しています。直属担当から確認してください。')
         if finishing and agent.pending:
@@ -1821,11 +1893,20 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 raise ValueError('新しい入力を確認してから現在の報告を監査してください')
             if decision == 'revise':
                 raise ValueError('順番のある仕事の訂正はrollback_work_stepで該当手番へ戻してください。後続結果も再確認します')
+        if not ordered and not run.get('adaptive_team') and self._report_informal(child):
+            if child.result_revision != revision:
+                raise ValueError(f'この担当の現在の result_revision は {child.result_revision} です。その値を指定してください')
+            return self._review_informal(run, agent, child, decision, feedback)
         if (child.closing or child.status != 'done' or child.pending or child.question or child.last_error
                 or child.result_revision != revision or child.finished_revision != revision
                 or agent.worker_report_deliveries.get(ident) != revision
                 or agent.worker_report_consumed.get(ident) != revision):
-            raise ValueError('現在の正式なworker完了報告を受領してから確認してください。list_teamでrevisionと状態を確認できます')
+            state = ('まだ作業中か、連絡待ちです。wait_for_workers で待ってください' if child.status in {'working', 'queued', 'idle'} or child.pending
+                     else '停止しています。必要なら新しい担当に依頼し直してください' if child.status in {'stopped', 'error'} or child.closing
+                     else f'現在の result_revision は {child.result_revision} です。その値を指定してください' if child.result_revision != revision
+                     else '報告がまだあなたに届いていません。wait_for_workers で受け取ってから確認してください')
+            raise ValueError('現在の正式なworker完了報告を受領してから確認してください。この担当は、' + state
+                             + '。list_teamでrevisionと状態を確認できます')
         proof, reference_event = None, None
         if reference_mode(ordered):
             proof = report_proof(ordered, child, agent)
@@ -2562,7 +2643,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                             self._append_context(agent, {'role': 'user', 'content': EMPTY_REPLY_NUDGE}, human=False)
                             continue
                         issue = self._delegation_issue(run, agent, finishing=True)
-                        if (not issue and agent.parent_id and turn_tool_calls
+                        if (not issue and agent.parent_id and (turn_tool_calls or self._formal_report_expected(run, agent))
                                 and continuation_nudges < CONTINUATION_NUDGES
                                 and not self._ordered_for(run, agent)
                                 and run['model_calls'] + 1 < limits['max_model_calls']):

@@ -183,6 +183,18 @@ CHECK = {'html': '<html><title>Just a moment...</title><body>Verify you are huma
 WORDS = ['just a moment', 'verify you are human']
 
 
+def test_a_file_is_opened_from_the_page_that_links_to_it_in_the_same_window(tmp_path):
+    """The page a window read before is loaded first; the file is then asked for in that window and session."""
+    page, file = 'https://www.imf.org/en/publications/weo/issues/2026/10/13/outlook', 'https://www.imf.org/-/media/files/weo/text.pdf'
+    result, window, _ = run_fetch(tmp_path, {'content_type': 'application/pdf', 'html': '<html><body><embed></body></html>',
+                                             'title': 'text.pdf', 'shown': REPORT}, url=file, via=page)
+    assert result['kind'] == 'download' and (tmp_path / 'downloads' / result['file']).read_bytes() == REPORT
+    assert [call for call in window.calls if call[0] == 'get'] == [('get', page), ('get', file)]   # one window, in this order
+    assert window.calls[-1] == ('quit',)
+    with pytest.raises(ValueError):
+        worker.run_fetch_job(fetch_job(via='file:///C:/Users'), tmp_path, driver_factory=lambda *_: pytest.fail('no window'))
+
+
 def test_a_check_meant_for_a_person_is_reported_at_once_or_waited_through_when_a_person_agreed(tmp_path):
     """Real-machine case: the IEA's report page shows a Turnstile box even in a person's own browser."""
     for name in 'abcd':
@@ -276,8 +288,8 @@ def tools_with(tmp_path, answers):
     """WebTools whose browser opener answers from ``answers`` (url suffix -> result or exception) and counts its calls."""
     opened = []
 
-    async def opener(url, max_download_bytes, person_seconds=0, check_words=()):
-        opened.append((url, person_seconds) if person_seconds else url)
+    async def opener(url, max_download_bytes, person_seconds=0, check_words=(), via=''):
+        opened.append((url, person_seconds) if person_seconds else (url, 'from', via) if via else url)
         answer = next(value for key, value in answers.items() if url.endswith(key))
         if isinstance(answer, dict) and 'person' in answer:  # what the window shows once a person is there
             answer = answer['person'] if person_seconds else {key: value for key, value in answer.items() if key != 'person'}
@@ -314,6 +326,43 @@ async def test_a_refused_pdf_and_page_come_from_one_try_each_in_the_window(tmp_p
         with pytest.raises(WebToolError, match=r'HTTP 404 \(not found\)$'):
             await tools.execute('web_fetch', {'url': base + '/missing'})
         assert len(opened) == 2
+
+
+async def test_a_refused_question_about_a_file_goes_on_to_the_file_and_a_link_is_opened_from_its_page(tmp_path, monkeypatch):
+    """Real-machine case: the issue page was read in the window; the worker then asked only for the size and date
+    of the report it links to (headers_only), got HTTP 403, and took a two-page summary from elsewhere instead."""
+    seen = []
+    pin(monkeypatch)
+    async with http_server(refusing(seen)) as port:
+        base = f'http://www.reports.example:{port}'
+        saved = {'kind': 'download', 'file': 'shown.pdf', 'bytes': len(REPORT), 'data': REPORT}
+        tools, opened = tools_with(tmp_path, {'/files/weo.pdf': saved, '/other.pdf': saved, '/issue': {'title': 'October issue', 'html': PAGE}})
+        page = await tools.execute('web_fetch', {'url': base + '/issue'})
+        assert page['pdf_links'] == [{'url': base + '/files/weo.pdf', 'text': 'Full report'}]
+        assert 'does not count as a new window' in page['pdf_links_note']
+        # The refused question is not a try: the file itself is fetched, from the page that links to it.
+        report = await tools.execute('web_fetch', {'url': base + '/files/weo.pdf', 'headers_only': True})
+        assert report['pages'] == 2 and report['fetched_with'] == 'browser window' and 'HTTP 403' in report['headers_only_note']
+        assert opened == [base + '/issue', (base + '/files/weo.pdf', 'from', base + '/issue')]
+        assert tools.browser_log[-1] == {'url': base + '/files/weo.pdf', 'outcome': 'success',
+                                         'detail': 'PDF saved, 2 pages, opened from the page that links to it'}
+        # The link's window is the continuation of the page's: four more windows may still be opened.
+        for index in range(4):
+            await tools.execute('web_fetch', {'url': base + f'/{index}/other.pdf'})
+        with pytest.raises(WebToolError, match='opened 5 times'):
+            await tools.execute('web_fetch', {'url': base + '/9/other.pdf'})
+        # Each address still once.
+        with pytest.raises(WebToolError, match='already tried this address once'):
+            await tools.execute('web_fetch', {'url': base + '/files/weo.pdf'})
+    # Without the window, a refused question still leads to the file itself, and that answer is what is reported.
+    seen.clear()
+    async with http_server(refusing(seen)) as port:
+        plain = WebTools({'search': {'enabled': True, 'provider': 'duckduckgo'}})
+        result = await plain.execute('web_fetch', {'url': f'http://www.reports.example:{port}/open', 'headers_only': True})
+        assert result['headers_only'] is True                       # answered: nothing else is fetched
+        with pytest.raises(WebToolError, match=r'HTTP 403 \(access refused\)$'):
+            await plain.execute('web_fetch', {'url': f'http://www.reports.example:{port}/files/text.pdf', 'headers_only': True})
+        assert seen == ['/open', '/files/text.pdf', '/files/text.pdf']  # the question, then the file
 
 
 async def test_a_refusal_or_a_check_in_the_window_is_final_and_the_human_is_asked(tmp_path, monkeypatch):
