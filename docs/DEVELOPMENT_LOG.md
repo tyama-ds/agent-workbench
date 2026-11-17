@@ -4,6 +4,89 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev71 — Protected PDFs that open for anyone are read; nothing a PDF raises stops a turn (2026-11-17)
+
+dev70 on the real machine (`7aa3e18`): the WEO's executive summary was
+fetched from the IMF eLibrary and summarised with page numbers. Then five
+Japanese ministry PDFs were tried and four could not be read.
+
+- Two of them raised `DependencyError` inside pypdf (AES needs the
+  `cryptography` library). That class is not one of pypdf's own errors, so it
+  passed through `web_fetch` as an unexpected error and the PM's turn
+  stopped. Two more were refused as encrypted. All four open in any viewer
+  without a password: their authors only restricted changing, printing or
+  copying. Refusing every encrypted file left most public documents of this
+  kind unreadable.
+  - A file that opens with the empty password is now read as a viewer shows
+    it, and its overview says so (`protected`). A file that needs a password
+    to open is refused, and no password is ever tried.
+  - `cryptography` 50.0.2 is pinned with hashes (with cffi and pycparser).
+  - Whatever the parser raises, on opening or later, comes back as the
+    tool's error with its reason; where the library is missing the error
+    says that.
+- The model wrote "main points of chapter 1" although the chapter could not
+  be downloaded, from the executive summary. Policy: a part that was not
+  obtained gets one line saying so and no summary; and the human is asked
+  once (with a recommended course, so an unanswered question does not stop
+  the work) to save that PDF from their browser into a read folder, after
+  which it is read by path.
+- `stat_lookup` with the IMF returned nothing for the world. The World
+  Economic Outlook keeps its aggregates under its own codes: WLD is asked as
+  G001 and the euro area as G163, and advanced economies (G110) and
+  emerging market and developing economies (G200) can be asked by name.
+
+Not done here: a Markdown table left as paragraphs beside the real table in
+a DOCX (next).
+
+## 0.1.1.dev70 — PDF reports are read by page (2026-11-17)
+
+The request: download the IMF's World Economic Outlook, read it and report a
+summary; and the same for any long PDF report. On the real machine nothing of
+this worked: `web_fetch` took text kinds only and stopped at 1 MiB, and no
+file tool opened a PDF.
+
+- `pdf_read` reads a PDF in an allowed read folder or one `web_fetch`
+  downloaded. The first call gives the page count, the outline, characters
+  per page and how the document begins; then pages by number, each under its
+  page number, as far as the answer's size allows, with where to go on;
+  `find` lists the pages on which a phrase stands. An encrypted file is
+  refused. Pages without a text layer are named, and a file with none says
+  that nothing could be read (there is no OCR).
+- `web_fetch` keeps a PDF answer in the application's own folder under
+  `limits.max_pdf_bytes` (50 MiB by default) and returns `pdf_id` with the
+  overview. A page's links to PDF files are returned beside its text, which
+  is how a report is reached from the page that describes it (the IMF
+  eLibrary's book page links to the chapters' files).
+- The run remembers which pages of a downloaded PDF were read. When sources
+  are checked, a cited PDF is shown with them, and the PM is told that only
+  pages read can be cited, each figure with its page.
+- Policy: page count and outline first, the executive summary and the first
+  chapter, then only what the request needs; every figure with its page; a
+  refused site's own official distribution site (the IMF eLibrary) instead
+  of repeating the request.
+- Dependency, pinned with hashes: pypdf 6.21.4 (pure Python; 7.x was days
+  old). It has no known advisory in PyPI's records today, and has had many
+  about files that exhaust time or memory, which is why reading has a time
+  budget and a file that does not end is not tried again.
+- Two tests fixed their context budget as a number and broke when the tool
+  list grew; they now measure it, as the one fixed in dev69.
+
+Built and taken out again within this version: a second request with a
+browser's TLS handshake (curl_cffi) for a site that answers 403 to an HTTP
+library, as www.imf.org does. The owner first asked for it and then decided
+against getting past a site's filter with a library. Nothing of it is in the
+product or the lock. The standing rule is unchanged: the application does not
+hide that a request is automated. What the owner asked for instead: anything
+that operates a browser or the screen is a separate switch, off by default,
+and is also chosen per piece of work on the start screen. Selenium page
+operation (off by default) and browser search (only when chosen as the search
+method) already are; a later "download through the browser" will follow the
+same rule.
+
+Not verified here: this environment reaches neither www.imf.org nor the
+eLibrary. A Japanese PDF made here with a CID font reads correctly; the
+ministries' own files were not tried.
+
 ## 0.1.1.dev69 — A change that cannot be formed is said, and a coordinator reads what its workers wrote (2026-11-17)
 
 dev68 passed on the real machine at `f07437a` (latest month and quarter,

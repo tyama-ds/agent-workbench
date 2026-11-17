@@ -104,6 +104,18 @@ def _excerpt(text):
     return ' '.join(text[:2000].split())[:_EXCERPT]
 
 
+def _page_ranges(numbers):
+    """Page numbers as "1-12, 45, 47-48" (bounded)."""
+    parts, numbers = [], sorted(numbers)
+    for number in numbers:
+        if parts and parts[-1][1] == number - 1:
+            parts[-1][1] = number
+        else:
+            parts.append([number, number])
+    text = ', '.join(str(first) if first == last else f'{first}-{last}' for first, last in parts[:12])
+    return text + (', ...' if len(parts) > 12 else '')
+
+
 def _tail(value, limit):
     value = value if isinstance(value, str) else ''
     return value if len(value) <= limit else '...\n' + value[-limit:]
@@ -221,7 +233,11 @@ class VerificationMixin:
         pages = run.setdefault('_pages', {})
         if not isinstance(result, dict) or len(pages) >= _MAX_PAGES:
             return
-        if name == 'web_fetch' and isinstance(result.get('text'), str):
+        if name == 'web_fetch' and isinstance(result.get('pdf_id'), str):
+            for url in (result.get('url'), args.get('url') if isinstance(args, dict) else None):
+                if isinstance(url, str):
+                    self._pdf_note(run, url, result)
+        elif name == 'web_fetch' and isinstance(result.get('text'), str):
             start = _excerpt(result['text'])
             for url in (result.get('url'), args.get('url') if isinstance(args, dict) else None):
                 if isinstance(url, str):
@@ -240,6 +256,22 @@ class VerificationMixin:
                 if isinstance(row, dict) and isinstance(row.get('url'), str):
                     # A fetched page's own text is better evidence than a result title.
                     pages.setdefault(sources.normalize(row['url']), ('search', _excerpt(str(row.get('title', '')))))
+
+    def _pdf_note(self, run, url, result):
+        """A downloaded PDF and the pages of it this run has read: the evidence beside a citation of its URL."""
+        pages, key = run.setdefault('_pages', {}), sources.normalize(url)
+        if not isinstance(result, dict) or (key not in pages and len(pages) >= _MAX_PAGES):
+            return
+        record = run.setdefault('_pdf_docs', {}).setdefault(key, {'read': set(), 'title': '', 'start': '', 'pages': 0})
+        record['pages'] = result.get('pages') if type(result.get('pages')) is int else record['pages']
+        record['title'] = result.get('title') or record['title']
+        record['start'] = result.get('start') or record['start']
+        if result.get('mode') == 'pages':
+            record['read'].update(row['page'] for row in result.get('content') or []
+                                  if isinstance(row, dict) and type(row.get('page')) is int and row.get('text'))
+        read = _page_ranges(record['read'])
+        pages[key] = ('pdf', _excerpt(f"{record['pages']} pages; " + (f'pages read: {read}' if read else 'no page read yet')
+                                      + (f"; title «{record['title']}»" if record['title'] else f"; begins «{record['start'][:60]}»")))
 
     def _citations_note(self, run, name, args, cited):
         """Which known URLs a saved document cites (replaced by a full write, extended by a patch)."""
@@ -274,6 +306,7 @@ class VerificationMixin:
             return None
         run['_citations_gated'] = True
         described = {'fetched': 'fetched page begins: «{}»', 'search': 'only seen as a search result titled «{}»; its text was never fetched',
+                     'pdf': 'downloaded PDF, {}',
                      'none': 'known from the request, a file or a script; no page text was retrieved{}'}
         lines = [f'- {self.redact(path)}: {self.redact(url)[:200]} - ' + described[kind].format(self.redact(start))
                  for path, url, kind, start in rows]
@@ -283,13 +316,18 @@ class VerificationMixin:
                   'different subject, that page is not a source: delete the citation from the file, or fetch a page that '
                   'really covers the point (web_fetch) and cite that one instead. Do not keep an unrelated page because it '
                   'was the only one retrieved; write the point as 未確認 without a URL. A page only seen as a search result '
-                  'must be fetched before it is cited. Save the corrected files, then finish.')
+                  'must be fetched before it is cited. '
+                + ('For a PDF, every figure taken from it needs the page it stands on ("p. 12"), and only pages listed as '
+                   'read can be cited; read the page with pdf_read before citing it, or drop the figure. '
+                   if any(kind == 'pdf' for _, _, kind, _ in rows) else '')
+                + 'Save the corrected files, then finish.')
 
     def _citations_footer(self, run):
         rows = self._citation_rows(run, 10)
         if not rows:
             return ''
         described = {'fetched': '取得したページの冒頭「{}」', 'search': '検索結果の題名「{}」のみ（本文は未取得）',
+                     'pdf': '取得した PDF（{}）',
                      'none': '本文の取得記録なし（依頼文・ファイル・スクリプト経由）{}'}
         lines = [f'- {self.redact(path)}: {self.redact(url)[:200]} — ' + described[kind].format(self.redact(start))
                  for path, url, kind, start in rows]

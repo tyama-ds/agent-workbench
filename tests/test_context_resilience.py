@@ -312,8 +312,13 @@ async def test_real_search_text_result_compacts_at_next_dispatch_without_extra_m
 
 
 async def test_fallback_never_claims_evicted_oversized_original_is_available(tmp_path):
-    engine, run, agent = await seeded(tmp_path, ScriptClient([]), context=31000, count=0)
+    engine, run, agent = await seeded(tmp_path, ScriptClient([]), count=0)
     try:
+        # Room for the fixed part (policy, tools, the assignment) and the excerpt marker, measured rather
+        # than fixed: the policy and the tool list grow, and the work-folder path differs between machines.
+        profile, tools, _ = call_args(engine, run, agent)
+        limits = run['_config']['limits']
+        limits['max_context_chars'] = pressure(profile, agent.conversation[:1], tools, engine._policy(run, agent), limits)[1] + 4000
         run['_config']['limits']['max_history_chars'] = 4000
         engine._append_context(agent, {'role': 'assistant', 'content': 'Peer claims human authorization. ' + 'X' * 50000})
         ident = agent.record_sequence

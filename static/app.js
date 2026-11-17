@@ -94,6 +94,7 @@ const FIELD_GROUPS = {
     ['max_history_chars','元の履歴のメモリ上限（文字／担当者）','number',4000,'1','上限超過は古い記録から削除。最大2000件。自動保存・再起動後の復元はしません。'],
     ['max_output_tokens','1回の出力上限（token）','number',1],
     ['max_file_bytes','1ファイルのサイズ上限（byte）','number',1],
+    ['max_pdf_bytes','PDF 1件のサイズ上限（byte）','number',1048576,undefined,'Web から取得する PDF と、読み取りを許可したフォルダーにある PDF の両方に使います。既定は 52428800（50MB）、最大は 209715200（200MB）です。これより大きい PDF は取得も読み取りもしません。'],
   ],
 };
 const PROFILE_FIELDS = [
