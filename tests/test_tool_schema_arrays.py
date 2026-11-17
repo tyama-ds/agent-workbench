@@ -54,7 +54,9 @@ def test_docx_tables_and_each_operation_keep_the_existing_minimal_shape(office_s
     assert operation["type"] == "object"
     fields_by_type = {
         "append_paragraph": {"type", "text"},
+        "insert_paragraph": {"type", "index", "text"},
         "replace_paragraph": {"type", "index", "text"},
+        "delete_paragraph": {"type", "index"},
         "replace_cell": {"type", "table", "row", "column", "text"},
         "append_table": {"type", "rows"},
     }

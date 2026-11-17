@@ -426,6 +426,28 @@ class VerificationMixin:
         return [name for key, name in (run.get('_expected_outputs') or {}).items()
                 if key not in saved and not self._file_present(run, name)]
 
+    def _outputs_incomplete(self, run):
+        """The work has ended and a file the request names is still not there.
+
+        Real-machine case: a report and slides were asked for; the document
+        held three placeholder paragraphs, the slides did not exist, and the
+        run said "done". The application already knew the files were missing.
+        The human is told once, where they follow the work.
+        """
+        if not run.get('_expected_outputs'):
+            return False
+        missing = self._outputs_missing(run)
+        self._outputs_publish(run)
+        if not missing:
+            run.pop('_incomplete_told', None)
+            return False
+        if run.get('_incomplete_told') != missing:
+            run['_incomplete_told'] = list(missing)
+            lead = (run.get('pm_agent_ids') or run['agent_ids'])[0]
+            self.event(run['id'], lead, 'incomplete', '未完了（成果物なし）: 依頼されたファイルが保存されていません: '
+                       + '、'.join(self.redact(name) for name in missing))
+        return True
+
     def _outputs_publish(self, run):
         expected = list((run.get('_expected_outputs') or {}).values())
         if expected:

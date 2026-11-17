@@ -42,7 +42,7 @@ class WorkerRecoveryMixin:
                 or actor.run_id != run['id'] or actor.id not in run['agent_ids']
                 or self.closed or actor.closing or actor.question
                 or actor.status in {'error', 'stopped', 'stopping', 'done'}
-                or run['status'] in {'stopped', 'stopping', 'done'}):
+                or run['status'] in {'stopped', 'stopping', 'done', 'incomplete'}):
             raise ValueError('稼働中の直属の親だけが復旧を判断できます')
         if run.get('_ordered_work') or run.get('_ordered_reference'):
             raise ValueError('順番のある仕事の手番はこの復旧操作で変更できません')

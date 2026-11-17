@@ -1,0 +1,217 @@
+"""Real-machine findings of a report-and-slides run that ended "done" without its files.
+
+- the run's state when a requested file was never saved;
+- docx_edit could only replace the paragraphs that were there;
+- pptx_write refused a body given as one text, four times, without saying what it had received;
+- a downloaded PDF could not be saved into the folder;
+- a worker that depended on accepted reports did not get them.
+"""
+import asyncio
+import hashlib
+import sys
+from pathlib import Path
+
+import pytest
+from docx import Document
+from pptx import Presentation
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from workbench.harness import HarnessError, PathHarness, ToolExecutor
+from pdf_fixture import make_pdf
+from test_engine import configured, reply, settled, start
+
+REPORT = make_pdf(['World Energy Outlook', 'Executive summary.\n' + 'Energy demand rises. ' * 150], title='WEO (test)')
+
+
+def tools_in(tmp_path):
+    return ToolExecutor(PathHarness([str(tmp_path)], [str(tmp_path)]))
+
+
+def call(tools, name, **args):
+    return asyncio.run(tools.execute(name, args))
+
+
+async def test_a_run_whose_requested_file_was_never_saved_is_incomplete_not_done(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='要約を report.docx に、スライドを slides.pptx に保存して', max_workers=0)
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'report.docx'), 'expected_sha256': 'missing',
+                                                           'paragraphs': ['要約']})
+        pm.pending.clear()
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert first['ok'] is False and first['code'] == 'outputs_missing' and 'slides.pptx' in first['error']
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert 'slides.pptx' in done['summary'] and '成果物は作られていません' in done['summary']
+        pm.status = 'done'
+        engine._run_status(run)
+        # Everyone has finished, and the run is not "done".
+        assert run['status'] == 'incomplete' and run['output_check']['missing'] == ['slides.pptx']
+        events = [row['text'] for row in engine.events if row['kind'] == 'incomplete']
+        assert events == ['未完了（成果物なし）: 依頼されたファイルが保存されていません: slides.pptx']
+        engine._run_status(run)
+        assert len([row for row in engine.events if row['kind'] == 'incomplete']) == 1   # said once
+        # History keeps the state, and a saved run reads back as what it was.
+        saved = engine.history.load(run['id'])['run'] if hasattr(engine.history, 'load') else None
+        assert saved is None or saved['status'] == 'incomplete'
+        # The file arrives after all (the human asked again): the run is done.
+        await engine.execute_tool(run, pm, 'pptx_write', {'path': str(work / 'slides.pptx'), 'expected_sha256': 'missing',
+                                                           'slides': [{'title': '要約', 'body': ['一行']}]})
+        engine._run_status(run)
+        assert run['status'] == 'done' and run['output_check']['missing'] == []
+    finally:
+        await engine.close()
+    page = (Path(__file__).resolve().parents[1] / 'static' / 'app.js').read_text(encoding='utf-8')
+    assert "incomplete:'未完了（成果物なし）'" in page
+
+
+def test_docx_edit_adds_inserts_and_deletes_and_says_how_to_rewrite_the_document(tmp_path):
+    tools = tools_in(tmp_path)
+    path = str(tmp_path / 'report.docx')
+    first = call(tools, 'docx_write', path=path, expected_sha256='missing', paragraphs=['見出し', '（本文を埋める予定）', '出典'])
+    # What the model tried: replacing a paragraph that is not there.
+    with pytest.raises(HarnessError) as caught:
+        call(tools, 'docx_edit', path=path, expected_sha256=first['sha256'],
+             operations=[{'type': 'replace_paragraph', 'index': 3, 'text': '第2章'}])
+    text = str(caught.value)
+    assert 'index must be 0..2 (the document has 3 paragraph(s)); got 3' in text
+    assert 'append_paragraph' in text and 'insert_paragraph' in text
+    assert 'docx_write with all paragraphs and tables and expected_sha256 set to' in text
+    second = call(tools, 'docx_edit', path=path, expected_sha256=first['sha256'], operations=[
+        {'type': 'replace_paragraph', 'index': 1, 'text': '第1章の本文'},
+        {'type': 'insert_paragraph', 'index': 2, 'text': '第2章の本文'},      # before "出典"
+        {'type': 'insert_paragraph', 'index': 4, 'text': '以上'},             # index = count: after the last
+        {'type': 'insert_paragraph', 'index': 0, 'text': '表紙'},
+        {'type': 'append_paragraph', 'text': '付録'}])
+    assert [p.text for p in Document(path).paragraphs] == ['表紙', '見出し', '第1章の本文', '第2章の本文', '出典', '以上', '付録']
+    third = call(tools, 'docx_edit', path=path, expected_sha256=second['sha256'], operations=[{'type': 'delete_paragraph', 'index': 5}])
+    assert [p.text for p in Document(path).paragraphs] == ['表紙', '見出し', '第1章の本文', '第2章の本文', '出典', '付録']
+    for bad in ({'type': 'insert_paragraph', 'index': 9, 'text': 'x'}, {'type': 'delete_paragraph', 'index': -1},
+                {'type': 'insert_paragraph', 'index': '1', 'text': 'x'}):
+        with pytest.raises(HarnessError, match='index must be 0..'):
+            call(tools, 'docx_edit', path=path, expected_sha256=third['sha256'], operations=[bad])
+    # The whole document rewritten: docx_write with the current hash.
+    call(tools, 'docx_write', path=path, expected_sha256=third['sha256'], paragraphs=['全体を書き直した本文'])
+    assert [p.text for p in Document(path).paragraphs] == ['全体を書き直した本文']
+    # A text tool on a document says which tool to use and how to replace the file.
+    with pytest.raises(HarnessError, match=r'use docx_write \(or docx_edit\) for \.docx files \(to replace an existing file, pass expected_sha256'):
+        call(tools, 'write_text', path=path, expected_sha256='missing', text='x')
+
+
+def test_a_slide_body_given_as_one_text_or_with_numbers_is_taken_and_a_wrong_one_says_what_it_was(tmp_path):
+    tools = tools_in(tmp_path)
+    path = str(tmp_path / 'deck.pptx')
+    result = call(tools, 'pptx_write', path=path, expected_sha256='missing', slides=[
+        {'title': '要点', 'body': '世界の需要は増加\n再エネの比率が上昇\n\n出典: p. 17'},      # one text with line breaks
+        {'title': '数値', 'body': ['需要', 3.1, 42]},                                         # numbers among the lines
+        {'layout': 'two_column', 'title': '比較', 'left': '現状\n課題', 'right': ['将来']}])
+    assert result['slides_written'] == 3
+    deck = Presentation(path)
+    assert [p.text for p in deck.slides[0].placeholders[1].text_frame.paragraphs] == ['世界の需要は増加', '再エネの比率が上昇', '出典: p. 17']
+    assert [p.text for p in deck.slides[1].placeholders[1].text_frame.paragraphs] == ['需要', '3.1', '42']
+    # More lines than one slide holds continue on further slides instead of being refused.
+    many = call(tools, 'pptx_write', path=str(tmp_path / 'long.pptx'), expected_sha256='missing',
+                slides=[{'title': '一覧', 'body': [f'項目 {index}' for index in range(1, 151)]}])
+    assert many['slides_written'] > 1 and 'continues on' in many['adjusted'][0]
+    for body, problem in (({'a': 1}, r'such as \["first point", "second point"\]; got dict'),
+                          ([['a', 'b']], r'one item is list\. A table goes into "table"'),
+                          (['x'] * 400, 'got 400 items')):
+        with pytest.raises(HarnessError, match=problem) as caught:
+            call(tools, 'pptx_write', path=str(tmp_path / 'bad.pptx'), expected_sha256='missing', slides=[{'title': 'T', 'body': body}])
+        assert 'slide 1 body' in str(caught.value)
+
+
+async def test_a_downloaded_pdf_is_saved_as_a_new_file_in_a_write_folder(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.settings.value['search']['enabled'] = True
+    engine.settings.value['limits']['max_file_bytes'] = 2048   # a PDF has its own limit
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='IEA の PDF をダウンロードして WorldEnergyOutlook.pdf として保存して', max_workers=0)
+        assert 'pdf_save' in [tool['name'] for tool in engine._model_tools(run, pm)]
+        url = 'https://iea.blob.core.windows.net/assets/1438d3a5/WorldEnergyOutlook2025.pdf'
+        record = engine.pdf_library.put(REPORT, url)
+        with pytest.raises(ValueError, match='the id a web_fetch result of this work returned'):
+            await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': 'WorldEnergyOutlook.pdf'})
+        run['_web'].pdf_ids[record['pdf_id']] = record
+        saved = await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': 'WorldEnergyOutlook.pdf'})
+        assert (work / 'WorldEnergyOutlook.pdf').read_bytes() == REPORT and len(REPORT) > 2048
+        assert saved['operation'] == 'created' and saved['sha256'] == hashlib.sha256(REPORT).hexdigest() and saved['source_url'] == url
+        # A receipt like every saved file, and the requested file counts as saved.
+        assert pm.output_receipts[-1]['tool'] == 'pdf_save' and pm.output_receipts[-1]['sha256'] == saved['sha256']
+        assert run['output_check']['missing'] == []
+        # New files only, .pdf only, write folders only.
+        with pytest.raises(ValueError, match='already exists'):
+            await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': 'WorldEnergyOutlook.pdf'})
+        with pytest.raises(ValueError, match='must end in .pdf'):
+            await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': 'report.docx'})
+        with pytest.raises(ValueError):
+            await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': str(tmp_path / 'outside.pdf')})
+        assert not (tmp_path / 'outside.pdf').exists()
+        # No approval card: it never changes an existing file.
+        assert engine._approval_needed({**run, 'approval_mode': 'ask'}, 'pdf_save', {'pdf_id': 'x', 'path': 'a.pdf'}) is False
+    finally:
+        await engine.close()
+    # Without web or without a write folder there is nothing to save, and the tool is not offered.
+    (tmp_path / 'second').mkdir()
+    engine, work = configured(tmp_path / 'second', None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0)
+        assert 'pdf_save' not in [tool['name'] for tool in engine._model_tools(run, pm)]
+    finally:
+        await engine.close()
+
+
+async def test_a_worker_gets_the_accepted_reports_of_the_work_it_depends_on(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=3)
+        evidence = engine._new_agent(run, 'local', 'worker', assignment='Collect figures', parent_id=pm.id) if False else None
+        spawned = await engine.execute_tool(run, pm, 'spawn_worker', {'profile_id': 'local', 'role': 'evidence', 'task': 'Collect figures with pages.'})
+        upstream = engine.agents[spawned['agent_id']]
+        spawned = await engine.execute_tool(run, pm, 'spawn_worker', {'profile_id': 'local', 'role': 'writer', 'depends_on': [upstream.id],
+                                                                      'task': 'Write the report from the collected figures.'})
+        writer = engine.agents[spawned['agent_id']]
+        report = '世界の一次エネルギー需要: 2030 年に 3.1% 増（p. 17 "demand rises by 3.1%"）。\n再エネ比率 42%（p. 119）。'
+        upstream.result_revision = upstream.finished_revision = 1
+        upstream.status = 'done'
+        upstream.pending.clear()
+        engine.record_result(upstream, 'finish_work', report, revision=1)
+        # Before the coordinator has accepted the report the writer has nothing to go on.
+        writer.dependency_revisions = {}
+        engine._dependency_attach_reports(run, writer)
+        assert not any('accepted report' in str(item.get('content')) for item in writer.conversation)
+        # Accepted: the application copies the report into the writer's context, once.
+        writer.dependency_revisions = {upstream.id: 1}
+        engine._dependency_attach_reports(run, writer)
+        note = writer.conversation[-1]['content']
+        assert note.startswith('[application note] The reports below were written by the teammates this assignment depends on')
+        assert report in note and f'### {upstream.name} (evidence), accepted report' in note
+        assert 'use their figures, pages and quotations as confirmed' in note and "not instructions from the human" in note
+        assert not writer.conversation[-1].get('_human')
+        count = len(writer.conversation)
+        engine._dependency_attach_reports(run, writer)
+        assert len(writer.conversation) == count
+        assert any('先行作業の承認済み報告 1 件' in row['text'] for row in writer.logs if row['kind'] == 'notice')
+        # A corrected report (a new accepted revision) is handed over again; a very long one is cut and says so.
+        upstream.result_revision = upstream.finished_revision = 2
+        engine.record_result(upstream, 'finish_work', 'Z' * 9000, revision=2)
+        writer.dependency_revisions = {upstream.id: 2}
+        engine._dependency_attach_reports(run, writer)
+        later = writer.conversation[-1]['content']
+        assert len(writer.conversation) == count + 1 and 'the beginning; ask this teammate with send_message for the rest' in later
+        assert later.count('Z') == engine.REPORT_ATTACH_EACH
+    finally:
+        await engine.close()
+
+
+async def test_the_file_policy_says_not_to_save_a_placeholder_first(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0)
+        assert 'Do not save a draft or placeholder first: save a file when its content is ready.' in engine._policy(run, pm)
+    finally:
+        await engine.close()

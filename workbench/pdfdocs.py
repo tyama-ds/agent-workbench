@@ -69,6 +69,11 @@ PDF_SEARCH_TOOL = {'name': 'pdf_search', 'description': (
         **_SOURCE, 'query': {'type': 'string', 'maxLength': 100}, **_RANGE,
         'max_chars': {'type': 'integer', 'minimum': 2000, 'maximum': MAX_CHARS}},
         'required': ['query'], 'additionalProperties': False}}
+PDF_SAVE_TOOL = {'name': 'pdf_save', 'description': (
+    'Save a PDF that web_fetch downloaded (pdf_id) as a new file in an allowed write folder: path ends in .pdf and '
+    'must not exist yet. Use it when the request asks to keep the PDF.'),
+    'parameters': {'type': 'object', 'properties': {'pdf_id': {'type': 'string', 'maxLength': 28}, 'path': {'type': 'string'}},
+                   'required': ['pdf_id', 'path'], 'additionalProperties': False}}
 PDF_TOOLS = {'pdf_read': frozenset(PDF_READ_TOOL['parameters']['properties']),
              'pdf_search': frozenset(PDF_SEARCH_TOOL['parameters']['properties'])}
 _ARGS = PDF_TOOLS['pdf_read'] | {'find'}   # what the library itself takes: a search arrives as ``find``
@@ -92,8 +97,11 @@ PDF_POLICY = (
 PDF_WEB_POLICY = (
     ' A chapter or section you could not obtain or read gets one line, "not obtained; no summary": never write its '
     'points from another part (an executive summary is not chapter 1).'
+    ' For "the latest" issue of a report that appears regularly, establish the publication dates first (the '
+    'publisher\'s list of issues) and take the newest issue, not the first one found; state its date.'
     ' To get a report, web_fetch its PDF address (the result has a pdf_id); a page that web_fetch returns lists the PDF '
-    'files it links to (pdf_links). If an institution\'s main site refuses the request, use the same institution\'s '
+    'files it links to (pdf_links). Where a report comes as several files, fetch the full report first, not its '
+    'parts (summary, chapters, tables) one after another. If an institution\'s main site refuses the request, use the same institution\'s '
     'official distribution site (for the IMF, the IMF eLibrary) instead of retrying: search for "<report name> '
     'filetype:pdf" or with site:<the publisher\'s domain> and fetch the PDF directly from where the publisher itself '
     'distributes it (its content network or file storage counts). Where several copies carry the same name, compare '
@@ -599,6 +607,27 @@ class PdfToolMixin:
         run.setdefault('_pdf_sources', {})[record['url']] = 'downloaded'
         self._pdf_note(run, record['url'], result)
         return result
+
+    async def _pdf_save(self, run, agent, args):
+        """Copy a PDF this work downloaded into a write folder, as a new file. The caller holds the file lock."""
+        if not isinstance(args, dict) or set(args) != {'pdf_id', 'path'} or not isinstance(args['path'], str):
+            raise PdfError('pdf_save takes pdf_id (from web_fetch) and path (a new .pdf file in a write folder)')
+        if not args['path'].lower().endswith('.pdf'):
+            raise PdfError('path must end in .pdf')
+        records = getattr(run.get('_web'), 'pdf_ids', {})
+        if args['pdf_id'] not in records:
+            raise PdfError('pdf_id must be the id a web_fetch result of this work returned')
+        data, record = await asyncio.to_thread(self.pdf_library.get, args['pdf_id'])
+        try:
+            result = await asyncio.to_thread(run['_harness'].write_bytes, args['path'], data, 'missing',
+                                             limit=run['_config']['limits']['max_pdf_bytes'])
+        except ValueError as exc:
+            if 'expected_sha256' in str(exc) or 'changed' in str(exc).lower():
+                raise PdfError('A file of that name already exists. pdf_save only creates a new file: choose another name') from None
+            raise
+        self.record_receipt(agent, 'pdf_save', result)
+        return {**{key: value for key, value in result.items() if key != 'previous_sha256'}, 'source_url': record['url'],
+                'note': 'Saved as downloaded. Say in the report where it came from (source_url).'}
 
     async def _pdf_from_file(self, run, args):
         """A PDF in a folder the human allowed for reading; the usual path checks, the PDF size limit."""

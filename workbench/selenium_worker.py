@@ -250,10 +250,50 @@ _STATUS = ("const e = performance.getEntriesByType('navigation')[0];"
            " String(document.readyState || '')];")
 
 
+# A PDF that the window shows in its viewer instead of saving it (the "always download PDFs" preference
+# does not take in every browser version): the same document is read through the page's own fetch, which
+# uses the window's session and its cache, as "Save" in the viewer does. Nothing is requested that the
+# window has not already been given.
+_SHOWN_FETCH = ("const done = arguments[arguments.length - 1];"
+                "fetch(window.location.href, {credentials: 'include', cache: 'force-cache'})"
+                ".then(r => { if (!r.ok) throw new Error('status ' + r.status); return r.arrayBuffer(); })"
+                ".then(b => { window.__awbPdf = new Uint8Array(b); done(window.__awbPdf.length); })"
+                ".catch(e => done('error: ' + String(e).slice(0, 200)));")
+_SHOWN_CHUNK = ("const a = window.__awbPdf.subarray(arguments[0], arguments[1]); let s = '';"
+                "for (let i = 0; i < a.length; i += 32768) s += String.fromCharCode.apply(null, a.subarray(i, i + 32768));"
+                "return btoa(s);")
+_SHOWN_STEP = 512 * 1024
+
+
+def _save_shown_pdf(driver, downloads, largest):
+    """Write the PDF that the window is showing into the download folder. -> (file name or '', size, reason)."""
+    import base64
+    driver.set_script_timeout(120)
+    try:
+        size = driver.execute_async_script(_SHOWN_FETCH)
+        if type(size) is not int or size <= 0:
+            return '', 0, str(size)[:200] if isinstance(size, str) else 'the page gave no data'
+        if size > largest:
+            return '', size, 'too_large'
+        target = downloads / 'shown.pdf'
+        with open(target, 'wb') as stream:
+            for start in range(0, size, _SHOWN_STEP):
+                stream.write(base64.b64decode(driver.execute_script(_SHOWN_CHUNK, start, min(size, start + _SHOWN_STEP))))
+        if target.stat().st_size != size:
+            target.unlink()
+            return '', 0, 'the data read from the page was incomplete'
+        return target.name, size, ''
+    except Exception as exc:
+        return '', 0, type(exc).__name__
+    finally:
+        driver.set_script_timeout(5)
+
+
 def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, sleep=time.sleep):
     """Load one address once in a visible window and report what came: a saved file, a page, or neither.
 
-    Nothing is clicked, typed or solved. The window is closed whatever happens.
+    Nothing is clicked, typed or solved. The window is closed whatever happens. A PDF that the window shows
+    in its viewer is read through the page's own fetch (its session and cache) and saved like a download.
     With ``person_seconds`` a person has agreed to pass the site's check in this window: while the page is
     such a check (one of ``check_words`` in its title or its short text), the window stays open and is
     looked at again, until the page or a download arrives, the window is closed, or that time is over.
@@ -330,13 +370,21 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
             if clock() >= deadline:
                 break
             sleep(.5)
+        if result['kind'] == 'page' and result['content_type'].lower().startswith('application/pdf') and not result['check']:
+            name, size, reason = _save_shown_pdf(driver, downloads, largest)
+            if name:
+                result.update(kind='download', file=name, bytes=size)
+            elif reason == 'too_large':
+                result.update(kind='too_large', bytes=size)
+            else:
+                result['title'] = ('The PDF was shown but could not be read from the page: ' + reason)[:300]
         if result['kind'] == 'page':
             html = str(driver.page_source).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')
             try:
                 result['url'] = validate_url(driver.current_url)
             except ValueError:
                 pass
-            result.update(title=str(driver.title).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')[:500],
+            result.update(title=result['title'] or str(driver.title).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')[:500],
                           html=html[:maximum], truncated=len(html) > maximum)
         return result
     finally:
