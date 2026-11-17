@@ -4,6 +4,32 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev69 — A change that cannot be formed is said, and a coordinator reads what its workers wrote (2026-11-17)
+
+dev68 passed on the real machine at `f07437a` (latest month and quarter,
+changes of an index for a quarter, forecasts marked, six suites done, a
+spreadsheet of numbers only). Two things went wrong in the agent tasks.
+
+- The lookup gave no change from a year earlier for the latest month of the
+  consumer price index, because BLS never published October 2025. The model
+  formed one itself, "1.0 % (2026-10 against 2025-10)", from a base that
+  does not exist. Now `latest_period.change_percent` is always there for an
+  index: a number, or null with `comparable`, the newest period that does
+  have a change, and a remark naming the missing period. The policy says to
+  use the change the lookup returns and not to compute one.
+- Three workers were to fill one workbook. One reserved it; one was refused
+  ("別の作業者がこの範囲を予約中") and wrote nothing; one wrote into another
+  sheet. The file held two of three countries and the PM reported all three.
+  - A refused reservation now names its holder and says what to do: report
+    the values to the PM (preferred), or wait. When the reservation ends,
+    the agents it turned away are told, so waiting is possible.
+  - Before the root PM finishes, a requested file that teammates wrote and
+    that the PM has not read since its last save sends the PM back once to
+    read it and compare it with the request (as with tests that were asked
+    for and not run). What the PM wrote itself needs no second look.
+  - Policy: one file has one writer; workers report their values and one
+    agent writes the file and reads it back.
+
 ## 0.1.1.dev68 — The latest month and quarter, changes of an index, forecasts marked, and spreadsheet units (2026-11-17)
 
 dev67 passed on the real machine (BEA six of six, BLS four, EIA five, the

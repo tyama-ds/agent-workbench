@@ -129,7 +129,8 @@ def plan(provider, indicator_name, countries, start, end):
 
 
 BEA_QUARTERS = 'https://apps.bea.gov/national/Release/TXT/NipaDataQ.txt'
-COMPUTED = 'change_percent is the change from a year earlier, computed by the application from the index.'
+COMPUTED = ('change_percent is the change from a year earlier, computed by the application from the index. '
+            'Use it as given; where it is null, the base period is missing and no change can be stated.')
 
 
 def is_index(spec):
@@ -148,6 +149,28 @@ def _change(now, before):
     if type(now) not in {int, float} or type(before) not in {int, float} or not before:
         return None
     return round((now / before - 1) * 100, 1)
+
+
+def _latest_change(latest, points, order, earlier, label):
+    """Add the change from a year earlier to the latest period of an index, or say why there is none.
+
+    ``points`` maps a period key to its value, ``order`` lists the keys from old to new, ``earlier(key)``
+    gives the key a year before and ``label(key)`` its written form. When the period a year before the
+    latest one was never published, the change is None and the newest period that does have one is given
+    beside it, so that nobody forms the change from some other base.
+    """
+    newest = order[-1]
+    latest['change_percent'] = _change(points[newest], points.get(earlier(newest)))
+    if latest['change_percent'] is not None:
+        return None
+    for key in reversed(order[:-1]):
+        change = _change(points[key], points.get(earlier(key)))
+        if change is not None:
+            latest['comparable'] = {'period': label(key), 'value': points[key], 'change_percent': change}
+            return (f'The change from a year earlier cannot be formed for {label(newest)}: {label(earlier(newest))} is not '
+                    f'published. The latest period for which it can is {label(key)}: {change} %. Do not compute one from another base.')
+    return (f'The change from a year earlier cannot be formed for {label(newest)}: {label(earlier(newest))} is not published, '
+            'and no other period in the answer has both. Do not compute one from another base.')
 
 
 def _yearly_changes(values):
@@ -193,10 +216,8 @@ def read_bea_quarter(data, code, index=False):
         return [], '', '', [], {}
     period = max(quarters)
     latest = {'period': period, 'value': quarters[period], 'basis': 'quarterly, seasonally adjusted at annual rates'}
-    change = _change(quarters[period], quarters.get(f'{int(period[:4]) - 1}{period[4:]}')) if index else None
-    if change is not None:
-        latest['change_percent'] = change
-    return [], '', '', [], {'latest_period': latest}
+    remark = _latest_change(latest, quarters, sorted(quarters), lambda key: f'{int(key[:4]) - 1}{key[4:]}', str) if index else None
+    return [], '', '', [remark] if remark else [], {'latest_period': latest}
 
 
 def read_bls(payload, code, start, end, index=False):
@@ -234,12 +255,15 @@ def read_bls(payload, code, start, end, index=False):
         year = max(months)
         month = max(months[year])
         latest = {'period': f'{year}-{month:02d}', 'value': months[year][month]}
-        change = _change(months[year][month], months.get(year - 1, {}).get(month)) if index else None
-        if change is not None:
-            latest['change_percent'] = change
         extra['latest_period'] = latest
         remarks.append(f'Latest month: {year}-{month:02d} = {months[year][month]}. A year is given only when all twelve months '
                        'are published; its figure is the mean of the monthly values, computed by the application.')
+        if index:
+            points = {(at_year, at): value for at_year, by_month in months.items() for at, value in by_month.items()}
+            remark = _latest_change(latest, points, sorted(points), lambda key: (key[0] - 1, key[1]),
+                                    lambda key: f'{key[0]}-{key[1]:02d}')
+            if remark:
+                remarks.append(remark)
         for year in sorted(months):
             if start <= year <= end and year not in values:
                 missing = [f'{at:02d}' for at in range(1, 13) if at not in months[year]]

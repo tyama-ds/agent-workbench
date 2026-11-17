@@ -285,3 +285,35 @@ def test_bls_is_not_asked_twice_for_an_answer_it_refused_and_a_missing_series_is
             await tools.execute('stat_lookup', {'source': 'bea', 'countries': ['USA'], 'indicator': 'gdp'})
         assert len(sent) == 4, 'a server error is tried once more; the quarterly file is not asked for when the yearly one failed'
     asyncio.run(run())
+
+
+def test_when_the_month_a_year_earlier_was_never_published_no_change_is_given_and_the_latest_that_has_one_is_named():
+    """Real-machine case: BLS published no October 2025. The lookup gave no change for October 2026, and the
+    model formed one itself from another base: '1.0 % (2026-10 against 2025-10)'."""
+    rows = ([(2025, month, 320.0 + month * 0.3) for month in (1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12)]
+            + [(2026, month, 329.0 + month * 0.3) for month in range(1, 11)])
+    answer = bls_json('CUUR0000SA0', rows)
+    values, _label, _updated, remarks, extra = usstats.read('bls', json.dumps(answer).encode(), 'CUUR0000SA0', 2025, 2026, index=True)
+    latest = extra['latest_period']
+    assert latest['period'] == '2026-10' and latest['value'] == 332.0 and latest['change_percent'] is None
+    assert latest['comparable'] == {'period': '2026-09', 'value': 331.7, 'change_percent': 2.8}      # 331.7 / 322.7
+    assert ('The change from a year earlier cannot be formed for 2026-10: 2025-10 is not published. '
+            'The latest period for which it can is 2026-09: 2.8 %. Do not compute one from another base.') in remarks
+    assert values == [] and '2025 has no yearly figure: 11 of 12 months are published (missing: 10).' in remarks
+    # With the month a year earlier there, the change is simply given.
+    full = bls_json('CUUR0000SA0', rows + [(2025, 10, 323.0)])
+    latest = usstats.read('bls', json.dumps(full).encode(), 'CUUR0000SA0', 2025, 2026, index=True)[4]['latest_period']
+    assert latest == {'period': '2026-10', 'value': 332.0, 'change_percent': 2.8} and 'comparable' not in latest
+    # Nothing in the answer has both periods: said, and still nothing invented.
+    only = bls_json('CUUR0000SA0', [(2026, month, 330.0) for month in (9, 10)])
+    values, _label, _updated, remarks, extra = usstats.read('bls', json.dumps(only).encode(), 'CUUR0000SA0', 2026, 2026, index=True)
+    assert extra['latest_period'] == {'period': '2026-10', 'value': 330.0, 'change_percent': None}
+    assert any('no other period in the answer has both' in remark for remark in remarks)
+    # A rate is not an index: no change is attached to it at all.
+    assert 'change_percent' not in usstats.read('bls', json.dumps(bls_json()).encode(), 'LNS14000000', 2020, 2026)[4]['latest_period']
+    # The BEA's latest quarter, the same way.
+    quarters = b'%SeriesCode,Period,Value\r\nDPCERG,2025Q2,125.0\r\nDPCERG,2026Q2,128.5\r\nDPCERG,2026Q3,129.5\r\n'
+    _values, _label, _updated, remarks, extra = usstats.read('bea', quarters, 'DPCERG', 2020, 2026, index=True, role='quarter')
+    assert extra['latest_period']['change_percent'] is None
+    assert extra['latest_period']['comparable'] == {'period': '2026Q2', 'value': 128.5, 'change_percent': 2.8}
+    assert remarks and '2025Q3 is not published' in remarks[0]
