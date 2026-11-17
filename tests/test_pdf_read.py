@@ -376,7 +376,13 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         assert 'only when no official one can be had, and say so' in policy
         # Real-machine cases: April and a July update were taken for "this year's latest" although October was out;
         # the browser window was spent on a report's summary, chapter and tables one after another.
-        assert 'take the newest issue, not the first one found; state its date' in policy
+        for step in ("(1) open the publisher's own list of issues", '(2) a search shows only some issues',
+                     '(3) take the newest issue published by today, not the first one found',
+                     '(4) write in the report which issue you used, its date, and what shows that no newer one exists'):
+            assert step in policy, step
+        import time as clock
+        assert 'Today is ' + clock.strftime('%Y-%m-%d', clock.localtime(run['created_at'])) + " (the application's clock)" in policy
+        assert 'Write that the PDF was saved only after pdf_save returned its path' in policy
         assert 'fetch the full report first, not its parts' in policy
         # Figures: found by search, cited with one form of page number and the words they come from, and looked up again.
         assert 'Find what you need with pdf_search' in policy and '"p. 26 (printed 10)"' in policy

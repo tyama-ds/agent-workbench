@@ -622,3 +622,49 @@ async def test_the_saved_pdf_is_the_one_that_was_read_and_it_is_saved_once(tmp_p
         assert 'it was not downloaded in this work' in own['origin']
     finally:
         await engine.close()
+
+
+def test_a_request_to_keep_the_pdf_is_recognised_without_a_file_name():
+    from workbench.verification import asks_to_keep_pdf
+    for text in ('要約を report.docx に保存し、ダウンロードした PDF も同じフォルダーに保存してください', 'PDF も保存して',
+                 '取得した PDF を weo フォルダーに保存', 'PDF を保存してください', 'PDFファイル自体も残しておいて',
+                 'Summarise it and save the PDF in the same folder', 'Please keep a copy of the downloaded PDF'):
+        assert asks_to_keep_pdf(text), text
+    for text in ('PDF を読んで要約を report.docx に保存して', 'WEO の PDF をダウンロードして読み、要約を summary.md に書いて',
+                 'PDF を参照して表を作り、xlsx に保存', 'Save the summary of the PDF as report.docx', 'https://example.org/PDFを保存', None):
+        assert not asks_to_keep_pdf(text), text
+
+
+async def test_keeping_the_downloaded_pdf_is_a_deliverable_even_without_a_name(tmp_path):
+    """Real-machine case: "…and save the downloaded PDF in the same folder". No PDF was saved, the document said
+    "obtained and saved in this work", and the run was done."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0,
+                              task='IEA の報告書の PDF を読んで要約を summary.docx に保存し、ダウンロードした PDF も同じフォルダーに保存してください')
+        assert run['output_check']['expected'] == ['summary.docx', 'ダウンロードした PDF（保存する名前は任意）']
+        pm.pending.clear()
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing',
+                                                           'paragraphs': ['要約。PDF は本作業で取得・保存した。']})
+        record = engine.pdf_library.put(REPORT, 'https://files.iea.org/WorldEnergyOutlook2025.pdf')
+        class Web:
+            pdf_ids = {record['pdf_id']: record}
+        run['_web'] = Web()
+        await engine._pdf_read(run, pm, {'pdf_id': record['pdf_id'], 'first_page': 1})
+        # The coordinator is sent back with the tool and the id; a second completion goes through as what it is.
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert first['code'] == 'outputs_missing' and 'ダウンロードした PDF（保存する名前は任意） (save with pdf_save)' in first['error']
+        assert record['pdf_id'] in first['error']
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert 'ダウンロードした PDF は、フォルダーには保存されていません（pdf_save の記録がありません）' in done['summary']
+        pm.status = 'done'
+        engine._run_status(run)
+        assert run['status'] == 'incomplete' and run['output_check']['missing'] == ['ダウンロードした PDF（保存する名前は任意）']
+        # Saved under any name: the deliverable is there, and the result names the file.
+        await engine.execute_tool(run, pm, 'pdf_save', {'pdf_id': record['pdf_id'], 'path': str(work / 'WEO2025.pdf')})
+        engine._run_status(run)
+        assert run['status'] == 'done' and run['output_check']['missing'] == []
+        assert 'フォルダーに保存した PDF: ' in engine._pdf_footer(run) and 'WEO2025.pdf' in engine._pdf_footer(run)
+    finally:
+        await engine.close()

@@ -97,8 +97,13 @@ PDF_POLICY = (
 PDF_WEB_POLICY = (
     ' A chapter or section you could not obtain or read gets one line, "not obtained; no summary": never write its '
     'points from another part (an executive summary is not chapter 1).'
-    ' For "the latest" issue of a report that appears regularly, establish the publication dates first (the '
-    'publisher\'s list of issues) and take the newest issue, not the first one found; state its date.'
+    ' For "the latest" issue of a report that appears regularly (an outlook, a yearbook, a monthly or quarterly '
+    'report), do this before you choose a file: (1) open the publisher\'s own list of issues (for the IMF World '
+    'Economic Outlook, imf.org/en/publications/weo) and note the date of each recent issue; (2) a search shows only '
+    'some issues, so also search by name for the later months of the year up to today ("<report name> October '
+    '<year>", "<report name> <year> latest"); (3) take the newest issue published by today, not the first one '
+    'found; (4) write in the report which issue you used, its date, and what shows that no newer one exists (the '
+    'list, or the searches you made).'
     ' To get a report, web_fetch its PDF address (the result has a pdf_id); a page that web_fetch returns lists the PDF '
     'files it links to (pdf_links). Where a report comes as several files, fetch the full report first, not its '
     'parts (summary, chapters, tables) one after another. If an institution\'s main site refuses the request, use the same institution\'s '
@@ -114,7 +119,8 @@ PDF_WEB_POLICY = (
     'downloaded, ask the human once with ask_user: give its URL and ask them to save the PDF from their browser into '
     'a read folder (recommendation: go on without that part and report it as not obtained). Once it is saved, read it '
     'with pdf_read by path. When the request asks to keep the downloaded PDF (to save it in a folder), save it with '
-    'pdf_save (its pdf_id and a path ending in .pdf) before you finish, and name the saved file in the report. Save '
+    'pdf_save (its pdf_id and a path ending in .pdf) before you finish, and name the saved file in the report. '
+    'Write that the PDF was saved only after pdf_save returned its path; otherwise write that it was not saved. Save '
     'the copy you read and quote, once. Before finishing, the application looks up every quotation that stands with a '
     'page number in your files in the PDF; give the page the words stand on, and put only words that are in the PDF '
     'into quotation marks.')
@@ -644,7 +650,12 @@ class PdfToolMixin:
         web = run['_config']['search']['enabled']
         # The guidance on PDFs joins the instructions once a PDF is part of the work.
         relevant = run.get('_pdf_touched') or bool(_PDF_WORD.search(run.get('task') or ''))
-        return ((PDF_POLICY + (PDF_WEB_POLICY if web else '') if relevant else '')
+        # "The latest issue" needs a date to be the latest of. Real-machine case: the April issue was taken in
+        # November, with an October issue out; nothing had told the agents what day it was. The day this work
+        # began is used, so the text stays the same throughout the work.
+        today = (' Today is ' + time.strftime('%Y-%m-%d', time.localtime(run.get('created_at') or time.time()))
+                 + ' (the application\'s clock): an issue dated after today does not exist yet, and one before it may.')
+        return ((PDF_POLICY + (PDF_WEB_POLICY + today if web else '') if relevant else '')
                 + (BROWSER_TRY_POLICY if run.get('browser_fetch') else ''))
 
     def _pdf_mentioned(self, run, text):
@@ -658,8 +669,15 @@ class PdfToolMixin:
         if not rows:
             return ''
         described = {'downloaded': 'この作業でダウンロード', 'folder': '読み取りフォルダーに既にあったファイル（この作業ではダウンロードしていません）'}
-        return ('\n\n【アプリの確認】この作業で読んだ PDF:\n'
+        text = ('\n\n【アプリの確認】この作業で読んだ PDF:\n'
                 + '\n'.join(f'- {self.redact(source)[:300]} — {described[kind]}' for source, kind in rows))
+        if any(kind == 'downloaded' for _, kind in rows):
+            # Whether the downloaded PDF was kept in a folder is the application's knowledge, not the document's.
+            saved = list((run.get('_pdf_saved') or {}).values())[:5]
+            text += ('\nフォルダーに保存した PDF: ' + '、'.join(self.redact(path)[:200] for path in saved) if saved else
+                     '\nダウンロードした PDF は、フォルダーには保存されていません（pdf_save の記録がありません）。'
+                     '成果物に「保存した」とあっても、PDF のファイルはありません。')
+        return text
 
     async def _pdf_read(self, run, agent, args, tool='pdf_read'):
         if not self._pdf_available(run):
