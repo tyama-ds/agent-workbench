@@ -784,7 +784,14 @@ def _comma_cells(line: str):
     """The cells of a line written as comma-separated values (three or more short cells), or None."""
     import csv
     stripped = line.strip()
-    if stripped.count(",") < 2 or len(stripped) > 2000 or stripped[-1] in ".。:：、,":
+    if len(stripped) > 2000:
+        return None
+    for separator in ("｜", " | "):
+        # Cells set apart by a vertical bar, without the bars at both ends that make a Markdown row.
+        if stripped.count(separator) >= 2 and not (stripped.startswith("|") and stripped.endswith("|")):
+            cells = [cell.strip() for cell in stripped.split(separator.strip())]
+            return cells if len(cells) >= 3 and cells[0] and all(len(cell) <= 240 for cell in cells) else None
+    if stripped.count(",") < 2 or stripped[-1] in ".。:：、,":
         return None
     try:
         cells = [cell.strip() for cell in next(csv.reader([stripped]))]
@@ -802,12 +809,26 @@ def _comma_tables(paragraphs: list[str], given: list) -> tuple[list, int]:
     become a list of rows where they stand. Anything else stays as written: values with unquoted thousands
     separators do not add up to equal rows and are not guessed at.
     """
-    copies = {"".join(",".join(row).split()) for table in given for row in table if len(row) >= 2}
+    # A row of a given table written out as text, with any of these between its cells. Real-machine case:
+    # "STEPS｜CO2排出｜2035年に35…｜Gt｜p.176｜“…”" stood in a paragraph, and the same cells in the table below it.
+    separators = (",", "｜", "|", "\t")
+
+    def key(text):
+        return "".join(text.split()).strip("|｜")
+
+    copies = {key(separator.join(row)): len(row) for table in given for row in table if len(row) >= 2 for separator in separators}
     rows_given = {tuple(row) for table in given for row in table if len(row) >= 2}
     lines = [(index, line) for index, text in enumerate(paragraphs) for line in text.split("\n")]
     cells = [_comma_cells(line) for _, line in lines]
-    copy = [("".join(line.split()) in copies and "," in line) or (cell is not None and tuple(cell) in rows_given)
-            for (_, line), cell in zip(lines, cells)]
+    # Rows with bars at both ends are Markdown rows: those are gathered, with their rule line, further on.
+    markdown = [line.strip().startswith("|") and line.strip().endswith("|") for _, line in lines]
+    copy = [not shaped and ((key(line) in copies and any(separator in line for separator in separators))
+                            or (cell is not None and tuple(cell) in rows_given))
+            for (_, line), cell, shaped in zip(lines, cells, markdown)]
+    # One such line alone is taken for a copy only when it cannot be a sentence: three or more cells, set apart
+    # by bars or tabs. With commas it takes two lines in a row.
+    strong = [found and copies.get(key(line), 0) >= 3 and any(separator in line for separator in separators[1:])
+              for (_, line), found in zip(lines, copy)]
     action, dropped, start = {}, 0, 0   # line number -> "drop" | rows (a table starts here) | "inside"
     while start < len(lines):
         if not (copy[start] or cells[start] is not None):
@@ -818,7 +839,7 @@ def _comma_tables(paragraphs: list[str], given: list) -> tuple[list, int]:
             end += 1
         run = range(start, end)
         table = [cells[i] for i in run]
-        if len(run) >= 2 and all(copy[i] for i in run):
+        if all(copy[i] for i in run) and (len(run) >= 2 or strong[start]):
             action.update({i: "drop" for i in run})
             dropped += 1
         elif (3 <= len(run) <= 200 and all(row is not None and len(row) == len(table[0]) for row in table)
@@ -831,7 +852,7 @@ def _comma_tables(paragraphs: list[str], given: list) -> tuple[list, int]:
                 last = first
                 while last < end and copy[last]:
                     last += 1
-                if last - first >= 2:
+                if last - first >= 2 or (last - first == 1 and strong[first]):
                     action.update({i: "drop" for i in range(first, last)})
                     dropped += 1
                 first = max(last, first + 1)

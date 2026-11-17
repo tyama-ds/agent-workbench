@@ -945,6 +945,16 @@ the human turned it on (0.1.1.dev61; off by default).
 - `selenium_worker.window_gone` / `error_words` classify an error of the
   fetch window; `selenium_runner` keeps records for `closed` and `timeout`.
 
+## Heavy pages and the report's own address (0.1.1.dev84)
+
+- `selenium_worker._fetch_options` sets `page_load_strategy = 'eager'`;
+  `run_fetch_job.watch` accepts an interactive document after ten seconds
+  and stops a page that does not answer.
+- `webtools.report_address` gives the report that belongs to an issue's
+  page; `WebTools._report_instead` asks for it when the page fails.
+- `harness._comma_tables` compares lines with the rows of given tables for
+  every separator, not only commas.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),
