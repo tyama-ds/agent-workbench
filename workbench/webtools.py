@@ -288,6 +288,37 @@ class _TextHTML(HTMLParser):
             if self._open is not None and sum(map(len, self._open[1])) < 300:
                 self._open[1].append(data)
 
+    DATED_LINKS, DATED_LINK_CHARS = 30, 3000
+
+    def dated_links(self, base: str) -> list[dict]:
+        """Links of the page's own site whose words carry a year: the issues of a periodical, dated documents.
+
+        A page's text alone does not say where its entries lead. Real-machine case: the list of issues was
+        read, the newest issue was named with its date, and its page was then never opened.
+        """
+        rows, seen, used = [], set(), 0
+        try:
+            host = _url(base).hostname
+        except WebToolError:
+            return rows
+        for href, words, named in self._links:
+            text = " ".join(" ".join(words).split())[:160]
+            if named or not re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", text):
+                continue
+            try:
+                url = urllib.parse.urldefrag(urllib.parse.urljoin(base, href))[0]
+                if _url(url).hostname != host:
+                    continue
+            except (WebToolError, ValueError):
+                continue
+            if url in seen or url == base or len(url) > 1000 or "pdf" in url.lower():
+                continue
+            seen.add(url)
+            if len(rows) < self.DATED_LINKS and used + len(url) + len(text) <= self.DATED_LINK_CHARS:
+                rows.append({"url": url, "text": text})
+                used += len(url) + len(text)
+        return rows
+
     def pdf_links(self, base: str) -> tuple[list[dict], int]:
         """Links whose address names a PDF: absolute, public-looking, once each; and how many were left out."""
         rows, seen, used = [], set(), 0
@@ -807,13 +838,14 @@ class WebTools:
 
     def _text_result(self, text: str, mime: str, final_url: str, decoding: dict, data: bytes, truncated: bool = False) -> dict:
         """The snapshot and preview of a decoded text answer (HTML is reduced to its text and its PDF links)."""
-        pdf_links, left_out = [], 0
+        pdf_links, left_out, dated = [], 0, []
         if mime in {"text/html", "application/xhtml+xml"}:
             parser = _TextHTML()
             parser.feed(text)
             parser.close()
             text = "".join(parser.parts)
             pdf_links, left_out = parser.pdf_links(final_url)
+            dated = parser.dated_links(final_url)
         # Do not turn malformed JSON into valid JSON by deleting controls.
         # Plain-text JSON candidates also retain their decoded source bytes.
         json_candidate = mime == "application/json" or (mime == "text/plain" and text.lstrip().startswith(("{", "[")))
@@ -829,6 +861,11 @@ class WebTools:
             result["pdf_links"] = pdf_links
             result["pdf_links_note"] = ("PDF files this page links to" + (f" ({left_out} more not listed)" if left_out else "")
                                         + ". Fetch one with web_fetch, then read it with pdf_read.")
+        if dated:
+            # Untrusted, like the page's text: where its dated entries lead (the issues of a periodical).
+            result["dated_links"] = dated
+            result["dated_links_note"] = ("Pages of this site that this page links to with a year in the link's words. To get "
+                                          "an issue's report, fetch that issue's page with web_fetch.")
         return result
 
     def _copy_seen(self, url: str, facts: dict) -> list[dict] | None:
@@ -1064,10 +1101,12 @@ class WebTools:
             record = await asyncio.to_thread(self._pdf_library.put, data, url)
         except PdfError as exc:
             raise WebToolError(str(exc)) from None
-        self.pdf_ids[record["pdf_id"]] = record
+        self.pdf_ids[record["pdf_id"]] = {**record, "pages": overview.get("pages")}
+        # The file's hash is returned as content_sha256: beside pdf_id, a key named sha256 was taken for part of the id.
         return {"pdf_id": record["pdf_id"], "url": url, "content_type": "application/pdf",
-                "fetched_at": record["fetched_at"], **{key: value for key, value in overview.items() if key != "source"},
-                "read_hint": ("This is a PDF kept by the application. Use pdf_read with this pdf_id: first_page and last_page "
+                "fetched_at": record["fetched_at"],
+                **{("content_sha256" if key == "sha256" else key): value for key, value in overview.items() if key != "source"},
+                "read_hint": ("This is a PDF kept by the application. Use pdf_read with this pdf_id, exactly as written (it is not the hash): first_page and last_page "
                               "return the text of those pages; find lists the pages where a term occurs. "
                               "Cite figures as \"p. N\" with the page numbers pdf_read returns.")}
 

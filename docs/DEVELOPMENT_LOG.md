@@ -4,7 +4,28 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev81 — The day it is; a PDF to keep without a name (2026-11-17)
+## 0.1.1.dev82 — An id is not a hash; the issue after its list; a quotation is a passage (2026-11-17)
+
+At dev81 the newest issue was found from the publisher's list, with its
+dates, and the energy report's three files were saved and reported as
+saved.
+
+- The report then could not be read: `web_fetch` returned the id
+  `pdf-23d1…4e` and, beside it, `sha256`; the agents passed "pdf-" plus the
+  whole hash six times and were refused each time. Such an id, the hash
+  itself, or a clear beginning of an id is now that PDF; a wrong one lists
+  the ids of the work; the hash is returned as `content_sha256`.
+- With the newest issue named, a supplement was fetched from elsewhere and
+  the issue's own page was never opened. A list page's text does not say
+  where its entries lead: its dated links are now returned, and the policy
+  goes on to the issue's page and its full report.
+- 26 of 40 quotations did not match. Many were terms of one to three
+  words, which stand on many pages; they are no longer looked up. A range
+  of pages matches any page in it. The send-back tells for each line the
+  page to write, and what is still wrong afterwards is marked in the file
+  itself as （ページ未確認）.
+
+The day it is; a PDF to keep without a name (2026-11-17)
 
 At dev80 the window saved the report from the publisher's site (180
 pages), and the quotations were looked up (11 of 13 on their pages, two

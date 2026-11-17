@@ -564,11 +564,21 @@ async def test_quotations_are_looked_up_in_the_pdf_and_a_wrong_page_is_sent_back
         assert refused['ok'] is False and refused['code'] == 'quotations_review'
         assert '- p. 3 「5,600 bcm by 2050」 → PDF では p. 2' in refused['error']
         assert '- p. 2 「demand rises by about 55 EJ」 → PDF の本文に見つかりません' in refused['error']
-        assert 'Electricity demand' not in refused['error'] and 'write ページ未確認' in refused['error']
+        assert 'Electricity demand' not in refused['error']
+        # Each line says what to do, with the page to write.
+        assert '→ PDF では p. 2。ページを p. 2 に直すか、引用を外してください' in refused['error']
+        assert '→ PDF の本文に見つかりません。引用符とページを外すか、「ページ未確認」と書いてください' in refused['error']
         # Said once. What is still wrong when the work ends stands in the result, for the human.
         done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
         assert 'ページ番号つきの引用 3 件' in done['summary'] and '一致 1 件、不一致 2 件' in done['summary']
         assert 'p. 3 「5,600 bcm by 2050」 → PDF では p. 2' in done['summary']
+        # Real-machine case: the pages were shown and left as they were. What still does not match after the one
+        # send-back is marked in the document itself, behind the page.
+        assert 'アプリが次のファイルの該当箇所に「（ページ未確認）」を付けました' in done['summary'] and 'summary.docx' in done['summary']
+        marked = [paragraph.text for paragraph in Document(str(work / 'summary.docx')).paragraphs]
+        assert marked == ['電力需要: 「Electricity demand reaches 37 800 TWh by 2035」（p.1）',
+                          '天然ガス: 「5,600 bcm by 2050」（p.3（ページ未確認））', 'STEPS: 「demand rises by about 55 EJ」（p.2（ページ未確認））']
+        assert pm.output_receipts[-1]['tool'] == 'page_unconfirmed_mark'
         # Corrected and saved again: nothing is left to say.
         sha = (await engine.execute_tool(run, pm, 'file_hash', {'path': str(work / 'summary.docx')}))['sha256']
         await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': sha, 'paragraphs': [
@@ -666,5 +676,81 @@ async def test_keeping_the_downloaded_pdf_is_a_deliverable_even_without_a_name(t
         engine._run_status(run)
         assert run['status'] == 'done' and run['output_check']['missing'] == []
         assert 'フォルダーに保存した PDF: ' in engine._pdf_footer(run) and 'WEO2025.pdf' in engine._pdf_footer(run)
+    finally:
+        await engine.close()
+
+
+def test_which_words_are_looked_up_and_a_range_of_pages():
+    from workbench.verification import page_quotes, quotable
+    # Real-machine case: 26 of 40 "quotations" did not match; many were terms of one to three words.
+    for words in ('Renewables', 'already in place', 'Total final consumption', '再生可能エネルギー'):
+        assert not quotable(words), words
+    for words in ('around 37 800 TWh', '5,600 bcm by 2050', 'Coal use starts to decline globally', '37,800 TWh', '世界の電力需要は 2035 年までに増える'):
+        assert quotable(words), words
+    assert page_quotes({'paragraphs': ['「Renewables」（p.12）', '「already in place」 p. 40', '"around 37 800 TWh" (p. 423)',
+                                       '“solar and wind lead the growth in supply” (pp. 17–19)', '「demand rises steadily to 2050」（p.5-7）']}) == [
+        (423, 'around 37 800 TWh'), ((17, 19), 'solar and wind lead the growth in supply'), ((5, 7), 'demand rises steadily to 2050')]
+
+
+async def test_a_range_of_pages_matches_any_page_in_it_and_marks_reach_tables_and_text_files(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        pdf = make_pdf(['Overview of the outlook.', 'Supply. Solar and wind lead the growth in supply to 2035.',
+                        'Demand. Electricity demand reaches 37 800 TWh by 2035.', 'Annex.'], title='Outlook (test)')
+        (work / 'outlook.pdf').write_bytes(pdf)
+        run, pm = await start(engine, max_workers=0, task='outlook.pdf を読んで要約を summary.docx と notes.md に保存して')
+        pm.pending.clear()
+        await engine.execute_tool(run, pm, 'pdf_read', {'path': str(work / 'outlook.pdf'), 'first_page': 1, 'last_page': 1})
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing', 'paragraphs': [
+            '供給: 「solar and wind lead the growth in supply」（pp. 1-3）'],                                   # page 2: inside the range
+            'tables': [[['指標', '値', '出典ページ', '原文の引用'], ['電力需要', '37,800 TWh', 'p.4', 'Electricity demand reaches 37 800 TWh by 2035']]]})
+        await engine.execute_tool(run, pm, 'write_text', {'path': str(work / 'notes.md'), 'expected_sha256': 'missing',
+                                                           'text': '# メモ\n- 電力: "Electricity demand reaches 37 800 TWh" (p. 2)\n- 供給は p. 2 を参照\n'})
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert first['code'] == 'quotations_review' and 'solar and wind' not in first['error']
+        assert first['error'].count('ページを p. 3 に直すか、引用を外してください') == 2
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert '引用 3 件' in done['summary'] and '一致 1 件、不一致 2 件' in done['summary']
+        # The table's page cell and the line of the text file carry the mark; the rest is as it was.
+        table = Document(str(work / 'summary.docx')).tables[0]
+        assert [cell.text for cell in table.rows[1].cells] == ['電力需要', '37,800 TWh', 'p.4（ページ未確認）', 'Electricity demand reaches 37 800 TWh by 2035']
+        assert (work / 'notes.md').read_text(encoding='utf-8') == (
+            '# メモ\n- 電力: "Electricity demand reaches 37 800 TWh" (p. 2（ページ未確認）)\n- 供給は p. 2 を参照\n')
+        assert sorted(Path(path).name for path in run['_quotes_marked']) == ['notes.md', 'summary.docx']
+    finally:
+        await engine.close()
+
+
+async def test_a_pdf_id_written_longer_or_as_the_hash_is_that_pdf_and_a_wrong_one_lists_the_ids(tmp_path):
+    """Real-machine case: web_fetch returned "pdf-23d1302fbff692820d3a6a4e" and the file's sha256 beside it; "pdf-" plus
+    the whole hash was passed six times and refused each time, and a page snapshot id was passed as well."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0, task='報告書の PDF を読んで')
+        record = engine.pdf_library.put(REPORT, 'https://www.imf.org/-/media/files/weo/2026/october/english/text.pdf')
+        other = engine.pdf_library.put(make_pdf(['Supplement.'], title='S002'), 'https://www.elibrary.imf.org/S002.pdf')
+        class Web:
+            pdf_ids = {record['pdf_id']: {**record, 'pages': 2}, other['pdf_id']: {**other, 'pages': 1}}
+        run['_web'] = Web()
+        for given in (record['pdf_id'], 'pdf-' + record['sha256'], record['sha256'], record['pdf_id'][:14], ' ' + record['pdf_id'] + ' '):
+            result = await engine._pdf_read(run, pm, {'pdf_id': given, 'first_page': 1})
+            assert result['pdf_id'] == record['pdf_id'] and result['pages'] == 2, given
+        # The hash is returned under a name that cannot be taken for an id.
+        assert result['content_sha256'] == record['sha256'] and 'sha256' not in result
+        for given in ('web-0123456789abcdef', 'pdf-ffffffffffffffffffffffff', 'pdf-', 42):
+            with pytest.raises(ValueError) as caught:
+                await engine._pdf_read(run, pm, {'pdf_id': given, 'first_page': 1})
+            text = str(caught.value)
+            assert 'The PDFs of this work: ' in text and f"{record['pdf_id']} (https://www.imf.org/-/media/files/weo/2026/october/english/text.pdf, 2 pages)" in text
+            assert other['pdf_id'] in text and 'exactly as written' in text
+        with pytest.raises(ValueError, match='page snapshot'):
+            await engine._pdf_read(run, pm, {'pdf_id': 'web-0123456789abcdef', 'first_page': 1})
+        saved = await engine._pdf_save(run, pm, {'pdf_id': 'pdf-' + record['sha256'], 'path': str(work / 'weo.pdf')})
+        assert (work / 'weo.pdf').read_bytes() == REPORT and saved['operation'] == 'created'
+        run['_web'] = type('Web', (), {'pdf_ids': {}})()
+        with pytest.raises(ValueError, match='This work has downloaded no PDF yet'):
+            await engine._pdf_read(run, pm, {'pdf_id': record['pdf_id'], 'first_page': 1})
     finally:
         await engine.close()
