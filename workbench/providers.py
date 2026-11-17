@@ -29,8 +29,10 @@ from .copilot_protocol import (
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_TOOL_ARGUMENT_BYTES = 256 * 1024
 # Transient HTTP statuses that are safe to re-send: no tool ran and the
-# provider produced no accepted reply. 529 is Anthropic "overloaded".
-RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 529})
+# provider produced no accepted reply. 529 is Anthropic "overloaded"; 520-524
+# are what a proxy in front of the provider answers when the provider did not
+# (real-machine case: one HTTP 520 stopped an agent, and with it the run).
+RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529})
 # Cloud profiles cannot carry retry keys, so they need a built-in default.
 # One transient 429/5xx must not permanently stop an agent.
 CLOUD_DEFAULT_RETRIES = 3
@@ -1027,6 +1029,9 @@ class ProviderClient:
                 observation_phase('retry_wait', retry_after_seconds=0)
             except ProviderError as exc:
                 if not exc.retryable or attempt >= retries:
+                    if exc.retryable and attempt:
+                        # Say that the stop comes after the automatic re-sends, not after one failure.
+                        exc.args = (f"{exc}; re-sent {attempt} time{'s' if attempt > 1 else ''} without success",)
                     raise
                 observation_phase('error', error=exc)
                 delay = retry_delay(exc, attempt, backoff)

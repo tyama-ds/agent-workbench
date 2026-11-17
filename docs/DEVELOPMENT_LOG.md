@@ -4,7 +4,18 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev76 — A run without its files is not "done"; the window saves the PDF it shows; documents can grow (2026-11-17)
+## 0.1.1.dev77 — A proxy's 520 is sent again; comma-separated rows leave the text (2026-11-17)
+
+- One `HTTP 520` from the provider's front end ended an agent's turn, and the
+  run then waited for a person for seven minutes without a question. 520-524
+  join the statuses that are sent again (three times for a cloud profile,
+  with backoff); when the re-sends are used up the message says how many
+  there were.
+- `docx_write`: "項目,CPS,STEPS,NZE" and its rows stood in a document as
+  text above the real table. Comma-separated lines that repeat a given
+  table are left out; a block that is a table of its own becomes one.
+
+A run without its files is not "done"; the window saves the PDF it shows; documents can grow (2026-11-17)
 
 Two runs on the real machine. The IEA's World Energy Outlook (PM and five
 workers, 432 s): the PDF was found on the IEA's own storage and two workers

@@ -196,7 +196,7 @@ async def test_local_retry_limit_exhausted_and_unknown_tool_refused():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('status', [500, 502, 504, 529])
+@pytest.mark.parametrize('status', [500, 502, 504, 520, 522, 524, 529])
 async def test_cloud_transient_errors_retry_by_default_and_honor_retry_after(status):
     calls = []
     async def handler(request):
@@ -219,6 +219,22 @@ async def test_non_transient_cloud_errors_are_not_retried():
         with pytest.raises(ProviderError) as caught:
             await ProviderClient().complete(dict(kind='anthropic', base_url=url, model='test', api_key='fake'), [], [], '', {})
     assert caught.value.status == 400 and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_transient_error_that_lasts_stops_the_request_and_says_how_often_it_was_sent_again():
+    """Real-machine case: one HTTP 520 ended an agent's turn and the run stood still."""
+    calls = []
+    async def handler(request):
+        calls.append(True)
+        return web.Response(status=520, text='upstream detail')
+    async with fake_server(handler) as url:
+        with pytest.raises(ProviderError) as caught:
+            await ProviderClient().complete(dict(kind='openai', base_url=url, model='test', api_key='fake',
+                                                 retry_backoff_seconds=0), [], [], '', {})
+    # The built-in default for a cloud profile: three re-sends after the first failure.
+    assert len(calls) == 4 and caught.value.status == 520 and caught.value.retryable
+    assert str(caught.value) == 'Provider returned HTTP 520; response body withheld; re-sent 3 times without success'
 
 
 def test_retry_after_parsing_and_bounded_jittered_backoff():
