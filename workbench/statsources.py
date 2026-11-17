@@ -1,4 +1,4 @@
-"""Official statistics from providers other than the World Bank: the IMF, Eurostat and the ILO.
+"""Official statistics from providers other than the World Bank: the IMF, Eurostat, the ILO and the OECD.
 
 Each provider publishes a keyless API. This module knows, for a small set of
 well-known indicators, which address to ask and how to read the answer; it
@@ -9,10 +9,12 @@ indicator name, countries and years, never an address.
               World Economic Outlook, one country and one indicator per request (SDMX-JSON, or SDMX-ML).
     Eurostat  https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/tps00001?geo=DE&geo=FR
               One table for the asked countries (JSON-stat).
-    ILO       https://sdmx.ilo.org/rest/data/ILO,DF_UNE_DEAP_SEX_AGE_RT/JPN.A..SEX_T.AGE_YTHADULT_YGE15
-              One series per country (SDMX-ML).
+    ILO       https://sdmx.ilo.org/rest/data/ILO,DF_UNE_DEAP_SEX_AGE_RT/JPN.A..SEX_T.AGE_YTHADULT_YGE15?lastNObservations=10
+              One country per request (SDMX-ML). Asked slowly: the service refused a machine that asked in quick succession.
+    OECD      https://sdmx.oecd.org/public/rest/data/OECD.SDD.TPS,DSD_LFS@DF_IALFS_UNE_M,1.0/JPN+USA..._Z.Y._T.Y_GE15..A
+              ?startPeriod=2020&format=csvfilewithlabels      (SDMX-CSV with labels)
 
-The three address shapes above answered from a real machine. The answers'
+The address shapes above answered from a real machine. The answers'
 layouts are read as their standards describe them (SDMX-JSON, SDMX-ML,
 JSON-stat) and tolerantly; what a reader does not recognise is an error that
 says what it received, never a guessed number. Every result names the
@@ -21,6 +23,8 @@ right one unnoticed.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 import xml.etree.ElementTree as ElementTree
@@ -35,7 +39,10 @@ PROVIDERS = {
     'imf': 'IMF World Economic Outlook',
     'eurostat': 'Eurostat',
     'ilo': 'ILOSTAT (International Labour Organization)',
+    'oecd': 'OECD Data Explorer',
 }
+# Seconds between two requests to one provider. The ILO refused (HTTP 403) a machine that asked in quick succession.
+PAUSE = {'ilo': 3.0}
 
 # source: {indicator key: specification}. The keys are the same plain names
 # stat_lookup uses for the World Bank, so one name can be asked of several
@@ -65,7 +72,18 @@ ILO = {
     'unemployment': ('DF_UNE_DEAP_SEX_AGE_RT', 'A..SEX_T.AGE_YTHADULT_YGE15', 'percent (age 15 and over)'),
     'youth_unemployment': ('DF_UNE_DEAP_SEX_AGE_RT', 'A..SEX_T.AGE_YTHADULT_Y15-24', 'percent (age 15 to 24)'),
 }
-TABLES = {'imf': IMF, 'eurostat': EUROSTAT, 'ilo': ILO}
+OECD = {
+    # dataflow, key with {countries} in the country's place, unit, and for a dimension left open the value that is meant.
+    # The three keys answered from a real machine; Japan was absent from the consumer price series.
+    'unemployment': ('OECD.SDD.TPS,DSD_LFS@DF_IALFS_UNE_M,1.0', '{countries}..._Z.Y._T.Y_GE15..A',
+                     'percent of the labour force (seasonally adjusted, age 15 and over)',
+                     {'MEASURE': ('UNE_LF_M', 'UNE_LF'), 'UNIT_MEASURE': ('PT_LF_SUB',)}),
+    'gdp_growth': ('OECD.SDD.NAD,DSD_NAMAIN1@DF_QNA_EXPENDITURE_GROWTH_OECD,', 'A..{countries}.S1..B1GQ......GY.',
+                   'percent change on the previous year', {'ADJUSTMENT': ('Y', 'N')}),
+    'inflation': ('OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0', '{countries}.A.N.CPI.PA._T.N.GY',
+                  'percent change on the previous year (consumer prices)', {}),
+}
+TABLES = {'imf': IMF, 'eurostat': EUROSTAT, 'ilo': ILO, 'oecd': OECD}
 
 # Eurostat writes Greece and the United Kingdom differently, and has codes for its own groups.
 _EUROSTAT_GEO = {'GRC': 'EL', 'GBR': 'UK', 'EUU': 'EU27_2020', 'EMU': 'EA20'}
@@ -79,7 +97,7 @@ def source(value):
         return 'worldbank'
     name = statdata._plain(value) if isinstance(value, str) else ''
     name = {'world bank': 'worldbank', 'wb': 'worldbank', '世界銀行': 'worldbank', 'ilostat': 'ilo', 'weo': 'imf',
-            '国際通貨基金': 'imf', 'ユーロスタット': 'eurostat', '国際労働機関': 'ilo'}.get(name, name)
+            '国際通貨基金': 'imf', 'ユーロスタット': 'eurostat', '国際労働機関': 'ilo', '経済協力開発機構': 'oecd'}.get(name, name)
     if name not in PROVIDERS:
         raise ValueError('source must be one of: ' + ', '.join(PROVIDERS))
     return name
@@ -128,10 +146,19 @@ def plan(provider, indicator_name, countries, start_year, end_year, this_year):
         geo = '&'.join('geo=' + _EUROSTAT_GEO.get(code, statdata.COUNTRIES.get(code, ('',))[0] or code) for code in codes)
         requests = [(f'https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/{table}?format=JSON&lang=EN&{geo}', codes)]
         page = f'https://ec.europa.eu/eurostat/databrowser/view/{table}/default/table?lang=en'
+    elif provider == 'oecd':
+        flow, key_shape, unit, _wanted = spec
+        label = ''
+        requests = [('https://sdmx.oecd.org/public/rest/data/' + flow + '/' + key_shape.format(countries='+'.join(codes))
+                     + f'?startPeriod={start}&format=csvfilewithlabels', codes)]
+        page = 'https://data-explorer.oecd.org/'
     else:
         flow, rest, unit = spec
         label = ''
-        requests = [(f'https://sdmx.ilo.org/rest/data/ILO,{flow}/{"+".join(codes)}.{rest}?startPeriod={start}&endPeriod={end}', codes)]
+        # One country per request and only the latest years: the shape that answered in two seconds.
+        # Several countries with a period filter took over thirty.
+        last = max(1, min(statdata.MAX_YEARS, this_year - start + 1))
+        requests = [(f'https://sdmx.ilo.org/rest/data/ILO,{flow}/{code}.{rest}?lastNObservations={last}', [code]) for code in codes]
         page = 'https://ilostat.ilo.org/data/'
     return {'key': key, 'spec': spec, 'label': label, 'unit': unit, 'codes': codes, 'start': start, 'end': end,
             'requests': requests, 'page': page}
@@ -175,8 +202,10 @@ def sdmx_json(payload):
 
     def parts(name):
         rows = dimensions.get(name) if isinstance(dimensions.get(name), list) else []
-        return [(str(row.get('id', '')), [(str(value.get('id', '')), str(value.get('name', '') if not isinstance(value.get('name'), dict)
-                                                                         else value['name'].get('en', '')))
+        # A value is named by "id"; the IMF's time periods come as {"value": "1980"} without one.
+        return [(str(row.get('id', '')), [(str(value.get('id') if value.get('id') is not None else value.get('value', '')),
+                                           str(value.get('name', '') if not isinstance(value.get('name'), dict)
+                                               else value['name'].get('en', '')))
                                           for value in row.get('values', []) if isinstance(value, dict)])
                 for row in rows if isinstance(row, dict)]
     series_dims, obs_dims = parts('series'), parts('observation')
@@ -226,24 +255,38 @@ def sdmx_xml(data):
         if local(series) != 'Series' or len(result) >= 2000:
             continue
         dims = {name: (value, '') for name, value in series.attrib.items()}
-        obs = {}
+        obs, remarks = {}, {}
+
+        def remark(name, value):
+            # Attributes (a source, a note, a status): what can tell two records of one series apart.
+            if name and value and len(remarks.setdefault(str(name)[:40], set())) < 4:
+                remarks[str(name)[:40]].add(str(value)[:80])
         for child in series:
             name = local(child)
             if name == 'SeriesKey':
                 for value in child:
                     if value.get('id') and value.get('value') is not None:
                         dims[value.get('id')] = (value.get('value'), '')
+            elif name == 'Attributes':
+                for value in child:
+                    remark(value.get('id'), value.get('value'))
             elif name == 'Obs':
                 period, number = child.get('TIME_PERIOD'), child.get('OBS_VALUE')
+                for key, value in child.attrib.items():
+                    if key not in {'TIME_PERIOD', 'OBS_VALUE'}:
+                        remark(key, value)
                 for part in child:
                     if local(part) == 'ObsDimension':
                         period = part.get('value')
                     elif local(part) == 'ObsValue':
                         number = part.get('value')
+                    elif local(part) == 'Attributes':
+                        for value in part:
+                            remark(value.get('id'), value.get('value'))
                 number = _number(number)
                 if period and number is not None:
                     obs[period] = number
-        result.append({'dims': dims, 'obs': obs})
+        result.append({'dims': dims, 'obs': obs, 'remarks': remarks})
     if not result and not any(local(element) in {'DataSet', 'GenericData', 'StructureSpecificData'} for element in root.iter()):
         raise ValueError(f'the XML answer was not an SDMX data message (its root is {local(root)[:40]})')
     return result
@@ -273,31 +316,104 @@ def _area(dims):
     return ''
 
 
-def _one_series(rows, code):
-    """The single series of a country, or an error that names what makes several differ."""
+def _one_series(rows, code, wanted=None):
+    """(the series of a country, a remark or '') — or an error when several are different things.
+
+    Several series that differ in a dimension are different statistics. Where
+    the indicator says which value of that dimension it means, that one is
+    taken; otherwise it is an error that shows the values, never a choice.
+
+    Several records with the same dimensions are one statistic kept more than
+    once (the ILO keeps one per national source). The record with the most
+    recent year is used, and the remark says so and what tells them apart.
+    """
     mine = [row for row in rows if _area(row['dims']) == code and row['obs']]
     if len(mine) <= 1:
-        return mine[0] if mine else None
-    differing = sorted({name for row in mine for name, value in row['dims'].items()
-                        if any(other['dims'].get(name) != value for other in mine)})
-    raise ValueError(f'the answer holds {len(mine)} different series for {code} (they differ in: ' + ', '.join(differing[:6])
-                     + '); the application does not choose between them. Report this indicator from this source as unconfirmed')
+        return (mine[0] if mine else None), ''
+
+    def differing(group):
+        return sorted({name for row in group for name, value in row['dims'].items()
+                       if any(other['dims'].get(name, ('',))[0] != value[0] for other in group)})
+    names = differing(mine)
+    if names and wanted:
+        for name in names:
+            choice = next((value for value in wanted.get(name, ()) if any(row['dims'].get(name, ('',))[0] == value for row in mine)), None)
+            if choice is not None:
+                mine = [row for row in mine if row['dims'].get(name, ('',))[0] == choice]
+        names = differing(mine)
+        if len(mine) == 1:
+            return mine[0], ''
+    if names:
+        shown = '; '.join(f"{name}: " + ' / '.join(sorted({str(row['dims'].get(name, ('',))[0]) for row in mine})[:6]) for name in names[:5])
+        raise ValueError(f'the answer holds {len(mine)} different series for {code} ({shown}); the application does not choose '
+                         'between them. Report this indicator from this source as unconfirmed')
+
+    def recent(row):
+        years = [int(period) for period in row['obs'] if re.fullmatch(r'\d{4}', str(period))]
+        return (max(years, default=0), len(years))
+    best = max(mine, key=recent)
+    apart = sorted({name for row in mine for name in row.get('remarks', {})
+                    if any(other.get('remarks', {}).get(name) != row.get('remarks', {}).get(name) for other in mine)})
+    told = '; '.join(f"{name}: " + ' | '.join(' / '.join(sorted(row.get('remarks', {}).get(name, {'-'}))[:2]) for row in mine[:4])
+                     for name in apart[:3])
+    return best, (f'{code}: the provider keeps {len(mine)} records of this series' + (f' ({told})' if told else '')
+                  + f'; the one with the most recent year ({recent(best)[0]}) was used')
 
 
-def read_series(data, plan_, codes):
-    """IMF and ILO: the asked countries out of SDMX series. -> (found rows, names by code, label parts)."""
-    rows = sdmx(data)
-    result, label = {}, ''
+def _series_result(rows, plan_, codes, wanted=None):
+    result, label, remarks = {}, '', []
     for code in codes:
-        row = _one_series(rows, code)
+        row, remark = _one_series(rows, code, wanted)
         if row is None:
             continue
         values = _annual(row['obs'], plan_['start'], plan_['end'])
         if values:
             result[code] = (row['dims'].get('COUNTRY', row['dims'].get('REF_AREA', ('', '')))[1], values)
+            if remark:
+                remarks.append(remark)
         label = label or ' — '.join(value[1] for name, value in row['dims'].items()
                                     if value[1] and name not in {'COUNTRY', 'REF_AREA', 'FREQ', 'FREQUENCY'})[:200]
-    return result, label, ''
+    return result, label, '', remarks
+
+
+def read_series(data, plan_, codes):
+    """IMF and ILO: the asked countries out of SDMX series."""
+    return _series_result(sdmx(data), plan_, codes)
+
+
+def read_csv(data, plan_, codes):
+    """OECD: the asked countries out of SDMX-CSV with labels (a code column, then its label column).
+
+    The columns up to TIME_PERIOD are the dimensions; what follows OBS_VALUE are attributes.
+    """
+    try:
+        text = data.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        raise ValueError('the answer was not UTF-8 text') from None
+    try:
+        table = list(csv.reader(io.StringIO(text)))
+    except csv.Error:
+        raise ValueError('the answer was not readable CSV') from None
+    header = [cell.strip() for cell in table[0]] if table else []
+    if not {'REF_AREA', 'TIME_PERIOD', 'OBS_VALUE'} <= set(header):
+        start = text.lstrip()[:60].replace('\n', ' ')
+        raise ValueError('the answer was not an SDMX-CSV table with REF_AREA, TIME_PERIOD and OBS_VALUE (it begins: ' + start + ')')
+    time_at, value_at = header.index('TIME_PERIOD'), header.index('OBS_VALUE')
+    dimensions = [(index, name) for index, name in enumerate(header[:time_at])
+                  if re.fullmatch(r'[A-Z][A-Z0-9_]*', name) and name not in {'STRUCTURE', 'STRUCTURE_ID', 'STRUCTURE_NAME', 'ACTION'}]
+    codes_named, found = {name for _, name in dimensions}, {}
+    for row in table[1:200001]:
+        if len(row) <= max(time_at, value_at):
+            continue
+        number = _number(row[value_at])
+        if number is None:
+            continue
+        # A code column is followed by its label column, unless the next column is another code.
+        dims = {name: (row[index].strip(), row[index + 1].strip() if index + 1 < time_at and header[index + 1] not in codes_named else '')
+                for index, name in dimensions}
+        entry = found.setdefault(tuple(sorted((name, value[0]) for name, value in dims.items())), {'dims': dims, 'obs': {}})
+        entry['obs'][row[time_at].strip()] = number
+    return _series_result(list(found.values()), plan_, codes, plan_['spec'][3])
 
 
 def read_jsonstat(payload, plan_, codes):
@@ -371,11 +487,13 @@ def read_jsonstat(payload, plan_, codes):
         if chosen:
             result[code] = (str(geo_labels.get(geo, ''))[:80], chosen)
     label = str(payload.get('label') or '')[:200] + (' (' + '; '.join(detail)[:200] + ')' if detail else '')
-    return result, label, str(payload.get('updated') or '')[:25]
+    return result, label, str(payload.get('updated') or '')[:25], []
 
 
 def read(provider, data, plan_, codes):
-    """(rows by ISO3 code, the provider's own label for what was read, the provider's update time or '')."""
+    """(rows by ISO3 code, the provider's own label for what was read, the provider's update time or '', remarks)."""
+    if provider == 'oecd':
+        return read_csv(data, plan_, codes)
     if provider == 'eurostat':
         try:
             payload = json.loads(data.decode('utf-8-sig'))

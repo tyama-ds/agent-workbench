@@ -664,9 +664,9 @@ def test_schemas_state_ranges_shapes_and_an_example_within_a_size_budget():
     assert "limit is 1..10 (default 5)" in schemas["web_search"]["description"]
     assert "#fragment" in schemas["web_fetch"]["description"]
     # Every schema is sent with every model request; the baseline was 2195 before stat_lookup, which names
-    # four providers and their indicators (about 1350).
-    assert sum(len(json.dumps(item, ensure_ascii=False)) for item in schemas.values()) <= 3900
-    assert len(json.dumps(schemas["stat_lookup"], ensure_ascii=False)) <= 1400
+    # five providers and their indicators (about 1400).
+    assert sum(len(json.dumps(item, ensure_ascii=False)) for item in schemas.values()) <= 4000
+    assert len(json.dumps(schemas["stat_lookup"], ensure_ascii=False)) <= 1500
 
 
 # --- real-machine follow-up: DuckDuckGo blocks an address that searches too often ---

@@ -4,6 +4,39 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev66 — The IMF's periods, several records of one ILO series, a refusal that is temporary, and the OECD (2026-11-17)
+
+dev65 was tried on the real machine for Japan, the United States and
+Germany, four indicators, four providers. The World Bank and Eurostat
+answered correctly. The IMF returned no values for any country although its
+answer held 52 observations; the ILO took 51.8 seconds and then failed with
+"2 different series for JPN (they differ in: )", after which the machine
+got HTTP 403 from sdmx.ilo.org.
+
+- IMF: the answer names a time period as `{"value": "1980"}`, without an
+  `id`. Only `id` was read, so every period was empty and every observation
+  dropped. Both are read now; the test fixture has the real shape.
+- ILO: one country per request with `lastNObservations`, the shape that
+  answered in two seconds (several countries with a period filter needed
+  more than thirty, so the first try timed out). Requests are three seconds
+  apart.
+- Several records of one series whose dimensions are all equal are one
+  statistic kept more than once (the ILO keeps one per national source).
+  The record with the most recent year is used, and `note` says so and
+  shows the attributes that tell them apart. Series that differ in a
+  dimension stay an error, now showing the values; where an indicator says
+  which value of an open dimension it means, that one is taken.
+- HTTP 403 or 429 from a provider is reported as a temporary refusal, not
+  as missing figures; nothing more is sent to that provider for ten minutes.
+- OECD (`source: oecd`): unemployment, GDP growth and consumer price
+  inflation, with the three keys that answered on the real machine
+  (SDMX-CSV with labels). Japan is absent from the consumer price series
+  there and comes back under `no_values`. No OECD population: the dataflow
+  tried returned 404.
+- **Still not run from this environment.** The OECD CSV's column names are
+  as SDMX-CSV defines them; whether the open dimensions of the unemployment
+  and GDP growth keys return one series per country has not been seen.
+
 ## 0.1.1.dev65 — stat_lookup with a source: the IMF, Eurostat and the ILO beside the World Bank (2026-11-17)
 
 The human asked for statistics from more providers than the World Bank. From
