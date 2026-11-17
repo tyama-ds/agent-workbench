@@ -38,6 +38,14 @@ text, 0.034 for 3.4 % and 0.02793.
 - Policy: the unit once in the heading, bare numbers in the cells, the same
   form for every source compared; what `latest_period` and
   `status: forecast` mean.
+- Python sandbox (Windows): while a script runs, its workspace is scanned
+  every 50 ms for size and for hidden streams. A scan that met a file in the
+  moment it was saved, renamed or deleted failed, and the run was ended as
+  `workspace_changed` with nothing wrong. CI hit this in the real sandbox
+  test, with a script that saves a .docx, an .xlsx and a .pptx. The scan is
+  now made again up to five times (about 0.15 s) before its failure is taken
+  as real, as the browser job has done since dev56; the scan after the
+  script has ended stays strict.
 - **Not seen answering**: `NipaDataQ.txt` (assumed beside `NipaDataA.txt`,
   same columns, periods like 2026Q3) and the name of the field in the EIA
   file that gives the last observed period.

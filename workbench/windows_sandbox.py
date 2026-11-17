@@ -232,6 +232,29 @@ def _workspace_size(directory: Path, max_bytes: int, max_entries=2048, named_str
     return True
 
 
+# Pauses between attempts of a scan made while the script runs; None marks the last attempt.
+_LIVE_SCAN_PAUSES = (.005, .01, .02, .04, .08, None)
+
+
+def _live_scan(check, pauses=_LIVE_SCAN_PAUSES):
+    """Run a storage scan while the sandboxed script is still writing.
+
+    A script that saves a document creates, renames and deletes files. A scan
+    that meets one of them in that moment (listed, then gone; or open for
+    writing) fails although nothing is wrong, and the run used to be ended as
+    'workspace_changed'. The scan is made again a few times, about 0.15 s in
+    all, before its failure is taken as real. The scan after the script has
+    ended is not retried.
+    """
+    for pause in pauses:
+        try:
+            return check()
+        except (OSError, SandboxError):
+            if pause is None:
+                raise
+            time.sleep(pause)
+
+
 def _prune_private_links(directory: Path):
     """After process exit, remove link entries without traversing their targets.
 
@@ -423,8 +446,9 @@ def run_isolated(command: list[str], workspace: Path, runtime_roots: list[tuple[
                 reason = 'output_limit'
             else:
                 try:
-                    if (not _workspace_size(workspace, workspace_limit, named_stream=native.named_stream) or
-                            not _workspace_size(profile_path, workspace_limit, named_stream=native.named_stream)):
+                    if not _live_scan(lambda: (
+                            _workspace_size(workspace, workspace_limit, named_stream=native.named_stream) and
+                            _workspace_size(profile_path, workspace_limit, named_stream=native.named_stream))):
                         reason = 'workspace_limit'
                 except (OSError, SandboxError):
                     reason = 'workspace_changed'
