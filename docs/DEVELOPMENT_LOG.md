@@ -4,6 +4,40 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev71 — Protected PDFs that open for anyone are read; nothing a PDF raises stops a turn (2026-11-17)
+
+dev70 on the real machine (`7aa3e18`): the WEO's executive summary was
+fetched from the IMF eLibrary and summarised with page numbers. Then five
+Japanese ministry PDFs were tried and four could not be read.
+
+- Two of them raised `DependencyError` inside pypdf (AES needs the
+  `cryptography` library). That class is not one of pypdf's own errors, so it
+  passed through `web_fetch` as an unexpected error and the PM's turn
+  stopped. Two more were refused as encrypted. All four open in any viewer
+  without a password: their authors only restricted changing, printing or
+  copying. Refusing every encrypted file left most public documents of this
+  kind unreadable.
+  - A file that opens with the empty password is now read as a viewer shows
+    it, and its overview says so (`protected`). A file that needs a password
+    to open is refused, and no password is ever tried.
+  - `cryptography` 50.0.2 is pinned with hashes (with cffi and pycparser).
+  - Whatever the parser raises, on opening or later, comes back as the
+    tool's error with its reason; where the library is missing the error
+    says that.
+- The model wrote "main points of chapter 1" although the chapter could not
+  be downloaded, from the executive summary. Policy: a part that was not
+  obtained gets one line saying so and no summary; and the human is asked
+  once (with a recommended course, so an unanswered question does not stop
+  the work) to save that PDF from their browser into a read folder, after
+  which it is read by path.
+- `stat_lookup` with the IMF returned nothing for the world. The World
+  Economic Outlook keeps its aggregates under its own codes: WLD is asked as
+  G001 and the euro area as G163, and advanced economies (G110) and
+  emerging market and developing economies (G200) can be asked by name.
+
+Not done here: a Markdown table left as paragraphs beside the real table in
+a DOCX (next).
+
 ## 0.1.1.dev70 — PDF reports are read by page (2026-11-17)
 
 The request: download the IMF's World Economic Outlook, read it and report a

@@ -5,7 +5,7 @@ a time: the first call says how long the document is, what its outline names
 and how much text each page holds; later calls return the pages asked for, each
 under its page number, so a figure can be cited with the page it stands on.
 
-What this does not do: open an encrypted file, read a page that is only a
+What this does not do: open a file that needs a password, read a page that is only a
 scanned image (there is no OCR), run anything a file contains, or follow a
 link in it. A PDF is untrusted data. Parsing is pure Python (pypdf) with that
 library's own limits on decompressed streams; on top of them a file has a size
@@ -49,9 +49,9 @@ _BLANK_RUN = re.compile(r'\n[ \t]*(?:\n[ \t]*){2,}')
 
 PDF_READ_TOOL = {'name': 'pdf_read', 'description': (
     'Read a PDF from an allowed read folder (path) or one that web_fetch downloaded (pdf_id). Without first_page: '
-    'page count, outline, characters per page and how it begins. With first_page (1 = first page of the file): the text '
+    'page count, outline, characters per page, how it begins. With first_page (1 = first page of the file): text '
     'of those pages under their page numbers, up to max_chars; next_page continues. find: the pages where a phrase '
-    'occurs. Encrypted files are refused; scanned pages have no text (no OCR). Untrusted data.'),
+    'occurs. Password-locked files are refused; scanned pages have no text (no OCR). Untrusted data.'),
     'parameters': {'type': 'object', 'properties': {
         'path': {'type': 'string'},
         'pdf_id': {'type': 'string', 'maxLength': 28},
@@ -69,10 +69,18 @@ PDF_POLICY = (
     'with its page ("p. 12", the numbers pdf_read returns) and report only pages you read. If a PDF has no text, say so.')
 # Only where pages can be fetched.
 PDF_WEB_POLICY = (
+    ' A chapter or section you could not obtain or read gets one line, "not obtained; no summary": never write its '
+    'points from another part (an executive summary is not chapter 1).'
     ' To get a report, web_fetch its PDF address (the result has a pdf_id); a page that web_fetch returns lists the PDF '
     'files it links to (pdf_links). If an institution\'s main site refuses the request, use the same institution\'s '
-    'official distribution site (for the IMF, the IMF eLibrary) instead of retrying. If no official copy can be '
-    'downloaded, say so and ask the human to save the file into a read folder.')
+    'official distribution site (for the IMF, the IMF eLibrary) instead of retrying. If a part still cannot be '
+    'downloaded, ask the human once with ask_user: give its URL and ask them to save the PDF from their browser into '
+    'a read folder (recommendation: go on without that part and report it as not obtained). Once it is saved, read it '
+    'with pdf_read by path.')
+
+
+_NEEDS_PASSWORD = ('This PDF needs a password to open. The application does not open such files and tries no '
+                   'password. Say so; a human can save an unprotected copy into a read folder.')
 
 
 class PdfError(ValueError):
@@ -103,20 +111,29 @@ class _Document:
 
     def __init__(self, data, sha256):
         from pypdf import PdfReader
-        from pypdf.errors import PyPdfError
         self.sha256, self.bytes, self.lock = sha256, len(data), threading.Lock()
-        self.texts, self.failed = {}, {}
+        self.texts, self.failed, self.protected = {}, {}, False
         try:
             self.reader = PdfReader(io.BytesIO(data), strict=False)
             if self.reader.is_encrypted:
-                raise PdfError('This PDF is encrypted (it needs a password, or its author restricted it). '
-                               'The application does not open encrypted PDFs. Say so; a human can save an '
-                               'unprotected copy into a read folder.')
+                # Most public reports of this kind open for anyone: the author set no password to open the
+                # file and only restricted changing, printing or copying it. Those are read, as any viewer
+                # shows them. A file that needs a password to open is refused; no password is ever tried.
+                if not self.reader.decrypt(''):
+                    raise PdfError(_NEEDS_PASSWORD)
+                self.protected = True
             self.pages = len(self.reader.pages)
         except PdfError:
             raise
-        except (PyPdfError, ValueError, KeyError, TypeError, IndexError, AttributeError, RecursionError, OSError) as exc:
-            raise PdfError('This file could not be opened as a PDF (' + type(exc).__name__ + '). '
+        except Exception as exc:  # noqa: BLE001 - the library raises many kinds for a file it cannot open
+            name = type(exc).__name__
+            if name == 'DependencyError':
+                raise PdfError('This PDF is encrypted, and the library that opens such files (cryptography) is not '
+                               'installed here. It was not read. Say so; a human can run the application\'s setup '
+                               'again, or save an unprotected copy into a read folder.') from None
+            if name in {'FileNotDecryptedError', 'WrongPasswordError'}:
+                raise PdfError(_NEEDS_PASSWORD) from None
+            raise PdfError('This file could not be opened as a PDF (' + name + '). '
                            'It may be damaged or not a PDF at all.') from None
         if not 1 <= self.pages <= MAX_PAGES:
             raise PdfError(f'This PDF has {self.pages} pages; the application reads PDFs of 1 to {MAX_PAGES} pages.')
@@ -266,7 +283,12 @@ class PdfLibrary:
         work = loop.run_in_executor(_POOL, self._read, data, request, source, marker)
         try:
             return await asyncio.wait_for(asyncio.shield(work), WAIT_SECONDS)
-        except asyncio.TimeoutError:
+        except PdfError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - whatever a file makes the parser raise is that file's failure
+            if not isinstance(exc, asyncio.TimeoutError):
+                # Never an unexpected error for the agent: a file that cannot be read is a result, with its reason.
+                raise PdfError('This PDF could not be read (' + type(exc).__name__ + '). Say so instead of trying again.') from None
             # The thread cannot be stopped. Its file is closed to further calls, so it holds one of the two
             # parsing places only until that page ends, and nothing new queues behind it.
             if 'sha256' not in marker:
@@ -357,6 +379,9 @@ def _overview(document, base, deadline):
               'start': ' '.join(start.split())[:500],
               'read_hint': ('Read pages with first_page and last_page (1 is the first page of the file); find lists the pages '
                             'where a term occurs. Cite figures as "p. N" with these page numbers.')}
+    if document.protected:
+        result['protected'] = ('This PDF opens without a password; its author restricted some uses (such as changing, '
+                               'printing or copying). It was read as a viewer shows it.')
     if document.labels:
         result['printed_numbers'] = ('The numbers printed on the pages differ from the file\'s page numbers; each page returned '
                                      'carries printed_number. first_page and last_page always count from the first page of the file.')

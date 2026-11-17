@@ -87,12 +87,13 @@ def make_pdf(pages, *, title=None, outline=None, labels_from=None):
     return bytes(output)
 
 
-def encrypted(data, user_password=''):
-    """The same document, encrypted (RC4, which needs no extra library)."""
+def encrypted(data, user_password='', algorithm='AES-256'):
+    """The same document, encrypted. An empty user password is a file that opens for anyone with its
+    author's restrictions set (what public reports use); AES is what current files use."""
     import io
     from pypdf import PdfReader, PdfWriter
     writer = PdfWriter(clone_from=PdfReader(io.BytesIO(data)))
-    writer.encrypt(user_password=user_password, owner_password='owner', algorithm='RC4-128')
+    writer.encrypt(user_password=user_password, owner_password='owner', algorithm=algorithm)
     output = io.BytesIO()
     writer.write(output)
     return output.getvalue()

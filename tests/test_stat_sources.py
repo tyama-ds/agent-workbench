@@ -327,6 +327,33 @@ def test_stat_lookup_reads_the_imf_one_country_at_a_time_and_says_what_the_figur
     asyncio.run(run())
 
 
+def test_the_imf_answers_for_the_world_and_its_groups_under_its_own_codes(tmp_path):
+    """Real-machine case: the table's row for the world stayed empty, beside a report that states 3.1 %.
+    The World Economic Outlook keeps its aggregates under G codes, not under WLD."""
+    async def run():
+        answers = {'/G001.': imf_json('G001', 'World', ((2025, '3.2'), (2026, '3.1'))),
+                   '/G110.': imf_json('G110', 'Advanced Economies', ((2025, '1.6'), (2026, '1.5'))),
+                   '/G200.': imf_json('G200', 'Emerging Market and Developing Economies', ((2025, '4.2'), (2026, '4.0'))),
+                   '/G163.': imf_json('G163', 'Euro Area', ((2025, '1.2'), (2026, '1.1'))),
+                   '/JPN.': imf_json()}
+        tools, sent = tools_with(answers)
+        tools.use_stat_store(statdata.IndicatorStore(tmp_path / 'stat-cache'))
+        result = await tools.execute('stat_lookup', {'source': 'imf', 'indicator': 'gdp_growth', 'start_year': 2025, 'end_year': 2026,
+                                                     'countries': ['世界', '先進国', 'Emerging market and developing economies', 'ユーロ圏', 'WLD']})
+        base = 'https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/WEO/+/'
+        assert [url for url, _ in sent] == [base + code + '.NGDP_RPCH.A' for code in ('G001', 'G110', 'G200', 'G163')]
+        assert [(row['code'], row['country'], row['latest']['value']) for row in result['series']] == [
+            ('WLD', 'World', 3.1), ('G110', 'Advanced Economies', 1.5),
+            ('G200', 'Emerging Market and Developing Economies', 4.0), ('EMU', 'Euro Area', 1.1)]
+        assert result['no_values'] == []
+    asyncio.run(run())
+    # The IMF's own codes are accepted as typed; the other providers do not know its groups.
+    plan = statsources.plan('imf', 'gdp_growth', ['G001', 'g110', 'Japan'], 2025, 2026, 2026)
+    assert plan['codes'] == ['WLD', 'G110', 'JPN'] and plan['areas'] == {'WLD': 'G001', 'G110': 'G110'}
+    with pytest.raises(ValueError):
+        statsources.plan('eurostat', 'unemployment', ['advanced economies'], 2025, 2026, 2026)
+
+
 def test_stat_lookup_reads_eurostat_and_the_ilo_and_says_when_a_country_is_not_covered():
     async def run():
         tools, sent = tools_with({'eurostat': eurostat_json(), '/JPN.A': ilo_xml(rows=(('JPN', ((2022, '2.6'), (2023, '2.6'))),)),

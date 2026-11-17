@@ -87,12 +87,48 @@ async def test_wrong_arguments_say_what_is_accepted(args, message):
         await read(PdfLibrary(), REPORT, **args)
 
 
-async def test_encrypted_damaged_scanned_and_oversized_files_are_named_as_such():
+@pytest.mark.parametrize('algorithm', ['AES-256', 'AES-128', 'RC4-128'])
+async def test_a_protected_pdf_that_opens_without_a_password_is_read_and_one_that_needs_one_is_refused(algorithm):
+    """Real-machine case: four of five Japanese ministry PDFs are encrypted with the author's restrictions
+    and no password to open them. Refusing all of them left most public documents unreadable."""
     library = PdfLibrary()
-    for password in ('', 'secret'):  # restricted by its author, or locked with a password
-        with pytest.raises(PdfError, match='encrypted') as caught:
-            await read(library, encrypted(REPORT, password))
-        assert 'does not open encrypted PDFs' in str(caught.value)
+    restricted = encrypted(REPORT, '', algorithm)
+    overview = await read(library, restricted)
+    assert overview['pages'] == 6 and overview['title'] == 'World Outlook (test)' and overview['text_layer'] == 'partial'
+    assert 'opens without a password' in overview['protected'] and 'restricted some uses' in overview['protected']
+    page = await read(library, restricted, first_page=3, last_page=3)
+    assert page['content'][0]['text'].startswith('Executive summary. Global growth is projected at 3.2 percent')
+    assert 'protected' not in await read(library, REPORT)
+    with pytest.raises(PdfError, match='needs a password to open') as caught:
+        await read(library, encrypted(REPORT, 'secret', algorithm))
+    assert 'tries no password' in str(caught.value)
+
+
+async def test_whatever_the_parser_raises_becomes_a_stated_reason_not_an_unexpected_error(monkeypatch):
+    """Real-machine case: without the AES library pypdf raised DependencyError, which is not one of its
+    own error classes; it passed through web_fetch as an unexpected error and stopped the PM's turn."""
+    import pypdf
+    from pypdf.errors import DependencyError
+
+    class NoAes(pypdf.PdfReader):
+        def __init__(self, *args, **kwargs):
+            raise DependencyError('cryptography>=3.1 is required for AES algorithm')
+
+    protected = encrypted(REPORT)
+    monkeypatch.setattr(pypdf, 'PdfReader', NoAes)
+    with pytest.raises(PdfError, match='the library that opens such files') as caught:
+        await read(PdfLibrary(), protected)
+    assert 'It was not read' in str(caught.value)
+    monkeypatch.undo()
+    # A failure after opening, of a kind nobody listed.
+    library = PdfLibrary()
+    monkeypatch.setattr(pdfdocs, '_overview', lambda *args: (_ for _ in ()).throw(ZeroDivisionError('boom')))
+    with pytest.raises(PdfError, match=r'could not be read \(ZeroDivisionError\)'):
+        await read(library, REPORT)
+
+
+async def test_damaged_scanned_and_oversized_files_are_named_as_such():
+    library = PdfLibrary()
     with pytest.raises(PdfError, match='not a PDF'):
         await read(library, b'<html>Access Denied</html>')
     with pytest.raises(PdfError, match='could not be opened as a PDF'):
@@ -163,6 +199,8 @@ async def test_web_fetch_keeps_a_pdf_and_returns_what_pdf_read_needs(tmp_path, m
         if request.path == '/denied.pdf':
             return web.Response(body=b'<html>Access Denied</html>', content_type='application/pdf')
         if request.path == '/locked.pdf':
+            return web.Response(body=encrypted(REPORT, 'secret'), content_type='application/pdf')
+        if request.path == '/restricted.pdf':  # what ministries publish: opens for anyone, changes restricted
             return web.Response(body=encrypted(REPORT), content_type='application/pdf')
         if request.path == '/page':
             return web.Response(text='x' * (2 * 1024 * 1024), content_type='text/plain')
@@ -182,9 +220,12 @@ async def test_web_fetch_keeps_a_pdf_and_returns_what_pdf_read_needs(tmp_path, m
         # What is not a readable PDF is refused and nothing of it is kept.
         with pytest.raises(WebToolError, match='not a PDF file'):
             await tools.execute('web_fetch', {'url': base + '/denied.pdf'})
-        with pytest.raises(WebToolError, match='encrypted'):
+        with pytest.raises(WebToolError, match='needs a password to open'):
             await tools.execute('web_fetch', {'url': base + '/locked.pdf'})
         assert len(tools.pdf_ids) == 2 and len(list((tmp_path / 'pdf-cache').glob('*.pdf'))) == 2
+        restricted = await tools.execute('web_fetch', {'url': base + '/restricted.pdf'})
+        assert restricted['pages'] == 6 and 'opens without a password' in restricted['protected']
+        assert len(tools.pdf_ids) == 3
         # The larger limit is for PDFs only.
         with pytest.raises(WebToolError, match='exceeds the configured size limit'):
             await tools.execute('web_fetch', {'url': base + '/page'})

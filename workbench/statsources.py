@@ -127,6 +127,21 @@ def indicator(provider, value):
                      + '. Other sources: ' + ', '.join(name for name in PROVIDERS if name != provider))
 
 
+# World Economic Outlook aggregates: the code used here -> the IMF's own. WLD and EMU are the codes the other
+# providers' groups already have; the two below exist only at the IMF and are returned under its code.
+IMF_AREAS = {'WLD': 'G001', 'EMU': 'G163', 'G110': 'G110', 'G200': 'G200'}
+_IMF_GROUPS = {name: code for code, names in {
+    'G110': ('g110', 'advanced economies', 'advanced economy', '先進国', '先進国・地域', '先進経済'),
+    'G200': ('g200', 'emerging market and developing economies', 'emerging and developing economies',
+             'emerging markets and developing economies', 'emde', '新興国・途上国', '新興市場国・発展途上国',
+             '新興市場国と発展途上国', '新興国と途上国'),
+    'WLD': ('g001',), 'EMU': ('g163',)}.items() for name in names}
+
+
+def _imf_group(value):
+    return _IMF_GROUPS.get(statdata._plain(value)) if isinstance(value, str) else None
+
+
 def plan(provider, indicator_name, countries, start_year, end_year, this_year):
     """What to request: {'key', 'label', 'unit', 'codes', 'start', 'end', 'requests': [(url, [ISO3, ...])], 'page'}."""
     if provider in usstats.PROVIDERS:
@@ -135,7 +150,9 @@ def plan(provider, indicator_name, countries, start_year, end_year, this_year):
         countries = [countries]
     if not isinstance(countries, list) or not 1 <= len(countries) <= statdata.MAX_COUNTRIES:
         raise ValueError(f'countries must be a list of 1 to {statdata.MAX_COUNTRIES} names or ISO codes')
-    codes = list(dict.fromkeys(statdata.country(item) for item in countries))
+    # The IMF publishes groups under its own codes; two of them have no ISO-like code elsewhere.
+    codes = list(dict.fromkeys(_imf_group(item) or statdata.country(item) if provider == 'imf' else statdata.country(item)
+                               for item in countries))
     key, spec = indicator(provider, indicator_name)
     end = this_year if end_year is None else end_year
     start = max(statdata.FIRST_YEAR, end - 9) if start_year is None else start_year
@@ -144,9 +161,12 @@ def plan(provider, indicator_name, countries, start_year, end_year, this_year):
             raise ValueError(f'{name} must be a year from {statdata.FIRST_YEAR} to {this_year + 1}')
     if start > end or end - start + 1 > statdata.MAX_YEARS:
         raise ValueError(f'start_year must not be after end_year, and the range may cover at most {statdata.MAX_YEARS} years')
+    areas = {}
     if provider == 'imf':
         series, label, unit = spec
-        requests = [(f'https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/WEO/+/{code}.{series}.A', [code]) for code in codes]
+        areas = {code: IMF_AREAS[code] for code in codes if code in IMF_AREAS}
+        requests = [(f'https://api.imf.org/external/sdmx/3.0/data/dataflow/IMF.RES/WEO/+/{areas.get(code, code)}.{series}.A', [code])
+                    for code in codes]
         page = f'https://www.imf.org/external/datamapper/{series}@WEO'
     elif provider == 'eurostat':
         table, unit, _wanted = spec
@@ -173,7 +193,7 @@ def plan(provider, indicator_name, countries, start_year, end_year, this_year):
         requests = [(f'https://sdmx.ilo.org/rest/data/ILO,{flow}/{code}.{rest}?lastNObservations={last}', [code]) for code in codes]
         page = 'https://ilostat.ilo.org/data/'
     return {'key': key, 'spec': spec, 'label': label, 'unit': unit, 'codes': codes, 'start': start, 'end': end,
-            'requests': requests, 'page': page}
+            'requests': requests, 'page': page, 'areas': areas}
 
 
 def _years(start_year, end_year, this_year):
@@ -397,7 +417,8 @@ def _one_series(rows, code, wanted=None):
 def _series_result(rows, plan_, codes, wanted=None):
     result, label, remarks = {}, '', []
     for code in codes:
-        row, remark = _one_series(rows, code, wanted)
+        # A group is asked for and answered under the provider's own code (the IMF's G001 for the world).
+        row, remark = _one_series(rows, (plan_.get('areas') or {}).get(code, code), wanted)
         if row is None:
             continue
         values = _annual(row['obs'], plan_['start'], plan_['end'])
