@@ -296,6 +296,38 @@ async def test_a_page_lists_the_pdf_files_it_links_to_and_they_can_be_fetched(tm
         assert 'pdf_links' not in await tools.execute('web_fetch', {'url': base + '/plain'})
 
 
+async def test_size_and_date_alone_tell_several_copies_of_a_report_apart(tmp_path, monkeypatch):
+    """Real-machine case: the IEA's storage holds five files named WorldEnergyOutlook2025.pdf; the newest
+    by Last-Modified is the current edition. Comparing them must not need five downloads of 15 MB."""
+    copies = {'/assets/1438d3a5/WorldEnergyOutlook2025.pdf': ('Fri, 27 Nov 2025 09:12:00 GMT', REPORT),
+              '/assets/0a1b2c3d/WorldEnergyOutlook2025.pdf': ('Wed, 12 Nov 2025 08:00:00 GMT', REPORT + b'%old')}
+    asked = []
+
+    async def handler(request):
+        asked.append((request.method, request.path))
+        if request.path not in copies:
+            return web.Response(status=404)
+        date, data = copies[request.path]
+        return web.Response(body=b'' if request.method == 'HEAD' else data, content_type='application/pdf',
+                            headers={'Last-Modified': date, 'Content-Length': str(len(data)), 'ETag': '"0x8DE2"'})
+
+    pin(monkeypatch)
+    async with http_server(handler) as port:
+        tools, base = fetcher(tmp_path, port)
+        facts = [await tools.execute('web_fetch', {'url': base + path, 'headers_only': True}) for path in copies]
+        assert [(row['last_modified'], row['bytes']) for row in facts] == [(date, len(data)) for date, data in copies.values()]
+        assert all(row['headers_only'] is True and row['content_type'] == 'application/pdf' and 'Nothing was downloaded' in row['note']
+                   for row in facts)
+        assert [method for method, _ in asked] == ['HEAD', 'HEAD'] and not tools.pdf_ids and not (tmp_path / 'pdf-cache').exists()
+        # The one chosen is then downloaded, and its date stays with it.
+        newest = await tools.execute('web_fetch', {'url': base + '/assets/1438d3a5/WorldEnergyOutlook2025.pdf'})
+        assert newest['pages'] == 6 and newest['last_modified'] == 'Fri, 27 Nov 2025 09:12:00 GMT'
+        with pytest.raises(WebToolError, match='HTTP 404'):
+            await tools.execute('web_fetch', {'url': base + '/assets/none.pdf', 'headers_only': True})
+        with pytest.raises(WebToolError, match='headers_only must be true or false'):
+            await tools.execute('web_fetch', {'url': base + '/x.pdf', 'headers_only': 'yes'})
+
+
 async def test_a_pdf_without_a_declared_length_stops_at_the_limit(tmp_path, monkeypatch):
     async def handler(request):
         response = web.StreamResponse(headers={'Content-Type': 'application/pdf'})
@@ -323,6 +355,10 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         policy = engine._policy(run, pm)
         assert {'pdf_read', 'pdf_search'} <= set(names) and 'PDF reports:' in policy and 'never read a long report from cover to cover' in policy
         assert 'official distribution site (for the IMF, the IMF eLibrary)' in policy and 'pdf_links' in policy
+        # A refused report page: the publisher's own file is searched for, the newest of several copies chosen and said.
+        assert 'filetype:pdf' in policy and "site:<the publisher's domain>" in policy and 'its content network or file storage counts' in policy
+        assert 'web_fetch headers_only' in policy and 'newest by last_modified and size' in policy
+        assert 'only when no official one can be had, and say so' in policy
         # Figures: found by search, cited with one form of page number and the words they come from, and looked up again.
         assert 'Find what you need with pdf_search' in policy and '"p. 26 (printed 10)"' in policy
         assert 'carries its page and the words it comes from' in policy
@@ -331,6 +367,13 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         assert len(REPORT) > 2048
         overview = await engine.execute_tool(run, pm, 'pdf_read', {'path': str(work / 'weo.pdf')})
         assert overview['pages'] == 6 and overview['source'] == str(work / 'weo.pdf')
+        # Real-machine case: asked to download the report, a worker read a copy left in the folder by an earlier
+        # test and nothing said so. Where a file came from is the application's knowledge.
+        assert 'already in a read folder; it was not downloaded in this work' in overview['origin']
+        assert 'If you read a PDF that was already in a folder instead of downloading it, say so' in policy
+        # Figures a worker confirmed are taken over; a table holds no figure that nobody confirmed.
+        assert 'does not mark as unconfirmed what a worker confirmed' in policy
+        assert 'a row nobody confirmed is left out (or its cell says 未確認), never filled with a number' in policy
         page = await engine.execute_tool(run, pm, 'pdf_read', {'path': 'weo.pdf', 'first_page': 3, 'last_page': 3})
         assert 'Global growth is projected at 3.2 percent' in page['content'][0]['text']
         # The usual file rules apply: outside the read folders nothing is read.
@@ -350,7 +393,7 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         with pytest.raises(ValueError, match='fetch the PDF'):
             await engine.execute_tool(run, pm, 'pdf_read', {'pdf_id': record['pdf_id']})
         run['_web'].pdf_ids[record['pdf_id']] = record
-        fetched = {'pdf_id': record['pdf_id'], 'url': url, **{key: value for key, value in overview.items() if key != 'source'}}
+        fetched = {'pdf_id': record['pdf_id'], 'url': url, **{key: value for key, value in overview.items() if key not in ('source', 'origin')}}
         engine._pages_note(run, 'web_fetch', {'url': url}, engine._urls_seen(run, fetched))
         assert run['_pages'][sources.normalize(url)] == ('pdf', '6 pages; no page read yet; title «World Outlook (test)»')
         result = await engine.execute_tool(run, pm, 'pdf_read', {'pdf_id': record['pdf_id'], 'first_page': 3, 'last_page': 5})
@@ -376,6 +419,10 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         assert 'only pages listed as read can be cited' in review['error']
         done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '要約を保存しました。'})
         assert f'{url} — 取得した PDF（6 pages; pages read: 3-4, 6' in done['summary']
+        # Under the report: which PDFs were read, and which of them this work downloaded.
+        assert '【アプリの確認】この作業で読んだ PDF:' in done['summary']
+        assert f"- {work / 'weo.pdf'} — 読み取りフォルダーに既にあったファイル（この作業ではダウンロードしていません）" in done['summary']
+        assert f'- {url} — この作業でダウンロード' in done['summary']
     finally:
         await engine.close()
 

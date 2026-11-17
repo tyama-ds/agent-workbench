@@ -378,7 +378,7 @@ async def test_normal_pm_synthetic_requests_keep_dev44_schema_and_one_compaction
     engine, _ = configured(tmp_path, client)
     # Identical to the existing compaction fixture; no relaxed threshold,
     # timeout, call budget or one-summary expectation.
-    engine.settings.value['limits'].update(max_context_chars=50000, context_recent_groups=2,
+    engine.settings.value['limits'].update(max_context_chars=60000, context_recent_groups=2,
                                           context_summary_chars=1500, max_output_tokens=2048)
     try:
         run, pm = await start_regular(engine, task=COMPACTION_CASE['task'], max_workers=0)

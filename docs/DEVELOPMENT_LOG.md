@@ -4,6 +4,75 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev75 — The browser window no longer fails on a helper that came and went; confirmed figures are taken over (2026-11-17)
+
+dev73 on the real machine (`0903a73`): the headline figures were right and
+came with page and quotation, and the slides were 16:9 with a chart and a
+table. Four things were not.
+
+- The browser window never came to be used: "Browser process history is
+  incomplete (total=16, held=15, active=0)". The Job that holds the browser
+  is looked at every 50 ms and a handle is kept for each process seen; at
+  the end the number of handles had to equal the number of processes the
+  Job ever had. A headed Edge with a new profile starts helpers that live
+  for a few milliseconds, and one of them was never seen. That process was
+  over. What has to be certain is that nothing still running is unknown:
+  once the Job is sealed its running set can only shrink, so it is compared
+  with the held handles that have not signalled. A running process that is
+  not held still fails as before.
+- The profile of that run stayed in the temporary folder. A retained folder
+  is now removed at the next browser job once it is six hours old.
+- A worker had read Table 1.1; the PM's table still said "not confirmed"
+  for the countries, and one row held numbers that are in no table. Policy:
+  a worker reports each figure with value, unit, page and quotation, the
+  coordinator takes them over as they stand, and a table or chart holds no
+  figure that nobody confirmed.
+- The Markdown table stood in the document again, this time as one
+  paragraph holding the whole table, above the real table from the same
+  call. A table written on one line is recognised, and a text copy of a
+  table that is also given in `tables` is left out.
+- Asked to download the report, a worker read a copy that an earlier test
+  had left in the folder, and nothing said so. `pdf_read` on a path now
+  says that the file was not downloaded in this work, the policy asks for
+  that to be stated in the deliverable, and the application lists under
+  the report which PDFs were read and which of them it downloaded.
+
+Not verified here: the Job logic runs against a fake of the Windows calls;
+whether the window now opens, loads the address and saves the PDF is for
+the real machine.
+
+## 0.1.1.dev74 — The publisher's own copy of a report; a person passes a check in the window; tables in DOCX (2026-11-17)
+
+The next goal on the real machine is the IEA's World Energy Outlook. Its
+report page answers 403 behind a Cloudflare check to every HTTP library and
+to a driven Edge, and shows a Turnstile box even in a person's own Chrome.
+The PDF itself is served without any check from the IEA's own storage
+(`iea.blob.core.windows.net`), where five files carry the same name.
+
+- Policy: when a report's page is refused, search for the publisher's own
+  copy (`filetype:pdf`, `site:` the publisher's domain) and fetch the PDF
+  from where the publisher distributes it. Among same-named copies take the
+  newest and say on what basis; an unrelated mirror only when no official
+  copy can be had, and say so.
+- `web_fetch` with `headers_only` returns the size and date the server
+  states without downloading, so five candidates of 15 MB are compared by
+  five small requests. A downloaded PDF's result carries that date.
+- The browser window (off by default) no longer ends at a check meant for a
+  person. It is closed, the human is asked through an approval that expires
+  after three minutes whether they will pass it, and only then does the
+  window open again and wait up to five minutes while they do; what follows
+  the check is taken in. The application clicks nothing. A flat refusal
+  ("Access Denied") is still final at once, and a human who declines is not
+  asked again in that work.
+- `docx_write`: a table written into the paragraphs as Markdown rows or as
+  tab-separated cells is written as a real table at that place. On the real
+  machine the Markdown rows had stayed in the document beside the real
+  table, and in another run the table was tab-separated paragraphs.
+
+Not verified here: no browser is started in the tests; whether the page
+that follows a Turnstile check is recognised as such is for the real
+machine (the worker waits while the title or short text is a check).
+
 ## 0.1.1.dev73 — Slides get a theme, a layout per slide, tables and charts, and text that fits (2026-11-17)
 
 The same run on the real machine asked for "fashionable, modern" slides with

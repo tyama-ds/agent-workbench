@@ -83,14 +83,23 @@ PDF_POLICY = (
     'result gives printed_page, add it in brackets, "p. 26 (printed 10)", and use this one form everywhere. Before '
     'finishing, look up each headline figure again with pdf_search and compare it with the text: correct what '
     'differs, and write a figure you cannot find as not confirmed, never as another number. Report only pages you '
-    'read. If a PDF has no text, say so.')
+    'read. A worker reports each figure it confirmed with its value, unit, page and quotation; the coordinator takes '
+    'those figures over as they stand and does not mark as unconfirmed what a worker confirmed. A table or chart '
+    'holds only figures confirmed on a page: a row nobody confirmed is left out (or its cell says 未確認), never '
+    'filled with a number. If you read a PDF that was already in a folder instead of downloading it, say so in the '
+    'deliverable and in your report: its path, and that it was not downloaded in this work. If a PDF has no text, say so.')
 # Only where pages can be fetched.
 PDF_WEB_POLICY = (
     ' A chapter or section you could not obtain or read gets one line, "not obtained; no summary": never write its '
     'points from another part (an executive summary is not chapter 1).'
     ' To get a report, web_fetch its PDF address (the result has a pdf_id); a page that web_fetch returns lists the PDF '
     'files it links to (pdf_links). If an institution\'s main site refuses the request, use the same institution\'s '
-    'official distribution site (for the IMF, the IMF eLibrary) instead of retrying. If a part still cannot be '
+    'official distribution site (for the IMF, the IMF eLibrary) instead of retrying: search for "<report name> '
+    'filetype:pdf" or with site:<the publisher\'s domain> and fetch the PDF directly from where the publisher itself '
+    'distributes it (its content network or file storage counts). Where several copies carry the same name, compare '
+    'them with web_fetch headers_only, take the newest by last_modified and size, and report that basis. A copy on '
+    'a site that is not the publisher\'s (a university repository, a mirror) only when no official one can be had, '
+    'and say so. If a part still cannot be '
     'downloaded, ask the human once with ask_user: give its URL and ask them to save the PDF from their browser into '
     'a read folder (recommendation: go on without that part and report it as not obtained). Once it is saved, read it '
     'with pdf_read by path.')
@@ -104,8 +113,9 @@ _NEEDS_PASSWORD = ('This PDF needs a password to open. The application does not 
 # Only in a piece of work for which the human allowed it.
 BROWSER_TRY_POLICY = (
     ' For this work the human allowed one try in a visible browser window: when a site refuses web_fetch, the '
-    'application opens that address once by itself and returns what the window showed. You do not ask for it and '
-    'cannot repeat it; if it also fails, ask the human as described above.')
+    'application opens that address once by itself and returns what the window showed. Where the site shows a check '
+    'meant for a person, the human is asked to pass it in that window. You do not ask for the window and cannot '
+    'repeat it; if it also fails, ask the human as described above.')
 
 
 class PdfError(ValueError):
@@ -553,6 +563,15 @@ class PdfToolMixin:
         if isinstance(text, str) and _PDF_WORD.search(text):
             run['_pdf_touched'] = True
 
+    def _pdf_footer(self, run):
+        """Under the coordinator's result: which PDFs this work read, and whether each was downloaded in it."""
+        rows = list((run.get('_pdf_sources') or {}).items())[:10]
+        if not rows:
+            return ''
+        described = {'downloaded': 'この作業でダウンロード', 'folder': '読み取りフォルダーに既にあったファイル（この作業ではダウンロードしていません）'}
+        return ('\n\n【アプリの確認】この作業で読んだ PDF:\n'
+                + '\n'.join(f'- {self.redact(source)[:300]} — {described[kind]}' for source, kind in rows))
+
     async def _pdf_read(self, run, agent, args, tool='pdf_read'):
         if not self._pdf_available(run):
             raise ValueError('PDF を読むには、読み取りを許可したフォルダーか Web 検索の設定が必要です')
@@ -577,6 +596,7 @@ class PdfToolMixin:
             result = await self.pdf_library.read(data, {key: value for key, value in args.items() if key != 'pdf_id'},
                                                  source=record['url'])
         result = {'pdf_id': args['pdf_id'], 'url': record['url'], **{key: value for key, value in result.items() if key != 'source'}}
+        run.setdefault('_pdf_sources', {})[record['url']] = 'downloaded'
         self._pdf_note(run, record['url'], result)
         return result
 
@@ -590,5 +610,11 @@ class PdfToolMixin:
             if 'size limit' in str(exc):
                 raise PdfError(f'{exc}: a PDF may be up to {megabytes(limit)} (the PDF size limit in the settings)') from None
             raise
-        return await self.pdf_library.read(data, {key: value for key, value in args.items() if key != 'path'},
-                                           source=str(harness.resolve(args['path'])))
+        source = str(harness.resolve(args['path']))
+        result = await self.pdf_library.read(data, {key: value for key, value in args.items() if key != 'path'}, source=source)
+        # Where the file came from is the application's knowledge, not the model's: this one was not downloaded
+        # by this work's web_fetch.
+        result['origin'] = ('A file that was already in a read folder; it was not downloaded in this work. '
+                            'Say so (with this path) wherever you report what it contains.')
+        run.setdefault('_pdf_sources', {}).setdefault(source, 'folder')
+        return result

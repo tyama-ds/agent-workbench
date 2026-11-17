@@ -13,8 +13,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 import threading
+import time
 
 from .harness import HarnessError, PathHarness, _inspect, _integer, _string
 from .python_runner import _runtime_path
@@ -50,6 +52,39 @@ class _Workspace:
             raise HarnessError(f'Private Selenium cleanup failed; storage retained at {self.path}') from exc
 
 
+_RETAINED_SECONDS = 6 * 3600
+
+
+def _sweep_retained(now=None):
+    """Remove private folders that an earlier run had to leave behind, once they are old.
+
+    A folder is retained when the end of every browser process could not be
+    confirmed: deleting it then could pull storage from under a live process.
+    Hours later nothing of that run is alive, and the folders (a whole browser
+    profile each) would otherwise stay in the temporary folder for good.
+    Only this application's own folders are touched, and a failure to remove
+    one is not an error.
+    """
+    now = time.time() if now is None else now
+    try:
+        candidates = list(Path(tempfile.gettempdir()).glob('awb-selenium-*'))
+    except OSError:
+        return 0
+    removed = 0
+    for path in candidates[:200]:
+        try:
+            info = path.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400
+                    or now - info.st_mtime < _RETAINED_SECONDS):
+                continue
+            _prune_private_links(path)
+            shutil.rmtree(path)
+            removed += 1
+        except (OSError, SandboxError):
+            continue
+    return removed
+
+
 @contextlib.contextmanager
 def _execution_lock(cancel):
     while not _RUN_LOCK.acquire(timeout=.1):
@@ -57,6 +92,7 @@ def _execution_lock(cancel):
             yield False
             return
     try:
+        _sweep_retained()  # only one browser job runs at a time; older leftovers are no one's
         yield True
     finally:
         _RUN_LOCK.release()
@@ -312,11 +348,12 @@ def _execute_page(config, python_config, harness, url, ready, visible, wait_seco
 
 # --- one visible try of an address that refused the ordinary request ---------------------
 
-_FETCH_KEYS = {'kind', 'url', 'status', 'content_type', 'title', 'html', 'truncated', 'file', 'bytes'}
+_FETCH_KEYS = {'kind', 'url', 'status', 'content_type', 'title', 'html', 'truncated', 'file', 'bytes', 'check'}
 _FETCH_KINDS = {'download', 'page', 'closed', 'timeout', 'too_large'}
 
 
-def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url, max_page_chars, max_download_bytes, cancel):
+def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url, max_page_chars, max_download_bytes, cancel,
+                   person_seconds=0, check_words=()):
     if os.name != 'nt':
         raise HarnessError('Opening a browser window for a refused page currently requires Windows')
     try:
@@ -324,6 +361,7 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
     except (ValueError, UnicodeError) as exc:
         raise HarnessError(str(exc)) from exc
     wait_seconds = _integer(wait_seconds, 'fetch wait', 5, 300)
+    person_seconds = _integer(person_seconds, 'wait for a person', 0, 600)
     memory = _integer(config.get('max_memory_mb', 1024), 'Selenium max_memory_mb', 256, 8192)
     with _execution_lock(cancel) as acquired:
         if not acquired or cancel.is_set():
@@ -334,7 +372,8 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
             job = {'mode': 'fetch', 'browser': config.get('browser', 'edge'), 'browser_executable': str(browser_path),
                    'driver_executable': str(driver_path), 'library_paths': [str(path) for path in libraries],
                    'proxy_url': proxy, 'url': url, 'wait_seconds': wait_seconds, 'max_page_chars': max_page_chars,
-                   'max_download_bytes': max_download_bytes}
+                   'max_download_bytes': max_download_bytes, 'person_seconds': person_seconds,
+                   'check_words': [str(word)[:80] for word in list(check_words)[:60]]}
             job_path, worker = workspace / 'job.json', workspace / 'worker.py'
             job_path.write_text(json.dumps(job, ensure_ascii=False), encoding='utf-8')
             worker.write_bytes(Path(__file__).with_name('selenium_worker.py').read_bytes())
@@ -342,7 +381,7 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
                 # The profile and the download both live in the private folder and are deleted with it.
                 result = run_browser_job([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8',
                                           str(worker), str(job_path)], workspace,
-                                         timeout=wait_seconds + 75, memory_mb=memory, output_limit=16384,
+                                         timeout=max(wait_seconds, person_seconds) + 75, memory_mb=memory, output_limit=16384,
                                          workspace_limit=max_download_bytes + 512 * 1024 * 1024, cancel=cancel)
             except SandboxError as exc:
                 private.preserve = exc.preserve_private
@@ -361,7 +400,8 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
                 page = json.loads(local.read_bytes(str(workspace / 'result.json')))
                 if (not isinstance(page, dict) or set(page) != _FETCH_KEYS or page['kind'] not in _FETCH_KINDS
                         or not all(isinstance(page[key], str) for key in ('url', 'content_type', 'title', 'html', 'file'))
-                        or type(page['status']) is not int or type(page['bytes']) is not int or type(page['truncated']) is not bool
+                        or type(page['status']) is not int or type(page['bytes']) is not int
+                        or type(page['truncated']) is not bool or type(page['check']) is not bool
                         or len(page['html']) > max_page_chars):
                     raise ValueError()
                 page['data'] = None
@@ -376,7 +416,7 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
 
 
 async def execute_fetch(config, python_config, harness, url, *, wait_seconds=60, proxy_url='', max_page_chars=1500000,
-                        max_download_bytes=50 * 1024 * 1024):
+                        max_download_bytes=50 * 1024 * 1024, person_seconds=0, check_words=()):
     """Load one address once in a visible browser window; return what came, with a downloaded file's bytes in ``data``.
 
     The human turned this on for the run. Nothing is clicked or typed, the
@@ -385,7 +425,8 @@ async def execute_fetch(config, python_config, harness, url, *, wait_seconds=60,
     """
     cancel = threading.Event()
     task = asyncio.create_task(asyncio.to_thread(_execute_fetch, config, python_config, harness, url, wait_seconds,
-                                                proxy_url, max_page_chars, max_download_bytes, cancel))
+                                                proxy_url, max_page_chars, max_download_bytes, cancel,
+                                                person_seconds, tuple(check_words)))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

@@ -2297,7 +2297,7 @@ async function stopSelectedAgent() {
 // Phase 7: tool-call approval, the team memo and its proposals, and history search.
 // Every model/state string below is untrusted and is placed with textContent only.
 const APPROVAL_MODE_LABELS={ask:'毎回確認',always_allow:'常に許可'};
-const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',run_tests:'テストの実行',selenium_browse:'ブラウザ操作',search_human_check:'検索の「人による確認」（ブラウザーで操作が必要）'};
+const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',run_tests:'テストの実行',selenium_browse:'ブラウザ操作',search_human_check:'検索の「人による確認」（ブラウザーで操作が必要）',fetch_human_check:'ページ取得の「人による確認」'};
 const TEST_CHECK_LABELS={passed:'成功',failed:'失敗あり',missing:'未実行'};
 function searchUseLabel(use){
   const count=key=>Number.isSafeInteger(use?.[key])&&use[key]>0?use[key]:0;

@@ -25,8 +25,11 @@ def test_environment_does_not_forward_host_secrets_or_profile(tmp_path, monkeypa
     assert 'must-not-forward' not in env.values()
 
 
-def _fake_job(active, *, query=True, terminate=True, total=2, wait=0):
-    counts = iter(active)
+def _fake_job(active, *, query=True, terminate=True, total=2, wait=0, running=()):
+    """active: what the Job reports as running, look after look (the last value stays).
+    running: handles that have not signalled when asked without waiting."""
+    remaining = list(active)
+    counts = iter(lambda: remaining.pop(0) if len(remaining) > 1 else remaining[0], None)
     calls = []
     def stop(handle, code):
         calls.append((handle, code))
@@ -55,8 +58,12 @@ def _fake_job(active, *, query=True, terminate=True, total=2, wait=0):
         ctypes.cast(output, ctypes.POINTER(ctypes.wintypes.BOOL)).contents.value = True
         return True
     def wait_for(handle, millis):
+        if millis == 0 and not terminated():
+            return 258 if handle in running else 0  # a look, not a wait
         calls.append(('wait', handle))
         return wait
+    def terminated():
+        return any(isinstance(call, tuple) and call[0] == 'job' for call in calls)
     return SimpleNamespace(k=SimpleNamespace(
         TerminateJobObject=stop, QueryInformationJobObject=info, SetInformationJobObject=seal,
         OpenProcess=lambda access, inherit, pid: pid + 100, IsProcessInJob=member,
@@ -91,12 +98,32 @@ def test_zero_job_accounting_is_not_a_process_exit_barrier():
     assert ('wait', 111) in calls and ('close', 112) in calls
 
 
-def test_missing_lifetime_handle_never_certifies_termination():
-    native, calls = _fake_job([0], total=3)
+def test_a_helper_that_came_and_went_between_two_looks_does_not_block_the_stop(monkeypatch):
+    """Real-machine case: a headed Edge with a new profile. "Browser process history is incomplete
+    (total=16, held=15, active=0)": one helper lived for less than the 50 ms between two looks at the Job.
+    It is over; every process still running is held, and each of those is waited on."""
+    monkeypatch.setattr(browser_job.time, 'sleep', lambda _: None)
+    native, calls = _fake_job([0], total=3)                       # three in all, two held, none running
+    browser_job._stop_job(native, 'job')
+    assert ('wait', 111) in calls and ('wait', 112) in calls and ('job', 1) in calls
+    native, calls = _fake_job([2, 2, 2, 0], total=16, running=(111, 112))   # the two that run are the two held
+    browser_job._stop_job(native, 'job')
+    assert ('wait', 111) in calls and ('wait', 112) in calls
+
+
+def test_a_running_process_that_is_not_held_never_certifies_termination(monkeypatch):
+    monkeypatch.setattr(browser_job.time, 'sleep', lambda _: None)
+    # The Job counts three running; only two handles are held, and both are running: one process is unknown.
+    native, calls = _fake_job([3], total=5, running=(111, 112))
+    with pytest.raises(SandboxError, match=r'history is incomplete \(total=5, held=2, active=3\)') as caught:
+        browser_job._stop_job(native, 'job')
+    assert caught.value.preserve_private
+    assert ('job', 1) in calls and ('wait', 111) not in calls   # stopped all the same, but not certified
+    # One is counted as running although every held handle has signalled.
+    native, _ = _fake_job([1], total=3)
     with pytest.raises(SandboxError, match='history is incomplete') as caught:
         browser_job._stop_job(native, 'job')
     assert caught.value.preserve_private
-    assert ('wait', 111) in calls and ('wait', 112) in calls
 
 
 def test_member_capture_refuses_truncated_snapshot():

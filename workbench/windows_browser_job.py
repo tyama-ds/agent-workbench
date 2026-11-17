@@ -200,10 +200,34 @@ def _workspace_ok(directory: Path, maximum: int, native, *, live=False, max_entr
     return True
 
 
+def _live_members_held(native, job, members):
+    """True when every process the sealed Job still counts as running is one whose handle is held.
+
+    A browser starts helpers that live for a few milliseconds (a first-run
+    task, a crash-handler probe). One that began and ended between two looks
+    at the Job was never held, so the Job's lifetime count is higher than the
+    number of handles. That process is over and cannot touch the private
+    storage; what has to be certain is that nothing still running is unknown.
+    The Job is sealed, so its running set can only shrink: it is compared with
+    the held handles that have not signalled, and looked at again while the
+    two are still settling.
+    """
+    for _ in range(40):
+        before = _accounting(native, job).active_processes
+        _capture_members(native, job, members)
+        running = sum(1 for handle in members.values() if native.k.WaitForSingleObject(handle, 0) == 258)
+        after = _accounting(native, job).active_processes
+        if before == after and running >= after:
+            return True
+        time.sleep(.01)
+    return False
+
+
 def _stop_job(native, job, timeout=5.0, *, members=None):
     # TerminateJobObject can remove membership BEFORE process handles signal.
-    # ActiveProcesses==0 alone is therefore not an exit barrier. Retain every
-    # observed identity and require lifetime coverage as well as actual waits.
+    # ActiveProcesses==0 alone is therefore not an exit barrier. Every process
+    # that is running when the Job is sealed must be held by its handle, and
+    # each of those handles is waited on.
     owned = members is None
     members = {} if members is None else members
     deadline = time.monotonic() + timeout
@@ -211,6 +235,12 @@ def _stop_job(native, job, timeout=5.0, *, members=None):
     try:
         _seal_job(native, job)
         _capture_members(native, job, members)
+        accounting = _accounting(native, job)
+        if accounting.total_processes != len(members) and not _live_members_held(native, job, members):
+            raise SandboxError(
+                f'Browser process history is incomplete (total={accounting.total_processes}, '
+                f'held={len(members)}, active={accounting.active_processes}); private storage retained',
+                preserve_private=True)
         native.k.TerminateJobObject(job, 1)
         terminated = True
         for handle in members.values():
@@ -219,11 +249,6 @@ def _stop_job(native, job, timeout=5.0, *, members=None):
                 raise SandboxError('Browser process termination is unconfirmed; private storage retained', preserve_private=True)
         while True:
             accounting = _accounting(native, job)
-            if accounting.total_processes != len(members):
-                raise SandboxError(
-                    f'Browser process history is incomplete (total={accounting.total_processes}, '
-                    f'held={len(members)}, active={accounting.active_processes}); private storage retained',
-                    preserve_private=True)
             if accounting.active_processes == 0:
                 return
             if time.monotonic() >= deadline:
