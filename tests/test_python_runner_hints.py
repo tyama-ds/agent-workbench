@@ -221,15 +221,23 @@ def test_a_scan_that_meets_a_file_being_saved_is_made_again_before_the_run_is_en
         entries = list(real_scandir(path))
         if not vanished:
             vanished.append(True)
-            (tmp_path / 'sample.docx.tmp').unlink()        # listed, then gone: stat() on it fails
+            (tmp_path / 'sample.docx.tmp').unlink()        # listed, then gone
         return contextlib.nullcontext(iter(entries))
     monkeypatch.setattr(windows_sandbox.os, 'scandir', scandir)
-    with pytest.raises(OSError):
-        _workspace_size(tmp_path, 1000)                    # one scan alone does fail
+
+    def streams(path):
+        # As the real check does for a file that is gone (FindFirstStreamW fails): an error, not "no streams".
+        if not os.path.lexists(path):
+            raise SandboxError('Cannot inspect private storage streams')
+        return False
+    # One scan alone does fail. Where the listing keeps each entry's details (Windows) it is the
+    # stream check that fails; elsewhere looking at the vanished entry already does.
+    with pytest.raises((OSError, SandboxError)):
+        _workspace_size(tmp_path, 1000, named_stream=streams)
     vanished.clear()
     (tmp_path / 'sample.docx.tmp').write_text('y')
-    assert _live_scan(lambda: _workspace_size(tmp_path, 1000)) is True and pauses == [.005]
-    assert _live_scan(lambda: _workspace_size(tmp_path, 5)) is False      # over the limit is an answer, not a failure
+    assert _live_scan(lambda: _workspace_size(tmp_path, 1000, named_stream=streams)) is True and pauses == [.005]
+    assert _live_scan(lambda: _workspace_size(tmp_path, 5, named_stream=streams)) is False   # over the limit is an answer, not a failure
 
     # Transient failures of either kind are retried; a failure that stays is still reported.
     attempts = []
