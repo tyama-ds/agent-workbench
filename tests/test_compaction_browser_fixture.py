@@ -11,7 +11,11 @@ from test_engine import configured, settled, start
 async def test_browser_fixture_compacts_and_verifies_original_history(tmp_path):
     client = SyntheticClient()
     engine, _ = configured(tmp_path, client)
-    engine.settings.value['limits'].update(max_context_chars=50000, context_recent_groups=2,
+    # The budget leaves room after the one compaction: with 50000 the fixed part of a request (policy and
+    # tool list, which grow with the product, and the work-folder path, which is longer on Windows) had come
+    # to within a few hundred characters of the trigger, and a second compaction began. Same value as the
+    # browser acceptance (tools/browser-tests/context_compaction_acceptance.cjs).
+    engine.settings.value['limits'].update(max_context_chars=60000, context_recent_groups=2,
                                           context_summary_chars=1500, max_output_tokens=2048)
     try:
         run, agent = await start(engine, task=COMPACTION_CASE['task'], max_workers=0)
@@ -24,7 +28,7 @@ async def test_browser_fixture_compacts_and_verifies_original_history(tmp_path):
         assert agent.conversation[0]['content'] == COMPACTION_CASE['task']
         assert agent.original_history[1][0]['content'] == COMPACTION_CASE['observation']
         assert any(item.get('_summary') for item in agent.conversation)
-        assert agent.context_chars < 50000 and not agent.compacting
+        assert agent.context_chars < 60000 and not agent.compacting
     finally:
         await engine.close()
 

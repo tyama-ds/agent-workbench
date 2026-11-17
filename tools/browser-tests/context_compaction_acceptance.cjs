@@ -9,7 +9,8 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
   const releaseFile=path.join(stateDir,'compaction-release');
   const task='[SYNTHETIC] Compact a long conversation; preserve this exact original task.';
   const finalText='[SYNTHETIC] Compaction continued; exact human and assistant originals verified; missing record reported.';
-  const edits={max_model_calls:30,max_tool_calls:40,max_context_chars:50000,context_trigger_percent:75,
+  // 60000: room after the one compaction (see tests/test_compaction_browser_fixture.py).
+  const edits={max_model_calls:30,max_tool_calls:40,max_context_chars:60000,context_trigger_percent:75,
     context_recent_groups:2,context_summary_chars:1500,context_reserve_tokens:1024,max_history_chars:400000,
     max_output_tokens:2048,max_run_seconds:120};
   let page,originalConfig,restore=false,runId,agentId,failed=false;
@@ -122,7 +123,7 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
     assert.deepEqual(doneRun.stop_reasons,[]);
     const observedAgain=(await api('/api/state')).runs.find(item=>item.id===runId);
     assert.deepEqual(observedAgain.budget,doneRun.budget,'Completed work retains its observed budget without a live countdown');
-    assert(done.context_memory.history_records>10);assert(done.context_memory.request_chars<50000);
+    assert(done.context_memory.history_records>10);assert(done.context_memory.request_chars<60000);
     assert(done.logs.some(log=>log.text===finalText),'The fake provider verifies exact retained human and assistant originals before its terminal reply');
     const lookup=JSON.parse(done.logs.find(log=>log.kind==='tool'&&log.text.startsWith('read_context_history\n')).text.split('\n').slice(1).join('\n'));
     assert.deepEqual(lookup.unavailable_ids,[999999]);assert.deepEqual(lookup.records.map(record=>record._record_id),[1,2]);
