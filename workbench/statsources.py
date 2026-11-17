@@ -192,7 +192,10 @@ def _plan_us(provider, indicator_name, countries, start_year, end_year, this_yea
     start, end = _years(start_year, end_year, this_year)
     key, spec, url, page, size, wait = usstats.plan(provider, indicator_name, countries, start, end)
     return {'key': key, 'spec': spec, 'label': spec[1], 'unit': spec[2], 'codes': ['USA'], 'start': start, 'end': end,
-            'requests': [(url, ['USA'])], 'page': page, 'size': size, 'wait': wait}
+            'requests': [(url, ['USA'])], 'page': page, 'size': size, 'wait': wait, 'this_year': this_year,
+            'index': usstats.is_index(spec),
+            # The BEA's quarterly file gives the latest quarter beside the yearly figures.
+            'extras': [(usstats.BEA_QUARTERS, 'quarter')] if provider == 'bea' else []}
 
 
 # --- reading the answers -------------------------------------------------------------------------------
@@ -524,8 +527,10 @@ def read_jsonstat(payload, plan_, codes):
 def read(provider, data, plan_, codes):
     """(rows by ISO3 code, the provider's own label for what was read, the provider's update time or '', remarks)."""
     if provider in usstats.PROVIDERS:
-        values, label, updated, remarks = usstats.read(provider, data, plan_['spec'][0], plan_['start'], plan_['end'])
-        return ({'USA': ('United States', values)} if values else {}), label, updated, remarks
+        values, label, updated, remarks, extra = usstats.read(
+            provider, data, plan_['spec'][0], plan_['start'], plan_['end'], index=plan_.get('index', False),
+            this_year=plan_.get('this_year'), role=plan_.get('role', ''))
+        return ({'USA': ('United States', values, extra)} if values or extra else {}), label, updated, remarks
     if provider == 'oecd':
         return read_csv(data, plan_, codes)
     if provider == 'eurostat':

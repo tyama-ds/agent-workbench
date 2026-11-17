@@ -4,6 +4,44 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev68 — The latest month and quarter, changes of an index, forecasts marked, and spreadsheet units (2026-11-17)
+
+dev67 passed on the real machine (BEA six of six, BLS four, EIA five, the
+Treasury two). In the agent task that collected five United States figures
+and compared them with the World Bank, the workers went to the web for the
+newest month and quarter, the change of consumer prices over the year stayed
+"unconfirmed" because only the index came back, a crude oil forecast for the
+current year carried no mark, and the spreadsheet mixed "94.37 USD/bbl" as
+text, 0.034 for 3.4 % and 0.02793.
+
+- `latest_period` beside the yearly values: the newest month for BLS, the
+  newest quarter for the BEA (from `NipaDataQ.txt`, seasonally adjusted at
+  annual rates). If the quarterly file cannot be read, the yearly figures
+  still come back and `note` says so.
+- BLS: a year with fewer than twelve published months has no yearly figure,
+  and `note` now says how many months there are and which are missing.
+- Index series (consumer prices, the PCE and GDP price indexes) carry
+  `change_percent`, the change from a year earlier to one decimal, for each
+  year and for the latest month or quarter, with the remark that the
+  application computed it. A test compares it with BLS's published figures
+  for the CPI-U: 8.0, 4.1 and 2.9 for 2022 to 2024 and 3.0 for September
+  2025, from the published monthly indexes.
+- EIA Short-Term Energy Outlook series: every year has `status` `actual` or
+  `forecast`. The file's own last observed period decides where it gives
+  one; the file read on the real machine gave none, so then the current year
+  and later are forecasts, and `note` says which rule was used. IMF values
+  of the current year and later have `status: forecast`.
+- `xlsx_write`: every cell that holds a number with a unit as text is
+  listed (it was the first of each column), also "3.4% (2026Q3)"; a year
+  with a remark stays a label. Two or more values far below 1 under a
+  heading about a rate or percent are pointed out as probable fractions.
+- Policy: the unit once in the heading, bare numbers in the cells, the same
+  form for every source compared; what `latest_period` and
+  `status: forecast` mean.
+- **Not seen answering**: `NipaDataQ.txt` (assumed beside `NipaDataA.txt`,
+  same columns, periods like 2026Q3) and the name of the field in the EIA
+  file that gives the last observed period.
+
 ## 0.1.1.dev67 — United States government statistics: BEA, BLS, EIA and the Treasury (2026-11-17)
 
 dev66 was confirmed on the real machine for all five providers (IMF 3 to 4

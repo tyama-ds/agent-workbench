@@ -1992,7 +1992,10 @@ class Engine(TurnWorkMixin, VerificationMixin, WorkerRecoveryMixin, AdaptiveTeam
                                   'Compare countries with figures from one source; for one country\'s own statistics prefer its '
                                   'national statistical office when you can retrieve it (United States: bea, bls, eia, treasury). When two sources give different values, '
                                   'report both with their source and date instead of choosing one silently, and never mix units '
-                                  '(the IMF gives population in millions).\n'
+                                  '(the IMF gives population in millions). In a spreadsheet, name the unit once in the heading and put bare '
+                                  'numbers in the cells: 3.4 for 3.4 %, not 0.034 and not "3.4 %" or "94.37 USD/bbl"; use the same form for '
+                                  'every source you compare. Where a result carries latest_period, that is the newest month or quarter; '
+                                  'status "forecast" marks a figure that is not observed.\n'
                                   + (f'Search guide: this whole work (all agents together) is expected to need about {guide} searches. '
                                      'Past half of that, go on with the results already returned and web_fetch.\n' if guide else ''))
                 if run.get('_search_check_declined'):
