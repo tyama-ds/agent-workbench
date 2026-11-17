@@ -79,8 +79,16 @@ class WorkflowProvider:
         return reply(calls=[('finish_work', {'summary': 'Saved result.txt; fixture value 42 and native receipt checked.'})])
 
 
+# How long a scripted team may take to finish. The work itself takes a fraction of a second; the bound is
+# for the machine. One such run saves its history 57 times, each save a commit that waits for the disk. A
+# hosted Windows runner whose commits took a third of a second each used up the former 20 s in the first
+# test of the session (other runs on such runners showed commits of 2 to 6 s). What the tests assert is
+# what the team did, not how fast.
+JOIN_SECONDS = 60
+
+
 async def joined(engine):
-    async with asyncio.timeout(20):
+    async with asyncio.timeout(JOIN_SECONDS):
         while True:
             pending = [a.task for a in engine.agents.values() if a.task and not a.task.done()]
             if not pending:
