@@ -104,13 +104,17 @@ PDF_WEB_POLICY = (
     'parts (summary, chapters, tables) one after another. If an institution\'s main site refuses the request, use the same institution\'s '
     'official distribution site (for the IMF, the IMF eLibrary) instead of retrying: search for "<report name> '
     'filetype:pdf" or with site:<the publisher\'s domain> and fetch the PDF directly from where the publisher itself '
-    'distributes it (its content network or file storage counts). Where several copies carry the same name, compare '
-    'them with web_fetch headers_only, take the newest by last_modified and size, and report that basis. A copy on '
+    'distributes it (its content network or file storage counts). Where several addresses carry the same file name, '
+    'follow these steps in order: (1) web_fetch every candidate with headers_only; (2) read same_name_copies in the '
+    'result: the application lists the candidates newest first by last_modified; (3) fetch newest_copy, the one with '
+    'the latest date, not the first one found; (4) write the candidates with their dates and sizes, and the one '
+    'chosen, in the report. A copy on '
     'a site that is not the publisher\'s (a university repository, a mirror) only when no official one can be had, '
     'and say so. If a part still cannot be '
     'downloaded, ask the human once with ask_user: give its URL and ask them to save the PDF from their browser into '
     'a read folder (recommendation: go on without that part and report it as not obtained). Once it is saved, read it '
-    'with pdf_read by path.')
+    'with pdf_read by path. When the request asks to keep the downloaded PDF (to save it in a folder), save it with '
+    'pdf_save (its pdf_id and a path ending in .pdf) before you finish, and name the saved file in the report.')
 _PDF_WORD = re.compile(r'pdf|ＰＤＦ', re.I)
 
 
@@ -123,9 +127,14 @@ BROWSER_TRY_POLICY = (
     ' For this work the human allowed one try in a visible browser window: when a site refuses web_fetch, the '
     'application opens that address once by itself and returns what the window showed. Where the site shows a check '
     'meant for a person, the human is asked to pass it in that window. You do not ask for the window and cannot '
-    'repeat it; if it also fails, ask the human as described above. When the window read a page, fetch the report it '
-    'links to (pdf_links) with web_fetch next: the application opens it from that page. A refused headers_only '
-    'question says nothing about the file; the file itself is then fetched.')
+    'repeat it; if it also fails, ask the human as described above. When the window read a page, look at its result: '
+    'linked_pdf is the full report the same window opened next (read it with pdf_read); if there is none, fetch the '
+    'report the page links to (pdf_links) with web_fetch next, and the application opens it from that page. A page or '
+    'file a window already brought is returned again when asked for. A refused headers_only question says nothing '
+    'about the file; the file itself is then fetched.')
+
+
+_PUT_LOCK = threading.Lock()  # one writer at a time into the folder of downloaded PDFs
 
 
 class PdfError(ValueError):
@@ -269,15 +278,42 @@ class PdfLibrary:
         record = {'pdf_id': ident, 'sha256': digest, 'bytes': len(data), 'url': url,
                   'fetched_at': datetime.now(timezone.utc).isoformat()}
         self.directory.mkdir(parents=True, exist_ok=True)
-        for name, content in ((ident + '.pdf', data), (ident + '.json', json.dumps(record).encode('utf-8'))):
-            temporary = self.directory / (name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
-            try:
-                temporary.write_bytes(content)
-                os.replace(temporary, self.directory / name)
-            finally:
-                temporary.unlink(missing_ok=True)
+        with _PUT_LOCK:
+            for name, content in ((ident + '.pdf', data), (ident + '.json', json.dumps(record).encode('utf-8'))):
+                target = self.directory / name
+                if name.endswith('.pdf') and self._same(target, data, digest):
+                    # Real-machine case: two agents fetched the same report at the same time; replacing the
+                    # file the other one had open was refused on Windows ("[WinError 5]") and the fetch failed.
+                    # The file is named after its content: the one that is there is this one.
+                    continue
+                temporary = self.directory / (name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
+                try:
+                    temporary.write_bytes(content)
+                    for attempt in range(6):
+                        try:
+                            os.replace(temporary, target)
+                            break
+                        except PermissionError:
+                            # Another reader has the old file open for a moment (Windows).
+                            if name.endswith('.pdf') and self._same(target, data, digest):
+                                break
+                            if attempt == 5:
+                                if target.is_file():
+                                    break  # the record that is there describes the same file; keep it
+                                raise PdfError('The downloaded PDF could not be kept (the file is in use); fetch it again') from None
+                            time.sleep(.1 * (attempt + 1))
+                finally:
+                    temporary.unlink(missing_ok=True)
         self._prune(keep=ident)
         return record
+
+    @staticmethod
+    def _same(path, data, digest):
+        """The file is there and holds exactly this content."""
+        try:
+            return path.stat().st_size == len(data) and hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        except OSError:
+            return False
 
     def get(self, ident):
         if not isinstance(ident, str) or not _ID.fullmatch(ident) or self.directory is None:

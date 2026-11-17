@@ -899,6 +899,19 @@ the human turned it on (0.1.1.dev61; off by default).
 - `providers.RETRYABLE_STATUSES` holds 520-524; `harness._comma_tables`
   runs before `_table_blocks` in `docx_write`.
 
+## Outputs beside older files; the report after its page (0.1.1.dev78)
+
+- `verification.output_names(text)` finds the names a request asks to
+  produce; `_file_instances` lists the files of a name with size and time;
+  `run['_output_before']` holds that list from the moment of the request,
+  and `_file_present` is true only for an instance that is new or changed.
+- `selenium_worker.main_pdf_link` picks a read page's own full report from
+  the links `_PDF_LINKS` reads; `run_fetch_job` (`follow`) loads it next
+  and reports it in `linked`. `WebTools._browser_linked` takes it into the
+  PDF library; `_browser_results` keeps what a window brought per address.
+- `WebTools._copy_seen` keeps what servers stated about addresses of one
+  file name and returns them newest first.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),

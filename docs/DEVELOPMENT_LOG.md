@@ -4,7 +4,60 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev77 — The report behind a read page; a worker without a report; 520 sent again (2026-11-17)
+## 0.1.1.dev79 — A refusal names the argument; one table is one table; the same PDF twice (2026-11-17)
+
+The energy outlook run at dev77 chose the newest copy of the report and
+read it, and produced no file.
+
+- `docx_write` answered "Unsupported or missing tool arguments" seven
+  times. The refusal now names the argument that is not one, the one that
+  is missing, what the tool takes, and an example. `tables` that holds the
+  rows of one table is one table; a cell may be a number.
+- "[WinError 5] Access is denied: …pdf.tmp -> …pdf": the coordinator and
+  a worker fetched the same report at once, and replacing the file the
+  other had open was refused. A file of the same content is kept, not
+  replaced; a refused replacement is tried again.
+- The result listed the document among the files with cited sources
+  although its save had failed every time: citations are noted before the
+  write runs. Only saved files are listed.
+
+The newest of several copies is the application's to say; a missing PDF is named again (2026-11-17)
+
+The energy outlook run at dev76 ended `incomplete`, as it should: the
+downloaded PDF was to be saved in the folder and was not. But `pdf_save`
+was never called, and of five copies of the report the coordinator took one
+dated November although it had looked at one from March of the next year.
+
+- `web_fetch` `headers_only` returns the copies of one file name compared
+  so far, newest first, and names the one to fetch; a download of an older
+  copy says that a newer one was seen. The policy gives the choice as
+  numbered steps.
+- A completion without a requested file is sent back once for each set of
+  missing files: after the document and slides were saved, the PDF alone is
+  named once more, with `pdf_save` and the ids downloaded. The policy says
+  to use `pdf_save` when the request asks to keep the PDF.
+
+The outlook run at dev77 (191 s) then showed three more things.
+
+- It ended `done` with an empty folder, the coordinator itself reporting
+  that the two requested files had not been made. Files of those names
+  stood in the folders of earlier runs under the same read folder, and a
+  name that exists anywhere was taken for an input. A name the request
+  asks to produce is now a deliverable all the same, and "saved" means new
+  or changed since the request.
+- "Browser try, success (page read)", and the next `web_fetch` of that
+  address answered "already tried": the page never reached the agent that
+  needed it. What a window brought is now returned again.
+- The page's report was never opened: an older issue's file was refused
+  first, which closed the whole site. A refusal now closes that address
+  only, and a read page is followed in the same window by its own full
+  report, which comes back with the page (`linked_pdf`). Links in
+  `data-href` / `data-url` and links that only say "PDF" are found.
+
+Not verified here: the real page's markup. The link rules were written
+from the addresses reported, not from the page.
+
+The report behind a read page; a worker without a report; 520 sent again (2026-11-17)
 
 - One `HTTP 520` from the provider's front end ended an agent's turn, and the
   run then waited for a person for seven minutes without a question. 520-524

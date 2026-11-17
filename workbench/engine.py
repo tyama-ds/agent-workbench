@@ -1094,11 +1094,11 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
 
     def _browser_fetcher(self, config, harness):
         """Opens one address once in a visible window of the configured browser (a fresh profile, deleted afterwards)."""
-        async def fetch(url, max_download_bytes, person_seconds=0, check_words=(), via=''):
+        async def fetch(url, max_download_bytes, person_seconds=0, check_words=(), via='', follow=False):
             try:
                 return await execute_fetch(config['selenium'], config['python'], harness, url,
                                            proxy_url=config['search']['proxy_url'], max_download_bytes=max_download_bytes,
-                                           person_seconds=person_seconds, check_words=check_words, via=via)
+                                           person_seconds=person_seconds, check_words=check_words, via=via, follow=follow)
             except HarnessError as exc:
                 raise ValueError(str(exc)) from None
         return fetch
@@ -3751,7 +3751,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         self._citations_note(run, name, args, cited)  # only a write that is not refused here
 
     def _source_footer(self, run):
-        ledger = run.get('_unverified_urls') or {}
+        # Only files that were really saved: a write that was refused afterwards left no file.
+        ledger = {key: row for key, row in (run.get('_unverified_urls') or {}).items() if self._was_saved(run, row['path'])}
         if not ledger:
             return ''
         lines = [f'- {self.redact(row["path"])}: ' + '、'.join(self.redact(url)[:200] for url in row['urls'][:10])

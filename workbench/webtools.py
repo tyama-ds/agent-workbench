@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import errno
 import hashlib
 import html
@@ -263,11 +264,16 @@ class _TextHTML(HTMLParser):
             self.parts.append("\n")
         if tag == "a" and not self.ignored and len(self._links) < 400:
             values = dict(attrs)
-            href = values.get("href")
+            # Sites also put the file's address in data-href / data-url (the visible href is a script or "#").
+            href = next((values[name] for name in ("href", "data-href", "data-url", "data-file")
+                         if isinstance(values.get(name), str) and "pdf" in values[name].lower()), None) or values.get("href")
             kind = (values.get("type") or "").lower()
-            if isinstance(href, str) and ("pdf" in href.lower() or kind == "application/pdf"):
-                label = values.get("title") or values.get("aria-label") or ""
-                self._open = [href.strip(), [label] if label else []]
+            label = values.get("title") or values.get("aria-label") or ""
+            if isinstance(href, str) and href.strip() and not href.strip().lower().startswith(("javascript:", "#", "mailto:")):
+                # A link is kept when its address or its type names a PDF; one that only says "PDF" in its
+                # words (…/text.ashx, "Full Report PDF") is decided when its words are complete.
+                named = "pdf" in href.lower() or kind == "application/pdf"
+                self._open = [href.strip(), [label] if label else [], named]
                 self._links.append(self._open)
 
     def handle_endtag(self, tag):
@@ -285,13 +291,14 @@ class _TextHTML(HTMLParser):
     def pdf_links(self, base: str) -> tuple[list[dict], int]:
         """Links whose address names a PDF: absolute, public-looking, once each; and how many were left out."""
         rows, seen, used = [], set(), 0
-        for href, words in self._links:
+        for href, words, named in self._links:
             try:
                 url = urllib.parse.urldefrag(urllib.parse.urljoin(base, href))[0]
                 parsed = _url(url)
             except (WebToolError, ValueError):
                 continue
-            if "pdf" not in (parsed.path + "?" + parsed.query).lower() or len(url) > 2000 or url in seen:
+            said = re.search(r"\bpdf\b", " ".join(words), re.I) is not None
+            if not (named or said or "pdf" in (parsed.path + "?" + parsed.query).lower()) or len(url) > 2000 or url in seen:
                 continue
             seen.add(url)
             text = " ".join(" ".join(words).split())[:160]
@@ -549,6 +556,10 @@ class WebTools:
         # human allowed it for this work (the engine then supplies the opener). What was tried, and how it ended.
         self._browser_fetch, self._browser_tried, self._browser_refused_hosts = None, {}, set()
         self._browser_unavailable, self.browser_log = "", []
+        # What servers stated about files of one name at several addresses: name -> {url: (date, text, bytes)}.
+        self._copies = {}
+        # What a browser window brought for an address: given again when the address is asked for again.
+        self._browser_results = {}
         # PDF links of a page that a browser window read -> that page; and the links opened from their page.
         self._browser_from, self._browser_followed = {}, set()
         # PDFs this run downloaded (pdf_id -> its record); the library that keeps them is the application's.
@@ -735,8 +746,17 @@ class WebTools:
                     result["headers_only_note"] = (f"The site refused the question about the file's size and date (HTTP {refused.status}), "
                                                    "so the address itself was fetched instead; this is its content.")
                     return result
-                return {"url": final_url, "headers_only": True, "content_type": _mime(content_type), **facts, "untrusted": True,
-                        "note": "Only what the server states: the size (bytes) and date (last_modified) of the file. Nothing was downloaded."}
+                result = {"url": final_url, "headers_only": True, "content_type": _mime(content_type), **facts, "untrusted": True,
+                          "note": "Only what the server states: the size (bytes) and date (last_modified) of the file. Nothing was downloaded."}
+                copies = self._copy_seen(args["url"], facts)
+                if copies:
+                    # The comparison is the application's, not the model's: sorted by the date the servers state.
+                    result["same_name_copies"] = copies
+                    result["newest_copy"] = copies[0]["url"]
+                    result["copies_note"] = (f"{len(copies)} addresses with this file name were compared in this work, newest first by "
+                                             "last_modified. Fetch newest_copy (not the first one found), and write this list and the "
+                                             "choice in the report. Check any further candidate with headers_only before you choose.")
+                return result
             try:
                 data, content_type, final_url = await (self._request(args["url"], pdf=(self._pdf_bytes, PDF_SECONDS), facts=facts)
                                                        if wants_pdf else self._request(args["url"]))
@@ -750,6 +770,14 @@ class WebTools:
                 result = await self._pdf_fetched(data, final_url)
                 if facts.get("last_modified"):
                     result["last_modified"] = facts["last_modified"]  # the date the server gives the file
+                copies = self._copy_seen(args["url"], facts)
+                if copies and copies[0]["url"] != args["url"]:
+                    # Real-machine case: of several copies of one report the coordinator took one from November
+                    # although it had seen one from March of the next year.
+                    result["newer_copy"] = copies[0]
+                    result["newer_copy_note"] = ("Another address with the same file name that was checked in this work is newer by "
+                                                 "last_modified. Fetch and use newer_copy unless the request names this edition; "
+                                                 "say in the report which copy was used and why.")
                 return result
             if mime not in {"text/plain", "text/html", "application/xhtml+xml", "application/json", "text/markdown", "text/csv"}:
                 # Echo the remote type only when it is a short plain MIME token.
@@ -802,6 +830,33 @@ class WebTools:
                                         + ". Fetch one with web_fetch, then read it with pdf_read.")
         return result
 
+    def _copy_seen(self, url: str, facts: dict) -> list[dict] | None:
+        """Remember the date a server states for this address; -> the addresses with the same file name, newest first.
+
+        None while there is nothing to compare (one address, or no date).
+        """
+        from email.utils import parsedate_to_datetime
+        from datetime import timezone
+        name = urllib.parse.unquote(_url(url).path).rsplit("/", 1)[-1].casefold()
+        stated = facts.get("last_modified")
+        if not name or not stated:
+            return None
+        try:
+            when = parsedate_to_datetime(stated)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if name not in self._copies and len(self._copies) >= 50:
+            return None
+        rows = self._copies.setdefault(name, {})
+        if url in rows or len(rows) < 20:
+            rows[url] = (when, stated, facts.get("bytes"))
+        if len(rows) < 2:
+            return None
+        return [{"url": address, "last_modified": text, **({"bytes": size} if size is not None else {})}
+                for address, (_, text, size) in sorted(rows.items(), key=lambda item: item[1][0], reverse=True)]
+
     # --- one try in a browser window, when the human allowed it for this work ------------------
     BROWSER_TRIES = 5  # windows one piece of work may open
     BROWSER_FOLLOWS = 5  # and PDF links opened from a page that a window read, in the same window as that page
@@ -822,12 +877,19 @@ class WebTools:
         ask = self._BROWSER_ASK
         parsed = _url(url)
         host = parsed.hostname
+        if url in self._browser_results:
+            # Real-machine case: one agent's window read the page; the next agent to ask for it was told "already
+            # tried" and never saw the page. What the window brought is given again; no second window opens.
+            again = copy.deepcopy(self._browser_results[url])
+            again["fetched_note"] += " (Read earlier in this work; the window was not opened again.)"
+            return again
         if url in self._browser_tried:
             raise WebToolError(f"{refused}. A browser window already tried this address once in this work ({self._browser_tried[url]})." + ask)
         if self._browser_unavailable:
             raise WebToolError(f"{refused}. A browser window cannot be opened here ({self._browser_unavailable})." + ask)
         if host in self._browser_refused_hosts:
-            raise WebToolError(f"{refused}. This site also refused the browser window earlier in this work; it is not opened there again." + ask)
+            raise WebToolError(f"{refused}. This site asked for a check by a person earlier in this work, and it was not passed; "
+                               "the window is not opened there again." + ask)
         via = self._browser_from.get(url, "")
         if via:
             # A PDF that a page read in a window links to: the continuation of that try, not a new one.
@@ -861,7 +923,7 @@ class WebTools:
         via = self._browser_from.get(url, "") if url in self._browser_followed else ""
         try:
             page = await self._browser_fetch(url, self._pdf_bytes or self.max_bytes, person_seconds, list(PERSON_CHECK_WORDS),
-                                             **({"via": via} if via else {}))
+                                             **({"via": via} if via else {}), **({"follow": True} if self._pdf_library is not None else {}))
         except ValueError as exc:
             # Not Windows, no browser or driver set, or the browser did not start: said once, never tried again.
             self._browser_unavailable = str(exc)[:300]
@@ -880,7 +942,8 @@ class WebTools:
                 raise WebToolError(f"The browser window saved the PDF, but it could not be read: {exc}") from None
             self._browser_record(url, "success", f"PDF saved, {result.get('pages')} pages" + (" after a person passed the check" if person_seconds else "")
                                  + (", opened from the page that links to it" if via else ""))
-            return self._browser_marked(result)
+            self._browser_results[url] = self._browser_marked(result)
+            return copy.deepcopy(self._browser_results[url])
         if kind == "too_large":
             self._browser_record(url, "failed", "the file is larger than the PDF size limit")
             raise WebToolError(_pdf_too_large(page.get("bytes") or None, self._pdf_bytes or self.max_bytes))
@@ -899,7 +962,8 @@ class WebTools:
             self._browser_record(url, "refused", "the check was not passed in the time given")
             raise WebToolError(f"{refused}. The site's check was not passed in the browser window in the time given." + ask)
         if status >= 400 or status == 202 or _words_in(_DENIED_WORDS, title, html_text):
-            self._browser_refused_hosts.add(host)
+            # This address was refused. Another address of the site is still its own try: real-machine case,
+            # an older issue's file was refused and the current issue's file was then never tried.
             detail = f"refused (HTTP {status})" if status >= 400 or status == 202 else "the site refused the browser as well"
             self._browser_record(url, "refused", detail)
             raise WebToolError(f"{refused}. A browser window tried once and was also turned away: {detail}. "
@@ -916,13 +980,46 @@ class WebTools:
             raise WebToolError(f"{refused}. The browser window was led to an address that is not allowed; nothing was kept." + ask) from None
         result = self._text_result(html_text, "text/html", final, {"encoding": "utf-8", "encoding_source": "browser", "encoding_assumed": False},
                                    html_text.encode("utf-8"), truncated=page.get("truncated") is True)
-        self._browser_record(url, "success", "page read" + (" after a person passed the check" if person_seconds else ""))
+        linked = await self._browser_linked(page, final, result)
+        self._browser_record(url, "success", "page read" + (" after a person passed the check" if person_seconds else "") + linked)
         for row in result.get("pdf_links", []):
             self._browser_from.setdefault(row["url"], final)
         if result.get("pdf_links"):
             result["pdf_links_note"] += (" Where the site refuses one of them, the application opens it from this page in a "
                                          "browser window (the same session); that does not count as a new window.")
-        return self._browser_marked(result)
+        self._browser_results[url] = self._browser_marked(result)
+        return copy.deepcopy(self._browser_results[url])
+
+    async def _browser_linked(self, page: dict, final: str, result: dict) -> str:
+        """The report a read page links to, which the same window opened next. -> words for the record of the try."""
+        linked = page.get("linked") or {}
+        address = linked.get("url")
+        if not address or self._pdf_library is None:
+            return ""
+        try:
+            if _url(address).hostname != _url(final).hostname:
+                return ""  # only a file of the page's own site is opened without being asked for
+        except WebToolError:
+            return ""
+        data = page.get("linked_data") or b""
+        if linked.get("kind") == "download" and looks_like_pdf(data):
+            try:
+                saved = await self._pdf_fetched(data, address)
+            except WebToolError as exc:
+                self._browser_tried[address] = "opened from its page; the PDF could not be read"
+                result["linked_pdf_note"] = f"The page links to {address}; the same window opened it, but the PDF could not be read: {exc}"
+                return "; the report it links to was saved but could not be read"
+            self._browser_tried[address] = f"PDF saved from its page, {saved.get('pages')} pages"
+            self._browser_results[address] = self._browser_marked(saved)
+            result["linked_pdf"] = {key: saved[key] for key in ("pdf_id", "url", "pages", "title") if key in saved}
+            result["linked_pdf_note"] = ("This page links to its full report. The same window opened that file next and saved it: "
+                                         "read it with pdf_read and this pdf_id. It need not be fetched again.")
+            return f"; the report it links to was saved in the same window ({saved.get('pages')} pages)"
+        reason = (f"HTTP {linked.get('status')}" if linked.get("status") else str(linked.get("kind") or "nothing arrived"))
+        self._browser_tried[address] = f"opened from its page in the same window: {reason}"
+        result["linked_pdf_note"] = (f"The page links to {address}; the same window opened it next and did not get the file ({reason}). "
+                                     "That address is not tried again in this work.")
+        return f"; the report it links to was not obtained ({reason})"
 
     @staticmethod
     def _browser_marked(result: dict) -> dict:

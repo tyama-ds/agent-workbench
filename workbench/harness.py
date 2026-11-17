@@ -869,6 +869,39 @@ def _paragraph_text(paragraph, text: str) -> None:
         paragraph.add_run(text)
 
 
+# What a correct call looks like, shown with a refusal for wrong argument names.
+_ARGUMENT_EXAMPLES = {
+    "docx_write": (' Example: {"path": "report.docx", "expected_sha256": "missing", "paragraphs": ["Title", "First paragraph."], '
+                   '"tables": [[["Item", "2035"], ["Demand", "654 EJ"]]]}. Headings, titles and notes go into paragraphs. '
+                   'A long document can be written in parts: docx_write with the first part, then docx_edit with '
+                   'append_paragraph and append_table.'),
+    "docx_edit": (' Example: {"path": "report.docx", "expected_sha256": "<sha256 from the last result>", '
+                  '"operations": [{"type": "append_paragraph", "text": "Next paragraph."}]}.'),
+    "pptx_write": (' Example: {"path": "slides.pptx", "expected_sha256": "missing", "slides": [{"title": "Summary", '
+                   '"body": ["First point", "Second point"]}]}.'),
+    "xlsx_write": (' Example: {"path": "data.xlsx", "expected_sha256": "missing", "cells": [{"sheet": "Sheet1", "cell": "A1", '
+                   '"value": "Item"}]}.'),
+    "write_text": ' Example: {"path": "notes.md", "expected_sha256": "missing", "text": "..."}.',
+}
+
+
+def _cell_text(value, label: str = "cell") -> str:
+    """A table cell: text, or a number written as text (a figure typed without quotes is still a figure)."""
+    if type(value) in (int, float) and value == value and abs(value) != float("inf"):
+        value = str(int(value)) if type(value) is float and value == int(value) and abs(value) < 1e15 else str(value)
+    elif value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise HarnessError(f"{label} must be text or a number; got {type(value).__name__}")
+    return _string(value, label, 10000, empty=True)
+
+
+def _one_table(tables) -> bool:
+    """tables holds the rows of one table (each row a list of cells), not a list of tables."""
+    return (isinstance(tables, list) and len(tables) > 0 and all(isinstance(row, list) and row for row in tables)
+            and all(not isinstance(cell, (list, dict)) for row in tables for cell in row))
+
+
 def _schema(properties: dict, required=()) -> dict:
     return {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
 
@@ -918,8 +951,16 @@ class ToolExecutor:
         if specification is None or not isinstance(args, dict):
             raise HarnessError("Unknown tool or invalid arguments")
         schema = specification["parameters"]
-        if set(args) - set(schema["properties"]) or set(schema["required"]) - set(args):
-            raise HarnessError("Unsupported or missing tool arguments")
+        unknown, missing = sorted(set(args) - set(schema["properties"])), sorted(set(schema["required"]) - set(args))
+        if unknown or missing:
+            # Real-machine case: docx_write answered "Unsupported or missing tool arguments" seven times in a
+            # row, and neither the model nor the person reading the history could tell which argument it was.
+            raise HarnessError(
+                f"{name} was not run: "
+                + (f"it has no argument named {', '.join(unknown[:8])}. " if unknown else "")
+                + (f"The required argument {', '.join(missing)} is missing. " if missing else "")
+                + f"{name} takes only: {', '.join(schema['properties'])} (required: {', '.join(schema['required']) or 'none'})."
+                + _ARGUMENT_EXAMPLES.get(name, ""))
         # A cancelled await cannot cancel an already-running filesystem thread.
         # Drain it before propagating cancellation, so the caller keeps its
         # reservation/write lock until this operation has actually settled.
@@ -1013,11 +1054,16 @@ class ToolExecutor:
     @staticmethod
     def _table_rows(rows):
         if not isinstance(rows, list) or not 1 <= len(rows) <= 200 or not all(isinstance(row, list) for row in rows):
-            raise HarnessError("Table rows must contain 1 to 200 rows")
+            got = (f"{len(rows)} rows" if isinstance(rows, list) and all(isinstance(row, list) for row in rows)
+                   else "a list whose items are not all rows (lists of cells)" if isinstance(rows, list) else type(rows).__name__)
+            raise HarnessError(f"A table is a list of 1 to 200 rows, each row a list of cells; got {got}. "
+                               'Example of one table: [["Item", "2035"], ["Demand", "654 EJ"]]')
         width = len(rows[0])
         if not 1 <= width <= 50 or any(len(row) != width for row in rows):
-            raise HarnessError("Table rows must have the same width (1 to 50 columns)")
-        return [[_string(cell, "cell", 10000, empty=True) for cell in row] for row in rows]
+            widths = sorted({len(row) for row in rows})
+            raise HarnessError(f"Every row of a table needs the same number of cells (1 to 50); the rows here have {widths} cells. "
+                               "Fill missing cells with an empty text.")
+        return [[_cell_text(cell) for cell in row] for row in rows]
 
     def _docx(self, name: str, args: dict) -> dict:
         from docx import Document
@@ -1034,8 +1080,13 @@ class ToolExecutor:
             return output
         if name == "docx_write":
             paragraphs, tables = args.get("paragraphs", []), args.get("tables", [])
+            if _one_table(tables):
+                # Real-machine case: tables held the rows of one table. That is what was meant: one table.
+                tables = [tables]
             if not isinstance(paragraphs, list) or not isinstance(tables, list) or len(paragraphs) > 1000 or len(tables) > 30:
-                raise HarnessError("Too many paragraphs or tables")
+                got = lambda value: f"{len(value)} items" if isinstance(value, list) else type(value).__name__
+                raise HarnessError("docx_write takes paragraphs (a list of at most 1000 texts) and tables (a list of at most 30 "
+                                   f"tables, each a list of rows); got paragraphs: {got(paragraphs)}, tables: {got(tables)}")
             # A table written as text (Markdown rows, or cells separated by tabs) becomes a real table where it
             # stands: left as paragraphs it is neither readable as a table nor editable as one.
             converted = dropped = 0

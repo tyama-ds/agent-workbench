@@ -361,3 +361,164 @@ async def test_a_worker_that_answers_in_prose_is_reminded_and_the_coordinator_ge
         assert not any(row['kind'] == 'stall_notice' for row in engine.events)
     finally:
         await asyncio.wait_for(engine.close(), 20)
+
+
+async def test_a_missing_pdf_is_sent_back_once_more_with_the_tool_that_saves_it(tmp_path):
+    """Real-machine case: report, slides and the downloaded PDF were asked for. Document and slides were saved, the
+    PDF was not, pdf_save was never called, and the run ended incomplete without the coordinator being told."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, task='要約を report.docx に保存し、ダウンロードした PDF も WEO2025.pdf として同じフォルダーに保存して',
+                              max_workers=0)
+        pm.pending.clear()
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '完了しました。'})
+        assert first['code'] == 'outputs_missing' and 'report.docx (save with docx_write)' in first['error']
+        assert 'WEO2025.pdf (save with pdf_save)' in first['error'] and 'pdf_id from the web_fetch result' in first['error']
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'report.docx'), 'expected_sha256': 'missing',
+                                                           'paragraphs': ['要約']})
+        # What is still missing is said once more, for that file alone.
+        second = await engine.execute_tool(run, pm, 'finish_work', {'summary': '完了しました。'})
+        assert second['code'] == 'outputs_missing' and 'report.docx' not in second['error']
+        assert 'WEO2025.pdf (save with pdf_save)' in second['error'] and 'docx_write' not in second['error']
+        # Said for this set; a third completion is let through and reported as what it is.
+        third = await engine.execute_tool(run, pm, 'finish_work', {'summary': 'PDF は保存できませんでした。'})
+        assert 'WEO2025.pdf' in third['summary'] and '成果物は作られていません' in third['summary']
+        pm.status = 'done'
+        engine._run_status(run)
+        assert run['status'] == 'incomplete' and run['output_check']['missing'] == ['WEO2025.pdf']
+    finally:
+        await engine.close()
+
+
+def test_which_named_files_a_request_asks_to_produce():
+    from workbench.verification import output_names
+    assert output_names('要約を weo2026_summary.docx、スライドを weo2026_slides.pptx として weo2026e フォルダーに保存してください') == {
+        'weo2026_summary.docx', 'weo2026_slides.pptx'}
+    assert output_names('data.xlsx と notes.docx を読んで report.docx を作って') == {'report.docx'}
+    assert output_names('weo.pdf から要点を抜き出し、summary.md にまとめて') == {'summary.md'}
+    assert output_names('Read data.xlsx and write the result to report.docx') == {'report.docx'}
+    assert output_names('Save the summary as a.docx and the slides as b.pptx, based on source.pdf') == {'a.docx', 'b.pptx'}
+    assert output_names('report.docx について教えて') == set() and output_names(None) == set()
+    assert output_names('成果物: weo_energy_summary.docx, weo_energy_slides.pptx') == {'weo_energy_summary.docx', 'weo_energy_slides.pptx'}
+    assert output_names('IEA の PDF を読み、要約を weo_energy_summary.docx、スライドを weo_energy_slides.pptx に保存し、'
+                        'ダウンロードした PDF も WorldEnergyOutlook2025.pdf として同じフォルダーに保存してください') == {
+        'weo_energy_summary.docx', 'weo_energy_slides.pptx', 'worldenergyoutlook2025.pdf'}
+
+
+async def test_an_older_file_of_the_same_name_elsewhere_does_not_stand_in_for_a_requested_file(tmp_path):
+    """Real-machine case: "save the summary as weo2026_summary.docx" ended "done" with an empty folder. Files of
+    those names stood in the folders of earlier runs beside it, and the application took them for the files asked for."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        for folder in ('weo2026c', 'weo2026d'):
+            (work / folder).mkdir()
+            (work / folder / 'weo2026_summary.docx').write_bytes(b'last week')
+        (work / 'weo2026d' / 'weo2026_slides.pptx').write_bytes(b'last week')
+        (work / 'data').mkdir()
+        (work / 'data' / 'figures.xlsx').write_bytes(b'input')
+        (work / 'notes.md').write_text('input', encoding='utf-8')
+        run, pm = await start(engine, max_workers=0, task='figures.xlsx と notes.md を読んで、要約を weo2026_summary.docx、'
+                              'スライドを weo2026_slides.pptx として weo2026e フォルダーに保存してください')
+        # What the request reads is not asked for; what it asks to produce is, although files of those names exist.
+        assert run['output_check'] == {'expected': ['weo2026_summary.docx', 'weo2026_slides.pptx'],
+                                       'missing': ['weo2026_summary.docx', 'weo2026_slides.pptx']}
+        pm.pending.clear()
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '取得できず、成果物は未作成です。'})
+        assert first['code'] == 'outputs_missing'
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '取得できず、成果物は未作成です。'})
+        assert '成果物は作られていません' in done['summary']
+        pm.status = 'done'
+        engine._run_status(run)
+        assert run['status'] == 'incomplete'          # the coordinator said so itself; the run says so too
+        # Saved where it was asked for (through a tool, or by a script without a receipt): no longer missing.
+        (work / 'weo2026e').mkdir()
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'weo2026e' / 'weo2026_summary.docx'),
+                                                           'expected_sha256': 'missing', 'paragraphs': ['要約']})
+        (work / 'weo2026e' / 'weo2026_slides.pptx').write_bytes(b'written by a script')
+        engine._run_status(run)
+        assert run['status'] == 'done' and run['output_check']['missing'] == []
+    finally:
+        await engine.close()
+
+
+def test_a_refused_file_tool_call_says_which_argument_and_one_table_is_taken_as_one_table(tmp_path):
+    """Real-machine case: docx_write answered "Unsupported or missing tool arguments" seven times in a row. tables held
+    the rows of one table, and the history did not show which argument was wrong."""
+    tools = tools_in(tmp_path)
+    path = str(tmp_path / 'report.docx')
+    rows = [['指標', 'CPS', 'STEPS', 'NZE'], ['2035年の総エネルギー需要増加', 838, 744.5, '654'], ['出典ページ', 'p. 12', None, 'p. 14']]
+    # The rows of one table are one table; a number typed without quotes is its text.
+    result = call(tools, 'docx_write', path=path, expected_sha256='missing', paragraphs=['要約'], tables=rows)
+    document = Document(path)
+    assert [[cell.text for cell in row.cells] for row in document.tables[0].rows] == [
+        ['指標', 'CPS', 'STEPS', 'NZE'], ['2035年の総エネルギー需要増加', '838', '744.5', '654'], ['出典ページ', 'p. 12', '', 'p. 14']]
+    assert len(document.tables) == 1 and result['operation'] == 'created'
+    # A list of tables stays a list of tables.
+    (tmp_path / 'b').mkdir()
+    call(tools, 'docx_write', path=str(tmp_path / 'b' / 'two.docx'), expected_sha256='missing', tables=[rows, [['a', 'b']]])
+    assert len(Document(str(tmp_path / 'b' / 'two.docx')).tables) == 2
+    # An argument the tool does not have, and one that is missing: named, with what the tool takes and an example.
+    with pytest.raises(HarnessError) as caught:
+        call(tools, 'docx_write', path=path, title='要約', sections=[], paragraphs=['x'])
+    text = str(caught.value)
+    for words in ('docx_write was not run', 'no argument named sections, title', 'required argument expected_sha256 is missing',
+                  'takes only: path, expected_sha256, paragraphs, tables', 'Example: {"path": "report.docx"',
+                  'docx_edit with append_paragraph and append_table'):
+        assert words in text, words
+    # Rows of different widths, and something that is not rows: said as what they are.
+    with pytest.raises(HarnessError, match=r'the rows here have \[2, 3\] cells'):
+        call(tools, 'docx_write', path=path, expected_sha256=result['sha256'], tables=[[['a', 'b'], ['c', 'd', 'e']]])
+    with pytest.raises(HarnessError, match='A table is a list of 1 to 200 rows, each row a list of cells'):
+        call(tools, 'docx_write', path=path, expected_sha256=result['sha256'], tables=[{'rows': []}])
+    from workbench.providers import _native_call
+    broken = _native_call('c1', 'docx_write', '{"path": "report.docx", "paragraphs": ["a" "b"]}', set())
+    assert 'the reply may have been cut off' in broken['error'] and 'docx_edit to append the rest' in broken['error']
+
+
+def test_two_agents_keeping_the_same_pdf_at_once_do_not_fail(tmp_path, monkeypatch):
+    """Real-machine case: "[WinError 5] Access is denied: ...pdf.21068.27188.tmp -> ...pdf": the coordinator and a
+    worker fetched the same report at the same time, and replacing the file the other had open was refused."""
+    import os
+    from workbench import pdfdocs
+    library = pdfdocs.PdfLibrary(tmp_path / 'pdf-cache')
+    first = library.put(REPORT, 'https://example.org/weo.pdf')
+    replaced, really_replace = [], os.replace
+
+    def refusing(source, target):
+        replaced.append(Path(target).name)
+        if str(target).endswith('.pdf'):
+            raise PermissionError(5, 'Access is denied')   # the other agent has it open
+        return really_replace(source, target)
+
+    monkeypatch.setattr(pdfdocs.os, 'replace', refusing)
+    second = library.put(REPORT, 'https://example.org/weo.pdf')
+    # The file that is there is this file: it is not replaced at all, and nothing fails.
+    assert second['pdf_id'] == first['pdf_id'] and replaced == [first['pdf_id'] + '.json']
+    assert library.get(first['pdf_id'])[0] == REPORT and not list((tmp_path / 'pdf-cache').glob('*.tmp'))
+    # A record that cannot be replaced for a moment is tried again, and an existing one is kept.
+    monkeypatch.setattr(pdfdocs.time, 'sleep', lambda seconds: None)
+    def always_refusing(source, target):
+        raise PermissionError(5, 'Access is denied')
+
+    monkeypatch.setattr(pdfdocs.os, 'replace', always_refusing)
+    third = library.put(REPORT, 'https://example.org/weo.pdf')
+    assert third['pdf_id'] == first['pdf_id'] and library.get(first['pdf_id'])[0] == REPORT
+    assert not list((tmp_path / 'pdf-cache').glob('*.tmp'))
+
+
+async def test_a_file_whose_save_failed_is_not_listed_as_a_cited_source(tmp_path):
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        source = 'https://www.iea.org/reports/world-energy-outlook-2025'
+        run, pm = await start(engine, max_workers=0, task=f'{source} の要約を summary.docx に保存して')
+        args = {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing', 'paragraphs': [f'出典: {source}']}
+        # The citations of a write are noted before it runs; this write never produced a file.
+        engine._source_check(run, pm, 'docx_write', args)
+        assert run['_cited'] and engine._citation_rows(run, 10) == [] and engine._citations_footer(run) == ''
+        await engine.execute_tool(run, pm, 'docx_write', args)
+        assert [row[:2] for row in engine._citation_rows(run, 10)] == [(args['path'], source)]
+    finally:
+        await engine.close()
