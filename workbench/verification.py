@@ -12,6 +12,7 @@ application states the recorded outcome under the result.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import time
@@ -160,7 +161,26 @@ def output_names(text):
 
 
 # A page reference ("p. 119", "p.119", "pp. 119") and a quotation in quotation marks.
-_PAGE_REF = re.compile(r'(?<![A-Za-z0-9])pp?\.?\s*(\d{1,4})(?![\d,.]\d)', re.I)
+_PAGE_REF = re.compile(r'(?<![A-Za-z0-9])pp?\.?\s*(\d{1,4})(?:\s*[-–—〜~]\s*(\d{1,4}))?(?![\d,.]\d)', re.I)
+_CJK = re.compile(r'[\u3040-\u30ff\u3400-\u9fff]')
+UNCONFIRMED = '（ページ未確認）'
+
+
+def _page_of(match):
+    """The page a reference names, or (first, last) for a short range ("p. 17-19")."""
+    first, last = int(match.group(1)), match.group(2)
+    return (first, int(last)) if last and first < int(last) <= first + 50 else first
+
+
+def quotable(words):
+    """Words that can be looked up as a quotation: a passage, or a figure; not a common phrase of a few words.
+
+    Real-machine case: "Renewables", "already in place" and "Total final consumption" stood in quotation marks
+    with a page; such words stand on many pages, and looking them up says nothing.
+    """
+    if _CJK.search(words):
+        return len(''.join(words.split())) >= 10
+    return len(words.split()) >= 4 or (any(char.isdigit() for char in words) and len(words.split()) >= 2)
 _QUOTATION = re.compile(r'[「『"“]([^「」『』"“”\n]{6,240})[」』"”]')
 _QUOTE_COLUMN = re.compile(r'引用|原文|quot', re.I)
 _PAGE_COLUMN = re.compile(r'ページ|頁|page|^p\.?$', re.I)
@@ -176,11 +196,12 @@ def page_quotes(value):
     pairs = []
 
     def line(text):
-        refs = [(match.start(), int(match.group(1))) for match in _PAGE_REF.finditer(text)]
+        refs = [(match.start(), _page_of(match)) for match in _PAGE_REF.finditer(text)]
         for match in _QUOTATION.finditer(text):
-            near = [(min(abs(position - match.start()), abs(position - match.end())), page) for position, page in refs]
-            if near and min(near)[0] <= 80:
-                pairs.append((min(near)[1], match.group(1).strip()))
+            near = [(min(abs(position - match.start()), abs(position - match.end())), index)
+                    for index, (position, _) in enumerate(refs)]
+            if near and min(near)[0] <= 80 and quotable(match.group(1).strip()):
+                pairs.append((refs[min(near)[1]][1], match.group(1).strip()))
 
     def walk(item):
         if len(pairs) >= _MAX_QUOTES:
@@ -202,10 +223,11 @@ def page_quotes(value):
                 if quote is not None and page is not None:
                     for row in rows[1:]:
                         if len(row) > max(quote, page):
-                            number = re.search(r'\d{1,4}', str(row[page]))
+                            cell = str(row[page])
+                            number = _PAGE_REF.search(cell) or re.search(r'(\d{1,4})(?:\s*[-–—〜~]\s*(\d{1,4}))?', cell)
                             words = str(row[quote]).strip().strip('「」『』"“”')
-                            if number and 6 <= len(words) <= 240:
-                                pairs.append((int(number.group()), words))
+                            if number and 6 <= len(words) <= 240 and quotable(words):
+                                pairs.append((_page_of(number), words))
                     return
             if rows:
                 for row in rows:
@@ -463,7 +485,10 @@ class VerificationMixin:
         for path, page, quote in stated:
             rows = found.get(quote, [])
             numbers = sorted({row['page'] for row in rows})
-            if page in numbers or any(str(row.get('printed_page', '')).strip() == str(page) for row in rows):
+            low, high = page if isinstance(page, tuple) else (page, page)
+            printed = [int(text) for text in (str(row.get('printed_page', '')).strip() for row in rows) if text.isdigit()]
+            # A range ("p. 17-19") is right when the words stand on any page of it; by position or as printed.
+            if any(low <= number <= high for number in [*numbers, *printed]):
                 status = 'ok'
             elif numbers:
                 status = 'elsewhere'
@@ -472,12 +497,22 @@ class VerificationMixin:
             run['_quote_results'].append({'path': path, 'page': page, 'quote': quote, 'status': status, 'pages': numbers[:6]})
 
     @staticmethod
-    def _quote_lines(rows, limit):
+    def _page_text(page):
+        return f'{page[0]}-{page[1]}' if isinstance(page, tuple) else str(page)
+
+    @classmethod
+    def _quote_lines(cls, rows, limit, *, instruct=False):
         lines = []
         for row in rows[:limit]:
             words = row['quote'] if len(row['quote']) <= 90 else row['quote'][:90] + '…'
-            where = ('PDF では p. ' + ', '.join(map(str, row['pages'])) if row['status'] == 'elsewhere' else 'PDF の本文に見つかりません')
-            lines.append(f'- p. {row["page"]} 「{words}」 → {where}')
+            if row['status'] == 'elsewhere':
+                where = 'PDF では p. ' + ', '.join(map(str, row['pages']))
+                # What to do, with the page to write: real-machine case, the pages were shown and not corrected.
+                todo = f"。ページを p. {row['pages'][0]} に直すか、引用を外してください"
+            else:
+                where = 'PDF の本文に見つかりません'
+                todo = '。引用符とページを外すか、「ページ未確認」と書いてください'
+            lines.append(f'- p. {cls._page_text(row["page"])} 「{words}」 → {where}' + (todo if instruct else ''))
         return lines
 
     def _quotes_gate(self, run, agent):
@@ -489,11 +524,12 @@ class VerificationMixin:
             return None
         run['_quotes_gated'] = True
         return ('[application notice] The application looked up the quotations your files give with a page number in the PDF '
-                'this work read. These do not stand on the page given:\n' + '\n'.join(
-                    self.redact(line) for line in self._quote_lines(wrong, 12))
-                + '\nFor each one: correct the page number to the page it stands on (check with pdf_search); if the words are '
-                  'not in the PDF, they are not a quotation: remove the quotation marks and the page, or write ページ未確認, '
-                  'and do not keep a figure that cannot be found. Save the corrected files, then finish.')
+                'this work read. These do not stand on the page given. Each line says what to do:\n' + '\n'.join(
+                    self.redact(line) for line in self._quote_lines(wrong, 20, instruct=True))
+                + '\nDo exactly that for every line: where a page is given after "PDF では", write that page in place of the '
+                  'old one; where the words are not in the PDF, they are not a quotation, and a figure that cannot be found '
+                  'is not kept. Save the corrected files, then finish. Whatever still does not match after that, the '
+                  'application marks in the file as ' + UNCONFIRMED + '.')
 
     def _quotes_footer(self, run):
         rows = run.get('_quote_results') or []
@@ -505,9 +541,95 @@ class VerificationMixin:
                 f'一致 {sum(row["status"] == "ok" for row in rows)} 件、不一致 {len(wrong)} 件'
                 + (f'、照合できず {unknown} 件' if unknown else '') + '。')
         if wrong:
-            text += '次の引用は、書かれたページにありません（ページ未確認として扱ってください）。\n' + '\n'.join(
-                self.redact(line) for line in self._quote_lines(wrong, 10))
+            marked = run.get('_quotes_marked') or []
+            text += ('次の引用は、書かれたページにありません（ページ未確認として扱ってください）。'
+                     + (f'アプリが次のファイルの該当箇所に「{UNCONFIRMED}」を付けました: '
+                        + '、'.join(self.redact(path) for path in marked[:5]) + '。' if marked else '') + '\n'
+                     + '\n'.join(self.redact(line) for line in self._quote_lines(wrong, 10)))
         return text
+
+    async def _quotes_mark(self, run, agent):
+        """After the one send-back: write （ページ未確認） behind the page of each quotation that still does not match.
+
+        The application has shown the right pages once. What the coordinator leaves wrong would otherwise go
+        out as a checked citation; the mark says in the document itself that the page was not confirmed.
+        Word documents and text files; other kinds are only listed in the result.
+        """
+        if agent.parent_id is not None or not run.get('_quotes_gated') or run.get('_quotes_marked') is not None:
+            return
+        wrong = {}
+        for row in run.get('_quote_results') or []:
+            if row['status'] in {'elsewhere', 'missing'}:
+                wrong.setdefault(row['path'], []).append((row['page'], row['quote']))
+        run['_quotes_marked'] = []
+        for path, pairs in wrong.items():
+            suffix = PureWindowsPath(path).suffix.lower()
+            if suffix not in {'.docx', '.md', '.txt'}:
+                continue
+            try:
+                async with self.lock:
+                    result = await asyncio.to_thread(self._quotes_mark_file, run, path, pairs, suffix)
+            except Exception:  # noqa: BLE001 - a mark that cannot be written leaves the file as the coordinator saved it
+                continue
+            if result:
+                self.record_receipt(agent, 'page_unconfirmed_mark', result)
+                run['_quotes_marked'].append(path)
+
+    @staticmethod
+    def _quotes_mark_text(text, pairs):
+        """``text`` with the mark behind the page reference of each pair it holds, or None when nothing changed."""
+        from .pdfdocs import fold_quote
+        folded, changed = fold_quote(text), False
+        for page, quote in pairs:
+            if fold_quote(quote) not in folded:
+                continue
+            low = page[0] if isinstance(page, tuple) else page
+            for match in _PAGE_REF.finditer(text):
+                if int(match.group(1)) == low and not text[match.end():].lstrip().startswith(UNCONFIRMED):
+                    text, changed = text[:match.end()] + UNCONFIRMED + text[match.end():], True
+                    break
+        return text if changed else None
+
+    def _quotes_mark_file(self, run, path, pairs, suffix):
+        harness = run['_harness']
+        data = harness.read_bytes(path)
+        before = hashlib.sha256(data).hexdigest()
+        if suffix != '.docx':
+            lines, changed = data.decode('utf-8').split('\n'), False
+            for index, line in enumerate(lines):
+                marked = self._quotes_mark_text(line, pairs)
+                if marked is not None:
+                    lines[index], changed = marked, True
+            return harness.write_bytes(path, '\n'.join(lines).encode('utf-8'), before) if changed else None
+        import io
+        from docx import Document
+        from .harness import _paragraph_text
+        document, changed = Document(io.BytesIO(data)), False
+        for paragraph in document.paragraphs:
+            marked = self._quotes_mark_text(paragraph.text, pairs)
+            if marked is not None:
+                _paragraph_text(paragraph, marked)
+                changed = True
+        for table in document.tables:
+            for row in table.rows:
+                cells = list(dict.fromkeys(row.cells))  # merged cells appear more than once
+                joined = ' | '.join(cell.text for cell in cells)
+                for page, quote in pairs:
+                    from .pdfdocs import fold_quote
+                    if fold_quote(quote) not in fold_quote(joined):
+                        continue
+                    low = page[0] if isinstance(page, tuple) else page
+                    for cell in cells:
+                        number = _PAGE_REF.search(cell.text) or re.fullmatch(r'\s*(\d{1,4})(?:\s*[-–—〜~]\s*(\d{1,4}))?\s*', cell.text)
+                        if number and int(number.group(1)) == low and UNCONFIRMED not in cell.text and cell.paragraphs:
+                            _paragraph_text(cell.paragraphs[0], cell.paragraphs[0].text + UNCONFIRMED)
+                            changed = True
+                            break
+        if not changed:
+            return None
+        stream = io.BytesIO()
+        document.save(stream)
+        return harness.write_bytes(path, stream.getvalue(), before)
 
     @staticmethod
     def _was_saved(run, path):

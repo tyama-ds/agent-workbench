@@ -3406,6 +3406,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 completion_notice = self._completion_notice(run, agent)
                 if completion_notice:
                     return {'ok': False, 'code': completion_notice[0], 'error': completion_notice[1]}
+                if agent.parent_id is None:
+                    await self._quotes_mark(run, agent)  # what still does not match after the one send-back
                 agent._revise_pending = False
                 summary += self._turn_footer(run, agent)
                 if agent.parent_id is None:

@@ -103,7 +103,10 @@ PDF_WEB_POLICY = (
     'some issues, so also search by name for the later months of the year up to today ("<report name> October '
     '<year>", "<report name> <year> latest"); (3) take the newest issue published by today, not the first one '
     'found; (4) write in the report which issue you used, its date, and what shows that no newer one exists (the '
-    'list, or the searches you made).'
+    'list, or the searches you made); (5) then get that issue itself: web_fetch the issue\'s own page on the '
+    'publisher\'s site (the list page gives its address in dated_links) and take its full report from there '
+    '(linked_pdf or pdf_links in the result), before any other source. Only if that fails, use the official '
+    'distribution site for the same issue, and there the full report, not a supplement or a summary.'
     ' To get a report, web_fetch its PDF address (the result has a pdf_id); a page that web_fetch returns lists the PDF '
     'files it links to (pdf_links). Where a report comes as several files, fetch the full report first, not its '
     'parts (summary, chapters, tables) one after another. If an institution\'s main site refuses the request, use the same institution\'s '
@@ -123,7 +126,8 @@ PDF_WEB_POLICY = (
     'Write that the PDF was saved only after pdf_save returned its path; otherwise write that it was not saved. Save '
     'the copy you read and quote, once. Before finishing, the application looks up every quotation that stands with a '
     'page number in your files in the PDF; give the page the words stand on, and put only words that are in the PDF '
-    'into quotation marks.')
+    'into quotation marks. A quotation is a passage of four or more words, or a figure with its unit: do not put '
+    'single terms or common phrases of a few words into quotation marks with a page.')
 _PDF_WORD = re.compile(r'pdf|ＰＤＦ', re.I)
 
 
@@ -679,6 +683,33 @@ class PdfToolMixin:
                      '成果物に「保存した」とあっても、PDF のファイルはありません。')
         return text
 
+    def _pdf_id(self, run, value):
+        """The pdf_id this work knows that ``value`` means; an error that lists the usable ones otherwise.
+
+        Real-machine case: web_fetch returned pdf_id "pdf-23d1302fbff692820d3a6a4e" and, beside it, the file's
+        sha256; the agents passed "pdf-" plus the whole hash six times and were refused each time. An id that
+        is one of this work's ids written longer, the file's hash, or a clear beginning of one id is that PDF.
+        """
+        records = getattr(run.get('_web'), 'pdf_ids', {})
+        if isinstance(value, str):
+            given = value.strip()
+            if given in records:
+                return given
+            bare = given[4:] if given.lower().startswith('pdf-') else given
+            matches = [ident for ident, record in records.items()
+                       if given.startswith(ident) or bare.lower() == str(record.get('sha256', '')).lower()
+                       or (len(bare) >= 8 and ident[4:].startswith(bare.lower()))]
+            if len(matches) == 1:
+                return matches[0]
+        listed = '; '.join(f"{ident} ({record.get('url', '')[:160]}"
+                           + (f", {record['pages']} pages" if record.get('pages') else '') + ')'
+                           for ident, record in list(records.items())[-8:])
+        kind = (' That is the id of a page snapshot (for web_read), not of a PDF.'
+                if isinstance(value, str) and value.strip().startswith('web-') else '')
+        raise PdfError('pdf_id must be the id a web_fetch result of this work returned.' + kind + (
+            ' The PDFs of this work: ' + listed + '. Pass one of these ids exactly as written.' if listed else
+            ' This work has downloaded no PDF yet: fetch the PDF\'s URL with web_fetch first.'))
+
     async def _pdf_read(self, run, agent, args, tool='pdf_read'):
         if not self._pdf_available(run):
             raise ValueError('PDF を読むには、読み取りを許可したフォルダーか Web 検索の設定が必要です')
@@ -695,14 +726,14 @@ class PdfToolMixin:
             if not isinstance(args['path'], str):
                 raise PdfError('path must be a string')
             return await self._execute_read_tool(run, agent, 'pdf_read', args)
-        records = getattr(run.get('_web'), 'pdf_ids', {})
-        if args['pdf_id'] not in records:
-            raise PdfError('pdf_id must be the id a web_fetch result of this work returned; fetch the PDF\'s URL with web_fetch first')
+        args = {**args, 'pdf_id': self._pdf_id(run, args['pdf_id'])}
         data, record = await asyncio.to_thread(self.pdf_library.get, args['pdf_id'])
         async with self._run_deadline(run):
             result = await self.pdf_library.read(data, {key: value for key, value in args.items() if key != 'pdf_id'},
                                                  source=record['url'])
-        result = {'pdf_id': args['pdf_id'], 'url': record['url'], **{key: value for key, value in result.items() if key != 'source'}}
+        # The file's hash is not an id: it is returned under a name that cannot be taken for one.
+        result = {'pdf_id': args['pdf_id'], 'url': record['url'],
+                  **{('content_sha256' if key == 'sha256' else key): value for key, value in result.items() if key != 'source'}}
         run.setdefault('_pdf_sources', {})[record['url']] = 'downloaded'
         if result.get('mode') != 'overview':
             run.setdefault('_pdf_read_ids', {})[args['pdf_id']] = record['url']  # pages or a search: this file was read
@@ -715,9 +746,7 @@ class PdfToolMixin:
             raise PdfError('pdf_save takes pdf_id (from web_fetch) and path (a new .pdf file in a write folder)')
         if not args['path'].lower().endswith('.pdf'):
             raise PdfError('path must end in .pdf')
-        records = getattr(run.get('_web'), 'pdf_ids', {})
-        if args['pdf_id'] not in records:
-            raise PdfError('pdf_id must be the id a web_fetch result of this work returned')
+        args = {**args, 'pdf_id': self._pdf_id(run, args['pdf_id'])}
         data, record = await asyncio.to_thread(self.pdf_library.get, args['pdf_id'])
         saved, read = run.setdefault('_pdf_saved', {}), run.get('_pdf_read_ids') or {}
         if record['sha256'] in saved:

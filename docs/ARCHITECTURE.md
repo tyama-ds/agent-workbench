@@ -926,6 +926,15 @@ the human turned it on (0.1.1.dev61; off by default).
   `selenium_runner._failure` turns that into one line and copies the
   records out of the private folder.
 
+## Ids, dated links, marks (0.1.1.dev82)
+
+- `PdfToolMixin._pdf_id` resolves what an agent passed as `pdf_id`.
+- `_TextHTML.dated_links` returns the same-host links whose words carry a
+  year; `WebTools._text_result` adds them to a page's result.
+- `verification.quotable` decides which words are looked up; `_page_of`
+  reads a page or a range; `_quotes_mark` (after the one send-back) writes
+  the mark through `_quotes_mark_file` and records a receipt.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),

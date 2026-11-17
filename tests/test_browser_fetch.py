@@ -483,6 +483,24 @@ async def test_what_a_window_read_is_given_again_and_the_report_it_opened_next_c
         assert 'linked_pdf' not in page and 'linked_pdf_note' not in page and not tools.pdf_ids
 
 
+def test_the_dated_entries_of_a_list_page_come_with_their_addresses():
+    """Real-machine case: the list of issues was read and the newest issue named, and its page was never opened: the
+    page's text does not say where its entries lead."""
+    from workbench.webtools import _TextHTML
+    parser = _TextHTML()
+    parser.feed('<a href="/en/publications/weo/issues/2026/10/13/world-economic-outlook-october-2026">World Economic Outlook, October 2026</a>'
+                '<a href="/en/publications/weo/issues/2026/04/14/world-economic-outlook-april-2026">World Economic Outlook, April 2026</a>'
+                '<a href="/en/publications/weo">World Economic Outlook</a><a href="/en/about">About (since 1944, in short)</a>'
+                '<a href="https://elsewhere.example/2026">Mirror 2026</a><a href="/files/2026/text.pdf">Full Report 2026</a>')
+    parser.close()
+    base = 'https://www.imf.org/en/publications/weo'
+    assert parser.dated_links(base) == [
+        {'url': 'https://www.imf.org/en/publications/weo/issues/2026/10/13/world-economic-outlook-october-2026', 'text': 'World Economic Outlook, October 2026'},
+        {'url': 'https://www.imf.org/en/publications/weo/issues/2026/04/14/world-economic-outlook-april-2026', 'text': 'World Economic Outlook, April 2026'},
+        {'url': 'https://www.imf.org/en/about', 'text': 'About (since 1944, in short)'}]
+    assert [row['url'] for row in parser.pdf_links(base)[0]] == ['https://www.imf.org/files/2026/text.pdf']
+
+
 def test_links_that_lead_to_a_pdf_are_found_in_the_forms_sites_use():
     from workbench.webtools import _TextHTML
     parser = _TextHTML()

@@ -383,6 +383,10 @@ async def test_an_agent_reads_a_saved_pdf_and_a_downloaded_one_and_the_run_remem
         import time as clock
         assert 'Today is ' + clock.strftime('%Y-%m-%d', clock.localtime(run['created_at'])) + " (the application's clock)" in policy
         assert 'Write that the PDF was saved only after pdf_save returned its path' in policy
+        # Real-machine case: the newest issue was named, and a supplement from elsewhere was fetched instead of it.
+        assert "(5) then get that issue itself: web_fetch the issue's own page on the publisher's site" in policy
+        assert 'the full report, not a supplement or a summary' in policy
+        assert 'A quotation is a passage of four or more words, or a figure with its unit' in policy
         assert 'fetch the full report first, not its parts' in policy
         # Figures: found by search, cited with one form of page number and the words they come from, and looked up again.
         assert 'Find what you need with pdf_search' in policy and '"p. 26 (printed 10)"' in policy
