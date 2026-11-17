@@ -11,6 +11,7 @@ application states the recorded outcome under the result.
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path, PureWindowsPath
@@ -97,6 +98,48 @@ def named_files(text):
         if name and not name.startswith('.'):
             names.setdefault(name.casefold(), name)
     return list(names.values())[:_MAX_OUTPUTS]
+
+
+# Words after a file name (Japanese) or before it (English) that say the file is to be produced, or read.
+_OUT_AFTER = re.compile(r'保存|出力|作成|生成|書き出|書き込|にまとめ|を作|に書')
+_IN_AFTER = re.compile(r'を読|を参照|を開|を使|を基|をもと|に基づ|から|を入力|を見')
+_OUT_BEFORE = re.compile(r'\b(?:sav|writ|creat|export|produc|generat|output|put)\w*', re.I)
+_IN_BEFORE = re.compile(r'\b(?:read|open|load|from|using|use|based on|according to)\w*', re.I)
+
+
+def output_names(text):
+    """The file names (casefolded) that a request clearly asks to produce: "…を a.docx に保存", "save it as a.docx".
+
+    A name in a list takes the meaning of the list: "要約を a.docx、スライドを b.pptx として保存" names two
+    outputs; "a.xlsx と b.docx を読んで c.docx を作って" names two inputs and one output. A name with no such
+    word near it is not in the result.
+    """
+    if not isinstance(text, str):
+        return set()
+    text, outputs = _LINK.sub(' ', text), set()
+    for segment in re.split(r'[。\n]|\.\s', text):
+        found = sorted({(match.start(1), match.end(1), match.group(1).strip()) for pattern in (_QUOTED_FILE, _BARE_FILE)
+                        for match in pattern.finditer(segment)})
+        kinds = []
+        for index, (start, end, _) in enumerate(found):
+            after = segment[end:found[index + 1][0] if index + 1 < len(found) else len(segment)]
+            before = segment[found[index - 1][1] if index else 0:start]
+            cues = sorted([(match.start(), kind) for kind, pattern in (('out', _OUT_AFTER), ('in', _IN_AFTER))
+                           for match in [pattern.search(after)] if match])
+            if cues:
+                kinds.append((cues[0][1], 'after'))
+                continue
+            cues = sorted([(match.start(), kind) for kind, pattern in (('out', _OUT_BEFORE), ('in', _IN_BEFORE))
+                           for match in pattern.finditer(before)])
+            kinds.append((cues[-1][1], 'before') if cues else (None, None))
+        for index in range(len(found) - 1, -1, -1):   # a list before its verb: "a、b として保存"
+            if kinds[index][0] is None and index + 1 < len(found) and kinds[index + 1][1] == 'after':
+                kinds[index] = kinds[index + 1]
+        for index in range(1, len(found)):            # a list after its verb: "save x as a and y as b"
+            if kinds[index][0] is None and kinds[index - 1][1] == 'before':
+                kinds[index] = kinds[index - 1]
+        outputs.update(name.casefold() for (_, _, name), (kind, _) in zip(found, kinds) if kind == 'out')
+    return outputs
 
 
 def _excerpt(text):
@@ -345,31 +388,52 @@ class VerificationMixin:
 
     def _outputs_note_request(self, run, text):
         expected = run.setdefault('_expected_outputs', {})
-        added = False
+        added, produced = False, None
         for name in named_files(text):
             key = name.casefold()
             if key in expected:
                 added = True  # named again: checked again at the next completion
-            elif len(expected) < _MAX_OUTPUTS and not self._file_present(run, name):
-                expected[key], added = name, True
+                continue
+            if len(expected) >= _MAX_OUTPUTS:
+                continue
+            there = self._file_instances(run, name)
+            if there:
+                # A file of this name exists. Directly in a permitted folder it is what the request works on.
+                # Deeper down it may be what an earlier piece of work left in its own folder: real-machine case,
+                # "save the summary as weo2026_summary.docx" ended "done" with an empty folder, because a file of
+                # that name stood in last week's folder beside it. Where the request clearly asks to produce
+                # the file, that older file does not stand in for it.
+                produced = output_names(text) if produced is None else produced
+                if any(top for top, _ in there.values()) or key not in produced:
+                    continue
+            expected[key], added = name, True
+            run.setdefault('_output_before', {})[key] = {path: state for path, (_, state) in there.items()}
         if added:
             run['_outputs_gated'] = False
             self._outputs_publish(run)
 
-    def _file_present(self, run, name):
-        """A file of this name exists somewhere in the permitted folders (bounded search)."""
-        harness, wanted = run['_harness'], name.casefold()
+    def _file_instances(self, run, name):
+        """Files of this name in the permitted folders (bounded search): path -> (directly in a folder, (size, mtime))."""
+        harness, wanted, found = run['_harness'], name.casefold(), {}
         for root in dict.fromkeys([*harness.write_roots, *harness.read_roots]):
             try:
-                if (Path(root) / name).is_file():
-                    return True
+                paths = [(Path(root) / name, True)]
                 if root in harness.read_roots:
-                    found = harness.search_paths(str(root), name, kind='file', max_results=50, max_depth=6, max_entries=3000)
-                    if any(row['name'].casefold() == wanted for row in found['matches']):
-                        return True
+                    rows = harness.search_paths(str(root), name, kind='file', max_results=50, max_depth=6, max_entries=3000)
+                    paths += [(Path(row['path']), False) for row in rows['matches'] if row['name'].casefold() == wanted]
+                for path, top in paths:
+                    if path.is_file():
+                        stat = path.stat()
+                        key = os.path.normcase(str(path))
+                        found[key] = (top or found.get(key, (False,))[0], (stat.st_size, stat.st_mtime_ns))
             except (HarnessError, OSError):
                 continue
-        return False
+        return found
+
+    def _file_present(self, run, name):
+        """A file of this name is there that was not there, or was different, when the request named it."""
+        before = (run.get('_output_before') or {}).get(name.casefold(), {})
+        return any(before.get(path) != state for path, (_, state) in self._file_instances(run, name).items())
 
     def _outputs_saved(self, run, path, agent=None, sha256=None):
         """A successful save: remember the file's name, its content hash and who wrote it."""

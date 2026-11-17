@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -254,6 +255,47 @@ _STATUS = ("const e = performance.getEntriesByType('navigation')[0];"
 # does not take in every browser version): the same document is read through the page's own fetch, which
 # uses the window's session and its cache, as "Save" in the viewer does. Nothing is requested that the
 # window has not already been given.
+# The links of the page that may lead to a PDF: read from the page, never clicked.
+_PDF_LINKS = ("const rows = [];"
+              "for (const e of Array.from(document.querySelectorAll('a[href], a[data-href], a[data-url]')).slice(0, 3000)) {"
+              "  let h = '';"
+              "  for (const v of [e.getAttribute('data-href'), e.getAttribute('data-url'), e.getAttribute('href')]) {"
+              "    if (v && (!h || /pdf/i.test(v))) { try { h = new URL(v, document.baseURI).href; } catch (x) {} if (/pdf/i.test(v)) break; }"
+              "  }"
+              "  if (h) rows.push([h, String(e.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160)]);"
+              "}"
+              "return rows.slice(0, 3000);")
+_FULL_REPORT = re.compile(r'full[\s-]*(?:report|text|document|publication)|complete report|entire report|'
+                          r'報告書全体|全文|本文|報告書全文', re.I)
+
+
+def main_pdf_link(rows, page_url):
+    """The one link of a read page that is its full report on the page's own site, or ''.
+
+    A link counts when its address names a PDF. It is taken when its words say "full report" (or the like),
+    or its file is named text.pdf / full*.pdf, or when it is the only PDF link of the site on the page.
+    Several candidates and no such sign: none is taken, and the choice stays with whoever reads the page.
+    """
+    from urllib.parse import urlsplit, urldefrag
+    host, found = urlsplit(page_url).hostname, {}
+    for row in rows if isinstance(rows, list) else []:
+        if not (isinstance(row, (list, tuple)) and len(row) == 2 and all(isinstance(item, str) for item in row)):
+            continue
+        try:
+            address = validate_url(urldefrag(row[0])[0])
+        except ValueError:
+            continue
+        parts = urlsplit(address)
+        if parts.hostname != host or 'pdf' not in (parts.path + '?' + parts.query).lower() or len(address) > 2000:
+            continue
+        found.setdefault(address, row[1])
+    for address, words in found.items():
+        name = urlsplit(address).path.rsplit('/', 1)[-1].lower()
+        if _FULL_REPORT.search(words) or name == 'text.pdf' or name.startswith('full'):
+            return address
+    return next(iter(found)) if len(found) == 1 else ''
+
+
 _SHOWN_FETCH = ("const done = arguments[arguments.length - 1];"
                 "fetch(window.location.href, {credentials: 'include', cache: 'force-cache'})"
                 ".then(r => { if (!r.ok) throw new Error('status ' + r.status); return r.arrayBuffer(); })"
@@ -298,8 +340,10 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
     With ``person_seconds`` a person has agreed to pass the site's check in this window: while the page is
     such a check (one of ``check_words`` in its title or its short text), the window stays open and is
     looked at again, until the page or a download arrives, the window is closed, or that time is over.
+    With ``follow`` a page that links to its full report on its own site (see main_pdf_link) is followed by
+    that file, in the same window; what came of it is in ``linked`` ({kind, url, status, file, bytes}, or {}).
     Returns {kind: download|page|closed|timeout|too_large, url, status, content_type, title, html, truncated,
-    file, bytes, check}.
+    file, bytes, check, linked}.
     """
     url = validate_url(job['url'])
     wait, maximum, largest = job['wait_seconds'], job['max_page_chars'], job['max_download_bytes']
@@ -323,7 +367,7 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
     downloads = workspace / 'downloads'
     downloads.mkdir(exist_ok=True)
     result = {'kind': 'timeout', 'url': url, 'status': 0, 'content_type': '', 'title': '', 'html': '',
-              'truncated': False, 'file': '', 'bytes': 0, 'check': False}
+              'truncated': False, 'file': '', 'bytes': 0, 'check': False, 'linked': {}}
     driver = (driver_factory or create_driver)(job, workspace)
     try:
         driver.set_page_load_timeout(45)
@@ -348,56 +392,60 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
             for item in downloads.iterdir():  # only what the address itself brings counts as its download
                 if item.is_file():
                     item.unlink()
+        def watch(result, started, deadline):
+            """Look at the window until a download, a page, a closed window or the deadline; fill ``result``."""
+            last = None
+            while True:
+                files = sorted(item for item in downloads.iterdir() if item.is_file())
+                sizes = [(item.name, item.stat().st_size) for item in files]
+                if any(size > largest for _, size in sizes):
+                    result.update(kind='too_large', bytes=max(size for _, size in sizes))
+                    break
+                whole = [row for row in sizes if not row[0].lower().endswith(_PARTIAL)]
+                if whole and len(whole) == len(sizes) and sizes == last:
+                    # Present and unchanged since the last look: the download is finished.
+                    result.update(kind='download', file=whole[0][0], bytes=whole[0][1])
+                    break
+                last = sizes
+                try:
+                    status, content_type, ready = driver.execute_script(_STATUS)
+                    current = str(driver.current_url)
+                except Exception:
+                    if not sizes:
+                        result['kind'] = 'closed'  # the person closed the window
+                        break
+                    status, content_type, ready, current = 0, '', '', ''
+                if (not sizes and ready == 'complete' and current.startswith(('http://', 'https://'))
+                        and clock() - started >= 2):
+                    # A page stands in the window and no download began.
+                    try:
+                        check = is_check(str(driver.title), str(driver.page_source))
+                    except Exception:
+                        check = False
+                    if check and person and clock() < deadline:
+                        sleep(1)  # the person is passing the check; look again
+                        continue
+                    result.update(kind='page', status=status if type(status) is int and 0 <= status <= 599 else 0,
+                                  content_type=str(content_type)[:80], check=check)
+                    break
+                if clock() >= deadline:
+                    break
+                sleep(.5)
+            if result['kind'] == 'page' and result['content_type'].lower().startswith('application/pdf') and not result['check']:
+                name, size, reason = _save_shown_pdf(driver, downloads, largest)
+                if name:
+                    result.update(kind='download', file=name, bytes=size)
+                elif reason == 'too_large':
+                    result.update(kind='too_large', bytes=size)
+                else:
+                    result['title'] = ('The PDF was shown but could not be read from the page: ' + reason)[:300]
+
         started = clock()
         try:
             driver.get(url)
         except Exception:
             pass  # an address that starts a download does not "load"; what arrived is looked at below
-        deadline, last = started + max(wait, person), None
-        while True:
-            files = sorted(item for item in downloads.iterdir() if item.is_file())
-            sizes = [(item.name, item.stat().st_size) for item in files]
-            if any(size > largest for _, size in sizes):
-                result.update(kind='too_large', bytes=max(size for _, size in sizes))
-                break
-            whole = [row for row in sizes if not row[0].lower().endswith(_PARTIAL)]
-            if whole and len(whole) == len(sizes) and sizes == last:
-                # Present and unchanged since the last look: the download is finished.
-                result.update(kind='download', file=whole[0][0], bytes=whole[0][1])
-                break
-            last = sizes
-            try:
-                status, content_type, ready = driver.execute_script(_STATUS)
-                current = str(driver.current_url)
-            except Exception:
-                if not sizes:
-                    result['kind'] = 'closed'  # the person closed the window
-                    break
-                status, content_type, ready, current = 0, '', '', ''
-            if (not sizes and ready == 'complete' and current.startswith(('http://', 'https://'))
-                    and clock() - started >= 2):
-                # A page stands in the window and no download began.
-                try:
-                    check = is_check(str(driver.title), str(driver.page_source))
-                except Exception:
-                    check = False
-                if check and person and clock() < deadline:
-                    sleep(1)  # the person is passing the check; look again
-                    continue
-                result.update(kind='page', status=status if type(status) is int and 0 <= status <= 599 else 0,
-                              content_type=str(content_type)[:80], check=check)
-                break
-            if clock() >= deadline:
-                break
-            sleep(.5)
-        if result['kind'] == 'page' and result['content_type'].lower().startswith('application/pdf') and not result['check']:
-            name, size, reason = _save_shown_pdf(driver, downloads, largest)
-            if name:
-                result.update(kind='download', file=name, bytes=size)
-            elif reason == 'too_large':
-                result.update(kind='too_large', bytes=size)
-            else:
-                result['title'] = ('The PDF was shown but could not be read from the page: ' + reason)[:300]
+        watch(result, started, started + max(wait, person))
         if result['kind'] == 'page':
             html = str(driver.page_source).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')
             try:
@@ -406,6 +454,24 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
                 pass
             result.update(title=result['title'] or str(driver.title).replace('\0', '').encode('utf-8', 'replace').decode('utf-8')[:500],
                           html=html[:maximum], truncated=len(html) > maximum)
+            if (job.get('follow') is True and not result['check'] and result['status'] in (0, 200)
+                    and not result['content_type'].lower().startswith('application/pdf')):
+                # The page is read. Where it links to its full report on its own site, that file is asked for
+                # next in this same window and session, as a person reading the page would; nothing is clicked.
+                try:
+                    link = main_pdf_link(driver.execute_script(_PDF_LINKS), result['url'])
+                except Exception:
+                    link = ''
+                if link:
+                    linked = {'kind': 'timeout', 'url': link, 'status': 0, 'content_type': '', 'title': '', 'file': '',
+                              'bytes': 0, 'check': False}
+                    began = clock()
+                    try:
+                        driver.get(link)
+                    except Exception:
+                        pass
+                    watch(linked, began, began + wait)
+                    result['linked'] = {key: linked[key] for key in ('kind', 'url', 'status', 'file', 'bytes')}
         return result
     finally:
         try:

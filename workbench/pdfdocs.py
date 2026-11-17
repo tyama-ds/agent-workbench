@@ -127,9 +127,11 @@ BROWSER_TRY_POLICY = (
     ' For this work the human allowed one try in a visible browser window: when a site refuses web_fetch, the '
     'application opens that address once by itself and returns what the window showed. Where the site shows a check '
     'meant for a person, the human is asked to pass it in that window. You do not ask for the window and cannot '
-    'repeat it; if it also fails, ask the human as described above. When the window read a page, fetch the report it '
-    'links to (pdf_links) with web_fetch next: the application opens it from that page. A refused headers_only '
-    'question says nothing about the file; the file itself is then fetched.')
+    'repeat it; if it also fails, ask the human as described above. When the window read a page, look at its result: '
+    'linked_pdf is the full report the same window opened next (read it with pdf_read); if there is none, fetch the '
+    'report the page links to (pdf_links) with web_fetch next, and the application opens it from that page. A page or '
+    'file a window already brought is returned again when asked for. A refused headers_only question says nothing '
+    'about the file; the file itself is then fetched.')
 
 
 class PdfError(ValueError):

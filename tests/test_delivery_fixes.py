@@ -389,3 +389,51 @@ async def test_a_missing_pdf_is_sent_back_once_more_with_the_tool_that_saves_it(
         assert run['status'] == 'incomplete' and run['output_check']['missing'] == ['WEO2025.pdf']
     finally:
         await engine.close()
+
+
+def test_which_named_files_a_request_asks_to_produce():
+    from workbench.verification import output_names
+    assert output_names('要約を weo2026_summary.docx、スライドを weo2026_slides.pptx として weo2026e フォルダーに保存してください') == {
+        'weo2026_summary.docx', 'weo2026_slides.pptx'}
+    assert output_names('data.xlsx と notes.docx を読んで report.docx を作って') == {'report.docx'}
+    assert output_names('weo.pdf から要点を抜き出し、summary.md にまとめて') == {'summary.md'}
+    assert output_names('Read data.xlsx and write the result to report.docx') == {'report.docx'}
+    assert output_names('Save the summary as a.docx and the slides as b.pptx, based on source.pdf') == {'a.docx', 'b.pptx'}
+    assert output_names('report.docx について教えて') == set() and output_names(None) == set()
+
+
+async def test_an_older_file_of_the_same_name_elsewhere_does_not_stand_in_for_a_requested_file(tmp_path):
+    """Real-machine case: "save the summary as weo2026_summary.docx" ended "done" with an empty folder. Files of
+    those names stood in the folders of earlier runs beside it, and the application took them for the files asked for."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        for folder in ('weo2026c', 'weo2026d'):
+            (work / folder).mkdir()
+            (work / folder / 'weo2026_summary.docx').write_bytes(b'last week')
+        (work / 'weo2026d' / 'weo2026_slides.pptx').write_bytes(b'last week')
+        (work / 'data').mkdir()
+        (work / 'data' / 'figures.xlsx').write_bytes(b'input')
+        (work / 'notes.md').write_text('input', encoding='utf-8')
+        run, pm = await start(engine, max_workers=0, task='figures.xlsx と notes.md を読んで、要約を weo2026_summary.docx、'
+                              'スライドを weo2026_slides.pptx として weo2026e フォルダーに保存してください')
+        # What the request reads is not asked for; what it asks to produce is, although files of those names exist.
+        assert run['output_check'] == {'expected': ['weo2026_summary.docx', 'weo2026_slides.pptx'],
+                                       'missing': ['weo2026_summary.docx', 'weo2026_slides.pptx']}
+        pm.pending.clear()
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '取得できず、成果物は未作成です。'})
+        assert first['code'] == 'outputs_missing'
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '取得できず、成果物は未作成です。'})
+        assert '成果物は作られていません' in done['summary']
+        pm.status = 'done'
+        engine._run_status(run)
+        assert run['status'] == 'incomplete'          # the coordinator said so itself; the run says so too
+        # Saved where it was asked for (through a tool, or by a script without a receipt): no longer missing.
+        (work / 'weo2026e').mkdir()
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'weo2026e' / 'weo2026_summary.docx'),
+                                                           'expected_sha256': 'missing', 'paragraphs': ['要約']})
+        (work / 'weo2026e' / 'weo2026_slides.pptx').write_bytes(b'written by a script')
+        engine._run_status(run)
+        assert run['status'] == 'done' and run['output_check']['missing'] == []
+    finally:
+        await engine.close()

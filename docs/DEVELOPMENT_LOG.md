@@ -20,6 +20,26 @@ dated November although it had looked at one from March of the next year.
   named once more, with `pdf_save` and the ids downloaded. The policy says
   to use `pdf_save` when the request asks to keep the PDF.
 
+The outlook run at dev77 (191 s) then showed three more things.
+
+- It ended `done` with an empty folder, the coordinator itself reporting
+  that the two requested files had not been made. Files of those names
+  stood in the folders of earlier runs under the same read folder, and a
+  name that exists anywhere was taken for an input. A name the request
+  asks to produce is now a deliverable all the same, and "saved" means new
+  or changed since the request.
+- "Browser try, success (page read)", and the next `web_fetch` of that
+  address answered "already tried": the page never reached the agent that
+  needed it. What a window brought is now returned again.
+- The page's report was never opened: an older issue's file was refused
+  first, which closed the whole site. A refusal now closes that address
+  only, and a read page is followed in the same window by its own full
+  report, which comes back with the page (`linked_pdf`). Links in
+  `data-href` / `data-url` and links that only say "PDF" are found.
+
+Not verified here: the real page's markup. The link rules were written
+from the addresses reported, not from the page.
+
 The report behind a read page; a worker without a report; 520 sent again (2026-11-17)
 
 - One `HTTP 520` from the provider's front end ended an agent's turn, and the
