@@ -164,7 +164,15 @@ def test_without_windows_or_without_a_browser_or_driver_the_reason_is_returned(t
         with pytest.raises(HarnessError, match='requires Windows'):
             selenium_runner._execute_fetch(*arguments)
     # On Windows the configured files are checked before anything is started.
-    monkeypatch.setattr(selenium_runner.os, 'name', 'nt')
+    # Only this module is told it runs on Windows: changing os.name itself would change what every Path() is.
+    class WindowsOs:
+        name = 'nt'
+
+        def __getattr__(self, attribute):
+            return getattr(real_os, attribute)
+
+    real_os = selenium_runner.os
+    monkeypatch.setattr(selenium_runner, 'os', WindowsOs())
     started = []
     monkeypatch.setattr(selenium_runner, 'run_browser_job', lambda *args, **kwargs: started.append(args))
     for config, python_config in (({}, {}),                                                        # no python.exe

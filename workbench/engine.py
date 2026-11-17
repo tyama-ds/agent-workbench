@@ -24,7 +24,7 @@ from .checkpoints import CheckpointStore
 from .memo import MemoStore, MAX_PROPOSAL_CHARS, clean as memo_clean
 from .turn_engine import TurnWorkMixin, PLAN_TOOL_NAMES, PLAN_NUDGE
 from .verification import VerificationMixin, RUN_TESTS_TOOL
-from . import sources, statdata
+from . import slides as slide_design, sources, statdata
 from .harness import HarnessError, PathHarness, ToolExecutor
 from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
@@ -1078,6 +1078,14 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             web_tools.use_browser_fetch(self._browser_fetcher(config, harness))
         return task, config, pms, workers, count, harness, web_tools
 
+    def _slides_policy(self, run):
+        """How to build a deck, once slides are part of the work and files can be written."""
+        return slide_design.SLIDES_POLICY if run['_config']['paths']['write_roots'] and self._slides_relevant(run) else ''
+
+    @staticmethod
+    def _slides_relevant(run):
+        return bool(run.get('_slides_touched') or slide_design.mentions_slides(run.get('task')))
+
     @staticmethod
     def _browser_fetch_chosen(config, payload):
         """This work may open a browser window once for a refused address: the human's choice at start, else the setting."""
@@ -1395,6 +1403,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         self.enqueue(agent, content, human=True)
         run.setdefault('_known_urls', set()).update(sources.extract(content))
         self._pdf_mentioned(run, content)
+        if slide_design.mentions_slides(content):
+            run['_slides_touched'] = True
         self._tests_note_request(run, content)
         self._outputs_note_request(run, content)
         run['status'] = 'running'
@@ -2078,7 +2088,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         recovery_policy = RECOVERY_POLICY if not self._ordered_for(run, agent) and any(
             child.status == 'error' and child.stop_reason == 'provider_output_limit'
             for child in self._owned_workers(run, agent)) else ''
-        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + self._memo_policy(run) + self._tests_policy(run) + self._pdf_policy(run) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy
+        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + self._memo_policy(run) + self._tests_policy(run) + self._pdf_policy(run) + self._slides_policy(run) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy
 
     def _contextual_team_tool(self, run, agent, tool):
         """One provider/validation contract without enlarging unrelated requests."""
@@ -2138,6 +2148,16 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         # With no read or write folder every file tool can only fail; do not
         # spend context or invite calls that cannot succeed.
         file_tools = run['_executor'].schemas() if paths['read_roots'] or paths['write_roots'] else []
+        if not self._slides_relevant(run):
+            # Themes, layouts, tables and charts are described once slides are part of the work; until then
+            # pptx_write keeps its short form, so other work does not carry the description.
+            plain = slide_design.PLAIN_WRITE_TOOL
+            file_tools = [tool if tool['name'] != 'pptx_write' else
+                          {**tool, 'description': plain['description'],
+                           'parameters': {**tool['parameters'], 'properties': {
+                               **{key: value for key, value in tool['parameters']['properties'].items()
+                                  if key not in slide_design.DESIGN_PROPERTIES}, 'slides': plain['slides']}}}
+                          for tool in file_tools]
         tools = [*[tool for tool in team_tools if run.get('work_board', {}).get('enabled') is True
                    or tool['name'] not in {'post_work_board', 'read_work_board'}], *file_tools]
         if self._python_ready(run):
@@ -3349,6 +3369,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             result = await self._pdf_read(run, agent, args, name)
             self._outputs_read(run, agent, args, result)
             return self._urls_seen(run, result)
+        if name.startswith('pptx_'):
+            run['_slides_touched'] = True
         self._source_check(run, agent, name, args)
         if self._approval_needed(run, name, args):
             await self._await_approval(run, agent, name, args)

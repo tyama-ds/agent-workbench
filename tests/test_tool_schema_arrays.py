@@ -81,9 +81,14 @@ def test_xlsx_cell_schema_keeps_all_json_scalar_types_including_null(office_sche
 def test_pptx_schemas_describe_slide_body_and_integer_edit_targets(office_schemas):
     slide = office_schemas["pptx_write"]["properties"]["slides"]["items"]
     assert slide["type"] == "object"
-    assert set(slide["required"]) == set(slide["properties"]) == {"title", "body"}
+    # A slide needs its title; what else it takes depends on its layout (bullets, kpi, table, chart ...).
+    assert slide["required"] == ["title"] and {"title", "body", "layout", "table", "chart"} <= set(slide["properties"])
     assert slide["properties"]["title"] == {"type": "string"}
     assert slide["properties"]["body"] == {"type": "array", "items": {"type": "string"}}
+    # Every array in the slide says what its items are, down to a chart's numbers.
+    assert slide["properties"]["table"] == {"type": "array", "items": {"type": "array", "items": {"type": "string"}}}
+    series = slide["properties"]["chart"]["properties"]["series"]["items"]
+    assert series["properties"]["values"] == {"type": "array", "items": {"type": "number"}}
     operation = office_schemas["pptx_edit"]["properties"]["operations"]["items"]
     assert operation["type"] == "object"
     assert set(operation["required"]) == set(operation["properties"]) == {"slide", "shape", "paragraph", "text"}

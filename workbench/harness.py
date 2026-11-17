@@ -21,6 +21,8 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 from xml.etree import ElementTree
 
+from . import slides as slide_design
+
 MAX_OUTPUT = 200_000
 _DENIED_SUFFIXES = {".doc", ".xls", ".ppt", ".docm", ".dotm", ".xlsm", ".xlam", ".xlsb", ".pptm", ".potm", ".ppam"}
 # Destructive text tools must not stand in for document/container editors.
@@ -723,7 +725,6 @@ class ToolExecutor:
         }, ("type",))
         cell = _schema({"sheet": text, "cell": text, "value": {"type": ["string", "number", "boolean", "null"]}},
                        ("sheet", "cell", "value"))
-        slide = _schema({"title": text, "body": {"type": "array", "items": text}}, ("title", "body"))
         edit = _schema({"find": text, "start_line": integer, "end_line": integer, "replace": text}, ("replace",))
         pptx_operation = _schema({"slide": integer, "shape": integer, "paragraph": integer, "text": text},
                                  ("slide", "shape", "paragraph", "text"))
@@ -742,7 +743,7 @@ class ToolExecutor:
             ("xlsx_read", "Read bounded cells from XLSX; formulas are returned as text and never evaluated.", {"path": path, "sheet": text, "range": text}, ("path",)),
             ("xlsx_write", "Set explicit XLSX cells [{sheet,cell,value}]. Creates a workbook when missing; create_sheets explicitly adds sheets and remove_sheets deletes sheets that an earlier write left and are no longer wanted. Pass numbers as JSON numbers; a numeric string such as '1,234' or '12.5%' is stored as a number (prefix an apostrophe to keep it text). Formula-like strings are rejected unless allow_formulas is true; external-data formulas remain disabled.", {**common, "cells": {"type": "array", "items": cell}, "create_sheets": {"type": "array", "items": text}, "remove_sheets": {"type": "array", "items": text}, "allow_formulas": {"type": "boolean"}}, ("path", "cells", "expected_sha256")),
             ("pptx_read", "Read slide text from a safe PPTX without launching PowerPoint.", {"path": path}, ("path",)),
-            ("pptx_write", "Create or explicitly replace a PPTX from slides [{title,body:[text]}].", {**common, "slides": {"type": "array", "items": slide}}, ("path", "slides", "expected_sha256")),
+            ("pptx_write", slide_design.PPTX_WRITE_DESCRIPTION, {**common, "slides": {"type": "array", "items": slide_design.SLIDE_SCHEMA}, **slide_design.DESIGN_PROPERTIES}, ("path", "slides", "expected_sha256")),
             ("pptx_edit", "Replace exact paragraph text using operations [{slide,shape,paragraph,text}] with zero-based indices, retaining first-run formatting.", {**common, "operations": {"type": "array", "items": pptx_operation}}, ("path", "operations", "expected_sha256")),
         ]
         return [{"name": name, "description": description, "parameters": _schema(properties, required)} for name, description, properties, required in definitions]
@@ -1052,23 +1053,21 @@ class ToolExecutor:
                         shapes.append({"shape": j, "paragraphs": [paragraph.text for paragraph in shape.text_frame.paragraphs]})
                     elif shape.has_table:
                         shapes.append({"shape": j, "table": [[cell.text for cell in row.cells] for row in shape.table.rows]})
+                    elif getattr(shape, "has_chart", False):
+                        # The numbers a chart shows, so that a reader of the file can check them.
+                        plot = shape.chart.plots[0]
+                        shapes.append({"shape": j, "chart": {"categories": [str(item) for item in plot.categories],
+                                                             "series": [{"name": series.name, "values": list(series.values)} for series in plot.series]}})
                 slides.append({"slide": i, "shapes": shapes})
             if len(str(slides)) > MAX_OUTPUT:
                 raise HarnessError("Presentation text exceeds the response limit")
             return {"slides": slides, "sha256": hashlib.sha256(source).hexdigest()}
+        extra = {}
         if name == "pptx_write":
-            slides = args["slides"]
-            if not isinstance(slides, list) or not 1 <= len(slides) <= 100:
-                raise HarnessError("slides must contain 1 to 100 slide objects")
-            for item in slides:
-                if not isinstance(item, dict) or set(item) != {"title", "body"} or not isinstance(item["body"], list) or len(item["body"]) > 100:
-                    raise HarnessError("Each slide requires title and body text array")
-                slide = presentation.slides.add_slide(presentation.slide_layouts[1])
-                slide.shapes.title.text = _string(item["title"], "title", 1000, empty=True)
-                frame = slide.placeholders[1].text_frame
-                for index, text in enumerate(item["body"]):
-                    paragraph = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
-                    paragraph.text = _string(text, "body text", 10000, empty=True)
+            try:
+                extra = slide_design.build(presentation, args)
+            except slide_design.SlideError as exc:
+                raise HarnessError(str(exc)) from None
         else:
             for item in self._operations(args):
                 if set(item) != {"slide", "shape", "paragraph", "text"}:
@@ -1080,5 +1079,8 @@ class ToolExecutor:
                 paragraphs = shape.text_frame.paragraphs
                 _paragraph_text(paragraphs[_integer(item["paragraph"], "paragraph", 0, len(paragraphs) - 1)], item["text"])
         result = self._save(presentation, args, ".pptx")
-        result["formatting_note"] = "Edited paragraphs retain first-run formatting; complex layout is not redesigned."
+        if name == "pptx_write":
+            result.update(extra)
+        else:
+            result["formatting_note"] = "Edited paragraphs retain first-run formatting; complex layout is not redesigned."
         return result
