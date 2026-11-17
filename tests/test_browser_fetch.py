@@ -32,7 +32,9 @@ class Window:
     address is loaded; otherwise ``html`` stands in the window."""
 
     def __init__(self, downloads, *, arrives=None, html=PAGE, status=200, content_type='text/html', closes=False, never=False,
-                 title='World Economic Outlook Reports', passes_after=None, clock=None, shown=b'', links=(), files=None):
+                 title='World Economic Outlook Reports', passes_after=None, clock=None, shown=b'', links=(), files=None,
+                 unreadable=False):
+        self.unreadable = unreadable  # the window stops answering when its content is asked for
         self.links, self.files = [list(row) for row in links], files or {}  # the page's links; address -> PDF it shows
         self.downloads, self.arrives, self.html, self.status = downloads, arrives, html, status
         self.content_type, self.closes, self.never = content_type, closes, never
@@ -92,6 +94,8 @@ class Window:
 
     @property
     def page_source(self):
+        if self.unreadable:
+            raise TimeoutError('timeout: Timed out receiving message from renderer')
         return PAGE if self._passed() else self.html
 
     def quit(self):
@@ -226,6 +230,48 @@ def test_a_read_page_is_followed_by_its_full_report_in_the_same_window(tmp_path)
                          ({'links': links, 'status': 403}, {'follow': True})):
         other, window, _ = run_fetch(tmp_path, options, url=page, **job)
         assert other['linked'] == {} and [call for call in window.calls if call[0] == 'get'] == [('get', page)]
+
+
+def test_a_failed_browser_job_says_what_failed_and_keeps_its_records(tmp_path, monkeypatch):
+    """Real-machine case: the report of a failed try was "(Session info: MicrosoftEdge=157.0.4341.60)", the last line
+    of the error; the kind of error and its message were cut away and the private folder was deleted."""
+    # The worker: the kind of error, the step, and the first words of the message, in one record.
+    try:
+        raise RuntimeError('Message: session not created: probably user data directory is already in use\n'
+                           '  (Session info: MicrosoftEdge=157.0.4341.60)\nStacktrace:\n\tGetHandleVerifier [0x1]')
+    except RuntimeError as exc:
+        record = worker.failure_record(exc, 'start browser')
+    assert record['type'] == 'RuntimeError' and record['step'] == 'start browser'
+    assert record['summary'] == 'session not created: probably user data directory is already in use'
+    assert 'Session info: MicrosoftEdge=157.0.4341.60' in record['message'] and 'RuntimeError' in record['traceback']
+    # A window that stops answering when its page is asked for: the try still ends with an answer.
+    result, window, _ = run_fetch(tmp_path, {'unreadable': True})
+    assert result['kind'] == 'page' and result['html'] == '' and window.calls[-1] == ('quit',)
+    # The application: one line for the history, and the records copied out before the private folder goes.
+    private = tmp_path / 'awb-selenium-x'
+    private.mkdir()
+    (private / 'error.json').write_text(json.dumps(record), encoding='utf-8')
+    (private / 'driver.log').write_text('[INFO] Starting Microsoft Edge WebDriver\n--proxy-server=http://user:secret@proxy.example:8080\n',
+                                        encoding='utf-8')
+    monkeypatch.setattr(selenium_runner.tempfile, 'gettempdir', lambda: str(tmp_path))
+    stderr = ('Selenium RuntimeError at step "start browser": session not created\nMessage: session not created\n'
+              '  (Session info: MicrosoftEdge=157.0.4341.60)')
+    text = selenium_runner._failure(private, {'exit_code': 1, 'termination_reason': '', 'stderr': stderr})
+    assert text.startswith('RuntimeError at step "start browser": session not created: probably user data directory is already in use')
+    kept = Path(text.split('; records kept in ')[1])
+    assert kept.parent == tmp_path / 'awb-browser-diagnostics'
+    error = (kept / 'error.txt').read_text(encoding='utf-8')
+    assert 'Session info: MicrosoftEdge=157.0.4341.60' in error and 'GetHandleVerifier' in error and 'exit code: 1' in error
+    log = (kept / 'driver.log').read_text(encoding='utf-8')
+    assert 'Starting Microsoft Edge WebDriver' in log and 'secret' not in log and 'http://proxy.example:8080' in log
+    # Without the worker's record (it was stopped): the first line of its error output, and why it was stopped.
+    (private / 'error.json').unlink()
+    text = selenium_runner._failure(private, {'exit_code': -1, 'termination_reason': 'timeout', 'stderr': stderr})
+    assert text.startswith('Selenium RuntimeError at step "start browser": session not created (stopped: timeout)')
+    # Only the newest records are kept.
+    for _ in range(12):
+        selenium_runner._failure(private, {'exit_code': 1, 'termination_reason': '', 'stderr': 'x'})
+    assert len(list((tmp_path / 'awb-browser-diagnostics').iterdir())) <= 10
 
 
 def test_a_check_meant_for_a_person_is_reported_at_once_or_waited_through_when_a_person_agreed(tmp_path):
@@ -502,6 +548,43 @@ async def test_a_refusal_or_a_check_in_the_window_is_final_and_the_human_is_aske
         with pytest.raises(WebToolError, match='is not a PDF; nothing was kept'):
             await tools.execute('web_fetch', {'url': other + '/zip.pdf'})
         assert not (tmp_path / 'pdf-cache').exists()
+
+
+async def test_one_try_in_which_the_browser_did_not_run_does_not_end_the_tries(tmp_path, monkeypatch):
+    """Real-machine case: the browser failed once, after it had updated itself, and the whole piece of work was then
+    left without a window: the report was written from a two-page summary."""
+    seen = []
+    pin(monkeypatch)
+    async with http_server(refusing(seen)) as port:
+        base = f'http://www.reports.example:{port}'
+        failed = ValueError('The browser could not be started or did not finish: SessionNotCreatedException at step '
+                            '"start browser": session not created; records kept in C:\\Temp\\awb-browser-diagnostics\\20261117-1')
+        answers = {'/first.pdf': failed, '/second.pdf': {'kind': 'download', 'data': REPORT}}
+        tools, opened = tools_with(tmp_path, answers)
+        with pytest.raises(WebToolError) as caught:
+            await tools.execute('web_fetch', {'url': base + '/first.pdf'})
+        text = str(caught.value)
+        assert 'the browser did not run: The browser could not be started or did not finish: SessionNotCreatedException' in text
+        assert 'another address may still be tried in a window' in text and 'records kept in' not in text   # the path is for the human
+        assert 'records kept in C:' in tools.browser_log[0]['detail'] and tools.browser_log[0]['outcome'] == 'failed'
+        # Another address is still tried; and the first one, which was never loaded, may be tried again.
+        assert (await tools.execute('web_fetch', {'url': base + '/second.pdf'}))['pages'] == 2
+        answers['/first.pdf'] = {'kind': 'download', 'data': REPORT}
+        assert (await tools.execute('web_fetch', {'url': base + '/first.pdf'}))['pages'] == 2
+        assert opened == [base + '/first.pdf', base + '/second.pdf', base + '/first.pdf']
+        # A window whose content could not be read is a failed try of that address, not an empty page.
+        tools, opened = tools_with(tmp_path, {'/hung': {'title': 'The page could not be read from the window (TimeoutException)'}})
+        with pytest.raises(WebToolError, match=r'its content could not be read \(The page could not be read from the window'):
+            await tools.execute('web_fetch', {'url': base + '/hung'})
+        assert tools.browser_log[-1]['outcome'] == 'failed'
+        # Twice in one piece of work: the window is not tried again.
+        tools, opened = tools_with(tmp_path, {'.pdf': failed})
+        for name in ('/a.pdf', '/b.pdf'):
+            with pytest.raises(WebToolError, match='the browser did not run'):
+                await tools.execute('web_fetch', {'url': base + name})
+        with pytest.raises(WebToolError, match='A browser window cannot be opened here'):
+            await tools.execute('web_fetch', {'url': base + '/c.pdf'})
+        assert opened == [base + '/a.pdf', base + '/b.pdf']
 
 
 async def test_a_window_that_cannot_be_opened_says_why_once_and_is_not_tried_again(tmp_path, monkeypatch):

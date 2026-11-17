@@ -11,6 +11,7 @@ application states the recorded outcome under the result.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -140,6 +141,65 @@ def output_names(text):
                 kinds[index] = kinds[index - 1]
         outputs.update(name.casefold() for (_, _, name), (kind, _) in zip(found, kinds) if kind == 'out')
     return outputs
+
+
+# A page reference ("p. 119", "p.119", "pp. 119") and a quotation in quotation marks.
+_PAGE_REF = re.compile(r'(?<![A-Za-z0-9])pp?\.?\s*(\d{1,4})(?![\d,.]\d)', re.I)
+_QUOTATION = re.compile(r'[「『"“]([^「」『』"“”\n]{6,240})[」』"”]')
+_QUOTE_COLUMN = re.compile(r'引用|原文|quot', re.I)
+_PAGE_COLUMN = re.compile(r'ページ|頁|page|^p\.?$', re.I)
+_MAX_QUOTES = 40
+
+
+def page_quotes(value):
+    """(page, quotation) pairs a document states: a quotation in quotation marks with a page reference beside it.
+
+    In a table whose header names a quotation column and a page column, each row is such a pair without
+    quotation marks. Text with a page number but no quotation says nothing that could be looked up.
+    """
+    pairs = []
+
+    def line(text):
+        refs = [(match.start(), int(match.group(1))) for match in _PAGE_REF.finditer(text)]
+        for match in _QUOTATION.finditer(text):
+            near = [(min(abs(position - match.start()), abs(position - match.end())), page) for position, page in refs]
+            if near and min(near)[0] <= 80:
+                pairs.append((min(near)[1], match.group(1).strip()))
+
+    def walk(item):
+        if len(pairs) >= _MAX_QUOTES:
+            return
+        if isinstance(item, str):
+            for part in item.split('\n'):
+                line(part)
+        elif isinstance(item, dict):
+            for key, part in item.items():
+                if key not in {'path', 'expected_sha256'}:
+                    walk(part)
+        elif isinstance(item, list):
+            rows = item if item and all(isinstance(row, list) and all(not isinstance(cell, (list, dict)) for cell in row)
+                                        for row in item) else None
+            if rows and len(rows) >= 2:
+                header = [str(cell) for cell in rows[0]]
+                quote = next((i for i, cell in enumerate(header) if _QUOTE_COLUMN.search(cell)), None)
+                page = next((i for i, cell in enumerate(header) if _PAGE_COLUMN.search(cell.strip()) and i != quote), None)
+                if quote is not None and page is not None:
+                    for row in rows[1:]:
+                        if len(row) > max(quote, page):
+                            number = re.search(r'\d{1,4}', str(row[page]))
+                            words = str(row[quote]).strip().strip('「」『』"“”')
+                            if number and 6 <= len(words) <= 240:
+                                pairs.append((int(number.group()), words))
+                    return
+            if rows:
+                for row in rows:
+                    line(' | '.join(str(cell) for cell in row))
+                return
+            for part in item:
+                walk(part)
+
+    walk(value)
+    return list(dict.fromkeys(pairs))[:_MAX_QUOTES]
 
 
 def _excerpt(text):
@@ -341,6 +401,97 @@ class VerificationMixin:
                 if len(rows) >= limit:
                     return rows
         return rows
+
+    # --- "p. 119 「…」": is the quotation on that page? ---------------------------
+    # Real-machine case: of nine cited passages seven stood on the page given; "5,600 bcm by 2050 (p.119)" stood
+    # on pages 151 and 161, and one figure was not in the PDF at all. The application has the PDF and the
+    # document: it looks the quotations up itself and sends the coordinator back once with what does not match.
+
+    def _quotes_note(self, run, name, args):
+        """What a write states as page and quotation (noted before the write; only saved files are used)."""
+        path = args.get('path') if isinstance(args, dict) else None
+        if not isinstance(path, str) or PureWindowsPath(path).suffix.lower() not in {'.docx', '.pptx', '.md', '.txt', '.html', '.htm'}:
+            return
+        pairs = page_quotes({key: value for key, value in args.items() if key not in {'path', 'expected_sha256'}})
+        ledger, key = run.setdefault('_page_quotes', {}), path.casefold()
+        if name in {'docx_edit', 'patch_text', 'pptx_edit'} and key in ledger:
+            pairs = list(dict.fromkeys([*ledger[key]['pairs'], *pairs]))[:_MAX_QUOTES]
+        if pairs:
+            ledger[key] = {'path': path, 'pairs': pairs}
+        elif name in {'docx_write', 'pptx_write', 'write_text'}:
+            ledger.pop(key, None)
+
+    async def _quotes_verify(self, run):
+        """Look every stated quotation up in the PDFs this work read; the findings are kept in the run."""
+        stated = [(entry['path'], page, quote) for entry in (run.get('_page_quotes') or {}).values()
+                  if self._was_saved(run, entry['path']) for page, quote in entry['pairs']][:_MAX_QUOTES]
+        files = [('id', ident) for ident in (run.get('_pdf_read_ids') or {})][-2:] + \
+                [('path', path) for path in (run.get('_pdf_read_paths') or {})][-2:]
+        signature = (tuple(stated), tuple(files))
+        if not stated or not files or run.get('_quote_signature') == signature:
+            return
+        run['_quote_signature'], run['_quote_results'] = signature, []
+        quotes, found, complete = list(dict.fromkeys(quote for _, _, quote in stated)), {}, True
+        for kind, name in files:
+            try:
+                data = ((await asyncio.to_thread(self.pdf_library.get, name))[0] if kind == 'id' else
+                        await asyncio.to_thread(run['_harness'].read_bytes, name, run['_config']['limits']['max_pdf_bytes']))
+                pages = await self.pdf_library.locate(data, quotes)
+            except Exception:  # noqa: BLE001 - a check that cannot be made is no finding
+                pages = None
+            if pages is None:
+                complete = False
+                continue
+            for quote, rows in pages.items():
+                found.setdefault(quote, []).extend(rows)
+        for path, page, quote in stated:
+            rows = found.get(quote, [])
+            numbers = sorted({row['page'] for row in rows})
+            if page in numbers or any(str(row.get('printed_page', '')).strip() == str(page) for row in rows):
+                status = 'ok'
+            elif numbers:
+                status = 'elsewhere'
+            else:
+                status = 'missing' if complete else 'unknown'
+            run['_quote_results'].append({'path': path, 'page': page, 'quote': quote, 'status': status, 'pages': numbers[:6]})
+
+    @staticmethod
+    def _quote_lines(rows, limit):
+        lines = []
+        for row in rows[:limit]:
+            words = row['quote'] if len(row['quote']) <= 90 else row['quote'][:90] + '…'
+            where = ('PDF では p. ' + ', '.join(map(str, row['pages'])) if row['status'] == 'elsewhere' else 'PDF の本文に見つかりません')
+            lines.append(f'- p. {row["page"]} 「{words}」 → {where}')
+        return lines
+
+    def _quotes_gate(self, run, agent):
+        """Once per run: send the root PM back with the quotations that do not stand on the page given."""
+        if agent.parent_id is not None or run.get('_quotes_gated') or self._others_active(run, agent):
+            return None
+        wrong = [row for row in run.get('_quote_results') or [] if row['status'] in {'elsewhere', 'missing'}]
+        if not wrong:
+            return None
+        run['_quotes_gated'] = True
+        return ('[application notice] The application looked up the quotations your files give with a page number in the PDF '
+                'this work read. These do not stand on the page given:\n' + '\n'.join(
+                    self.redact(line) for line in self._quote_lines(wrong, 12))
+                + '\nFor each one: correct the page number to the page it stands on (check with pdf_search); if the words are '
+                  'not in the PDF, they are not a quotation: remove the quotation marks and the page, or write ページ未確認, '
+                  'and do not keep a figure that cannot be found. Save the corrected files, then finish.')
+
+    def _quotes_footer(self, run):
+        rows = run.get('_quote_results') or []
+        if not rows:
+            return ''
+        wrong = [row for row in rows if row['status'] in {'elsewhere', 'missing'}]
+        unknown = sum(row['status'] == 'unknown' for row in rows)
+        text = (f'\n\n【アプリの確認】ページ番号つきの引用 {len(rows)} 件を、この作業で読んだ PDF の本文と照合しました: '
+                f'一致 {sum(row["status"] == "ok" for row in rows)} 件、不一致 {len(wrong)} 件'
+                + (f'、照合できず {unknown} 件' if unknown else '') + '。')
+        if wrong:
+            text += '次の引用は、書かれたページにありません（ページ未確認として扱ってください）。\n' + '\n'.join(
+                self.redact(line) for line in self._quote_lines(wrong, 10))
+        return text
 
     @staticmethod
     def _was_saved(run, path):
@@ -579,4 +730,7 @@ class VerificationMixin:
         if text:
             return 'tests_not_passed', text
         text = self._citations_gate(run, agent)
-        return ('sources_review', text) if text else None
+        if text:
+            return 'sources_review', text
+        text = self._quotes_gate(run, agent)
+        return ('quotations_review', text) if text else None

@@ -114,7 +114,10 @@ PDF_WEB_POLICY = (
     'downloaded, ask the human once with ask_user: give its URL and ask them to save the PDF from their browser into '
     'a read folder (recommendation: go on without that part and report it as not obtained). Once it is saved, read it '
     'with pdf_read by path. When the request asks to keep the downloaded PDF (to save it in a folder), save it with '
-    'pdf_save (its pdf_id and a path ending in .pdf) before you finish, and name the saved file in the report.')
+    'pdf_save (its pdf_id and a path ending in .pdf) before you finish, and name the saved file in the report. Save '
+    'the copy you read and quote, once. Before finishing, the application looks up every quotation that stands with a '
+    'page number in your files in the PDF; give the page the words stand on, and put only words that are in the PDF '
+    'into quotation marks.')
 _PDF_WORD = re.compile(r'pdf|ＰＤＦ', re.I)
 
 
@@ -139,6 +142,14 @@ _PUT_LOCK = threading.Lock()  # one writer at a time into the folder of download
 
 class PdfError(ValueError):
     """A PDF could not be opened or read; the text is safe to show to a model."""
+
+
+_QUOTE_MARKS = str.maketrans({'’': "'", '‘': "'", '“': '"', '”': '"', '–': '-', '—': '-', '‐': '-', '‑': '-', '−': '-'})
+
+
+def fold_quote(text):
+    """Text as it is compared: case, spaces, line breaks and the shapes of quotes and dashes do not count."""
+    return ''.join(text.translate(_QUOTE_MARKS).casefold().split()).strip('.,;:。、')
 
 
 def megabytes(count):
@@ -385,6 +396,38 @@ class PdfLibrary:
             self._stuck.add(marker['sha256'])
             raise PdfError(f'This PDF did not finish within {WAIT_SECONDS} seconds (opening it, or one of its pages). '
                            'The file cannot be read by this application; say so instead of trying again.') from None
+
+    async def locate(self, data, quotes):
+        """For each quotation, the pages on which it stands: {quote: [{page, printed_page?}, ...]}.
+
+        None when the file could not be gone through in the time one call has (a long file whose pages were
+        not read before): then nothing is known, and nothing is said.
+        """
+        loop = asyncio.get_running_loop()
+        work = loop.run_in_executor(_POOL, self._locate, data, list(quotes))
+        try:
+            return await asyncio.wait_for(asyncio.shield(work), WAIT_SECONDS)
+        except Exception:  # noqa: BLE001 - a check that cannot be made is no finding
+            return None
+
+    def _locate(self, data, quotes):
+        document = self._document(data, {})
+        if not document.lock.acquire(timeout=CALL_SECONDS):
+            return None
+        try:
+            deadline = time.monotonic() + CALL_SECONDS
+            wanted = {quote: [part for part in map(fold_quote, re.split(r'…|\.{3,}', quote)) if len(part) >= 4] for quote in quotes}
+            found = {quote: [] for quote in quotes}
+            for number in range(1, document.pages + 1):
+                if time.monotonic() > deadline:
+                    return None
+                page = fold_quote(document.flat(number))
+                for quote, parts in wanted.items():
+                    if parts and len(found[quote]) < 8 and all(part in page for part in parts):
+                        found[quote].append(document.head(number))
+            return found
+        finally:
+            document.lock.release()
 
     def _read(self, data, request, source, marker):
         document = self._document(data, marker)
@@ -643,6 +686,8 @@ class PdfToolMixin:
                                                  source=record['url'])
         result = {'pdf_id': args['pdf_id'], 'url': record['url'], **{key: value for key, value in result.items() if key != 'source'}}
         run.setdefault('_pdf_sources', {})[record['url']] = 'downloaded'
+        if result.get('mode') != 'overview':
+            run.setdefault('_pdf_read_ids', {})[args['pdf_id']] = record['url']  # pages or a search: this file was read
         self._pdf_note(run, record['url'], result)
         return result
 
@@ -656,6 +701,19 @@ class PdfToolMixin:
         if args['pdf_id'] not in records:
             raise PdfError('pdf_id must be the id a web_fetch result of this work returned')
         data, record = await asyncio.to_thread(self.pdf_library.get, args['pdf_id'])
+        saved, read = run.setdefault('_pdf_saved', {}), run.get('_pdf_read_ids') or {}
+        if record['sha256'] in saved:
+            # Real-machine case: the same file was saved twice, as "…2025.pdf" and "…2025_latest.pdf".
+            raise PdfError(f"This PDF is already saved in this work as {saved[record['sha256']]}. The same file is not saved a "
+                           'second time: use that file, and name it in the report.')
+        asked = run.setdefault('_pdf_save_asked', set())
+        if read and args['pdf_id'] not in read and args['pdf_id'] not in asked:
+            # Real-machine case: the report quoted one copy of a document, and an older copy was saved beside it.
+            asked.add(args['pdf_id'])
+            others = ', '.join(f'{ident} ({url})' for ident, url in list(read.items())[-3:])
+            raise PdfError('Not saved. This is not the PDF this work read: its pages were read from ' + others + '. Save the PDF '
+                           'the report quotes (that pdf_id), so that the saved file is the one the page numbers refer to. '
+                           'If this other file is really the one wanted, call pdf_save again with the same arguments.')
         try:
             result = await asyncio.to_thread(run['_harness'].write_bytes, args['path'], data, 'missing',
                                              limit=run['_config']['limits']['max_pdf_bytes'])
@@ -664,6 +722,7 @@ class PdfToolMixin:
                 raise PdfError('A file of that name already exists. pdf_save only creates a new file: choose another name') from None
             raise
         self.record_receipt(agent, 'pdf_save', result)
+        saved[record['sha256']] = result['path']
         return {**{key: value for key, value in result.items() if key != 'previous_sha256'}, 'source_url': record['url'],
                 'note': 'Saved as downloaded. Say in the report where it came from (source_url).'}
 
@@ -679,6 +738,21 @@ class PdfToolMixin:
             raise
         source = str(harness.resolve(args['path']))
         result = await self.pdf_library.read(data, {key: value for key, value in args.items() if key != 'path'}, source=source)
+        digest = hashlib.sha256(data).hexdigest()
+        fetched = next(((ident, record) for ident, record in getattr(run.get('_web'), 'pdf_ids', {}).items()
+                        if record.get('sha256') == digest), None)
+        if result.get('mode') != 'overview':
+            run.setdefault('_pdf_read_paths', {})[source] = digest
+        if fetched:
+            # Real-machine case: the PDF was downloaded and saved with pdf_save in this work, then read by its
+            # path, and the report said it "was not downloaded in this work". It is the downloaded file.
+            ident, record = fetched
+            result['origin'] = (f"This file is the PDF this work downloaded from {record['url']} (the same content as "
+                                f'{ident}). Report it as downloaded in this work, with that address.')
+            run.setdefault('_pdf_sources', {})[record['url']] = 'downloaded'
+            if result.get('mode') != 'overview':
+                run.setdefault('_pdf_read_ids', {})[ident] = record['url']
+            return result
         # Where the file came from is the application's knowledge, not the model's: this one was not downloaded
         # by this work's web_fetch.
         result['origin'] = ('A file that was already in a read folder; it was not downloaded in this work. '
