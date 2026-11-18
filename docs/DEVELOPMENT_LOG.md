@@ -4,6 +4,38 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev89 — Looking at the screen (2026-11-18)
+
+Desktop, first stage: an agent can be shown the screen. It cannot operate
+it; that comes as a later stage, after this one has been tried on the real
+machine.
+
+- Off unless the human ticks "この作業で画面の閲覧を許可" on the start screen,
+  for that one piece of work. There is no setting that turns it on, and
+  the tick is taken off again after each start. It is its own choice,
+  apart from operating pages in the browser.
+- `screen_view` takes one picture of the primary screen (Windows, through
+  GDI; no new dependency), made smaller so that its longest side is at
+  most 1568 pixels. Nothing is clicked, typed or moved.
+- Every look waits for the human, also in a piece of work that asks for
+  no other approval: what is on the screen at that moment cannot be known
+  beforehand. The request says that everything on the screen is sent to
+  the agent's model. No answer in three minutes counts as "no".
+- The picture goes to the model beside the tool result. It is not part of
+  the conversation, the log, the events, the history or any file; only
+  the latest look is kept, in memory, and sent while its result is still
+  in the context. At most 30 looks in one piece of work.
+- The model layer could send text only. Each kind of connection now
+  carries a picture: Anthropic inside the tool result, OpenAI and local
+  servers as one user item after the batch of results. The Copilot
+  connection exchanges text only, so its agents are not offered the tool.
+- A connection that turns the request with the picture away (HTTP 400,
+  413, 415, 422) gets the same request once more without it, with a note
+  that the screen was not seen; that agent is not offered another look.
+- Not verified here: the capture itself on a real desktop with display
+  scaling and several monitors (the Windows test job pictures the
+  runner's screen), and which of the models in use accept pictures.
+
 ## 0.1.1.dev88 — Someone else reads what is handed in (2026-11-18)
 
 "The coordinator is a dictator": it plans, gives out the work, accepts the

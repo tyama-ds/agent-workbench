@@ -852,6 +852,7 @@ function runPayload() {
   if(approvalMode!==(ui.config?.approvals?.mode==='always_allow'?'always_allow':'ask'))payload.approval_mode=approvalMode;
   // The review before completion is on unless the human unticks it for this piece of work.
   if($('reviewAllow')&&$('reviewAllow').checked!==true)payload.review=false;
+  if($('screenViewAllow')?.checked===true)payload.screen_view=true;
   if(ui.config?.python?.executable&&$('pythonAllow')){
     const python=$('pythonAllow').checked===true;
     if(python!==(ui.config?.python?.enabled===true))payload.python=python;
@@ -2315,7 +2316,7 @@ async function stopSelectedAgent() {
 // Phase 7: tool-call approval, the team memo and its proposals, and history search.
 // Every model/state string below is untrusted and is placed with textContent only.
 const APPROVAL_MODE_LABELS={ask:'毎回確認',always_allow:'常に許可'};
-const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',run_tests:'テストの実行',selenium_browse:'ブラウザ操作',search_human_check:'検索の「人による確認」（ブラウザーで操作が必要）',fetch_human_check:'ページ取得の「人による確認」'};
+const APPROVAL_TOOL_LABELS={python_execute:'Python の実行',run_tests:'テストの実行',selenium_browse:'ブラウザ操作',search_human_check:'検索の「人による確認」（ブラウザーで操作が必要）',fetch_human_check:'ページ取得の「人による確認」',screen_view:'画面の閲覧（1 枚撮って、モデルに送る）'};
 const TEST_CHECK_LABELS={passed:'成功',failed:'失敗あり',missing:'未実行'};
 function searchUseLabel(use){
   const count=key=>Number.isSafeInteger(use?.[key])&&use[key]>0?use[key]:0;
@@ -2860,7 +2861,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(typeof run.review==='boolean'&&run.adaptive_team!==true?[['提出前のレビュー',run.review?'あり（レビュー担当が成果物を確認）':'なし（この作業では省略）']]:[]),...(run.python===true?[['Python の実行','この作業で許可']]:[]),...(run.browser_operation===true?[['ブラウザ内の操作','この作業で許可（ページを開く・クリック・入力）']]:[]),...(run.browser_fetch===true?[['ブラウザ操作','この作業で許可（拒否されたとき、画面に表示して1回だけ試す）']]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(outputCheckLabel(run.output_check)?[['依頼されたファイル',outputCheckLabel(run.output_check)]]:[]),...(searchUseLabel(run.search_use)?[['Web の利用',searchUseLabel(run.search_use)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(typeof run.review==='boolean'&&run.adaptive_team!==true?[['提出前のレビュー',run.review?'あり（レビュー担当が成果物を確認）':'なし（この作業では省略）']]:[]),...(run.python===true?[['Python の実行','この作業で許可']]:[]),...(run.browser_operation===true?[['ブラウザ内の操作','この作業で許可（ページを開く・クリック・入力）']]:[]),...(run.screen_view===true?[['画面の閲覧','この作業で許可（撮るたびに承認。操作はしない）']]:[]),...(run.browser_fetch===true?[['ブラウザ操作','この作業で許可（拒否されたとき、画面に表示して1回だけ試す）']]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(outputCheckLabel(run.output_check)?[['依頼されたファイル',outputCheckLabel(run.output_check)]]:[]),...(searchUseLabel(run.search_use)?[['Web の利用',searchUseLabel(run.search_use)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }
@@ -3014,6 +3015,8 @@ async function initialize() {
       const id=response.run?.id||response.id||response.run_id;
       if(typeof id!=='string'||!id){const failure=new Error('開始応答の実行 ID を確認できませんでした。');failure.outcomeUnknown=true;throw failure;}
       action.runId=id;
+      // Looking at the screen is ticked for one piece of work at a time: the next start begins without it.
+      if(ownsTaskDialog(action)&&$('screenViewAllow'))$('screenViewAllow').checked=false;
       // A successful mutation remains accepted even if observing its state fails.
       // Polling may discover it later; it must never repeat the creation request.
       showPendingStart();
