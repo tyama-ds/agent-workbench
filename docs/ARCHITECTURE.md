@@ -865,6 +865,29 @@ the human turned it on (0.1.1.dev61; off by default).
   opener is set only when the run has `browser_fetch`), and what its result
   means; `Engine._browser_tries_publish` turns each try into an event.
 
+## Looking at the screen (0.1.1.dev89)
+
+- `screen.capture()` pictures the primary screen through GDI (`StretchBlt`
+  into a smaller bitmap, `GetDIBits`) on a thread that is made aware of
+  display scaling for the call, and `screen.png_from_bgra` writes the PNG
+  with zlib. `Engine.screen_capture` and `Engine.screen_available` are
+  class attributes so that tests replace the screen.
+- The choice is `run['screen_view']`, true only from the start payload.
+  `Engine._screen_ready(run, agent)` decides whether `SCREEN_TOOL` is
+  offered; `execute_tool` checks `_screen_require`, then always calls
+  `_await_approval` (with the time limit of the person checks), then
+  `_screen_view`.
+- The picture is `agent._screen` (`call_id`, `media_type`, base64
+  `data`), beside the conversation. The loop binds it to the id of the
+  result it belongs to, and before each request `_screen_images` hands it
+  to the model layer as `profile['_images']`, a per-request key like
+  `_live_note`. `providers._pictures` places it at the latest tool result
+  with that id; `request_size` never sees it.
+- A provider error with status 400, 413, 415 or 422 for a request that
+  carried a picture drops the picture, sets `agent._screen_refused`, and
+  sends the request again; from then on `SCREEN_REFUSED_NOTE` joins the
+  live note and `_screen_require` refuses further looks.
+
 ## Unfinished runs, growing documents, handed-over reports (0.1.1.dev76)
 
 - `VerificationMixin._outputs_incomplete(run)` is true while a file the
