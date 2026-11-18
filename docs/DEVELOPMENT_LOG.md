@@ -4,7 +4,30 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev84 — A heavy page is read when its document is there; the report at its own address (2026-11-17)
+## 0.1.1.dev85 — What a request asks to be made; a worker with nothing in hand; the report that came late (2026-11-18)
+
+At dev84 the window got the October report (124 pages) at the address
+that follows from the issue's page. Three things went wrong around it.
+
+- The slides, asked for by name, were not made and the run was "done".
+  Two ways out of the check were found and closed. Words of reading
+  anywhere before the word of making ("要約から 8 枚程度で作成", "図表を
+  使ったスライド") had turned a file to produce into a file to read; only
+  what stands right behind the name now does. And a file of the same name
+  lying directly in a permitted folder (an earlier run's folder that is
+  itself a read folder) had counted as "what the request works on"
+  whatever the request said.
+- The worker that was to make the slides ended without one tool call. A
+  worker that reports without the file its assignment names, or without
+  having used any tool while requested files are missing, is sent back
+  once.
+- The report arrived at second 281 of 312; the document had been written
+  before from a two-page summary, and the report was never opened. A
+  completion that never read the work's largest PDF is sent back once.
+  The coordinator's tool for creating workers now says to give a writer
+  depends_on of those who gather its sources.
+
+A heavy page is read when its document is there; the report at its own address (2026-11-17)
 
 At dev83 the energy report came out nearly right: three files, 14 of 15
 quotations on their pages, one page corrected by the application, one
