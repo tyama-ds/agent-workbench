@@ -966,6 +966,14 @@ the human turned it on (0.1.1.dev61; off by default).
 - `Engine.execute_tool` counts every tool outside `TALK_TOOLS` in
   `agent._work_calls`.
 
+## Lists and stated folders (0.1.1.dev86)
+
+- `verification.file_roles` (and `output_names`) take the list marker off
+  each line, and carry `_introduces_outputs` of the last prose sentence to
+  the lines of the list after it.
+- `VerificationMixin._stated_folders` reads the folder a request names for
+  saving; `_outputs_note_request` asks only there whether a file exists.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),

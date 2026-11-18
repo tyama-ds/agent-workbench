@@ -142,8 +142,38 @@ _OUT_BEFORE = re.compile(r'\b(?:sav|writ|creat|export|produc|generat|output|put|
 _IN_BEFORE = re.compile(r'\b(?:read|open|load|from|using|use|based on|according to)\w*', re.I)
 
 
+# A line of a list: "1. …", "（2）…", "- …", "・…".
+_LIST_LINE = re.compile(r'\s*(?:\d{1,2}[.)．）、]|[（(]\d{1,2}[）)]|[①-⑳]|[-・*●■◆▪‣–])\s*')
+# The sentence that introduces a list: "次の2つを…", "以下を…", "the following …".
+_LIST_INTRO = re.compile(r'次の|以下|下記|following|below', re.I)
+
+
+def _introduces_outputs(sentence):
+    """A sentence before a list says that what the list names is to be produced.
+
+    "…次の2つを作成して提出してください" does; "次のファイルを読んで、要約を作成してください" does not (what
+    follows "次の" is read first). Without such a phrase: a sentence that ends in a colon and speaks of
+    producing and not of reading ("成果物:", "Deliverables:").
+    """
+    intro = _LIST_INTRO.search(sentence)
+    if intro:
+        rest = sentence[intro.end():]
+        made = _OUT_AFTER.search(rest) or _OUT_BEFORE.search(sentence)
+        read = re.search(r'を(?:読|参照|参考|開|使|基|もと|入力|見|確認|分析|集計|要約|翻訳)|\b(?:read|open|load|use)\b', rest, re.I)
+        return made is not None and (read is None or (made.re is _OUT_AFTER and made.start() < read.start()))
+    return (sentence.rstrip().endswith((':', '：')) and (_OUT_AFTER.search(sentence) or _OUT_BEFORE.search(sentence)) is not None
+            and re.search(r'読|参照|\b(?:read|open|load)\b', sentence, re.I) is None)
+
+
 def output_names(text):
-    """The file names (casefolded) that a request clearly asks to produce: "…を a.docx に保存", "save it as a.docx".
+    """The file names (casefolded) that a request clearly asks to produce (see file_roles)."""
+    return {name for name, role in file_roles(text).items() if role == 'out'}
+
+
+def file_roles(text):
+    """What a request says of the files it names: {name (casefolded): 'out' (to produce) or 'in' (to read)}.
+
+    "…を a.docx に保存", "save it as a.docx" name a file to produce; "a.xlsx を読んで", "a.pdf から" one to read.
 
     A name in a list takes the meaning of the list: "要約を a.docx、スライドを b.pptx として保存" names two
     outputs; "a.xlsx と b.docx を読んで c.docx を作って" names two inputs and one output. A name with no such
@@ -152,13 +182,25 @@ def output_names(text):
     Real-machine case: slides that were asked for were not made and the run was "done". Words such as
     "要約から 8 枚程度で作成" or "図表を使ったスライド" had been read as "this file is read", because a word of
     reading stood somewhere before the word of making. Reading is only what stands right behind the name.
+
+    Real-machine case, the same slides again: "…次の2つを作成して提出してください。" and then a numbered list,
+    "1. 要約レポート（weo2026_summary.docx）", "2. 説明スライド（weo2026_slides.pptx）". The word of making stood
+    in the sentence before the list, and each list line was looked at alone. A sentence that introduces a
+    list as things to produce now holds for the names in the lines of that list.
     """
     if not isinstance(text, str):
-        return set()
-    text, outputs = _LINK.sub(' ', text), set()
-    for segment in re.split(r'[。\n]|\.\s', text):
+        return {}
+    text, roles, carried, segments = _LINK.sub(' ', text), {}, False, []
+    for line in text.split('\n'):
+        marker = _LIST_LINE.match(line)   # the marker is taken off first: "1. 要約…" is one line of a list, not "1" and a sentence
+        segments += [(part, marker is not None) for part in re.split(r'。|\.\s', line[marker.end():] if marker else line)
+                     if part.strip()]
+    for segment, in_list in segments:
         found = sorted({(match.start(1), match.end(1), match.group(1).strip()) for pattern in (_QUOTED_FILE, _BARE_FILE)
                         for match in pattern.finditer(segment)})
+        if not in_list:
+            # Prose: it may introduce the list that follows, and it ends the list before it.
+            carried = _introduces_outputs(segment)
         kinds, listed = [], []
         for index, (start, end, _) in enumerate(found):
             after = segment[end:found[index + 1][0] if index + 1 < len(found) else len(segment)]
@@ -178,8 +220,12 @@ def output_names(text):
         for index in range(1, len(found)):            # a list after its verb: "save x as a and y as b"
             if kinds[index][0] is None and kinds[index - 1][1] == 'before':
                 kinds[index] = kinds[index - 1]
-        outputs.update(name.casefold() for (_, _, name), (kind, _) in zip(found, kinds) if kind == 'out')
-    return outputs
+        if in_list and carried:                       # a line of a list that was introduced as things to produce
+            kinds = [('out', 'list') if kind is None else (kind, how) for kind, how in kinds]
+        for (_, _, name), (kind, _) in zip(found, kinds):
+            if kind and roles.get(name.casefold()) != 'out':   # named once as a thing to produce, it is one
+                roles[name.casefold()] = kind
+    return roles
 
 
 # A page reference ("p. 119", "p.119", "pp. 119") and a quotation in quotation marks.
@@ -908,7 +954,8 @@ class VerificationMixin:
 
     def _outputs_note_request(self, run, text):
         expected = run.setdefault('_expected_outputs', {})
-        added, produced = False, None
+        added, roles = False, None
+        destinations = self._stated_folders(run, text)
         for name in named_files(text):
             key = name.casefold()
             if key in expected:
@@ -917,15 +964,23 @@ class VerificationMixin:
             if len(expected) >= _MAX_OUTPUTS:
                 continue
             there = self._file_instances(run, name)
-            if there:
+            roles = file_roles(text) if roles is None else roles
+            if (there and destinations and roles.get(key) != 'in'
+                    and not any(os.path.normcase(str(folder / name)) in there for folder in destinations)):
+                # The request says where the files go, and no file of this name is there: what lies in other
+                # folders (the output of earlier work, under the same name) is not this file. A file the request
+                # says to read is a different matter: that one is where it is.
+                there_is = False
+            else:
+                there_is = bool(there)
+            if there_is:
                 # A file of this name exists somewhere in the permitted folders. It may be what the request
                 # works on, or what an earlier piece of work left behind: real-machine cases, "save the summary
                 # as weo2026_summary.docx" ended "done" with an empty folder, and later slides that were asked
                 # for were not made, because files of those names stood in the folders of earlier runs (below
                 # a read folder, or in folders that are read folders themselves). Where the request clearly
                 # asks to produce the file, no older file stands in for it, wherever it is.
-                produced = output_names(text) if produced is None else produced
-                if key not in produced:
+                if roles.get(key) != 'out':
                     continue
             expected[key], added = name, True
             run.setdefault('_output_before', {})[key] = {path: state for path, (_, state) in there.items()}
@@ -939,6 +994,33 @@ class VerificationMixin:
         if added:
             run['_outputs_gated'] = False
             self._outputs_publish(run)
+
+    def _stated_folders(self, run, text):
+        """Folders the request names as the place to save to ("保存先は C:\\…\\weo2026l フォルダー", "out フォルダーに保存"),
+        as far as they lie in a folder the human allowed for writing. They need not exist yet."""
+        if not isinstance(text, str):
+            return []
+        roots = [Path(root) for root in run['_harness'].write_roots]
+        candidates = re.findall(r'(?:[A-Za-z]:[\\/]|/)[^\s"\'<>|*?。、「」]+', _LINK.sub(' ', text))
+        folders = []
+        for value in candidates[:8]:
+            path = Path(value.rstrip('\\/.,）)'))
+            if path.suffix.lower().lstrip('.') in _EXTENSIONS.split('|'):
+                path = path.parent  # a file's full path: its folder
+            folders.append(path)
+        # A folder given by its name alone ("out フォルダーに保存"); not the last part of a full path.
+        for word in re.findall(r'(?<![\\/\w.\-])([A-Za-z0-9_][A-Za-z0-9_.\-]{0,60})\s*フォルダー?', text)[:8]:
+            folders += [root / word for root in roots]
+        found = []
+        for folder in folders:
+            try:
+                inside = any(os.path.normcase(os.path.commonpath([str(root), str(folder)])) == os.path.normcase(str(root))
+                             for root in roots if folder.is_absolute())
+            except ValueError:
+                inside = False
+            if inside and folder not in found:
+                found.append(folder)
+        return found[:4]
 
     def _file_instances(self, run, name):
         """Files of this name in the permitted folders (bounded search): path -> (directly in a folder, (size, mtime))."""

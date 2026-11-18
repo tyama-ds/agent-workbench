@@ -914,3 +914,91 @@ async def test_a_completion_that_never_read_the_largest_pdf_of_the_work_is_sent_
         assert engine._main_pdf_unread(run) is None
     finally:
         await engine.close()
+
+
+# The request of a real run, as it was typed (the user's folder name is replaced). The slides it asks for were
+# not made, and the run was "done": no word of making stands in the lines that name the two files.
+NUMBERED_REQUEST = '''IMF の World Economic Outlook（WEO）について、今年（2026年）の最新号の報告書 PDF を、公式の配布元からダウンロードして読み込んでください。PDF に書かれている内容をもとに、次の2つを作成して提出してください。
+
+1. 要約レポート（weo2026_summary.docx）
+   - 全体の要旨、世界経済の見通し（成長率・インフレ）、主要国・地域の見通し、リスク、政策提言を日本語でまとめる。
+   - 主要な数値や主張には、PDF のページ番号と原文の短い引用を付ける。
+   - 世界・主要国の成長率見通しは表にする。
+   - PDF から読めなかった部分は推測で補わず、「未確認」と明記する。
+
+2. 説明スライド（weo2026_slides.pptx）
+   - 要約レポートの内容を説明する 8〜10 枚程度のスライドにする。
+   - ファッショナブルでモダンなデザインにする（16:9、統一した配色、余白を活かしたレイアウト、大きな見出し、要点は簡潔に）。
+   - 成長率見通しはグラフで見せる。
+
+保存先は C:\\Users\\user\\Documents\\AgentWorkbenchOutputs\\weo2026l フォルダー。完了する前に、数値が PDF と一致しているかを pdf_search で確認してください。
+'''
+
+
+def test_files_named_in_a_numbered_list_after_a_sentence_of_making_are_outputs():
+    from workbench.verification import file_roles, named_files, output_names
+    assert named_files(NUMBERED_REQUEST) == ['weo2026_summary.docx', 'weo2026_slides.pptx']
+    assert output_names(NUMBERED_REQUEST) == {'weo2026_summary.docx', 'weo2026_slides.pptx'}
+    # Other lists of things to produce, with other markers.
+    assert output_names('成果物:\n- a.docx\n- b.pptx') == {'a.docx', 'b.pptx'}
+    assert output_names('Please produce the following:\n1. report.docx\n2. slides.pptx') == {'report.docx', 'slides.pptx'}
+    assert output_names('次の2つを作ってください。\n(1) a.docx\n(2) b.pptx\n\n参考: old.docx を読んでおくこと') == {'a.docx', 'b.pptx'}
+    # A list of things to read stays one, and prose after a list ends it.
+    assert output_names('次のファイルを読んで、要約を作成してください:\n- a.xlsx\n- b.docx') == set()
+    assert output_names('参考資料:\n- a.pdf\n- b.xlsx') == set()
+    assert output_names('以下を参照して summary.md を作成:\n- data.csv') == {'summary.md'}
+    assert file_roles('次の2つを作成:\n1. a.docx\n2. b.pptx\n\nなお c.xlsx を読んで数値を確かめること') == {
+        'a.docx': 'out', 'b.pptx': 'out', 'c.xlsx': 'in'}
+
+
+async def test_the_numbered_request_is_checked_although_older_files_of_those_names_exist(tmp_path):
+    """Real-machine case (three runs): the request above, with the output of earlier runs under the same names in the
+    folders beside it. Nothing was expected, so nothing was missed: no send-back, no note, "done"."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        for folder in ('weo2026j', 'weo2026k'):
+            (work / folder).mkdir()
+            for name in ('weo2026_summary.docx', 'weo2026_slides.pptx'):
+                (work / folder / name).write_bytes(b'an earlier run')
+        run, pm = await start(engine, max_workers=0, task=NUMBERED_REQUEST)
+        assert list(run['_expected_outputs'].values()) == ['weo2026_summary.docx', 'weo2026_slides.pptx']
+        assert run['output_check']['missing'] == ['weo2026_summary.docx', 'weo2026_slides.pptx']
+        pm.pending.clear()
+        (work / 'weo2026l').mkdir()
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'weo2026l' / 'weo2026_summary.docx'),
+                                                           'expected_sha256': 'missing', 'paragraphs': ['要約'],
+                                                           'tables': [[['対象', '2026'], ['世界', '3.1']]]})
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': 'スライド作成は未完了のため、次工程で作成が必要です。'})
+        assert first['code'] == 'outputs_missing' and 'weo2026_slides.pptx (save with pptx_write)' in first['error']
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': 'スライド作成は未完了のため、次工程で作成が必要です。'})
+        assert '依頼された成果物は作られていません' in done['summary'] and 'weo2026_slides.pptx' in done['summary']
+        pm.status = 'done'
+        engine._run_status(run)
+        assert run['status'] == 'incomplete' and run['output_check']['missing'] == ['weo2026_slides.pptx']
+    finally:
+        await engine.close()
+
+
+async def test_a_stated_destination_folder_decides_whether_a_named_file_already_exists(tmp_path):
+    """Where the request says where the files go, a file of the same name in another folder is not that file."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        (work / 'old').mkdir()
+        (work / 'new').mkdir()
+        for name in ('report.docx', 'slides.pptx', 'figures.xlsx'):
+            (work / 'old' / name).write_bytes(b'an earlier run')
+        (work / 'new' / 'slides.pptx').write_bytes(b'already there')
+        # No word of making near the names: the stated folder decides.
+        run, pm = await start(engine, max_workers=0,
+                              task=f'レポート: report.docx\nスライド: slides.pptx\nfigures.xlsx を読んで数値を確かめる。\n保存先は {work / "new"} フォルダー。')
+        assert engine._stated_folders(run, run['task']) == [work / 'new']
+        # report.docx is not in the stated folder: it is asked for. slides.pptx is there, figures.xlsx is read.
+        assert list(run['_expected_outputs'].values()) == ['report.docx']
+        # A folder named by its name alone, a file's full path, and a folder outside the permitted ones.
+        assert engine._stated_folders(run, 'new フォルダーに保存して') == [work / 'new']
+        assert engine._stated_folders(run, f'{work / "out" / "report.docx"} に保存') == [work / 'out']
+        assert engine._stated_folders(run, '保存先は C:\\Users\\user\\Documents\\out フォルダー、または /etc/out') == []
+    finally:
+        await engine.close()

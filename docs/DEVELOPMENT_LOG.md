@@ -4,7 +4,26 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev85 — What a request asks to be made; a worker with nothing in hand; the report that came late (2026-11-18)
+## 0.1.1.dev86 — A list of things to make; the folder the request names (2026-11-18)
+
+At dev85 the slides were missing and the run was "done" a third time.
+The tester found the cause by running the request through the two
+functions: `named_files` returned both names, `output_names` nothing.
+
+- The request said "…次の2つを作成して提出してください。" and then
+  "1. 要約レポート（weo2026_summary.docx）", "2. 説明スライド（weo2026_slides.pptx）".
+  The word of making stood in the sentence before the list, and each line
+  was looked at alone; and "1. 要約…" was cut at its own number. With older
+  files of both names in the folders of earlier runs, nothing was
+  expected, so nothing was missed: no send-back, no note, "done". A
+  sentence that introduces a list as things to produce now holds for the
+  names in the list's lines.
+- Where the request names the folder to save to, a file of the same name
+  in another folder is not "already there".
+- The request of that run is a test now, with older files of both names
+  beside it.
+
+What a request asks to be made; a worker with nothing in hand; the report that came late (2026-11-18)
 
 At dev84 the window got the October report (124 pages) at the address
 that follows from the issue's page. Three things went wrong around it.
