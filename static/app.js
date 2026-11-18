@@ -1648,9 +1648,12 @@ function svgElement(tag,attributes={}) {
   return node;
 }
 // --- Faces: every agent is drawn with a face, and each piece of work deals them out afresh ----------------
-// Original drawings, built here from a few shapes (no image files). kind: human or robot.
+// Original drawings, built here from a few shapes (no image files, no photographs). kind: human or robot.
 // hair: [style, colour]; wear: [kind, main colour, second colour, third colour]; extra: things worn or grown.
+// Each face can be drawn in three manners (FACE_STYLES): flat illustration, a shaded "real" manner, and anime.
 const FACE_SKINS=['#f3cfae','#e9b991','#d8a276','#c18a61','#f7dcc4','#a8734f'];
+const FACE_STYLES=['flat','real','anime'],FACE_STYLE_LABELS={flat:'イラスト',real:'リアル',anime:'アニメ'};
+const FACE_IRIS={real:['#4a3423','#3b2a1c','#55606b','#3f4f3a','#2f2a26','#5a4634'],anime:['#3f74c4','#8a4f2c','#2f9b74','#8d55b0','#c0564a','#3f4656']};
 const FACES=[
   {id:'shades',name:'黒スーツとサングラス',kind:'human',bg:'#3c4654',skin:1,hair:['slick','#141518'],eyes:'none',mouth:'flat',wear:['suit','#15161a','#eeeeea','#0d0e10'],extra:['shades']},
   {id:'office',name:'ふつうの会社員',kind:'human',bg:'#3f5870',skin:0,hair:['short','#2e221b'],eyes:'normal',mouth:'smile',wear:['suit','#27405f','#f2f4f6','#b9413c'],extra:[]},
@@ -1680,16 +1683,27 @@ const FACES=[
   {id:'catbot',name:'ねこ耳ロボ',kind:'robot',bg:'#5a3f4a',shape:'cat',metal:'#f0c7cf',dark:'#9a6b78',led:'#ff8fb1'}
 ];
 const FACE_INK='#1d1d22';
-function drawHumanFace(add,face) {
-  const skin=FACE_SKINS[face.skin]||FACE_SKINS[0],[hair,tint]=face.hair,[wear,main,second,third]=face.wear,extra=new Set(face.extra);
-  const shape=(d,fill,more={})=>add('path',{d,fill,...more}),line=(d,stroke,width,more={})=>add('path',{d,fill:'none',stroke,'stroke-width':width,'stroke-linecap':'round','stroke-linejoin':'round',...more});
-  // Hair that falls behind the head.
-  if(hair==='long')shape('M15 27Q14 7 32 7Q50 7 49 27L50 51Q42 48 41 36L23 36Q22 48 14 51Z',tint);
-  if(hair==='bob')shape('M16 27Q15 8 32 8Q49 8 48 27L48 39Q44 42 42 36L22 36Q20 42 16 39Z',tint);
-  if(hair==='pony')shape('M43 14Q57 14 55 31Q54 38 50 40Q52 30 46 24Z',tint);
-  if(hair==='bun')add('circle',{cx:32,cy:7.5,r:5.5,fill:tint});
-  // Shoulders and what is worn.
-  shape('M6 64Q8 47 23 44L41 44Q56 47 58 64Z',main);
+// A lighter (amount > 0) or darker (amount < 0) shade of a #rrggbb colour.
+function faceTone(hex,amount) {
+  const value=parseInt(hex.slice(1,7),16),toward=amount<0?0:255,share=Math.abs(amount);
+  return '#'+[value>>16,(value>>8)&255,value&255].map(part=>Math.round(part+(toward-part)*share).toString(16).padStart(2,'0')).join('');
+}
+function facePen(add) {
+  return {shape:(d,fill,more={})=>add('path',{d,fill,...more}),
+    line:(d,stroke,width,more={})=>add('path',{d,fill:'none',stroke,'stroke-width':width,'stroke-linecap':'round','stroke-linejoin':'round',...more})};
+}
+// Hair that falls behind the head.
+function faceHairBack(add,hair,fill) {
+  const {shape}=facePen(add);
+  if(hair==='long')shape('M15 27Q14 7 32 7Q50 7 49 27L50 51Q42 48 41 36L23 36Q22 48 14 51Z',fill);
+  if(hair==='bob')shape('M16 27Q15 8 32 8Q49 8 48 27L48 39Q44 42 42 36L22 36Q20 42 16 39Z',fill);
+  if(hair==='pony')shape('M43 14Q57 14 55 31Q54 38 50 40Q52 30 46 24Z',fill);
+  if(hair==='bun')add('circle',{cx:32,cy:7.5,r:5.5,fill});
+}
+// Shoulders and what is worn. fill: the main colour, or a shading of it.
+function faceWear(add,face,fill) {
+  const [wear,,second,third]=face.wear,{shape,line}=facePen(add);
+  shape('M6 64Q8 47 23 44L41 44Q56 47 58 64Z',fill);
   if(wear==='suit'){shape('M25 44L32 56L39 44Z',second);shape('M30.6 46.5L33.4 46.5L34.6 55L32 58.5L29.4 55Z',third);line('M25 44L29.5 57M39 44L34.5 57','#00000055',1);}
   if(wear==='shirt'){shape('M25 44L32 51L28 54Z',second);shape('M39 44L32 51L36 54Z',second);if(third)shape('M31 50.5L33 50.5L34 58L32 60.5L30 58Z',third);}
   if(wear==='hoodie'){line('M21.5 45.5Q32 56 42.5 45.5',second,2.2);line('M29.5 52L29 60M34.5 52L35 60',second,1.1);}
@@ -1697,29 +1711,44 @@ function drawHumanFace(add,face) {
   if(wear==='coat'){shape('M26 44L32 58L38 44Z',second);line('M26 44L21.5 52L27 55M38 44L42.5 52L37 55','#00000040',1);}
   if(wear==='cardigan'){shape('M24 44L32 61L40 44Z',second);line('M24 44L32 61L40 44','#00000030',.9);}
   if(wear==='work'){add('rect',{x:9,y:55,width:46,height:3,fill:second});shape('M27 44L32 50L37 44Z','#00000033');}
-  // Neck, ears and head.
+}
+// Hair in front of the head, or what is worn on it. fill: the hair's colour or a shading of it; tint: its plain colour.
+function faceHairFront(add,hair,fill,tint) {
+  const {shape,line}=facePen(add);
+  if(hair==='slick'){shape('M20 25Q19 10 32 10Q45 10 44 25Q42 17 32 16.5Q22 17 20 25Z',fill);line('M25 13.2Q32 11.4 39 13.2M27 15.4Q32 14.2 37 15.4','#ffffff30',.8);}
+  if(hair==='short')shape('M20 26Q18 10 32 10Q46 10 44 26Q43 20 38 18Q30 21 23 18Q21 21 20 26Z',fill);
+  if(hair==='side')shape('M20 27Q17 10 33 10Q46 10 44 27Q43 19 36 17Q27 16 23 21Q21 23 20 27Z',fill);
+  if(hair==='long')shape('M20 26Q21 13 32 13Q43 13 44 26Q40 18.5 33 19Q25 18.5 20 26Z',fill);
+  if(hair==='bob')shape('M20 25Q20 12 32 12Q44 12 44 25Q38 21 32 22Q26 21 20 25Z',fill);
+  if(hair==='pony'||hair==='bun')shape('M20 25Q19 10 32 10Q45 10 44 25Q41 17 32 17Q23 17 20 25Z',fill);
+  if(hair==='spiky')shape('M19 26L20 14L24.5 18L27 9L31.5 16L36 9L38.5 17L44 13L45 26Q40 18 32 18Q24 18 19 26Z',fill);
+  if(hair==='curly')for(const [cx,cy,r] of [[21,22.5,4],[22.5,17,5],[27,12.5,5.5],[33.5,11.5,5.5],[39.5,13.5,5.5],[43.5,19,4.6]])add('circle',{cx,cy,r,fill});
+  if(hair==='buzz')shape('M20.5 24Q20 11.5 32 11.5Q44 11.5 43.5 24Q40 15.5 32 15.5Q24 15.5 20.5 24Z',fill,{'fill-opacity':.85});
+  if(hair==='bald'){shape('M19.8 28Q18.8 20 22.4 16.5Q21.2 22.5 21.4 28Z',fill);shape('M44.2 28Q45.2 20 41.6 16.5Q42.8 22.5 42.6 28Z',fill);line('M27 15Q30 13.4 33 14','#ffffff40',1);}
+  if(hair==='cap'){shape('M19.5 23Q20 9 32 9Q44 9 44.5 23Z',fill);shape('M18 22.5L49 22.5Q52.5 23 51.5 25.6L18 25.6Z',faceTone(tint,-.35));}
+  if(hair==='helmet'){shape('M18.5 24Q19 8 32 8Q45 8 45.5 24Z',fill);add('rect',{x:16.5,y:22.6,width:31,height:3.2,rx:1.4,fill:tint});line('M32 8.4L32 22.4','#00000030',1.4);}
+  if(hair==='beanie'){shape('M19.5 24Q19 9 32 9Q45 9 44.5 24Z',fill);add('rect',{x:19,y:20.5,width:26,height:5,rx:1.6,fill:faceTone(tint,.22)});}
+}
+// Things worn on the face and head, the same in every manner.
+function faceWorn(add,face) {
+  const extra=new Set(face.extra),{shape,line}=facePen(add);
+  if(extra.has('shades')){shape('M21.5 25.5L30.6 25.5L30 30.6Q26 32.2 22.4 30.6Z','#0b0c0f');shape('M33.4 25.5L42.5 25.5L41.6 30.6Q38 32.2 34 30.6Z','#0b0c0f');line('M30.4 26.6L33.6 26.6M21.6 26.4L19.6 27.4M42.4 26.4L44.4 27.4','#0b0c0f',1.3);line('M23.2 27L25.6 27M35.2 27L37.6 27','#ffffff55',.8);}
+  if(extra.has('glasses')||extra.has('roundglasses')){const rim=extra.has('roundglasses')?'#b8892b':'#262a33';for(const cx of [26.6,37.4])add('circle',{cx,cy:28.6,r:4.3,fill:'#ffffff','fill-opacity':.14,stroke:rim,'stroke-width':1.2});line('M30.9 28.2L33.1 28.2M22.3 28L20 27.4M41.7 28L44 27.4',rim,1.1);}
+  if(extra.has('earring'))add('circle',{cx:19.4,cy:33.2,r:1.35,fill:'#e6c15a'});
+  if(extra.has('headset')){line('M18.6 27Q18.6 8.2 32 8.2Q45.4 8.2 45.4 27','#24272d',2.4);add('rect',{x:15.6,y:24,width:5.2,height:9.4,rx:2.2,fill:'#24272d'});add('rect',{x:43.2,y:24,width:5.2,height:9.4,rx:2.2,fill:'#24272d'});line('M18.4 33Q19.6 39.6 27 38.8','#24272d',1.4);add('circle',{cx:27.6,cy:38.7,r:1.5,fill:'#24272d'});}
+}
+// The flat illustration.
+function drawHumanFace(add,face) {
+  const skin=FACE_SKINS[face.skin]||FACE_SKINS[0],[hair,tint]=face.hair,wear=face.wear[0],extra=new Set(face.extra),{shape,line}=facePen(add);
+  faceHairBack(add,hair,tint);faceWear(add,face,face.wear[1]);
   if(wear!=='knit')add('rect',{x:27.5,y:37,width:9,height:9,fill:skin});
   add('rect',{x:27.5,y:39.5,width:9,height:3,fill:'#00000018'});
   add('circle',{cx:19.6,cy:29,r:2.6,fill:skin});add('circle',{cx:44.4,cy:29,r:2.6,fill:skin});
   shape('M20 26Q20 12 32 12Q44 12 44 26Q44 40 32 42Q20 40 20 26Z',skin);
-  if(extra.has('stubble'))shape('M21.5 31Q22 42 32 43.2Q42 42 42.5 31Q40 36.5 32 37Q24 36.5 21.5 31Z',tint==='#e6b422'?'#3a2f28':tint,{'fill-opacity':.28});
+  if(extra.has('stubble'))shape('M21.5 31Q22 42 32 43.2Q42 42 42.5 31Q40 36.5 32 37Q24 36.5 21.5 31Z',hair==='helmet'?'#3a2f28':tint,{'fill-opacity':.28});
   if(extra.has('beard'))shape('M21.2 30Q21.5 42.5 32 44Q42.5 42.5 42.8 30Q40.5 36 32 36.6Q23.5 36 21.2 30Z','#4a3324');
   if(extra.has('blush')){add('circle',{cx:24.3,cy:33,r:2.5,fill:'#f08a7a','fill-opacity':.38});add('circle',{cx:39.7,cy:33,r:2.5,fill:'#f08a7a','fill-opacity':.38});}
-  // Hair in front of the head, or what is worn on it.
-  if(hair==='slick'){shape('M20 25Q19 10 32 10Q45 10 44 25Q42 17 32 16.5Q22 17 20 25Z',tint);line('M25 13.2Q32 11.4 39 13.2M27 15.4Q32 14.2 37 15.4','#ffffff30',.8);}
-  if(hair==='short')shape('M20 26Q18 10 32 10Q46 10 44 26Q43 20 38 18Q30 21 23 18Q21 21 20 26Z',tint);
-  if(hair==='side')shape('M20 27Q17 10 33 10Q46 10 44 27Q43 19 36 17Q27 16 23 21Q21 23 20 27Z',tint);
-  if(hair==='long')shape('M20 26Q21 13 32 13Q43 13 44 26Q40 18.5 33 19Q25 18.5 20 26Z',tint);
-  if(hair==='bob')shape('M20 25Q20 12 32 12Q44 12 44 25Q38 21 32 22Q26 21 20 25Z',tint);
-  if(hair==='pony'||hair==='bun')shape('M20 25Q19 10 32 10Q45 10 44 25Q41 17 32 17Q23 17 20 25Z',tint);
-  if(hair==='spiky')shape('M19 26L20 14L24.5 18L27 9L31.5 16L36 9L38.5 17L44 13L45 26Q40 18 32 18Q24 18 19 26Z',tint);
-  if(hair==='curly')for(const [cx,cy,r] of [[21,22.5,4],[22.5,17,5],[27,12.5,5.5],[33.5,11.5,5.5],[39.5,13.5,5.5],[43.5,19,4.6]])add('circle',{cx,cy,r,fill:tint});
-  if(hair==='buzz')shape('M20.5 24Q20 11.5 32 11.5Q44 11.5 43.5 24Q40 15.5 32 15.5Q24 15.5 20.5 24Z',tint,{'fill-opacity':.85});
-  if(hair==='bald'){shape('M19.8 28Q18.8 20 22.4 16.5Q21.2 22.5 21.4 28Z',tint);shape('M44.2 28Q45.2 20 41.6 16.5Q42.8 22.5 42.6 28Z',tint);line('M27 15Q30 13.4 33 14',  '#ffffff40',1);}
-  if(hair==='cap'){shape('M19.5 23Q20 9 32 9Q44 9 44.5 23Z',tint);shape('M18 22.5L49 22.5Q52.5 23 51.5 25.6L18 25.6Z','#00000055');shape('M18 22.5L49 22.5Q52.5 23 51.5 25.6L18 25.6Z',tint,{'fill-opacity':.75});}
-  if(hair==='helmet'){shape('M18.5 24Q19 8 32 8Q45 8 45.5 24Z',tint);add('rect',{x:16.5,y:22.6,width:31,height:3.2,rx:1.4,fill:tint});line('M32 8.4L32 22.4','#00000030',1.4);}
-  if(hair==='beanie'){shape('M19.5 24Q19 9 32 9Q45 9 44.5 24Z',tint);add('rect',{x:19,y:20.5,width:26,height:5,rx:1.6,fill:'#ffffff33'});add('rect',{x:19,y:20.5,width:26,height:5,rx:1.6,fill:tint,'fill-opacity':.6});}
-  // Eyes.
+  faceHairFront(add,hair,tint,tint);
   if(extra.has('brows'))line('M24 24.6L29.8 25.4M40 24.6L34.2 25.4',FACE_INK,1.6);
   if(face.eyes==='normal'){add('circle',{cx:27,cy:28.5,r:1.7,fill:FACE_INK});add('circle',{cx:37,cy:28.5,r:1.7,fill:FACE_INK});}
   if(face.eyes==='wide')for(const cx of [27,37]){add('circle',{cx,cy:28.4,r:3,fill:'#ffffff'});add('circle',{cx,cy:28.6,r:1.6,fill:FACE_INK});}
@@ -1727,7 +1756,6 @@ function drawHumanFace(add,face) {
   if(face.eyes==='sleepy'){shape('M25.2 28.2Q27 31 28.8 28.2ZM35.2 28.2Q37 31 38.8 28.2Z',FACE_INK);line('M24.2 28L29.8 28M34.2 28L39.8 28',FACE_INK,1.6);}
   if(face.eyes==='sharp'){add('circle',{cx:27.4,cy:29.2,r:1.25,fill:FACE_INK});add('circle',{cx:36.6,cy:29.2,r:1.25,fill:FACE_INK});line('M24.4 27.2L29.8 28.4M39.6 27.2L34.2 28.4',FACE_INK,1.3);}
   if(extra.has('bags'))line('M24.8 31.2Q27 32.4 29.2 31.2M34.8 31.2Q37 32.4 39.2 31.2','#00000045',.9);
-  // Mouth.
   if(extra.has('mustache'))shape('M26.6 33.8Q29.4 31.6 32 33.4Q34.6 31.6 37.4 33.8Q34.6 35.4 32 34.3Q29.4 35.4 26.6 33.8Z',tint);
   if(face.mouth==='smile')line('M27.5 35Q32 38.6 36.5 35','#7a3b2e',1.5);
   if(face.mouth==='grin')shape('M27 34.4Q32 40.4 37 34.4Z','#ffffff',{stroke:'#7a3b2e','stroke-width':.9,'stroke-linejoin':'round'});
@@ -1735,15 +1763,92 @@ function drawHumanFace(add,face) {
   if(face.mouth==='smirk')line('M28 36Q33 37 36.6 34','#7a3b2e',1.5);
   if(face.mouth==='pout'){line('M29.6 35.8Q32 34.6 34.4 35.8','#a3473f',1.6);line('M30.4 37.4Q32 38 33.6 37.4','#a3473f',1);}
   if(extra.has('mole'))add('circle',{cx:36.9,cy:33.4,r:.75,fill:'#4a2f28'});
-  // Things worn on the face and head.
-  if(extra.has('shades')){shape('M21.5 25.5L30.6 25.5L30 30.6Q26 32.2 22.4 30.6Z',  '#0b0c0f');shape('M33.4 25.5L42.5 25.5L41.6 30.6Q38 32.2 34 30.6Z','#0b0c0f');line('M30.4 26.6L33.6 26.6M21.6 26.4L19.6 27.4M42.4 26.4L44.4 27.4','#0b0c0f',1.3);line('M23.2 27L25.6 27M35.2 27L37.6 27','#ffffff55',.8);}
-  if(extra.has('glasses')||extra.has('roundglasses')){const rim=extra.has('roundglasses')?'#b8892b':'#262a33';for(const cx of [26.6,37.4])add('circle',{cx,cy:28.6,r:4.1,fill:'#ffffff','fill-opacity':.14,stroke:rim,'stroke-width':1.2});line('M30.7 28.2L33.3 28.2M22.5 28L20 27.4M41.5 28L44 27.4',rim,1.1);}
-  if(extra.has('earring'))add('circle',{cx:19.4,cy:33.2,r:1.35,fill:'#e6c15a'});
-  if(extra.has('headset')){line('M18.6 27Q18.6 8.2 32 8.2Q45.4 8.2 45.4 27','#24272d',2.4);add('rect',{x:15.6,y:24,width:5.2,height:9.4,rx:2.2,fill:'#24272d'});add('rect',{x:43.2,y:24,width:5.2,height:9.4,rx:2.2,fill:'#24272d'});line('M18.4 33Q19.6 39.6 27 38.8','#24272d',1.4);add('circle',{cx:27.6,cy:38.7,r:1.5,fill:'#24272d'});}
+  faceWorn(add,face);
 }
-function drawRobotFace(add,face) {
-  const {metal,dark,led}=face,screen='#10161d';
-  const shape=(d,fill,more={})=>add('path',{d,fill,...more}),line=(d,stroke,width,more={})=>add('path',{d,fill:'none',stroke,'stroke-width':width,'stroke-linecap':'round','stroke-linejoin':'round',...more});
+// The anime manner: a small chin, large eyes with lights in them, bangs, a small mouth.
+function drawHumanAnime(add,face) {
+  const skin=FACE_SKINS[face.skin]||FACE_SKINS[0],[hair,tint]=face.hair,wear=face.wear[0],extra=new Set(face.extra),{shape,line}=facePen(add);
+  const iris=FACE_IRIS.anime[FACES.indexOf(face)%FACE_IRIS.anime.length],grown=!['bald','cap','helmet','beanie','buzz'].includes(hair);
+  faceHairBack(add,hair,tint);faceWear(add,face,face.wear[1]);
+  if(wear!=='knit')add('rect',{x:28.5,y:37.5,width:7,height:8.5,fill:faceTone(skin,-.1)});
+  add('circle',{cx:19.6,cy:28.8,r:2.3,fill:skin});add('circle',{cx:44.4,cy:28.8,r:2.3,fill:skin});
+  shape('M19.5 25Q19.5 11.5 32 11.5Q44.5 11.5 44.5 25Q44.5 32.5 39 38Q34.6 42.4 32 42.6Q29.4 42.4 25 38Q19.5 32.5 19.5 25Z',skin);
+  if(extra.has('stubble'))shape('M22.4 32.5Q24.5 39.6 32 42.4Q39.5 39.6 41.6 32.5Q38.6 37 32 37.6Q25.4 37 22.4 32.5Z',hair==='helmet'?'#3a2f28':tint,{'fill-opacity':.25});
+  if(extra.has('beard'))shape('M21.4 30.5Q22.6 39.6 32 43.4Q41.4 39.6 42.6 30.5Q40 36.4 32 37Q24 36.4 21.4 30.5Z','#4a3324');
+  if(!extra.has('beard')&&!extra.has('stubble')&&!extra.has('mustache')&&!extra.has('shades')){add('ellipse',{cx:23.6,cy:33.6,rx:2.6,ry:1.4,fill:'#f48b84','fill-opacity':extra.has('blush')?.6:.34});add('ellipse',{cx:40.4,cy:33.6,rx:2.6,ry:1.4,fill:'#f48b84','fill-opacity':extra.has('blush')?.6:.34});}
+  faceHairFront(add,hair,tint,tint);
+  if(grown&&hair!=='slick'&&hair!=='spiky'&&hair!=='curly')shape('M19.6 26Q19 12.5 32 11.5Q45 12.5 44.4 26L41.6 19.5L39 25.5L36 18.5L33 25.5L30 18.5L27 25.5L24 19L21.6 25Z',tint);
+  if(grown)line('M24.4 16.6Q26.6 13.8 30.2 13M26.6 18Q27.8 16.6 29.6 16',faceTone(tint,.6),1.1,{'stroke-opacity':.6});
+  const ink=FACE_INK,brow=faceTone(tint==='#d9dadd'?'#8d8f93':tint,-.15);
+  for(const [cx,side] of [[26.2,1],[37.8,-1]]) {
+    if(face.eyes==='none')continue;
+    if(face.eyes==='smile'){line(`M${cx-3.4} 29.6Q${cx} 25.2 ${cx+3.4} 29.6`,ink,1.7);continue;}
+    const tall=face.eyes==='wide'?4.7:4.2;
+    add('ellipse',{cx,cy:28.8,rx:3.3,ry:tall,fill:'#ffffff'});add('ellipse',{cx,cy:29.2,rx:2.7,ry:tall-.5,fill:iris});
+    add('ellipse',{cx,cy:30.7,rx:2,ry:1.8,fill:faceTone(iris,.4)});add('ellipse',{cx,cy:29,rx:1.2,ry:1.9,fill:'#1c1a22'});
+    add('circle',{cx:cx-1.1,cy:27.2,r:1.05,fill:'#ffffff'});add('circle',{cx:cx+1.2,cy:30.9,r:.5,fill:'#ffffff'});
+    if(face.eyes==='sleepy'){add('rect',{x:cx-3.7,y:23.6,width:7.4,height:5,fill:skin});line(`M${cx-3.8} 28.6L${cx+3.8} 28.6`,ink,1.5);}
+    else if(face.eyes==='sharp'){shape(`M${cx-4*side} 22.6L${cx+4*side} 22.6L${cx+4*side} 27.6L${cx-4*side} 25.2Z`,skin);line(`M${cx-3.9*side} 25.2L${cx+3.9*side} 27.5`,ink,1.5);}
+    else line(`M${cx-3.9} 27.2Q${cx} ${28.6-tall-1.4} ${cx+3.9} 27.2`,ink,1.5);
+    if(face.eyes!=='sleepy')line(extra.has('brows')?`M${cx-3.2*side} 21.4L${cx+3*side} 22.8`:`M${cx-3} 22.2Q${cx} 21 ${cx+3} 22.2`,brow,extra.has('brows')?1.6:1);
+  }
+  if(extra.has('bags'))line('M23.8 32.2Q26.2 33.2 28.6 32.2M35.4 32.2Q37.8 33.2 40.2 32.2','#00000040',.8);
+  line('M32.2 33.1L31.5 34.2',faceTone(skin,-.32),.9);
+  if(extra.has('mustache'))shape('M27.6 35Q30 33.4 32 34.8Q34 33.4 36.4 35Q34 36.2 32 35.5Q30 36.2 27.6 35Z',tint);
+  if(face.mouth==='smile')line('M29.8 36.9Q32 38.7 34.2 36.9','#a8483f',1.2);
+  if(face.mouth==='grin')shape('M29.2 36.3Q32 40.6 34.8 36.3Z','#d05a50',{stroke:'#8f3a33','stroke-width':.6,'stroke-linejoin':'round'});
+  if(face.mouth==='flat')line('M30.4 37.3L33.6 37.3','#a8483f',1.2);
+  if(face.mouth==='smirk')line('M30 37.5Q33 38.1 34.7 36.1','#a8483f',1.2);
+  if(face.mouth==='pout')line('M30.7 37.1Q32 36.2 33.3 37.1','#b8443f',1.4);
+  if(extra.has('mole'))add('circle',{cx:35.6,cy:35.4,r:.65,fill:'#4a2f28'});
+  faceWorn(add,face);
+}
+// The shaded manner: light and shadow on skin, hair and cloth, eyes with lids, a nose, lips. Drawn, not photographed.
+function drawHumanReal(add,face,paint) {
+  const skin=FACE_SKINS[face.skin]||FACE_SKINS[0],[hair,tint]=face.hair,wear=face.wear[0],extra=new Set(face.extra),{shape,line}=facePen(add);
+  const skinFill=paint('radialGradient',{cx:.42,cy:.34,r:.78},[[0,faceTone(skin,.2)],[.55,skin],[1,faceTone(skin,-.24)]]);
+  const hairFill=paint('linearGradient',{x1:0,y1:0,x2:0,y2:1},[[0,faceTone(tint,.22)],[1,faceTone(tint,-.2)]]);
+  const wearFill=paint('linearGradient',{x1:0,y1:0,x2:1,y2:1},[[0,faceTone(face.wear[1],.14)],[1,faceTone(face.wear[1],-.26)]]);
+  const shadow=faceTone(skin,-.34),iris=FACE_IRIS.real[FACES.indexOf(face)%FACE_IRIS.real.length],lip=faceTone('#b0605a',face.skin===5||face.skin===3?-.18:0),browTint=faceTone(tint==='#d9dadd'||tint==='#8d8f93'?'#9a9ca1':hair==='helmet'||hair==='cap'||hair==='beanie'?'#3a2f28':tint,-.1);
+  faceHairBack(add,hair,hairFill);faceWear(add,face,wearFill);
+  if(wear!=='knit')add('rect',{x:27.2,y:37,width:9.6,height:9,fill:faceTone(skin,-.14)});
+  add('ellipse',{cx:32,cy:42.9,rx:7.2,ry:2.3,fill:'#000000','fill-opacity':.24});
+  for(const cx of [19.8,44.2]){add('ellipse',{cx,cy:29.2,rx:2.3,ry:3.3,fill:faceTone(skin,-.08)});add('ellipse',{cx,cy:29.4,rx:1,ry:1.9,fill:shadow,'fill-opacity':.45});}
+  shape('M20.4 25.5Q20.2 12 32 12Q43.8 12 43.6 25.5Q43.7 32.4 40.4 37.2Q36.6 42.8 32 43Q27.4 42.8 23.6 37.2Q20.3 32.4 20.4 25.5Z',skinFill);
+  add('ellipse',{cx:29,cy:19.4,rx:5.4,ry:3,fill:'#ffffff','fill-opacity':.1});
+  add('ellipse',{cx:22.9,cy:33.4,rx:2,ry:4.2,fill:'#000000','fill-opacity':.07});add('ellipse',{cx:41.1,cy:33.4,rx:2,ry:4.2,fill:'#000000','fill-opacity':.1});
+  if(extra.has('blush')){add('ellipse',{cx:24.6,cy:33.4,rx:2.6,ry:1.7,fill:'#e0705f','fill-opacity':.22});add('ellipse',{cx:39.4,cy:33.4,rx:2.6,ry:1.7,fill:'#e0705f','fill-opacity':.22});}
+  if(extra.has('stubble'))shape('M21.6 31.5Q22.6 40.8 32 43Q41.4 40.8 42.4 31.5Q40 36.6 36 35.4Q32 34.4 28 35.4Q24 36.6 21.6 31.5Z','#2a211c',{'fill-opacity':.26});
+  if(extra.has('beard')){shape('M21 30Q21.6 42 32 44.2Q42.4 42 43 30Q40.4 36 36 35Q32 34 28 35Q23.6 36 21 30Z',paint('linearGradient',{x1:0,y1:0,x2:0,y2:1},[[0,'#5a4030'],[1,'#33241a']]));line('M25 37.5L25.6 41M28.5 38.4L28.8 42.4M32 38.6L32 43M35.5 38.4L35.2 42.4M39 37.5L38.4 41','#ffffff22',.5);}
+  faceHairFront(add,hair,hairFill,tint);
+  const hat=['cap','helmet','beanie'].includes(hair);
+  if(!hat&&hair!=='bald')line('M24.6 17Q26.8 14 30.4 13.2M27 18.4Q28.2 17 30 16.4',faceTone(tint,.45),.6,{'stroke-opacity':.6});
+  for(const [cx,side] of [[26.6,1],[37.4,-1]]) {
+    if(face.eyes==='none')continue;
+    add('ellipse',{cx,cy:28.3,rx:4.1,ry:2.7,fill:'#000000','fill-opacity':.09});
+    const top=face.eyes==='wide'?25.6:face.eyes==='smile'?27:26.3,low=face.eyes==='wide'?30.9:face.eyes==='smile'?29.5:30.2,lift=face.eyes==='sharp'?.8:0;
+    shape(`M${cx-3.1*side} ${28.5-lift}Q${cx} ${top} ${cx+3.1*side} ${28.5+lift*.4}Q${cx} ${low} ${cx-3.1*side} ${28.5-lift}Z`,'#f3efe9');
+    add('circle',{cx,cy:28.4,r:1.5,fill:iris});add('circle',{cx,cy:28.4,r:.68,fill:'#111111'});add('circle',{cx:cx-.5,cy:27.8,r:.36,fill:'#ffffff'});
+    if(face.eyes==='sleepy')shape(`M${cx-3.3} 28.5Q${cx} 25.9 ${cx+3.3} 28.5Q${cx} 28.1 ${cx-3.3} 28.5Z`,faceTone(skin,-.12));
+    line(`M${cx-3.3*side} ${28.4-lift}Q${cx} ${face.eyes==='sleepy'?27.6:top-.4} ${cx+3.3*side} ${28.4+lift*.4}`,'#2a1f1a',face.eyes==='sleepy'?1.1:.95);
+    const rise=face.eyes==='sharp'||extra.has('brows')?1.1:0,drop=face.eyes==='sleepy'?.7:0;
+    if(!hat)line(`M${cx-3.6*side} ${24.4-rise+drop}Q${cx-.4*side} ${22.9+drop} ${cx+3.4*side} ${24.5+rise*.6+drop}`,browTint,extra.has('brows')?1.9:1.5);  // a brim hides the brows
+  }
+  if(extra.has('bags'))line('M24.2 31Q26.6 32.2 29 31M35 31Q37.4 32.2 39.8 31',shadow,.8,{'stroke-opacity':.6});
+  line('M31.3 29.6Q30.3 33.2 30.9 34.3Q32 35.1 33.3 34.3',shadow,.8,{'stroke-opacity':.75});line('M32.5 29.8L32.6 33.2','#ffffff',.9,{'stroke-opacity':.22});
+  if(extra.has('mustache'))shape('M26.8 35.4Q29.6 33.6 32 35Q34.4 33.6 37.2 35.4Q34.6 36.8 32 36Q29.4 36.8 26.8 35.4Z',hairFill);
+  const dark=faceTone(lip,-.3);
+  if(face.mouth==='smile'){shape('M28 36.6Q30.5 35.8 32 36.4Q33.5 35.8 36 36.6Q32 38 28 36.6Z',dark);shape('M28.6 37.1Q32 39.7 35.4 37.1Q32 38.3 28.6 37.1Z',lip);}
+  if(face.mouth==='grin')shape('M27.8 36.2Q32 37.2 36.2 36.2Q32 40.4 27.8 36.2Z','#f4efe8',{stroke:dark,'stroke-width':.7,'stroke-linejoin':'round'});
+  if(face.mouth==='flat'){line('M28.6 37Q32 36.6 35.4 37',dark,1);shape('M29.4 37.5Q32 38.9 34.6 37.5Z',lip,{'fill-opacity':.8});}
+  if(face.mouth==='smirk'){line('M28.6 37.2Q32.6 37.6 35.8 35.8',dark,1.1);shape('M29.6 37.7Q32.4 38.9 34.6 37.2Z',lip,{'fill-opacity':.8});}
+  if(face.mouth==='pout'){shape('M29.2 36.8Q30.8 35.6 32 36.2Q33.2 35.6 34.8 36.8Q32 37.4 29.2 36.8Z','#a8483f');shape('M29.4 37.1Q32 40 34.6 37.1Z','#c05a52');}
+  if(extra.has('mole'))add('circle',{cx:36.2,cy:34.6,r:.6,fill:'#3a2620'});
+  faceWorn(add,face);
+  if(extra.has('glasses')||extra.has('roundglasses'))line('M24.4 26.6L26.2 25.4M35.2 26.6L37 25.4','#ffffff',.7,{'stroke-opacity':.55});
+}
+function drawRobotFace(add,face,style) {
+  const {metal,dark,led}=face,screen='#10161d',{shape,line}=facePen(add);
   const box=(x,y,width,height,rx,fill,more={})=>add('rect',{x,y,width,height,rx,fill,...more}),dot=(cx,cy,r,fill,more={})=>add('circle',{cx,cy,r,fill,...more});
   shape('M9 64Q11 50 24 48L40 48Q53 50 55 64Z',dark);box(27.5,41,9,8,1.5,dark);line('M27.5 44.5L36.5 44.5','#00000040',1);
   if(face.shape==='box'){line('M32 14L32 7.5',dark,1.6);dot(32,6,2.6,led);box(11.5,23.5,4.5,9,1.5,dark);box(48,23.5,4.5,9,1.5,dark);box(16,14,32,28,6,metal);
@@ -1759,20 +1864,41 @@ function drawRobotFace(add,face) {
   if(face.shape==='bug'){dot(32,27,15.5,metal);dot(25.4,25.6,6,screen);dot(38.6,25.6,6,screen);dot(25.4,25.6,3,led);dot(38.6,25.6,3,led);dot(26.6,24.2,.9,'#ffffff');dot(39.8,24.2,.9,'#ffffff');line('M28.4 35.6Q32 38 35.6 35.6',dark,1.4);line('M32 11.5L32 7',dark,1.4);dot(32,6,1.8,led);}
   if(face.shape==='cat'){shape('M17.5 20L19.5 7.5L28.5 14.5Z',metal);shape('M46.5 20L44.5 7.5L35.5 14.5Z',metal);shape('M19.8 16.6L20.8 11L25 14.4Z',led);shape('M44.2 16.6L43.2 11L39 14.4Z',led);box(16,13.5,32,28,11,metal);
     box(19.5,20.5,25,10.5,5,screen);line('M23.6 27Q26 24 28.4 27M35.6 27Q38 24 40.4 27',led,1.7);shape('M30.8 34.4L33.2 34.4L32 36Z',dark);line('M32 36L32 37.4M29.6 38Q32 39.6 34.4 38',dark,1);line('M21 35L16.5 34M21 37L16.5 38M43 35L47.5 34M43 37L47.5 38',dark,.8);}
+  // Anime: rosy cheeks and a sparkle beside the head.
+  if(style==='anime'){const cheek=face.shape==='dome'?37.6:face.shape==='tv'?39.6:35.4;add('ellipse',{cx:20.8,cy:cheek,rx:2.6,ry:1.4,fill:'#ff8fa3','fill-opacity':.7});add('ellipse',{cx:43.2,cy:cheek,rx:2.6,ry:1.4,fill:'#ff8fa3','fill-opacity':.7});
+    shape('M51 9L52.1 12.9L56 14L52.1 15.1L51 19L49.9 15.1L46 14L49.9 12.9Z','#ffffff',{'fill-opacity':.9});shape('M12 12L12.6 14.4L15 15L12.6 15.6L12 18L11.4 15.6L9 15L11.4 14.4Z','#ffffff',{'fill-opacity':.7});}
 }
-function faceSvg(face) {
-  const svg=svgElement('svg',{viewBox:'6 2 52 52',class:'face','aria-hidden':'true',focusable:'false'});svg.dataset.face=face.id;
-  const add=(tag,attributes)=>{const node=svgElement(tag,Object.fromEntries(Object.entries(attributes).filter(([,value])=>value!=='')));svg.appendChild(node);return node;};
-  add('rect',{x:0,y:0,width:64,height:64,fill:face.bg});
-  (face.kind==='robot'?drawRobotFace:drawHumanFace)(add,face);
+function faceSvg(face,style='flat') {
+  if(!FACE_STYLES.includes(style))style='flat';
+  const svg=svgElement('svg',{viewBox:'6 2 52 52',class:'face','aria-hidden':'true',focusable:'false'});svg.dataset.face=face.id;svg.dataset.faceStyle=style;
+  const add=(tag,attributes,parent=svg)=>{const node=svgElement(tag,Object.fromEntries(Object.entries(attributes).filter(([,value])=>value!=='')));parent.appendChild(node);return node;};
+  // Shadings are defined inside each drawing under a name of its own: one that sat in a hidden part of the page would not paint.
+  let defs=null;const serial=ui.faceSerial=(ui.faceSerial||0)+1;let count=0;
+  const paint=(kind,attributes,stops)=>{
+    if(!defs)defs=add('defs',{});
+    const id=`face-${serial}-${++count}`,gradient=add(kind,{id,...attributes},defs);
+    for(const [offset,color,opacity] of stops)add('stop',{offset,'stop-color':color,...(opacity===undefined?{}:{'stop-opacity':opacity})},gradient);
+    return `url(#${id})`;
+  };
+  const ground=style==='real'?paint('radialGradient',{cx:.5,cy:.4,r:.8},[[0,faceTone(face.bg,.2)],[1,faceTone(face.bg,-.3)]]):style==='anime'?faceTone(face.bg,.22):face.bg;
+  add('rect',{x:0,y:0,width:64,height:64,fill:ground});
+  if(style==='anime')add('path',{d:'M0 46L64 14L64 30L0 62Z',fill:'#ffffff','fill-opacity':.1});
+  if(face.kind==='robot')drawRobotFace(add,face,style);
+  else if(style==='anime')drawHumanAnime(add,face);
+  else if(style==='real')drawHumanReal(add,face,paint);
+  else drawHumanFace(add,face);
+  // Light from the upper left, for the shaded manner (and so that metal looks like metal).
+  if(style==='real')add('rect',{x:0,y:0,width:64,height:64,fill:paint('linearGradient',{x1:0,y1:0,x2:1,y2:1},[[0,'#ffffff',.2],[.45,'#ffffff',0],[1,'#000000',.3]])});
+  if(style==='real'&&face.kind==='robot')add('ellipse',{cx:25.5,cy:18.6,rx:5,ry:2,fill:'#ffffff','fill-opacity':.32});
   return svg;
 }
 // Which face an agent has: the faces are shuffled by the piece of work, and dealt in the order its agents joined.
 // The same work always shows the same faces; another piece of work has another cast.
+function faceSeed(text) { let seed=2166136261;for(const char of String(text)){seed^=char.codePointAt(0);seed=Math.imul(seed,16777619)>>>0;}return seed; }
 function faceOrder(runId) {
   if(!ui.faceOrders)ui.faceOrders=new Map();
   let order=ui.faceOrders.get(runId);if(order)return order;
-  let seed=2166136261;for(const char of String(runId)){seed^=char.codePointAt(0);seed=Math.imul(seed,16777619)>>>0;}
+  let seed=faceSeed(runId);
   order=FACES.map((_,index)=>index);
   for(let index=order.length-1;index>0;index--){seed=(Math.imul(seed,1664525)+1013904223)>>>0;const other=seed%(index+1);[order[index],order[other]]=[order[other],order[index]];}
   ui.faceOrders.set(runId,order);while(ui.faceOrders.size>64)ui.faceOrders.delete(ui.faceOrders.keys().next().value);
@@ -1782,6 +1908,9 @@ function agentFace(agent) {
   const place=Math.max(0,(ui.state?.agents||[]).filter(item=>item.run_id===agent.run_id).findIndex(item=>item.id===agent.id));
   return FACES[faceOrder(agent.run_id)[place%FACES.length]];
 }
+// The manner the faces of a piece of work are drawn in: the one chosen on the screen, else one that goes with the work.
+function faceStyle(runId) { return FACE_STYLES.includes(ui.faceStyle)?ui.faceStyle:FACE_STYLES[faceSeed('style:'+runId)%FACE_STYLES.length]; }
+function agentFaceSvg(agent) { return faceSvg(agentFace(agent),faceStyle(agent.run_id)); }
 function retainedTeamEvents(run) {
   if(!run||(ui.compactState&&ui.loadedEventsRun!==run.id))return [];
   return ui.state.events.filter(event=>event.run_id===run.id).slice(-100);
@@ -2106,7 +2235,7 @@ function initializeNetworkControls() {
 }
 function renderTeamMap(agents) {
   pruneNetworkViews();
-  const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,agents.map(agent=>[agent.id,agent.parent_id,agent.kind])]);
+  const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,ui.faceStyle||'',agents.map(agent=>[agent.id,agent.parent_id,agent.kind])]);
   $('teamMapMeta').textContent=`${agents.length} 人`;
   const counts=[['作業中',agents.filter(a=>!archivedAgent(a)&&['working','running'].includes(a.status)).length],['待機',agents.filter(a=>!archivedAgent(a)&&['queued','waiting','idle'].includes(a.status)&&!needsHuman(a)).length],['要回答',agents.filter(needsHuman).length]];
   $('networkCounts').textContent=archivedRun(getRun())?'保存時点の担当と通信 · 現在は実行していません':counts.map(([label,count])=>`${label} ${count}`).join('  /  ');
@@ -2131,7 +2260,7 @@ function renderTeamMap(agents) {
       const place=layout.positions.get(agent.id),button=element('button','network-node');button.type='button';button.dataset.agentId=agent.id;button.dataset.networkRole=independentReviewer(agent)?'reviewer':agent.parent_id?'worker':'pm';button.dataset.focusKey=`map:${agent.id}`;
       button.style.left=`${place.x}px`;button.style.top=`${place.y}px`;
       const glyph=element('span','network-glyph'),inner=element('span','network-orb-inner'),monogram=element('span','network-monogram'),role=element('span','network-role',agentRoleTag(agent)),name=element('strong','network-name'),state=element('span','network-state');
-      glyph.setAttribute('aria-hidden','true');const face=faceSvg(agentFace(agent));face.classList.add('network-face');inner.append(face,monogram,role);button.append(glyph,inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
+      glyph.setAttribute('aria-hidden','true');const face=agentFaceSvg(agent);face.classList.add('network-face');inner.append(face,monogram,role);button.append(glyph,inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
       button.addEventListener('pointerenter',()=>{cancelNetworkPreviewDismiss();if(!ui.networkGesture){ui.networkHoverAgent=agent.id;renderNetworkPreview();}});
       button.addEventListener('pointerleave',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
       button.addEventListener('focus',()=>{cancelNetworkPreviewDismiss();ui.networkFocusAgent=agent.id;renderNetworkPreview();});
@@ -2275,7 +2404,7 @@ function renderCrewSummary(agents) {
   panel.append(total,bar,chips);
 }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.read_only_worker,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([ui.faceStyle||'',ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.read_only_worker,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   crewOrder(filteredAgents(agents)).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
@@ -2283,7 +2412,7 @@ function renderAgents(agents) {
     const top=element('div','agent-card-top'),stateLine=element('span','agent-state-line'),inputBadge=messageInputBadge(agent);
     const glyph=element('span','crew-glyph',CREW_STATES[crew].glyph);glyph.setAttribute('aria-hidden','true');
     stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason,agent));if(inputBadge)stateLine.append(inputBadge);
-    const avatar=element('span','agent-avatar has-face');avatar.append(faceSvg(agentFace(agent)),element('span','agent-avatar-ring'),glyph,element('span','agent-avatar-mark',independentReviewer(agent)?'R':!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`));avatar.setAttribute('aria-hidden','true');
+    const avatar=element('span','agent-avatar has-face');avatar.append(agentFaceSvg(agent),element('span','agent-avatar-ring'),glyph,element('span','agent-avatar-mark',independentReviewer(agent)?'R':!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`));avatar.setAttribute('aria-hidden','true');
     top.append(avatar,stateLine);
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
@@ -2674,8 +2803,8 @@ function renderConversation(agent) {
   if(detailStatus.textContent!==detailMessage)detailStatus.textContent=detailMessage;
   $('conversationLog').setAttribute('aria-busy',String(loading));$('resultsPanel').setAttribute('aria-busy',String(loading));
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
-  const faceHolder=$('conversationFace'),faceKey=agent?`${agent.run_id}:${agent.id}`:'';
-  if(faceHolder.dataset.agent!==faceKey){const face=agent?agentFace(agent):null;faceHolder.dataset.agent=faceKey;faceHolder.replaceChildren(...(face?[faceSvg(face)]:[]));faceHolder.title=face?face.name:'';faceHolder.hidden=!face;}
+  const faceHolder=$('conversationFace'),faceKey=agent?`${agent.run_id}:${agent.id}:${faceStyle(agent.run_id)}`:'';
+  if(faceHolder.dataset.agent!==faceKey){const face=agent?agentFace(agent):null;faceHolder.dataset.agent=faceKey;faceHolder.replaceChildren(...(face?[agentFaceSvg(agent)]:[]));faceHolder.title=face?face.name:'';faceHolder.hidden=!face;}
   $('conversationMeta').textContent=agent?`${agentRoleLabel(agent)} · ${agent.profile_id} · 応答 ${agent.turns||0} 回`:'';
   const memory=agent?.context_memory;
   $('contextMemoryStatus').hidden=!memory;
@@ -2955,7 +3084,7 @@ function mailLifecycleLabel(row) {
 function renderCoordinationMonitor(run,agents) {
   const panel=$('coordinationMonitor');if(!panel)return;panel.hidden=!run;if(!run)return;
   const c=run.coordination,rows=mailLifecycles(retainedTeamEvents(run),run.id);
-  const signature=JSON.stringify([run.id,run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.worker_dependencies,a.provider_observation]),rows]);
+  const signature=JSON.stringify([run.id,ui.faceStyle||'',run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.worker_dependencies,a.provider_observation]),rows]);
   if(signature===ui.monitorSignature)return;ui.monitorSignature=signature;
   const content=$('coordinationContent');content.replaceChildren();
   const name=id=>agents.find(a=>a.id===id)?.name||id||'未記録';
@@ -2974,7 +3103,7 @@ function renderCoordinationMonitor(run,agents) {
   for(const agent of agents) {
     const text=agentMonitorText(agent);if(!text)continue;
     const card=element('button','monitor-agent');card.type='button';card.dataset.focusKey=`monitor-agent:${run.id}:${agent.id}`;
-    card.append(faceSvg(agentFace(agent)),element('strong','',agent.name||agent.id),element('span','',text));card.addEventListener('click',()=>selectAgent(agent.id));crew.appendChild(card);
+    card.append(agentFaceSvg(agent),element('strong','',agent.name||agent.id),element('span','',text));card.addEventListener('click',()=>selectAgent(agent.id));crew.appendChild(card);
   }
   content.appendChild(crew);
   const mail=$('mailLifecycleList');mail.replaceChildren();
@@ -3084,6 +3213,8 @@ async function initialize() {
   renderQuestionNotice(questionEntries());
   initializeNetworkControls();
   $('progressView').addEventListener('click',()=>setCockpitView('progress'));
+  // The manner the faces are drawn in, for as long as this page is open: one of the three, or whatever goes with each piece of work.
+  $('faceStyleSelect').addEventListener('change',event=>{ui.faceStyle=FACE_STYLES.includes(event.target.value)?event.target.value:'';renderRun();});
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
   $('networkOpenWindow')?.addEventListener('click',openNetworkWindow);
   if(NETWORK_POPOUT){ui.cockpitView='network';document.querySelector('.app-shell').dataset.cockpitView='network';$('progressView').setAttribute('aria-pressed','false');$('networkView').setAttribute('aria-pressed','true');document.documentElement.dataset.layout='network-popout';document.title='Mission Network · Workbench';}

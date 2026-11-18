@@ -432,3 +432,7 @@ body{background:var(--cp-bg)}
 .monitor-agent>.face{width:36px;height:36px}
 .monitor-agent>span{grid-column:1/-1}
 .conversation-face{flex:none;width:40px;height:40px;margin-right:10px}
+.face-style{display:flex;align-items:center;gap:8px;font-size:12px;color:#a6aeb9}
+.face-style select{min-height:32px;padding:4px 8px;border:1px solid var(--cp-line-strong,#3d4651);border-radius:8px;background:#14171c;color:inherit;font:inherit}
+.app-shell[data-cockpit-view=progress] .monitor-heading{flex-direction:row;align-items:center;flex-wrap:wrap}
+.app-shell[data-cockpit-view=progress] .monitor-heading .face-style{margin-left:auto}

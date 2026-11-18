@@ -26,6 +26,21 @@ the status cards, the diagram, the detail).
   work has another.
 - The start screen and the settings are as they were.
 
+Three manners of drawing (2026-11-18)
+
+- Every face can be drawn as a flat illustration (the first set), in a
+  shaded manner called リアル (light and shadow on skin, hair and cloth,
+  eyes with lids, a nose, lips) and in an anime manner (a small chin,
+  large eyes with lights in them, bangs). All three are drawings built in
+  the page; none is a photograph or an image file.
+- A piece of work is drawn in one manner, chosen by its id, so that works
+  differ. "顔の絵柄" above the status cards fixes one manner for as long
+  as the page is open; nothing is stored, and a reload returns to
+  "作業ごとにおまかせ".
+- Shadings (gradients) are defined inside each drawing under a name of its
+  own: one defined in a part of the page that is not shown would not
+  paint elsewhere.
+
 ## 0.1.1.dev89 — Looking at the screen (2026-11-18)
 
 Desktop, first stage: an agent can be shown the screen. It cannot operate

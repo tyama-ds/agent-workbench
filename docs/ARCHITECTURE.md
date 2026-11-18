@@ -881,6 +881,13 @@ the human turned it on (0.1.1.dev61; off by default).
   attributes). `faceOrder(runId)` shuffles the list with a generator seeded
   by the run's id (no `Math.random`), and `agentFace(agent)` takes the
   face at the agent's place among the run's agents.
+- `faceSvg(face, style)` draws in one of `FACE_STYLES`: `drawHumanFace`
+  (flat), `drawHumanReal` (gradients made by the `paint` helper, in a
+  `defs` of that drawing with ids from `ui.faceSerial`) or
+  `drawHumanAnime`; `drawRobotFace` takes the style for its additions.
+  `faceStyle(runId)` is the chosen `ui.faceStyle`, else a manner seeded
+  by the run's id. The style is part of the refresh keys of the list,
+  the status cards and the diagram, so a change draws them again.
 
 ## Looking at the screen (0.1.1.dev89)
 

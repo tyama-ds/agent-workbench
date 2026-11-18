@@ -73,6 +73,52 @@ assert.equal(drawings.size,FACES.length);   // no two faces are the same drawing
     assert 'Math.random' not in APP and '<img' not in APP
 
 
+def test_every_face_is_drawn_in_three_manners_and_a_piece_of_work_has_one_of_them():
+    check(WALK + r'''
+assert.deepEqual(FACE_STYLES,['flat','real','anime']);assert.deepEqual(Object.values(FACE_STYLE_LABELS),['イラスト','リアル','アニメ']);
+const allowed=['SVG','RECT','PATH','CIRCLE','ELLIPSE','DEFS','LINEARGRADIENT','RADIALGRADIENT','STOP'],names=new Set();
+for(const face of FACES){
+  const drawn=FACE_STYLES.map(style=>{
+    const svg=faceSvg(face,style),nodes=everyNode(svg);
+    assert.equal(svg.dataset.face,face.id);assert.equal(svg.dataset.faceStyle,style);
+    for(const node of nodes){
+      assert.ok(allowed.includes(node.tagName.toUpperCase()),face.id+' '+style+' '+node.tagName);
+      for(const name of ['style','href','xlink:href','src'])assert.ok(node.getAttribute(name)==null,face.id+' '+name);
+      // A shading is named inside its own drawing, and a drawing uses only its own shadings.
+      const id=node.getAttribute('id');if(id!=null){assert.ok(!names.has(id),id);names.add(id);}
+      const fill=String(node.getAttribute('fill')||'');
+      if(fill.startsWith('url('))assert.ok(nodes.some(other=>other.getAttribute('id')===fill.slice(5,-1)),face.id+' '+fill);
+    }
+    return JSON.stringify(nodes.map(node=>[node.tagName,node.getAttribute('d'),node.getAttribute('cx'),node.getAttribute('rx'),String(node.getAttribute('fill')||'').replace(/face-\d+-/,'')]));
+  });
+  assert.equal(new Set(drawn).size,3,face.id);                                  // the three manners are three drawings
+}
+assert.ok(names.size>FACES.length);                                             // the shaded manner uses shadings
+assert.equal(faceSvg(FACES[0],'photograph').dataset.faceStyle,'flat');
+// A piece of work is drawn in one manner, the same every time; other pieces of work have other manners.
+seedSelection();
+const runs=Array.from({length:30},(_,index)=>'r-'+String(index).padStart(16,'0')),manners=runs.map(run=>faceStyle(run));
+assert.deepEqual(runs.map(run=>faceStyle(run)),manners);assert.deepEqual([...new Set(manners)].sort(),['anime','flat','real']);
+const agent=ui.state.agents.find(item=>item.run_id===ui.selectedRun);
+assert.equal(agentFaceSvg(agent).dataset.faceStyle,faceStyle(agent.run_id));assert.equal(agentFaceSvg(agent).dataset.face,agentFace(agent).id);
+// Chosen on the screen: every piece of work is drawn that way, the faces themselves stay, and the lists are drawn again.
+renderRun();const before=facesIn($('agentCards')).map(node=>node.dataset.face);
+for(const style of FACE_STYLES){
+  ui.faceStyle=style;renderRun();
+  assert.ok(runs.every(run=>faceStyle(run)===style));
+  for(const holder of ['agentCards','teamMap','conversationFace'])
+    assert.ok(facesIn($(holder)).length>0&&facesIn($(holder)).every(node=>node.dataset.faceStyle===style),holder+' '+style);
+  assert.deepEqual(facesIn($('agentCards')).map(node=>node.dataset.face),before);
+}
+ui.faceStyle='';renderRun();assert.equal(facesIn($('agentCards'))[0].dataset.faceStyle,faceStyle(ui.selectedRun));
+''')
+    tree = Elements()
+    assert tree.ids['faceStyleSelect']['attrs'].get('id') == 'faceStyleSelect'
+    assert [value for value in ('auto', 'flat', 'real', 'anime') if f'<option value="{value}"' in HTML] == ['auto', 'flat', 'real', 'anime']
+    assert "ui.faceStyle=FACE_STYLES.includes(event.target.value)?event.target.value:'';renderRun();" in APP
+    assert 'localStorage' not in APP.split('// --- Faces:')[1].split('function retainedTeamEvents')[0]
+
+
 def test_each_piece_of_work_has_its_own_cast_and_keeps_it():
     check(r'''
 seedSelection();
