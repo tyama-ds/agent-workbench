@@ -13,6 +13,13 @@ from test_task_guidance import Elements
 
 CSS = (Path(__file__).resolve().parents[1] / 'static/styles.css').read_text(encoding='utf-8')
 
+
+def test_the_style_sheet_can_be_read_with_the_default_encoding_of_windows():
+    # Other tests read it with the platform's default encoding (cp1252 on Windows): one Japanese comment broke them.
+    (Path(__file__).resolve().parents[1] / 'static/styles.css').read_bytes().decode('cp1252')
+    assert not [char for char in CSS if '\u3040' <= char <= '\u9fff']
+    assert '@media(max-width:640px){.conversation-face{display:none}}' in CSS   # a narrow heading keeps its room
+
 WALK = r'''
 function everyNode(root){const all=[];(function walk(node){all.push(node);(node.children||[]).forEach(walk);})(root);return all;}
 function facesIn(root){return everyNode(root).filter(node=>node.dataset&&node.dataset.face);}

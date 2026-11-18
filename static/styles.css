@@ -408,8 +408,9 @@ body{background:var(--cp-bg)}
 .history-search-results{display:grid;gap:4px;padding:0 9px 6px;max-height:180px;overflow:auto;flex:none}.history-search-results:empty{display:none}
 .history-result{width:100%;min-width:0;border-color:var(--cp-line,#2a2e35)}.history-match{font-size:10px;line-height:1.5;color:#b7bcc4;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .radio-field .choice{display:flex;align-items:center;gap:8px;padding:8px 10px;text-align:left}.radio-field .choice input{width:auto;flex:none;margin:0}
-/* dev90 — The centre shows one thing at a time. 進み具合: who is doing what, and the messages.
-   チーム図: the diagram alone. 掲示板: the board. (The diagram's own window keeps its layout.) */
+/* dev90: the centre shows one thing at a time. progress: who is doing what, and the messages.
+   network: the diagram alone. board: the board. (The diagram's own window keeps its layout.)
+   No Japanese in this file: tests read it with the platform's default encoding. */
 :root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .active-run{overflow-y:auto}
 :root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .network-panel{display:none}
 :root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .network-workspace{grid-template-rows:minmax(300px,1fr);min-height:300px}
@@ -432,6 +433,8 @@ body{background:var(--cp-bg)}
 .monitor-agent>.face{width:36px;height:36px}
 .monitor-agent>span{grid-column:1/-1}
 .conversation-face{flex:none;width:40px;height:40px;margin-right:10px}
+/* On a narrow screen the heading keeps its width and height for its text: the face is in the list above. */
+@media(max-width:640px){.conversation-face{display:none}}
 .face-style{display:flex;align-items:center;gap:8px;font-size:12px;color:#a6aeb9}
 .face-style select{min-height:32px;padding:4px 8px;border:1px solid var(--cp-line-strong,#3d4651);border-radius:8px;background:#14171c;color:inherit;font:inherit}
 .app-shell[data-cockpit-view=progress] .monitor-heading{flex-direction:row;align-items:center;flex-wrap:wrap}
