@@ -18,28 +18,34 @@ the status cards, the diagram, the detail).
   and 担当ログ. A link that leads to the messages opens 進み具合.
 - The run's numbers and settings are one line away ("予算と設定の詳細")
   instead of three rows that are always there.
-- Every agent has a face: 26 original drawings (18 people, 8 robots),
-  built in the page from a few shapes, with no image files. They stand in
+- Every agent has a face: 26 characters (18 people, 8 robots). They stand in
   the list, on the status cards, in the diagram and beside the selected
   agent's name. Each piece of work shuffles the faces by its id and deals
   them in the order its agents joined: one work keeps its cast, another
   work has another.
 - The start screen and the settings are as they were.
 
-Three manners of drawing (2026-11-18)
+Three manners: an illustration, and two sets of pictures (2026-11-18)
 
-- Every face can be drawn as a flat illustration (the first set), in a
-  shaded manner called リアル (light and shadow on skin, hair and cloth,
-  eyes with lids, a nose, lips) and in an anime manner (a small chin,
-  large eyes with lights in them, bangs). All three are drawings built in
-  the page; none is a photograph or an image file.
-- A piece of work is drawn in one manner, chosen by its id, so that works
-  differ. "顔の絵柄" above the status cards fixes one manner for as long
-  as the page is open; nothing is stored, and a reload returns to
-  "作業ごとにおまかせ".
-- Shadings (gradients) are defined inside each drawing under a name of its
-  own: one defined in a part of the page that is not shown would not
-  paint elsewhere.
+- The drawn "real" and "anime" manners were tried and set aside: shapes
+  drawn in the page do not make a photograph or an anime drawing. The
+  project's owner had the 26 characters made with an image model in both
+  manners (fictional characters, no real person) and supplied them as
+  1024-pixel WebP files. They are kept under `static/faces/real` and
+  `static/faces/anime` at 256 pixels (417 KB in all), with a note of where
+  they came from.
+- イラスト is still drawn in the page. リアル and アニメ are those
+  pictures, served from `/faces/<style>/<NN>.webp`: signed-in pages only,
+  the two folders and the 26 names only. They are the one thing the page
+  may keep (a day), so that a list drawn again does not fetch its faces
+  again; everything else stays uncached. A picture that cannot be loaded
+  gives way to the illustration of the same face.
+- The anime set is used only while "アニメ絵も使う" is ticked; the page
+  opens with it unticked. Unticked, no piece of work is shown in that
+  manner and it cannot be chosen.
+- A piece of work is shown in one manner, chosen by its id from those in
+  use. "顔の絵柄" fixes one for as long as the page is open. Neither
+  choice is stored.
 
 ## 0.1.1.dev89 — Looking at the screen (2026-11-18)
 

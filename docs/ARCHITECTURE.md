@@ -876,18 +876,20 @@ the human turned it on (0.1.1.dev61; off by default).
 - A diagram laid out while it is not on the screen is fitted with a
   guessed size (`networkViewport`); `fitNetwork` marks that as
   `fitPending` and `setCockpitView('network')` fits it again.
-- `FACES` lists the drawings; `faceSvg(face)` builds one as SVG elements
+- `FACES` lists the characters; `faceSvg(face)` builds the illustration of one as SVG elements
   with presentation attributes only (the content policy allows no style
   attributes). `faceOrder(runId)` shuffles the list with a generator seeded
   by the run's id (no `Math.random`), and `agentFace(agent)` takes the
   face at the agent's place among the run's agents.
-- `faceSvg(face, style)` draws in one of `FACE_STYLES`: `drawHumanFace`
-  (flat), `drawHumanReal` (gradients made by the `paint` helper, in a
-  `defs` of that drawing with ids from `ui.faceSerial`) or
-  `drawHumanAnime`; `drawRobotFace` takes the style for its additions.
-  `faceStyle(runId)` is the chosen `ui.faceStyle`, else a manner seeded
-  by the run's id. The style is part of the refresh keys of the list,
-  the status cards and the diagram, so a change draws them again.
+- `faceElement(face, style)` gives the illustration (`faceSvg`) for
+  `flat` and an `img` (`facePicture`) for `real` and `anime`, whose file
+  is the character's number under `/faces/<style>/`. `server.face` serves
+  those files after checking the style and the name against
+  `FACE_STYLES` and `FACE_FILE`; the middleware lets only these responses
+  be cached. `faceStyles()` leaves `anime` out unless `ui.faceAnime` is
+  true; `faceStyle(runId)` is the chosen `ui.faceStyle` when it is in use,
+  else a manner seeded by the run's id. The manner is part of the refresh
+  keys of the list, the status cards and the diagram.
 
 ## Looking at the screen (0.1.1.dev89)
 

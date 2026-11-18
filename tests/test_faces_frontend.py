@@ -58,7 +58,7 @@ assert.equal(ui.cockpitView,'progress');assert.deepEqual(ui.activityPair,{from:'
     assert "$('inspectAgentMail').addEventListener('click',()=>{ui.activityFilter='selected';setCockpitView('progress');" in APP
 
 
-def test_there_are_more_than_twenty_faces_drawn_in_the_page_itself():
+def test_there_are_more_than_twenty_faces_and_the_illustrations_are_drawn_in_the_page():
     check(WALK + r'''
 assert.ok(FACES.length>=20);
 assert.equal(new Set(FACES.map(face=>face.id)).size,FACES.length);assert.equal(new Set(FACES.map(face=>face.name)).size,FACES.length);
@@ -67,7 +67,7 @@ for(const name of ['黒スーツとサングラス','ふつうの会社員','気
 const drawings=new Set();
 for(const face of FACES){
   const svg=faceSvg(face),nodes=everyNode(svg);
-  assert.equal(svg.getAttribute('aria-hidden'),'true');assert.equal(svg.dataset.face,face.id);assert.ok(nodes.length>8,face.id);
+  assert.equal(svg.getAttribute('aria-hidden'),'true');assert.equal(svg.dataset.face,face.id);assert.equal(svg.dataset.faceStyle,'flat');assert.ok(nodes.length>8,face.id);
   for(const node of nodes){
     assert.ok(['SVG','RECT','PATH','CIRCLE','ELLIPSE'].includes(node.tagName.toUpperCase()),face.id+' '+node.tagName);
     // Nothing the page's content policy would refuse, and nothing fetched: no style attribute, no link, no image.
@@ -77,53 +77,65 @@ for(const face of FACES){
 }
 assert.equal(drawings.size,FACES.length);   // no two faces are the same drawing
 ''')
-    assert 'Math.random' not in APP and '<img' not in APP
+    assert 'Math.random' not in APP
 
 
-def test_every_face_is_drawn_in_three_manners_and_a_piece_of_work_has_one_of_them():
+def test_the_real_and_anime_manners_are_pictures_and_anime_is_used_only_when_ticked():
     check(WALK + r'''
 assert.deepEqual(FACE_STYLES,['flat','real','anime']);assert.deepEqual(Object.values(FACE_STYLE_LABELS),['イラスト','リアル','アニメ']);
-const allowed=['SVG','RECT','PATH','CIRCLE','ELLIPSE','DEFS','LINEARGRADIENT','RADIALGRADIENT','STOP'],names=new Set();
-for(const face of FACES){
-  const drawn=FACE_STYLES.map(style=>{
-    const svg=faceSvg(face,style),nodes=everyNode(svg);
-    assert.equal(svg.dataset.face,face.id);assert.equal(svg.dataset.faceStyle,style);
-    for(const node of nodes){
-      assert.ok(allowed.includes(node.tagName.toUpperCase()),face.id+' '+style+' '+node.tagName);
-      for(const name of ['style','href','xlink:href','src'])assert.ok(node.getAttribute(name)==null,face.id+' '+name);
-      // A shading is named inside its own drawing, and a drawing uses only its own shadings.
-      const id=node.getAttribute('id');if(id!=null){assert.ok(!names.has(id),id);names.add(id);}
-      const fill=String(node.getAttribute('fill')||'');
-      if(fill.startsWith('url('))assert.ok(nodes.some(other=>other.getAttribute('id')===fill.slice(5,-1)),face.id+' '+fill);
-    }
-    return JSON.stringify(nodes.map(node=>[node.tagName,node.getAttribute('d'),node.getAttribute('cx'),node.getAttribute('rx'),String(node.getAttribute('fill')||'').replace(/face-\d+-/,'')]));
-  });
-  assert.equal(new Set(drawn).size,3,face.id);                                  // the three manners are three drawings
+// A picture is one of the application's own files, by manner and number; it carries no script, style or outside address.
+const sources=new Set();
+for(const style of ['real','anime'])for(const [index,face] of FACES.entries()){
+  const image=faceElement(face,style);
+  assert.equal(image.tagName.toUpperCase(),'IMG');assert.equal(image.src,`/faces/${style}/${String(index+1).padStart(2,'0')}.webp`);
+  assert.equal(image.dataset.face,face.id);assert.equal(image.dataset.faceStyle,style);assert.equal(image.alt,'');assert.equal(image.getAttribute('aria-hidden'),'true');
+  assert.equal(image.draggable,false);assert.ok(image.getAttribute('style')==null);sources.add(image.src);
 }
-assert.ok(names.size>FACES.length);                                             // the shaded manner uses shadings
-assert.equal(faceSvg(FACES[0],'photograph').dataset.faceStyle,'flat');
-// A piece of work is drawn in one manner, the same every time; other pieces of work have other manners.
+assert.equal(sources.size,FACES.length*2);
+assert.equal(faceElement(FACES[0],'flat').tagName.toUpperCase(),'SVG');assert.equal(faceElement(FACES[0],'photograph').tagName.toUpperCase(),'SVG');
+// Not ticked (how the page opens): no piece of work is shown in the anime manner, and it cannot be chosen.
 seedSelection();
-const runs=Array.from({length:30},(_,index)=>'r-'+String(index).padStart(16,'0')),manners=runs.map(run=>faceStyle(run));
-assert.deepEqual(runs.map(run=>faceStyle(run)),manners);assert.deepEqual([...new Set(manners)].sort(),['anime','flat','real']);
-const agent=ui.state.agents.find(item=>item.run_id===ui.selectedRun);
-assert.equal(agentFaceSvg(agent).dataset.faceStyle,faceStyle(agent.run_id));assert.equal(agentFaceSvg(agent).dataset.face,agentFace(agent).id);
-// Chosen on the screen: every piece of work is drawn that way, the faces themselves stay, and the lists are drawn again.
+const runs=Array.from({length:40},(_,index)=>'r-'+String(index).padStart(16,'0'));
+assert.ok(ui.faceAnime!==true);assert.deepEqual(faceStyles(),['flat','real']);
+assert.deepEqual([...new Set(runs.map(run=>faceStyle(run)))].sort(),['flat','real']);
+assert.deepEqual(runs.map(run=>faceStyle(run)),runs.map(run=>faceStyle(run)));           // a work keeps its manner
+ui.faceStyle='anime';assert.ok(runs.every(run=>faceStyle(run)!=='anime'));ui.faceStyle='';
+// Ticked: anime joins the manners that go with a piece of work, and can be chosen.
+ui.faceAnime=true;assert.deepEqual(faceStyles(),['flat','real','anime']);
+assert.deepEqual([...new Set(runs.map(run=>faceStyle(run)))].sort(),['anime','flat','real']);
+// Chosen on the screen: every piece of work is shown that way, the faces themselves stay, and the lists are drawn again.
 renderRun();const before=facesIn($('agentCards')).map(node=>node.dataset.face);
 for(const style of FACE_STYLES){
-  ui.faceStyle=style;renderRun();
-  assert.ok(runs.every(run=>faceStyle(run)===style));
+  ui.faceStyle=style;renderRun();assert.ok(runs.every(run=>faceStyle(run)===style));
   for(const holder of ['agentCards','teamMap','conversationFace'])
-    assert.ok(facesIn($(holder)).length>0&&facesIn($(holder)).every(node=>node.dataset.faceStyle===style),holder+' '+style);
+    assert.ok(facesIn($(holder)).length>0&&facesIn($(holder)).every(node=>node.dataset.faceStyle===style&&(node.tagName.toUpperCase()==='IMG')===(style!=='flat')),holder+' '+style);
   assert.deepEqual(facesIn($('agentCards')).map(node=>node.dataset.face),before);
 }
+// Unticked again while anime is chosen: the choice no longer holds.
+ui.faceAnime=false;renderRun();assert.ok(facesIn($('agentCards')).every(node=>node.dataset.faceStyle!=='anime'));
 ui.faceStyle='';renderRun();assert.equal(facesIn($('agentCards'))[0].dataset.faceStyle,faceStyle(ui.selectedRun));
 ''')
     tree = Elements()
-    assert tree.ids['faceStyleSelect']['attrs'].get('id') == 'faceStyleSelect'
+    assert tree.ids['faceAnimeAllow']['attrs'].get('type') == 'checkbox' and 'checked' not in tree.ids['faceAnimeAllow']['attrs']
+    assert '<option value="anime" disabled>' in HTML
     assert [value for value in ('auto', 'flat', 'real', 'anime') if f'<option value="{value}"' in HTML] == ['auto', 'flat', 'real', 'anime']
-    assert "ui.faceStyle=FACE_STYLES.includes(event.target.value)?event.target.value:'';renderRun();" in APP
-    assert 'localStorage' not in APP.split('// --- Faces:')[1].split('function retainedTeamEvents')[0]
+    assert "$('faceAnimeAllow').addEventListener('change'" in APP
+    faces = APP.split('// --- Faces:')[1].split('function retainedTeamEvents')[0]
+    assert 'localStorage' not in faces and 'sessionStorage' not in faces and 'http' not in faces.replace('http://www.w3.org', '')
+
+
+def test_the_pictures_are_the_application_s_own_small_files():
+    import struct
+    root = Path(__file__).resolve().parents[1] / 'static' / 'faces'
+    assert sorted(path.name for path in root.iterdir()) == ['NOTICE.txt', 'anime', 'real']
+    for style in ('real', 'anime'):
+        names = sorted(path.name for path in (root / style).iterdir())
+        assert names == [f'{number:02d}.webp' for number in range(1, 27)]
+        for name in names:
+            data = (root / style / name).read_bytes()
+            assert data[:4] == b'RIFF' and data[8:12] == b'WEBP' and struct.unpack('<I', data[4:8])[0] + 8 == len(data)
+            assert 1000 < len(data) < 40000, name                      # 256 pixels square: a few kilobytes each
+    assert 'fictional' in (root / 'NOTICE.txt').read_text(encoding='utf-8')
 
 
 def test_each_piece_of_work_has_its_own_cast_and_keeps_it():
@@ -161,3 +173,33 @@ renderRun();assert.equal(facesIn($('conversationFace'))[0],kept);assert.equal(ui
     for rule in ('.face{display:block;width:100%;height:100%;border-radius:50%}', '.agent-avatar.has-face .agent-avatar-mark{display:none}',
                  '.network-node .network-face~.network-monogram,.network-node .network-face~.network-role{display:none}'):
         assert rule in CSS
+
+
+async def test_the_server_gives_only_the_fixed_pictures_to_the_page_that_signed_in(tmp_path):
+    from test_config_server import bootstrap, serving
+    root = Path(__file__).resolve().parents[1] / 'static' / 'faces'
+    async with serving(tmp_path / 'http') as (auth, app, client):
+        # Not signed in: nothing.
+        response = await client.get(auth.origin + '/faces/real/01.webp')
+        assert response.status == 401 and response.headers['Cache-Control'] == 'no-store'
+        await bootstrap(auth, client)
+        for style, name in (('real', '01.webp'), ('real', '26.webp'), ('anime', '13.webp')):
+            response = await client.get(f'{auth.origin}/faces/{style}/{name}')
+            assert response.status == 200 and response.headers['Content-Type'] == 'image/webp'
+            assert await response.read() == (root / style / name).read_bytes()
+            # A fixed file of the application: the page may keep it, and the other protections stay.
+            assert response.headers['Cache-Control'] == 'private, max-age=86400'
+            assert response.headers['X-Content-Type-Options'] == 'nosniff' and "img-src 'self' data:" in response.headers['Content-Security-Policy']
+        # Nothing else under the folder, no other folder, no other name.
+        for path in ('/faces/real/00.webp', '/faces/real/27.webp', '/faces/real/1.webp', '/faces/real/01.png', '/faces/real/01.webp.bak',
+                     '/faces/flat/01.webp', '/faces/NOTICE.txt', '/faces/real/NOTICE.txt', '/faces/real/..%2Fanime%2F01.webp',
+                     '/faces/real/', '/faces/', '/faces/real/01.webp/x'):
+            response = await client.get(auth.origin + path)
+            assert response.status in {404, 405}, path
+            assert response.headers['Cache-Control'] == 'no-store', path
+        for headers in ({'Origin': 'https://attacker.invalid'}, {'Sec-Fetch-Site': 'cross-site'}):
+            response = await client.get(auth.origin + '/faces/real/01.webp', headers=headers)
+            assert response.status == 403 and response.headers['Cache-Control'] == 'no-store'
+        # Everything else is still not kept.
+        response = await client.get(auth.origin + '/styles.css')
+        assert response.status == 200 and response.headers['Cache-Control'] == 'no-store'

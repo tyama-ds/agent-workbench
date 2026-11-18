@@ -1647,13 +1647,13 @@ function svgElement(tag,attributes={}) {
   for(const [key,value] of Object.entries(attributes))node.setAttribute(key,String(value));
   return node;
 }
-// --- Faces: every agent is drawn with a face, and each piece of work deals them out afresh ----------------
-// Original drawings, built here from a few shapes (no image files, no photographs). kind: human or robot.
+// --- Faces: every agent is shown with a face, and each piece of work deals them out afresh ----------------
+// 26 characters (kind: human or robot), each in three manners (FACE_STYLES): an illustration drawn here from a
+// few shapes, and two sets of pictures kept under static/faces (real and anime; fictional, made with an image
+// model and supplied by the project's owner). The anime set is used only where the human ticked it.
 // hair: [style, colour]; wear: [kind, main colour, second colour, third colour]; extra: things worn or grown.
-// Each face can be drawn in three manners (FACE_STYLES): flat illustration, a shaded "real" manner, and anime.
 const FACE_SKINS=['#f3cfae','#e9b991','#d8a276','#c18a61','#f7dcc4','#a8734f'];
 const FACE_STYLES=['flat','real','anime'],FACE_STYLE_LABELS={flat:'イラスト',real:'リアル',anime:'アニメ'};
-const FACE_IRIS={real:['#4a3423','#3b2a1c','#55606b','#3f4f3a','#2f2a26','#5a4634'],anime:['#3f74c4','#8a4f2c','#2f9b74','#8d55b0','#c0564a','#3f4656']};
 const FACES=[
   {id:'shades',name:'黒スーツとサングラス',kind:'human',bg:'#3c4654',skin:1,hair:['slick','#141518'],eyes:'none',mouth:'flat',wear:['suit','#15161a','#eeeeea','#0d0e10'],extra:['shades']},
   {id:'office',name:'ふつうの会社員',kind:'human',bg:'#3f5870',skin:0,hair:['short','#2e221b'],eyes:'normal',mouth:'smile',wear:['suit','#27405f','#f2f4f6','#b9413c'],extra:[]},
@@ -1765,89 +1765,7 @@ function drawHumanFace(add,face) {
   if(extra.has('mole'))add('circle',{cx:36.9,cy:33.4,r:.75,fill:'#4a2f28'});
   faceWorn(add,face);
 }
-// The anime manner: a small chin, large eyes with lights in them, bangs, a small mouth.
-function drawHumanAnime(add,face) {
-  const skin=FACE_SKINS[face.skin]||FACE_SKINS[0],[hair,tint]=face.hair,wear=face.wear[0],extra=new Set(face.extra),{shape,line}=facePen(add);
-  const iris=FACE_IRIS.anime[FACES.indexOf(face)%FACE_IRIS.anime.length],grown=!['bald','cap','helmet','beanie','buzz'].includes(hair);
-  faceHairBack(add,hair,tint);faceWear(add,face,face.wear[1]);
-  if(wear!=='knit')add('rect',{x:28.5,y:37.5,width:7,height:8.5,fill:faceTone(skin,-.1)});
-  add('circle',{cx:19.6,cy:28.8,r:2.3,fill:skin});add('circle',{cx:44.4,cy:28.8,r:2.3,fill:skin});
-  shape('M19.5 25Q19.5 11.5 32 11.5Q44.5 11.5 44.5 25Q44.5 32.5 39 38Q34.6 42.4 32 42.6Q29.4 42.4 25 38Q19.5 32.5 19.5 25Z',skin);
-  if(extra.has('stubble'))shape('M22.4 32.5Q24.5 39.6 32 42.4Q39.5 39.6 41.6 32.5Q38.6 37 32 37.6Q25.4 37 22.4 32.5Z',hair==='helmet'?'#3a2f28':tint,{'fill-opacity':.25});
-  if(extra.has('beard'))shape('M21.4 30.5Q22.6 39.6 32 43.4Q41.4 39.6 42.6 30.5Q40 36.4 32 37Q24 36.4 21.4 30.5Z','#4a3324');
-  if(!extra.has('beard')&&!extra.has('stubble')&&!extra.has('mustache')&&!extra.has('shades')){add('ellipse',{cx:23.6,cy:33.6,rx:2.6,ry:1.4,fill:'#f48b84','fill-opacity':extra.has('blush')?.6:.34});add('ellipse',{cx:40.4,cy:33.6,rx:2.6,ry:1.4,fill:'#f48b84','fill-opacity':extra.has('blush')?.6:.34});}
-  faceHairFront(add,hair,tint,tint);
-  if(grown&&hair!=='slick'&&hair!=='spiky'&&hair!=='curly')shape('M19.6 26Q19 12.5 32 11.5Q45 12.5 44.4 26L41.6 19.5L39 25.5L36 18.5L33 25.5L30 18.5L27 25.5L24 19L21.6 25Z',tint);
-  if(grown)line('M24.4 16.6Q26.6 13.8 30.2 13M26.6 18Q27.8 16.6 29.6 16',faceTone(tint,.6),1.1,{'stroke-opacity':.6});
-  const ink=FACE_INK,brow=faceTone(tint==='#d9dadd'?'#8d8f93':tint,-.15);
-  for(const [cx,side] of [[26.2,1],[37.8,-1]]) {
-    if(face.eyes==='none')continue;
-    if(face.eyes==='smile'){line(`M${cx-3.4} 29.6Q${cx} 25.2 ${cx+3.4} 29.6`,ink,1.7);continue;}
-    const tall=face.eyes==='wide'?4.7:4.2;
-    add('ellipse',{cx,cy:28.8,rx:3.3,ry:tall,fill:'#ffffff'});add('ellipse',{cx,cy:29.2,rx:2.7,ry:tall-.5,fill:iris});
-    add('ellipse',{cx,cy:30.7,rx:2,ry:1.8,fill:faceTone(iris,.4)});add('ellipse',{cx,cy:29,rx:1.2,ry:1.9,fill:'#1c1a22'});
-    add('circle',{cx:cx-1.1,cy:27.2,r:1.05,fill:'#ffffff'});add('circle',{cx:cx+1.2,cy:30.9,r:.5,fill:'#ffffff'});
-    if(face.eyes==='sleepy'){add('rect',{x:cx-3.7,y:23.6,width:7.4,height:5,fill:skin});line(`M${cx-3.8} 28.6L${cx+3.8} 28.6`,ink,1.5);}
-    else if(face.eyes==='sharp'){shape(`M${cx-4*side} 22.6L${cx+4*side} 22.6L${cx+4*side} 27.6L${cx-4*side} 25.2Z`,skin);line(`M${cx-3.9*side} 25.2L${cx+3.9*side} 27.5`,ink,1.5);}
-    else line(`M${cx-3.9} 27.2Q${cx} ${28.6-tall-1.4} ${cx+3.9} 27.2`,ink,1.5);
-    if(face.eyes!=='sleepy')line(extra.has('brows')?`M${cx-3.2*side} 21.4L${cx+3*side} 22.8`:`M${cx-3} 22.2Q${cx} 21 ${cx+3} 22.2`,brow,extra.has('brows')?1.6:1);
-  }
-  if(extra.has('bags'))line('M23.8 32.2Q26.2 33.2 28.6 32.2M35.4 32.2Q37.8 33.2 40.2 32.2','#00000040',.8);
-  line('M32.2 33.1L31.5 34.2',faceTone(skin,-.32),.9);
-  if(extra.has('mustache'))shape('M27.6 35Q30 33.4 32 34.8Q34 33.4 36.4 35Q34 36.2 32 35.5Q30 36.2 27.6 35Z',tint);
-  if(face.mouth==='smile')line('M29.8 36.9Q32 38.7 34.2 36.9','#a8483f',1.2);
-  if(face.mouth==='grin')shape('M29.2 36.3Q32 40.6 34.8 36.3Z','#d05a50',{stroke:'#8f3a33','stroke-width':.6,'stroke-linejoin':'round'});
-  if(face.mouth==='flat')line('M30.4 37.3L33.6 37.3','#a8483f',1.2);
-  if(face.mouth==='smirk')line('M30 37.5Q33 38.1 34.7 36.1','#a8483f',1.2);
-  if(face.mouth==='pout')line('M30.7 37.1Q32 36.2 33.3 37.1','#b8443f',1.4);
-  if(extra.has('mole'))add('circle',{cx:35.6,cy:35.4,r:.65,fill:'#4a2f28'});
-  faceWorn(add,face);
-}
-// The shaded manner: light and shadow on skin, hair and cloth, eyes with lids, a nose, lips. Drawn, not photographed.
-function drawHumanReal(add,face,paint) {
-  const skin=FACE_SKINS[face.skin]||FACE_SKINS[0],[hair,tint]=face.hair,wear=face.wear[0],extra=new Set(face.extra),{shape,line}=facePen(add);
-  const skinFill=paint('radialGradient',{cx:.42,cy:.34,r:.78},[[0,faceTone(skin,.2)],[.55,skin],[1,faceTone(skin,-.24)]]);
-  const hairFill=paint('linearGradient',{x1:0,y1:0,x2:0,y2:1},[[0,faceTone(tint,.22)],[1,faceTone(tint,-.2)]]);
-  const wearFill=paint('linearGradient',{x1:0,y1:0,x2:1,y2:1},[[0,faceTone(face.wear[1],.14)],[1,faceTone(face.wear[1],-.26)]]);
-  const shadow=faceTone(skin,-.34),iris=FACE_IRIS.real[FACES.indexOf(face)%FACE_IRIS.real.length],lip=faceTone('#b0605a',face.skin===5||face.skin===3?-.18:0),browTint=faceTone(tint==='#d9dadd'||tint==='#8d8f93'?'#9a9ca1':hair==='helmet'||hair==='cap'||hair==='beanie'?'#3a2f28':tint,-.1);
-  faceHairBack(add,hair,hairFill);faceWear(add,face,wearFill);
-  if(wear!=='knit')add('rect',{x:27.2,y:37,width:9.6,height:9,fill:faceTone(skin,-.14)});
-  add('ellipse',{cx:32,cy:42.9,rx:7.2,ry:2.3,fill:'#000000','fill-opacity':.24});
-  for(const cx of [19.8,44.2]){add('ellipse',{cx,cy:29.2,rx:2.3,ry:3.3,fill:faceTone(skin,-.08)});add('ellipse',{cx,cy:29.4,rx:1,ry:1.9,fill:shadow,'fill-opacity':.45});}
-  shape('M20.4 25.5Q20.2 12 32 12Q43.8 12 43.6 25.5Q43.7 32.4 40.4 37.2Q36.6 42.8 32 43Q27.4 42.8 23.6 37.2Q20.3 32.4 20.4 25.5Z',skinFill);
-  add('ellipse',{cx:29,cy:19.4,rx:5.4,ry:3,fill:'#ffffff','fill-opacity':.1});
-  add('ellipse',{cx:22.9,cy:33.4,rx:2,ry:4.2,fill:'#000000','fill-opacity':.07});add('ellipse',{cx:41.1,cy:33.4,rx:2,ry:4.2,fill:'#000000','fill-opacity':.1});
-  if(extra.has('blush')){add('ellipse',{cx:24.6,cy:33.4,rx:2.6,ry:1.7,fill:'#e0705f','fill-opacity':.22});add('ellipse',{cx:39.4,cy:33.4,rx:2.6,ry:1.7,fill:'#e0705f','fill-opacity':.22});}
-  if(extra.has('stubble'))shape('M21.6 31.5Q22.6 40.8 32 43Q41.4 40.8 42.4 31.5Q40 36.6 36 35.4Q32 34.4 28 35.4Q24 36.6 21.6 31.5Z','#2a211c',{'fill-opacity':.26});
-  if(extra.has('beard')){shape('M21 30Q21.6 42 32 44.2Q42.4 42 43 30Q40.4 36 36 35Q32 34 28 35Q23.6 36 21 30Z',paint('linearGradient',{x1:0,y1:0,x2:0,y2:1},[[0,'#5a4030'],[1,'#33241a']]));line('M25 37.5L25.6 41M28.5 38.4L28.8 42.4M32 38.6L32 43M35.5 38.4L35.2 42.4M39 37.5L38.4 41','#ffffff22',.5);}
-  faceHairFront(add,hair,hairFill,tint);
-  const hat=['cap','helmet','beanie'].includes(hair);
-  if(!hat&&hair!=='bald')line('M24.6 17Q26.8 14 30.4 13.2M27 18.4Q28.2 17 30 16.4',faceTone(tint,.45),.6,{'stroke-opacity':.6});
-  for(const [cx,side] of [[26.6,1],[37.4,-1]]) {
-    if(face.eyes==='none')continue;
-    add('ellipse',{cx,cy:28.3,rx:4.1,ry:2.7,fill:'#000000','fill-opacity':.09});
-    const top=face.eyes==='wide'?25.6:face.eyes==='smile'?27:26.3,low=face.eyes==='wide'?30.9:face.eyes==='smile'?29.5:30.2,lift=face.eyes==='sharp'?.8:0;
-    shape(`M${cx-3.1*side} ${28.5-lift}Q${cx} ${top} ${cx+3.1*side} ${28.5+lift*.4}Q${cx} ${low} ${cx-3.1*side} ${28.5-lift}Z`,'#f3efe9');
-    add('circle',{cx,cy:28.4,r:1.5,fill:iris});add('circle',{cx,cy:28.4,r:.68,fill:'#111111'});add('circle',{cx:cx-.5,cy:27.8,r:.36,fill:'#ffffff'});
-    if(face.eyes==='sleepy')shape(`M${cx-3.3} 28.5Q${cx} 25.9 ${cx+3.3} 28.5Q${cx} 28.1 ${cx-3.3} 28.5Z`,faceTone(skin,-.12));
-    line(`M${cx-3.3*side} ${28.4-lift}Q${cx} ${face.eyes==='sleepy'?27.6:top-.4} ${cx+3.3*side} ${28.4+lift*.4}`,'#2a1f1a',face.eyes==='sleepy'?1.1:.95);
-    const rise=face.eyes==='sharp'||extra.has('brows')?1.1:0,drop=face.eyes==='sleepy'?.7:0;
-    if(!hat)line(`M${cx-3.6*side} ${24.4-rise+drop}Q${cx-.4*side} ${22.9+drop} ${cx+3.4*side} ${24.5+rise*.6+drop}`,browTint,extra.has('brows')?1.9:1.5);  // a brim hides the brows
-  }
-  if(extra.has('bags'))line('M24.2 31Q26.6 32.2 29 31M35 31Q37.4 32.2 39.8 31',shadow,.8,{'stroke-opacity':.6});
-  line('M31.3 29.6Q30.3 33.2 30.9 34.3Q32 35.1 33.3 34.3',shadow,.8,{'stroke-opacity':.75});line('M32.5 29.8L32.6 33.2','#ffffff',.9,{'stroke-opacity':.22});
-  if(extra.has('mustache'))shape('M26.8 35.4Q29.6 33.6 32 35Q34.4 33.6 37.2 35.4Q34.6 36.8 32 36Q29.4 36.8 26.8 35.4Z',hairFill);
-  const dark=faceTone(lip,-.3);
-  if(face.mouth==='smile'){shape('M28 36.6Q30.5 35.8 32 36.4Q33.5 35.8 36 36.6Q32 38 28 36.6Z',dark);shape('M28.6 37.1Q32 39.7 35.4 37.1Q32 38.3 28.6 37.1Z',lip);}
-  if(face.mouth==='grin')shape('M27.8 36.2Q32 37.2 36.2 36.2Q32 40.4 27.8 36.2Z','#f4efe8',{stroke:dark,'stroke-width':.7,'stroke-linejoin':'round'});
-  if(face.mouth==='flat'){line('M28.6 37Q32 36.6 35.4 37',dark,1);shape('M29.4 37.5Q32 38.9 34.6 37.5Z',lip,{'fill-opacity':.8});}
-  if(face.mouth==='smirk'){line('M28.6 37.2Q32.6 37.6 35.8 35.8',dark,1.1);shape('M29.6 37.7Q32.4 38.9 34.6 37.2Z',lip,{'fill-opacity':.8});}
-  if(face.mouth==='pout'){shape('M29.2 36.8Q30.8 35.6 32 36.2Q33.2 35.6 34.8 36.8Q32 37.4 29.2 36.8Z','#a8483f');shape('M29.4 37.1Q32 40 34.6 37.1Z','#c05a52');}
-  if(extra.has('mole'))add('circle',{cx:36.2,cy:34.6,r:.6,fill:'#3a2620'});
-  faceWorn(add,face);
-  if(extra.has('glasses')||extra.has('roundglasses'))line('M24.4 26.6L26.2 25.4M35.2 26.6L37 25.4','#ffffff',.7,{'stroke-opacity':.55});
-}
-function drawRobotFace(add,face,style) {
+function drawRobotFace(add,face) {
   const {metal,dark,led}=face,screen='#10161d',{shape,line}=facePen(add);
   const box=(x,y,width,height,rx,fill,more={})=>add('rect',{x,y,width,height,rx,fill,...more}),dot=(cx,cy,r,fill,more={})=>add('circle',{cx,cy,r,fill,...more});
   shape('M9 64Q11 50 24 48L40 48Q53 50 55 64Z',dark);box(27.5,41,9,8,1.5,dark);line('M27.5 44.5L36.5 44.5','#00000040',1);
@@ -1864,34 +1782,25 @@ function drawRobotFace(add,face,style) {
   if(face.shape==='bug'){dot(32,27,15.5,metal);dot(25.4,25.6,6,screen);dot(38.6,25.6,6,screen);dot(25.4,25.6,3,led);dot(38.6,25.6,3,led);dot(26.6,24.2,.9,'#ffffff');dot(39.8,24.2,.9,'#ffffff');line('M28.4 35.6Q32 38 35.6 35.6',dark,1.4);line('M32 11.5L32 7',dark,1.4);dot(32,6,1.8,led);}
   if(face.shape==='cat'){shape('M17.5 20L19.5 7.5L28.5 14.5Z',metal);shape('M46.5 20L44.5 7.5L35.5 14.5Z',metal);shape('M19.8 16.6L20.8 11L25 14.4Z',led);shape('M44.2 16.6L43.2 11L39 14.4Z',led);box(16,13.5,32,28,11,metal);
     box(19.5,20.5,25,10.5,5,screen);line('M23.6 27Q26 24 28.4 27M35.6 27Q38 24 40.4 27',led,1.7);shape('M30.8 34.4L33.2 34.4L32 36Z',dark);line('M32 36L32 37.4M29.6 38Q32 39.6 34.4 38',dark,1);line('M21 35L16.5 34M21 37L16.5 38M43 35L47.5 34M43 37L47.5 38',dark,.8);}
-  // Anime: rosy cheeks and a sparkle beside the head.
-  if(style==='anime'){const cheek=face.shape==='dome'?37.6:face.shape==='tv'?39.6:35.4;add('ellipse',{cx:20.8,cy:cheek,rx:2.6,ry:1.4,fill:'#ff8fa3','fill-opacity':.7});add('ellipse',{cx:43.2,cy:cheek,rx:2.6,ry:1.4,fill:'#ff8fa3','fill-opacity':.7});
-    shape('M51 9L52.1 12.9L56 14L52.1 15.1L51 19L49.9 15.1L46 14L49.9 12.9Z','#ffffff',{'fill-opacity':.9});shape('M12 12L12.6 14.4L15 15L12.6 15.6L12 18L11.4 15.6L9 15L11.4 14.4Z','#ffffff',{'fill-opacity':.7});}
 }
-function faceSvg(face,style='flat') {
-  if(!FACE_STYLES.includes(style))style='flat';
-  const svg=svgElement('svg',{viewBox:'6 2 52 52',class:'face','aria-hidden':'true',focusable:'false'});svg.dataset.face=face.id;svg.dataset.faceStyle=style;
-  const add=(tag,attributes,parent=svg)=>{const node=svgElement(tag,Object.fromEntries(Object.entries(attributes).filter(([,value])=>value!=='')));parent.appendChild(node);return node;};
-  // Shadings are defined inside each drawing under a name of its own: one that sat in a hidden part of the page would not paint.
-  let defs=null;const serial=ui.faceSerial=(ui.faceSerial||0)+1;let count=0;
-  const paint=(kind,attributes,stops)=>{
-    if(!defs)defs=add('defs',{});
-    const id=`face-${serial}-${++count}`,gradient=add(kind,{id,...attributes},defs);
-    for(const [offset,color,opacity] of stops)add('stop',{offset,'stop-color':color,...(opacity===undefined?{}:{'stop-opacity':opacity})},gradient);
-    return `url(#${id})`;
-  };
-  const ground=style==='real'?paint('radialGradient',{cx:.5,cy:.4,r:.8},[[0,faceTone(face.bg,.2)],[1,faceTone(face.bg,-.3)]]):style==='anime'?faceTone(face.bg,.22):face.bg;
-  add('rect',{x:0,y:0,width:64,height:64,fill:ground});
-  if(style==='anime')add('path',{d:'M0 46L64 14L64 30L0 62Z',fill:'#ffffff','fill-opacity':.1});
-  if(face.kind==='robot')drawRobotFace(add,face,style);
-  else if(style==='anime')drawHumanAnime(add,face);
-  else if(style==='real')drawHumanReal(add,face,paint);
-  else drawHumanFace(add,face);
-  // Light from the upper left, for the shaded manner (and so that metal looks like metal).
-  if(style==='real')add('rect',{x:0,y:0,width:64,height:64,fill:paint('linearGradient',{x1:0,y1:0,x2:1,y2:1},[[0,'#ffffff',.2],[.45,'#ffffff',0],[1,'#000000',.3]])});
-  if(style==='real'&&face.kind==='robot')add('ellipse',{cx:25.5,cy:18.6,rx:5,ry:2,fill:'#ffffff','fill-opacity':.32});
+// The illustration of a face, drawn here.
+function faceSvg(face) {
+  const svg=svgElement('svg',{viewBox:'6 2 52 52',class:'face','aria-hidden':'true',focusable:'false'});svg.dataset.face=face.id;svg.dataset.faceStyle='flat';
+  const add=(tag,attributes)=>{const node=svgElement(tag,Object.fromEntries(Object.entries(attributes).filter(([,value])=>value!=='')));svg.appendChild(node);return node;};
+  add('rect',{x:0,y:0,width:64,height:64,fill:face.bg});
+  (face.kind==='robot'?drawRobotFace:drawHumanFace)(add,face);
   return svg;
 }
+// The picture of a face in the real or the anime manner: one of the files under /faces. A picture that cannot be
+// loaded gives way to the illustration of the same face.
+function facePicture(face,style) {
+  const image=document.createElement('img');image.className='face';image.alt='';image.setAttribute('aria-hidden','true');
+  image.decoding='async';image.draggable=false;image.width=256;image.height=256;image.dataset.face=face.id;image.dataset.faceStyle=style;
+  image.addEventListener('error',()=>{if(image.parentNode){const drawn=faceSvg(face);drawn.setAttribute('class',image.className);image.replaceWith(drawn);}},{once:true});
+  image.src=`/faces/${style}/${String(FACES.indexOf(face)+1).padStart(2,'0')}.webp`;
+  return image;
+}
+function faceElement(face,style) { return style==='real'||style==='anime'?facePicture(face,style):faceSvg(face); }
 // Which face an agent has: the faces are shuffled by the piece of work, and dealt in the order its agents joined.
 // The same work always shows the same faces; another piece of work has another cast.
 function faceSeed(text) { let seed=2166136261;for(const char of String(text)){seed^=char.codePointAt(0);seed=Math.imul(seed,16777619)>>>0;}return seed; }
@@ -1908,9 +1817,11 @@ function agentFace(agent) {
   const place=Math.max(0,(ui.state?.agents||[]).filter(item=>item.run_id===agent.run_id).findIndex(item=>item.id===agent.id));
   return FACES[faceOrder(agent.run_id)[place%FACES.length]];
 }
-// The manner the faces of a piece of work are drawn in: the one chosen on the screen, else one that goes with the work.
-function faceStyle(runId) { return FACE_STYLES.includes(ui.faceStyle)?ui.faceStyle:FACE_STYLES[faceSeed('style:'+runId)%FACE_STYLES.length]; }
-function agentFaceSvg(agent) { return faceSvg(agentFace(agent),faceStyle(agent.run_id)); }
+// The manners in use: the illustration and the real pictures, and the anime pictures only where the human ticked them.
+function faceStyles() { return ui.faceAnime===true?FACE_STYLES:FACE_STYLES.filter(style=>style!=='anime'); }
+// The manner of a piece of work: the one chosen on the screen, else one that goes with the work.
+function faceStyle(runId) { const styles=faceStyles();return styles.includes(ui.faceStyle)?ui.faceStyle:styles[faceSeed('style:'+runId)%styles.length]; }
+function agentFaceSvg(agent) { return faceElement(agentFace(agent),faceStyle(agent.run_id)); }
 function retainedTeamEvents(run) {
   if(!run||(ui.compactState&&ui.loadedEventsRun!==run.id))return [];
   return ui.state.events.filter(event=>event.run_id===run.id).slice(-100);
@@ -2235,7 +2146,7 @@ function initializeNetworkControls() {
 }
 function renderTeamMap(agents) {
   pruneNetworkViews();
-  const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,ui.faceStyle||'',agents.map(agent=>[agent.id,agent.parent_id,agent.kind])]);
+  const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,faceStyle(ui.selectedRun||''),agents.map(agent=>[agent.id,agent.parent_id,agent.kind])]);
   $('teamMapMeta').textContent=`${agents.length} 人`;
   const counts=[['作業中',agents.filter(a=>!archivedAgent(a)&&['working','running'].includes(a.status)).length],['待機',agents.filter(a=>!archivedAgent(a)&&['queued','waiting','idle'].includes(a.status)&&!needsHuman(a)).length],['要回答',agents.filter(needsHuman).length]];
   $('networkCounts').textContent=archivedRun(getRun())?'保存時点の担当と通信 · 現在は実行していません':counts.map(([label,count])=>`${label} ${count}`).join('  /  ');
@@ -2404,7 +2315,7 @@ function renderCrewSummary(agents) {
   panel.append(total,bar,chips);
 }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.faceStyle||'',ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.read_only_worker,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([faceStyle(ui.selectedRun||''),ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.read_only_worker,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   crewOrder(filteredAgents(agents)).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
@@ -3084,7 +2995,7 @@ function mailLifecycleLabel(row) {
 function renderCoordinationMonitor(run,agents) {
   const panel=$('coordinationMonitor');if(!panel)return;panel.hidden=!run;if(!run)return;
   const c=run.coordination,rows=mailLifecycles(retainedTeamEvents(run),run.id);
-  const signature=JSON.stringify([run.id,ui.faceStyle||'',run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.worker_dependencies,a.provider_observation]),rows]);
+  const signature=JSON.stringify([run.id,faceStyle(run.id),run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.worker_dependencies,a.provider_observation]),rows]);
   if(signature===ui.monitorSignature)return;ui.monitorSignature=signature;
   const content=$('coordinationContent');content.replaceChildren();
   const name=id=>agents.find(a=>a.id===id)?.name||id||'未記録';
@@ -3214,7 +3125,15 @@ async function initialize() {
   initializeNetworkControls();
   $('progressView').addEventListener('click',()=>setCockpitView('progress'));
   // The manner the faces are drawn in, for as long as this page is open: one of the three, or whatever goes with each piece of work.
-  $('faceStyleSelect').addEventListener('change',event=>{ui.faceStyle=FACE_STYLES.includes(event.target.value)?event.target.value:'';renderRun();});
+  $('faceStyleSelect').addEventListener('change',event=>{ui.faceStyle=faceStyles().includes(event.target.value)?event.target.value:'';renderRun();});
+  // The anime pictures are used only while this is ticked (it starts unticked): then they join the manners that go with
+  // each piece of work, and can be chosen. Unticked again, a choice of anime goes back to "whatever goes with the work".
+  $('faceAnimeAllow').addEventListener('change',event=>{
+    ui.faceAnime=event.target.checked===true;const select=$('faceStyleSelect'),anime=select.querySelector('option[value="anime"]');
+    if(anime)anime.disabled=!ui.faceAnime;
+    if(!ui.faceAnime&&(ui.faceStyle==='anime'||select.value==='anime')){ui.faceStyle='';select.value='auto';}
+    renderRun();
+  });
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
   $('networkOpenWindow')?.addEventListener('click',openNetworkWindow);
   if(NETWORK_POPOUT){ui.cockpitView='network';document.querySelector('.app-shell').dataset.cockpitView='network';$('progressView').setAttribute('aria-pressed','false');$('networkView').setAttribute('aria-pressed','true');document.documentElement.dataset.layout='network-popout';document.title='Mission Network · Workbench';}
