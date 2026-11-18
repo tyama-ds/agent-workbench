@@ -4,7 +4,15 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev86 — A list of things to make; the folder the request names (2026-11-18)
+## 0.1.1.dev87 — Python for one piece of work (2026-11-18)
+
+- Python could be turned on only for the whole installation, in the
+  settings. The start screen now offers it per piece of work, like the
+  browser window: it starts as the setting says (off unless turned on),
+  and a run can have it on while the setting stays off, or off while the
+  setting is on. It needs the python.exe set in the settings.
+
+A list of things to make; the folder the request names (2026-11-18)
 
 At dev85 the slides were missing and the run was "done" a third time.
 The tester found the cause by running the request through the two

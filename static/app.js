@@ -144,7 +144,7 @@ const DELEGATION_LABELS=['PM中心','委任優先','委任必須'];
 const APPROVAL_DEFAULTS={mode:'ask',python:true,selenium:true,overwrite:true},MEMO_DEFAULTS={proposals_enabled:true},HISTORY_SEARCH_DEFAULTS={pm_enabled:false};
 const GROUP_DEFAULTS={copilot_agent:COPILOT_AGENT_DEFAULTS,orchestration:ORCHESTRATION_DEFAULTS,work_board:WORK_BOARD_DEFAULTS,approvals:APPROVAL_DEFAULTS,memo:MEMO_DEFAULTS,history_search:HISTORY_SEARCH_DEFAULTS};
 const SETTINGS_CONTAINERS={work_board:'workBoardFields',copilot_agent:'copilotAgentFields',orchestration:'orchestrationFields',approvals:'approvalFields',memo:'memoFields',history_search:'historySearchFields',paths:'pathFields',python:'pythonFields',selenium:'seleniumFields',search:'searchFields',local:'localFields',limits:'budgetFields'};
-Object.assign(ui,{approvalOperation:null,approvalContext:'',approvalChoiceTouched:false,browserFetchTouched:false,memoOperation:null,memoLoaded:false,memoBaseline:'',memoProposalOperation:null,memoProposalSignature:'',historySearchOperation:null});
+Object.assign(ui,{approvalOperation:null,approvalContext:'',approvalChoiceTouched:false,browserFetchTouched:false,pythonTouched:false,memoOperation:null,memoLoaded:false,memoBaseline:'',memoProposalOperation:null,memoProposalSignature:'',historySearchOperation:null});
 NUMBER_BOUNDS.copilot_agent={startup_timeout_seconds:[5,1200],max_concurrent_requests:[1,16]};
 NUMBER_BOUNDS.orchestration={delegation_level:[0,2],workers_per_pm:[1,16],max_delegation_depth:[1,3]};
 NUMBER_BOUNDS.python={timeout_seconds:[1,600],max_memory_mb:[128,8192],max_output_bytes:[1024,1048576]};
@@ -779,6 +779,9 @@ function renderProfileChoices(preserveDraft=false,preferDefault=false) {
   if(!ui.taskOrchestrationInitialized){applyTaskOrchestrationDefaults();ui.taskOrchestrationInitialized=true;}
   if(!ui.approvalChoiceTouched&&$('approvalAlwaysAllow'))$('approvalAlwaysAllow').checked=ui.config?.approvals?.mode==='always_allow';
   // The browser try is offered where pages can be fetched at all; it starts as the saved setting says (off unless the human turned it on).
+  // Python is offered where a python.exe is set in the settings; it starts as the saved setting says (off unless the human turned it on).
+  if($('pythonChoice'))$('pythonChoice').hidden=!ui.config?.python?.executable;
+  if(!ui.pythonTouched&&$('pythonAllow'))$('pythonAllow').checked=ui.config?.python?.enabled===true;
   if($('browserFetchChoice'))$('browserFetchChoice').hidden=ui.config?.search?.enabled!==true;
   if(!ui.browserFetchTouched&&$('browserFetchAllow'))$('browserFetchAllow').checked=ui.config?.search?.browser_fetch===true;
   let previous=$('pmProfile').value,checked=new Set([...$('workerProfiles').querySelectorAll('input:checked')].map(input=>input.value));
@@ -844,6 +847,10 @@ function runPayload() {
   // Sent only when this run differs from the saved setting (the server's default).
   const approvalMode=$('approvalAlwaysAllow')?.checked===true?'always_allow':'ask';
   if(approvalMode!==(ui.config?.approvals?.mode==='always_allow'?'always_allow':'ask'))payload.approval_mode=approvalMode;
+  if(ui.config?.python?.executable&&$('pythonAllow')){
+    const python=$('pythonAllow').checked===true;
+    if(python!==(ui.config?.python?.enabled===true))payload.python=python;
+  }
   if(ui.config?.search?.enabled===true&&$('browserFetchAllow')){
     const browserFetch=$('browserFetchAllow').checked===true;
     if(browserFetch!==(ui.config?.search?.browser_fetch===true))payload.browser_fetch=browserFetch;
@@ -854,6 +861,7 @@ function trackTaskDraft(event) {
   if(['input','change'].includes(event?.type)&&[ $('delegationLevel'),$('workersPerPM'),$('maxDelegationDepth') ].includes(event.target))ui.taskOrchestrationInitialized=true;
   if(['input','change'].includes(event?.type)&&event.target===$('approvalAlwaysAllow'))ui.approvalChoiceTouched=true;
   if(['input','change'].includes(event?.type)&&event.target===$('browserFetchAllow'))ui.browserFetchTouched=true;
+  if(['input','change'].includes(event?.type)&&event.target===$('pythonAllow'))ui.pythonTouched=true;
   if(['input','change'].includes(event?.type)&&(event.target===$('pmProfile')||event.target?.dataset?.focusKey?.startsWith('task-worker:')||event.target?.id?.startsWith('additional-pm-')))ui.modelChoicesTouched=true;
   // An actual edit also invalidates a choice when numeric parsing would hide
   // it (0 → blank, 1 → 01), or when the user re-enters the same value.
@@ -2842,7 +2850,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(run.browser_fetch===true?[['ブラウザ操作','この作業で許可（拒否されたとき、画面に表示して1回だけ試す）']]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(outputCheckLabel(run.output_check)?[['依頼されたファイル',outputCheckLabel(run.output_check)]]:[]),...(searchUseLabel(run.search_use)?[['Web の利用',searchUseLabel(run.search_use)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(run.python===true?[['Python の実行','この作業で許可']]:[]),...(run.browser_fetch===true?[['ブラウザ操作','この作業で許可（拒否されたとき、画面に表示して1回だけ試す）']]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(outputCheckLabel(run.output_check)?[['依頼されたファイル',outputCheckLabel(run.output_check)]]:[]),...(searchUseLabel(run.search_use)?[['Web の利用',searchUseLabel(run.search_use)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }

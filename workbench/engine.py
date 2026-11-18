@@ -1018,8 +1018,10 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 '保存済み設定のパスを確認し、現在のPCに合わせて保存してから作業を開始してください。', field='settings')
         if len(self.runs) >= 20:
             raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動後も保存済み履歴は閲覧専用で残ります。今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます')
-        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team', 'approval_mode', 'browser_fetch'}:
+        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team', 'approval_mode', 'browser_fetch', 'python'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
+        if type(payload.get('python', False)) is not bool:
+            raise AdmissionError('invalid_python', 'python は真偽値です。', field='python')
         if type(payload.get('adaptive_team', False)) is not bool:
             raise AdmissionError('invalid_adaptive_team', 'adaptive_teamは真偽値です。', field='adaptive_team')
         if type(payload.get('browser_fetch', False)) is not bool:
@@ -1032,7 +1034,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             except OrderedReferenceError as exc:
                 raise AdmissionError(exc.code, str(exc), field='ordered_reference') from None
         task = text(payload.get('task'), 'task', 16000, False)
-        config = effective_config(self.settings.value)
+        config = self._run_config(payload)
         profiles = {p['id']: p for p in config['providers'] if p['enabled']}
         pm = payload.get('pm_profile', COPILOT_PROFILE_ID if config['copilot_agent']['enabled'] else None)
         pms = payload.get('pm_profiles', [pm])
@@ -1090,6 +1092,23 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
     @staticmethod
     def _slides_relevant(run):
         return bool(run.get('_slides_touched') or slide_design.mentions_slides(run.get('task')))
+
+    def _run_config(self, payload):
+        """The settings as this piece of work uses them: the saved ones, with the choices made at its start."""
+        config = effective_config(self.settings.value)
+        # Python for this piece of work: the human's choice on the start screen, else what the settings say.
+        config['python']['enabled'] = self._python_chosen(config, payload)
+        return config
+
+    @staticmethod
+    def _python_chosen(config, payload):
+        """This work may run Python: the human's choice at start, else the setting. It needs a configured python.exe."""
+        wanted = payload.get('python', config['python']['enabled'])
+        # Only the choice made at start is checked here: saved settings cannot be "on" without a python.exe.
+        if payload.get('python') is True and not config['python']['executable']:
+            raise AdmissionError('python_not_configured', 'この作業で Python を使うには、先に「設定 → Python」で python.exe を指定してください。',
+                                 field='python')
+        return bool(wanted)
 
     @staticmethod
     def _browser_fetch_chosen(config, payload):
@@ -1163,14 +1182,14 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             await self.copilot_bridge.ensure(config['copilot_agent'])
             # Connection checks may await. Re-run all admission after a settings
             # save, shutdown or another request instead of using stale authority.
-            if config != effective_config(self.settings.value):
+            if config != self._run_config(payload):
                 raise AdmissionError('settings_changed', '設定が変更されました。接続先を確認してから開始してください。')
             task, config, pms, workers, count, harness, web_tools = self._prepare_run(payload)
         # All agents share this bounded snapshot; later refreshes/edits only
         # affect new runs. Discovery does not execute skill resources.
         skill_revision = self.settings.revision
         skill_catalog = await asyncio.to_thread(SkillCatalog, harness)
-        if skill_revision != self.settings.revision or config != effective_config(self.settings.value):
+        if skill_revision != self.settings.revision or config != self._run_config(payload):
             raise AdmissionError('settings_changed', 'スキル読み込み中に設定が変更されました。内容を確認してから開始してください。')
         # Discovery may await slow storage. Recheck shutdown, credentials,
         # history and concurrent run capacity before publishing any agent.
@@ -1200,6 +1219,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                'approval_mode': payload.get('approval_mode', config['approvals']['mode']),
                # Whether this work may open a browser window once for a refused address (off unless chosen).
                'browser_fetch': self._browser_fetch_chosen(config, payload),
+               # Whether this work may run Python (the start screen's choice, else the setting).
+               'python': bool(config['python']['enabled']),
                '_memo': self.redact(self.memo.text)}
         if payload.get('adaptive_team'):
             run['adaptive_team'] = True

@@ -1002,3 +1002,39 @@ async def test_a_stated_destination_folder_decides_whether_a_named_file_already_
         assert engine._stated_folders(run, '保存先は C:\\Users\\user\\Documents\\out フォルダー、または /etc/out') == []
     finally:
         await engine.close()
+
+
+async def test_python_is_chosen_for_one_piece_of_work_on_the_start_screen(tmp_path):
+    """Python is off unless the human turns it on, in the settings or for one piece of work."""
+    from workbench.engine import AdmissionError
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        assert engine.settings.value['python']['enabled'] is False
+        run, pm = await start(engine, max_workers=0)
+        assert run['python'] is False and run['_config']['python']['enabled'] is False
+        # Chosen for this work, without a python.exe set in the settings: said at once, with where to set it.
+        with pytest.raises(AdmissionError, match='設定 → Python'):
+            await start(engine, max_workers=0, python=True)
+        with pytest.raises(AdmissionError, match='真偽値'):
+            await start(engine, max_workers=0, python='yes')
+        # A python.exe is set and the setting stays off: the choice at start turns it on for that work only.
+        engine.settings.value['python']['executable'] = 'C:\\Python313\\python.exe'
+        run, pm = await start(engine, max_workers=0, python=True)
+        assert run['python'] is True and run['_config']['python']['enabled'] is True
+        assert engine.settings.value['python']['enabled'] is False
+        run, pm = await start(engine, max_workers=0)
+        assert run['python'] is False
+        # The setting is on: a piece of work can still be started without Python.
+        engine.settings.value['python']['enabled'] = True
+        run, pm = await start(engine, max_workers=0)
+        assert run['python'] is True
+        run, pm = await start(engine, max_workers=0, python=False)
+        assert run['python'] is False and run['_config']['python']['enabled'] is False
+        assert 'python_execute' not in {tool['name'] for tool in engine._model_tools(run, pm)}
+    finally:
+        await engine.close()
+    page = (Path(__file__).resolve().parents[1] / 'static' / 'index.html').read_text(encoding='utf-8')
+    script = (Path(__file__).resolve().parents[1] / 'static' / 'app.js').read_text(encoding='utf-8')
+    assert 'id="pythonAllow" type="checkbox"' in page and 'この作業で Python の実行を許可' in page
+    assert "payload.python=python" in script and "$('pythonChoice').hidden=!ui.config?.python?.executable" in script
