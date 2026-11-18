@@ -19,6 +19,7 @@ def test_the_style_sheet_can_be_read_with_the_default_encoding_of_windows():
     (Path(__file__).resolve().parents[1] / 'static/styles.css').read_bytes().decode('cp1252')
     assert not [char for char in CSS if '\u3040' <= char <= '\u9fff']
     assert '@media(max-width:640px){.conversation-face{display:none}}' in CSS   # a narrow heading keeps its room
+    assert '@media(max-width:640px){.topbar .brand{display:none}}' in CSS       # and the narrow top bar its height
 
 WALK = r'''
 function everyNode(root){const all=[];(function walk(node){all.push(node);(node.children||[]).forEach(walk);})(root);return all;}

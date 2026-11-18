@@ -441,3 +441,7 @@ body{background:var(--cp-bg)}
 .app-shell[data-cockpit-view=progress] .monitor-heading .face-style{margin-left:auto}
 .face{object-fit:cover;user-select:none;-webkit-user-drag:none}
 .face-anime{display:flex;align-items:center;gap:6px;font-size:12px;color:#a6aeb9;min-height:32px}
+/* Narrow screens: a fourth view button made the top bar wrap to one more row, and the 28px it took were missing
+   below (a help text no longer fitted its scrolling area). The name of the application gives its place to the
+   button there (it is wider than the button), so the bar is no taller than it was with three buttons. */
+@media(max-width:640px){.topbar .brand{display:none}}
