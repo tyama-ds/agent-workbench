@@ -955,6 +955,17 @@ the human turned it on (0.1.1.dev61; off by default).
 - `harness._comma_tables` compares lines with the rows of given tables for
   every separator, not only commas.
 
+## What is asked to be made, and by whom (0.1.1.dev85)
+
+- `verification.output_names` reads producing words behind a name and
+  reading words only right behind it (`_IN_NEXT`, `_LIST_NEXT`);
+  `_outputs_note_request` no longer exempts a name that lies directly in
+  a permitted folder.
+- `VerificationMixin._assignment_undone` (worker reports),
+  `_main_pdf_unread` / `_main_pdf_gate` / `_main_pdf_footer`.
+- `Engine.execute_tool` counts every tool outside `TALK_TOOLS` in
+  `agent._work_calls`.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),

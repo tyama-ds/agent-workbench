@@ -131,6 +131,10 @@ INVALID_BATCH_RETRIES = 2
 CONTINUATION_NUDGE = ('[application notice] This turn has not finished: your last reply contained text but no tool call. '
                       'If the work is complete and verified, call finish_work with the result. If anything remains, '
                       'do not stop at a description of the next step: call the next tool now and continue.')
+# Tools with which an agent talks or waits; every other tool reads, checks or saves something.
+TALK_TOOLS = frozenset({'finish_work', 'wait_for_message', 'wait_for_workers', 'send_message', 'list_team', 'ask_user',
+                        'plan_work', 'read_work_board', 'post_work_board', 'read_context_history', 'release_paths',
+                        'review_worker_report', 'spawn_worker', 'recover_worker', 'propose_memo'})
 CONTINUATION_NUDGE_WORKERS = (' Your workers are still running; if you are only waiting for them, call wait_for_workers.')
 
 
@@ -2069,8 +2073,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 'must be consumed and explicitly accepted before the worker starts. This is separate from ordered text-chain work. '
                 'A changed prerequisite invalidates all downstream results. After re-accepting prerequisites, the parent PM '
                 'must explicitly send_message a new assignment to each stale worker; human or peer messages do not bypass this gate. '
-                'The gate does not forward report contents. Give downstream workers the accepted worker IDs and report revisions, '
-                'input locations and sources in their assignment or a concrete handoff message; they must read and verify those inputs. '
+                'The application hands each downstream worker the accepted reports of the workers it depends on. Give them the '
+                'input locations and sources in their assignment as well; they must read and verify those inputs. '
                 'Already executed tool side effects are not rolled back. Verify files before redoing work. '
                 'A PM using dependencies must accept every current owned worker report before finish_work.\n')
         if agent.depends_on:
@@ -2201,6 +2205,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             contextual['parameters']['properties']['read_only'] = {'type': 'boolean'}
             contextual['description'] = ('Create a direct child within shared worker/depth caps. Give exact instructions, deliverable and checks. '
                 'Optional depends_on: existing siblings; starts after your current formal-report acceptance. '
+                'A worker that writes a file from what others find gets depends_on = those workers (it then receives '
+                'their accepted reports); started beside them, it writes before they are done. '
                 'read_only=true: reads and run_tests only, no writes/code/browser. Reuse via send_message.')
             return contextual
         if agent.parent_id and not self._ordered_for(run, agent) and tool['name'] in {'wait_for_workers', 'review_worker_report'}:
@@ -2647,7 +2653,9 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                             self._append_context(agent, {'role': 'user', 'content': EMPTY_REPLY_NUDGE}, human=False)
                             continue
                         issue = self._delegation_issue(run, agent, finishing=True)
-                        if (not issue and agent.parent_id and (turn_tool_calls or self._formal_report_expected(run, agent))
+                        undone = None if issue else self._assignment_undone(run, agent)
+                        if (not issue and agent.parent_id
+                                and (turn_tool_calls or undone or self._formal_report_expected(run, agent))
                                 and continuation_nudges < CONTINUATION_NUDGES
                                 and not self._ordered_for(run, agent)
                                 and run['model_calls'] + 1 < limits['max_model_calls']):
@@ -2660,7 +2668,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                             continuation_nudges += 1
                             running = [child for child in self._owned_workers(run, agent)
                                        if child.status not in {'done', 'stopped', 'error'}]
-                            message = CONTINUATION_NUDGE + (CONTINUATION_NUDGE_WORKERS if running else '')
+                            message = undone or (CONTINUATION_NUDGE + (CONTINUATION_NUDGE_WORKERS if running else ''))
                             self.log(agent, 'notice', message)
                             self._append_context(agent, {'role': 'user', 'content': message}, human=False)
                             continue
@@ -2871,7 +2879,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                     if agent.parent_id is None:
                         terminal_response += (self._outputs_footer(run) + self._tests_footer(run)
                                               + self._source_footer(run) + self._citations_footer(run)
-                                              + self._tables_footer(run) + self._quotes_footer(run) + self._pdf_footer(run))
+                                              + self._tables_footer(run) + self._quotes_footer(run) + self._pdf_footer(run)
+                                              + self._main_pdf_footer(run))
                     self.record_result(agent, 'assistant_response', terminal_response, revision=turn_revision)
                 if agent.parent_id and not ordered_report_sent:
                     parent = self.agents[agent.parent_id]
@@ -3117,6 +3126,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             self._reservations_ended(ended)
 
     async def execute_tool(self, run, agent, name, args):
+        if name not in TALK_TOOLS:
+            agent._work_calls = getattr(agent, '_work_calls', 0) + 1  # a tool that reads, checks or saves
         if self.closed or agent.closing or run['status'] in {'stopping', 'stopped'}:
             raise ValueError('停止したチームではツールを実行できません')
         if agent.read_only and name in READ_ONLY_DENIED_TOOLS:
@@ -3403,6 +3414,9 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 if any(self.agents[x].status not in {'done', 'stopped'} or self.agents[x].pending
                         for x in run['agent_ids'] if self.agents[x].parent_id == agent.id):
                     raise ValueError('未完了の作業者がいます。最終回答を終え、完了通知を待ってください')
+                undone = self._assignment_undone(run, agent)
+                if undone:
+                    return {'ok': False, 'code': 'assignment_not_done', 'error': undone}
                 if agent.parent_id is None:
                     await self._tables_check(run)   # a table the request asks for
                     await self._quotes_verify(run)  # the quotations of the saved files, looked up in the PDF
@@ -3417,7 +3431,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 if agent.parent_id is None:
                     summary += (self._outputs_footer(run) + self._tests_footer(run) + self._source_footer(run)
                                 + self._citations_footer(run) + self._tables_footer(run) + self._quotes_footer(run)
-                                + self._pdf_footer(run))
+                                + self._pdf_footer(run) + self._main_pdf_footer(run))
                 self.log(agent, 'result', summary)
                 self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
                 agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)

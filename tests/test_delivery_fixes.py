@@ -406,10 +406,52 @@ def test_which_named_files_a_request_asks_to_produce():
     assert output_names('Read data.xlsx and write the result to report.docx') == {'report.docx'}
     assert output_names('Save the summary as a.docx and the slides as b.pptx, based on source.pdf') == {'a.docx', 'b.pptx'}
     assert output_names('report.docx について教えて') == set() and output_names(None) == set()
+    # Real-machine case: slides that were asked for were not made and the run was "done". A word of reading that
+    # stands somewhere before the word of making ("要約から…作成", "図表を使ったスライド") does not make the file an input.
+    both = {'weo2026_summary.docx', 'weo2026_slides.pptx'}
+    for request in ('IMF の WEO 最新号の PDF を読み、要約を weo2026_summary.docx に、スライドを weo2026_slides.pptx に保存してください',
+                    '要約レポート weo2026_summary.docx と、図表を使ったスライド weo2026_slides.pptx を作成してください',
+                    'weo2026_summary.docx（要約、主要な数値は表にする）と weo2026_slides.pptx（要約から 8 枚程度）を作成',
+                    'スライド weo2026_slides.pptx は、要約の内容をもとに 16:9 で作成してください。要約は weo2026_summary.docx に保存',
+                    'weo2026_summary.docx を作り、それを見て weo2026_slides.pptx も作る'):
+        assert output_names(request) == both, request
+    assert output_names('figures.xlsx の数値で report.docx を作成') == {'report.docx'}
+    assert output_names('前回の old.docx（先月分）を参考に new.docx を作成') == {'new.docx'}
     assert output_names('成果物: weo_energy_summary.docx, weo_energy_slides.pptx') == {'weo_energy_summary.docx', 'weo_energy_slides.pptx'}
     assert output_names('IEA の PDF を読み、要約を weo_energy_summary.docx、スライドを weo_energy_slides.pptx に保存し、'
                         'ダウンロードした PDF も WorldEnergyOutlook2025.pdf として同じフォルダーに保存してください') == {
         'weo_energy_summary.docx', 'weo_energy_slides.pptx', 'worldenergyoutlook2025.pdf'}
+
+
+async def test_a_requested_file_is_a_deliverable_although_one_of_its_name_lies_directly_in_a_permitted_folder(tmp_path):
+    """Real-machine case: the slides were asked for by name, were not made, and the run was "done". A file of that name
+    from an earlier run counted as "what the request works on" wherever it lay directly in a permitted folder."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        (work / 'weo2026_slides.pptx').write_bytes(b'last week')     # directly in the folder, from an earlier run
+        (work / 'figures.xlsx').write_bytes(b'input')
+        run, pm = await start(engine, max_workers=0, task='figures.xlsx を読んで、要約を weo2026_summary.docx に保存し、'
+                              'スライド weo2026_slides.pptx（要約から 8 枚程度）も作成してください')
+        assert run['output_check'] == {'expected': ['weo2026_summary.docx', 'weo2026_slides.pptx'],
+                                       'missing': ['weo2026_summary.docx', 'weo2026_slides.pptx']}
+        pm.pending.clear()
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'weo2026_summary.docx'), 'expected_sha256': 'missing',
+                                                           'paragraphs': ['要約']})
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': 'スライドは未検証です。'})
+        assert first['code'] == 'outputs_missing' and 'weo2026_slides.pptx (save with pptx_write)' in first['error']
+        await engine.execute_tool(run, pm, 'finish_work', {'summary': 'スライドは未検証です。'})
+        pm.status = 'done'
+        engine._run_status(run)
+        assert run['status'] == 'incomplete' and run['output_check']['missing'] == ['weo2026_slides.pptx']
+        # Written anew in this run (over the old file): the deliverable is there.
+        sha = (await engine.execute_tool(run, pm, 'file_hash', {'path': str(work / 'weo2026_slides.pptx')}))['sha256']
+        await engine.execute_tool(run, pm, 'pptx_write', {'path': str(work / 'weo2026_slides.pptx'), 'expected_sha256': sha,
+                                                           'slides': [{'title': '要約', 'body': ['一行']}]})
+        engine._run_status(run)
+        assert run['status'] == 'done'
+    finally:
+        await engine.close()
 
 
 async def test_an_older_file_of_the_same_name_elsewhere_does_not_stand_in_for_a_requested_file(tmp_path):
@@ -804,5 +846,71 @@ async def test_a_document_without_the_table_the_request_asks_for_is_sent_back_on
                                                           'operations': [{'type': 'append_table', 'rows': [['指標', '値'], ['需要', '654 EJ']]}]})
         await engine._tables_check(run)
         assert run['_tables_missing'] == [] and engine._tables_footer(run) == ''
+    finally:
+        await engine.close()
+
+
+async def test_a_worker_that_reports_without_its_assigned_file_or_any_tool_is_sent_back_once(tmp_path):
+    """Real-machine case: the worker that was to make the slides ended without one tool call and was "done"; the run
+    had no slides."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=3, task='要約を summary.docx に保存し、スライドを slides.pptx に保存して')
+        designer = engine.agents[(await engine.execute_tool(run, pm, 'spawn_worker', {
+            'profile_id': 'local', 'role': 'designer', 'task': '要約をもとに slides.pptx を 16:9 で作成する。'}))['agent_id']]
+        helper = engine.agents[(await engine.execute_tool(run, pm, 'spawn_worker', {
+            'profile_id': 'local', 'role': 'checker', 'task': '数値を確認する。'}))['agent_id']]
+        writer = engine.agents[(await engine.execute_tool(run, pm, 'spawn_worker', {
+            'profile_id': 'local', 'role': 'writer', 'task': '要約を summary.docx に保存する。'}))['agent_id']]
+        for agent in (pm, designer, helper, writer):
+            agent.pending.clear()
+        # The file its assignment names was not saved: said once, with the tool that makes it.
+        first = await engine.execute_tool(run, designer, 'finish_work', {'summary': 'スライドの構成を考えました。'})
+        assert first['ok'] is False and first['code'] == 'assignment_not_done'
+        assert 'Your assignment asks you to produce: slides.pptx (save with pptx_write)' in first['error']
+        assert (await engine.execute_tool(run, designer, 'finish_work', {'summary': '作れませんでした。'})).get('ok') is not False
+        # No file in its assignment, but no tool used at all while requested files are missing: said once as well.
+        assert 'without having used any tool in this assignment' in engine._assignment_undone(run, helper)
+        assert engine._assignment_undone(run, helper) is None
+        # A worker that did its part reports without being asked again.
+        await engine.execute_tool(run, writer, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing',
+                                                               'paragraphs': ['要約']})
+        assert engine._assignment_undone(run, writer) is None and engine._assignment_undone(run, pm) is None
+    finally:
+        await engine.close()
+
+
+async def test_a_completion_that_never_read_the_largest_pdf_of_the_work_is_sent_back_once(tmp_path):
+    """Real-machine case: the full report (124 pages) arrived at second 281 of 312; the document had been written
+    before from a two-page summary, and the report was never opened."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0, task='報告書の PDF を読んで要約を summary.docx に保存して')
+        pm.pending.clear()
+        summary = engine.pdf_library.put(make_pdf(['Executive summary.', 'Foreword.'], title='S001'), 'https://www.elibrary.imf.org/S001.pdf')
+        full = engine.pdf_library.put(make_pdf([f'Chapter text, page {number}.' for number in range(1, 13)], title='Full report'),
+                                      'https://www.imf.org/-/media/files/publications/weo/2026/october/english/text.pdf')
+        class Web:
+            pdf_ids = {summary['pdf_id']: {**summary, 'pages': 2}, full['pdf_id']: {**full, 'pages': 12}}
+        run['_web'] = Web()
+        await engine._pdf_read(run, pm, {'pdf_id': summary['pdf_id'], 'first_page': 1})
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing',
+                                                           'paragraphs': ['要約（Executive Summary による）']})
+        first = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert first['ok'] is False and first['code'] == 'main_pdf_unread'
+        for words in ('october/english/text.pdf (12 pages', f"pdf_id {full['pdf_id']}", 'the largest PDF of the work, and no page of it was read',
+                      'pdf_search for the main figures'):
+            assert words in first['error'], words
+        # Said once; left unread, the result says so.
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert '（12 ページ）は、1 ページも読まれていません' in done['summary']
+        # Read: nothing is said. A copy nearly as long that was read counts as well.
+        await engine._pdf_read(run, pm, {'pdf_id': full['pdf_id'], 'first_page': 3})
+        assert engine._main_pdf_unread(run) is None and engine._main_pdf_footer(run) == ''
+        other = engine.pdf_library.put(make_pdf([f'Other copy, page {number}.' for number in range(1, 14)], title='Copy'), 'https://files.example/copy.pdf')
+        run['_web'].pdf_ids[other['pdf_id']] = {**other, 'pages': 13}
+        assert engine._main_pdf_unread(run) is None
     finally:
         await engine.close()

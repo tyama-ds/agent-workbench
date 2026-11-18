@@ -129,9 +129,15 @@ def named_files(text):
     return list(names.values())[:_MAX_OUTPUTS]
 
 
-# Words after a file name (Japanese) or before it (English) that say the file is to be produced, or read.
-_OUT_AFTER = re.compile(r'保存|出力|作成|生成|書き出|書き込|にまとめ|を作|に書')
-_IN_AFTER = re.compile(r'を読|を参照|を開|を使|を基|をもと|に基づ|から|を入力|を見')
+# Words that say a named file is to be produced, or is something to read. In Japanese they follow the name,
+# in English they stand before it.
+_OUT_AFTER = re.compile(r'保存|保管|出力|作成|生成|納品|仕上げ|用意|作っ|作る|作り|作ら|書き出|書き込|書いて|に書|まとめ')
+# What is read is said right behind the name: "a.xlsx を読んで", "a.pdf から", "a.docx（前回分）を参考に".
+_IN_NEXT = re.compile(r'[\s）)」』"”]*(?:[（(][^）)]{0,60}[）)])?\s*(?:の(?:内容|データ|数値|結果|本文))?\s*'
+                      r'(?:を(?:読|参照|参考|開|使|基|もと|入力|見|確認|分析|集計|要約|翻訳|チェック|レビュー)|から|に基づ|に(?:ある|書かれ|記載))')
+# Two names of one list: "a.docx、…", "a.docx に、…", "a.docx（要約）と …", "a.docx and …".
+_LIST_NEXT = re.compile(r'[\s）)」』"”]*(?:[（(][^）)]{0,60}[）)])?\s*(?:に|へ|として)?\s*'
+                        r'(?:、|,|，|・|/|／|と|や|及び|および|ならびに|and\b|&|＆|\+)', re.I)
 _OUT_BEFORE = re.compile(r'\b(?:sav|writ|creat|export|produc|generat|output|put|deliverable)\w*|成果物|出力ファイル|納品物', re.I)
 _IN_BEFORE = re.compile(r'\b(?:read|open|load|from|using|use|based on|according to)\w*', re.I)
 
@@ -142,6 +148,10 @@ def output_names(text):
     A name in a list takes the meaning of the list: "要約を a.docx、スライドを b.pptx として保存" names two
     outputs; "a.xlsx と b.docx を読んで c.docx を作って" names two inputs and one output. A name with no such
     word near it is not in the result.
+
+    Real-machine case: slides that were asked for were not made and the run was "done". Words such as
+    "要約から 8 枚程度で作成" or "図表を使ったスライド" had been read as "this file is read", because a word of
+    reading stood somewhere before the word of making. Reading is only what stands right behind the name.
     """
     if not isinstance(text, str):
         return set()
@@ -149,20 +159,21 @@ def output_names(text):
     for segment in re.split(r'[。\n]|\.\s', text):
         found = sorted({(match.start(1), match.end(1), match.group(1).strip()) for pattern in (_QUOTED_FILE, _BARE_FILE)
                         for match in pattern.finditer(segment)})
-        kinds = []
+        kinds, listed = [], []
         for index, (start, end, _) in enumerate(found):
             after = segment[end:found[index + 1][0] if index + 1 < len(found) else len(segment)]
             before = segment[found[index - 1][1] if index else 0:start]
-            cues = sorted([(match.start(), kind) for kind, pattern in (('out', _OUT_AFTER), ('in', _IN_AFTER))
-                           for match in [pattern.search(after)] if match])
-            if cues:
-                kinds.append((cues[0][1], 'after'))
-                continue
-            cues = sorted([(match.start(), kind) for kind, pattern in (('out', _OUT_BEFORE), ('in', _IN_BEFORE))
-                           for match in pattern.finditer(before)])
-            kinds.append((cues[-1][1], 'before') if cues else (None, None))
-        for index in range(len(found) - 1, -1, -1):   # a list before its verb: "a、b として保存"
-            if kinds[index][0] is None and index + 1 < len(found) and kinds[index + 1][1] == 'after':
+            listed.append(index + 1 < len(found) and _LIST_NEXT.match(after) is not None)
+            if _IN_NEXT.match(after):
+                kinds.append(('in', 'after'))
+            elif _OUT_AFTER.search(after) and not listed[-1]:
+                kinds.append(('out', 'after'))
+            else:
+                cues = sorted([(match.start(), kind) for kind, pattern in (('out', _OUT_BEFORE), ('in', _IN_BEFORE))
+                               for match in pattern.finditer(before)])
+                kinds.append((cues[-1][1], 'before') if cues else (None, None))
+        for index in range(len(found) - 2, -1, -1):   # a list before its verb: "a、b として保存"
+            if kinds[index][0] is None and listed[index] and kinds[index + 1][1] == 'after':
                 kinds[index] = kinds[index + 1]
         for index in range(1, len(found)):            # a list after its verb: "save x as a and y as b"
             if kinds[index][0] is None and kinds[index - 1][1] == 'before':
@@ -451,6 +462,73 @@ class VerificationMixin:
                 if len(rows) >= limit:
                     return rows
         return rows
+
+    # --- a worker that reports without having done its assignment -----------------
+    # Real-machine case: the worker that was to make the slides ended without one tool call, was "done", and
+    # the run had no slides. The application knows what a worker saved and whether it used a tool at all.
+
+    def _assignment_undone(self, run, agent):
+        """Once per worker: text sending it back when its assignment names a file that was not saved, or when
+        it used no tool at all while files the request asks for are still missing."""
+        if (agent.parent_id is None or getattr(agent, '_undone_told', False) or run.get('_ordered_work')
+                or run.get('adaptive_team') or run.get('_turns') is not None or not run['_harness'].write_roots):
+            return None
+        saved = run.get('_saved_names') or set()
+        wanted = [name for name in named_files(agent.assignment) if name.casefold() in output_names(agent.assignment)
+                  and name.casefold() not in saved]
+        if wanted:
+            agent._undone_told = True
+            return ('[application notice] Your assignment asks you to produce: '
+                    + ', '.join(f'{self.redact(name)} (save with {_writer_tool(name)})' for name in wanted[:5])
+                    + '. No file of that name has been saved in this work. Make it now with that tool, from what you have '
+                    'and from the reports you were given, then report with finish_work. If it truly cannot be made, say '
+                    'in finish_work exactly what is missing; do not report it as done.')
+        if not getattr(agent, '_work_calls', 0) and self._outputs_missing(run):
+            agent._undone_told = True
+            return ('[application notice] You are reporting without having used any tool in this assignment: nothing was '
+                    'read, checked or saved, and files the request asks for are still missing. Do the assigned work with '
+                    'the tools now, then report with finish_work. If the assignment needs no tool, say in finish_work why.')
+        return None
+
+    # --- the largest PDF of the work was fetched and not read ---------------------
+    # Real-machine case: the full report (124 pages) arrived late; the document had been written before from a
+    # two-page summary, and the report was never opened.
+
+    def _main_pdf_unread(self, run):
+        """(pdf_id, record) of the largest PDF this work downloaded, when neither it nor one nearly as long was read."""
+        records = getattr(run.get('_web'), 'pdf_ids', None) or {}
+        if not records:
+            return None
+        ident, record = max(records.items(), key=lambda item: item[1].get('pages') or 0)
+        pages, read = record.get('pages') or 0, run.get('_pdf_read_ids') or {}
+        if pages < 10 or any((records.get(other, {}).get('pages') or 0) >= 0.8 * pages for other in read):
+            return None
+        return ident, record
+
+    def _main_pdf_gate(self, run, agent):
+        """Once per run: the root PM finishes, files were saved, and the work's largest PDF was never read."""
+        if (agent.parent_id is not None or run.get('_main_pdf_gated') or not run.get('_saved_names')
+                or self._others_active(run, agent)):
+            return None
+        found = self._main_pdf_unread(run)
+        if not found:
+            return None
+        ident, record = found
+        run['_main_pdf_gated'] = True
+        return (f"[application notice] This work downloaded {self.redact(record.get('url', ''))[:200]} ({record.get('pages')} "
+                f'pages, pdf_id {ident}): the largest PDF of the work, and no page of it was read. The files were written '
+                'from other sources. Before finishing, check the files against it: pdf_search for the main figures and '
+                'statements, pdf_read for the pages; correct what the report says otherwise, and cite its pages. If your '
+                'workers are done, do this yourself or assign it once. If there is a reason not to use this file, say it '
+                'in your result.')
+
+    def _main_pdf_footer(self, run):
+        found = self._main_pdf_unread(run) if run.get('_saved_names') else None
+        if not found:
+            return ''
+        ident, record = found
+        return (f"\n\n【アプリの確認】この作業でダウンロードした PDF のうち最もページ数の多い {self.redact(record.get('url', ''))[:200]}"
+                f"（{record.get('pages')} ページ）は、1 ページも読まれていません。成果物はこの PDF の内容で確かめられていません。")
 
     # --- "…in a table": does the document have one? ------------------------------
     # Real-machine case: "the main figures in a table" was asked for; the document had every figure in its
@@ -840,13 +918,14 @@ class VerificationMixin:
                 continue
             there = self._file_instances(run, name)
             if there:
-                # A file of this name exists. Directly in a permitted folder it is what the request works on.
-                # Deeper down it may be what an earlier piece of work left in its own folder: real-machine case,
-                # "save the summary as weo2026_summary.docx" ended "done" with an empty folder, because a file of
-                # that name stood in last week's folder beside it. Where the request clearly asks to produce
-                # the file, that older file does not stand in for it.
+                # A file of this name exists somewhere in the permitted folders. It may be what the request
+                # works on, or what an earlier piece of work left behind: real-machine cases, "save the summary
+                # as weo2026_summary.docx" ended "done" with an empty folder, and later slides that were asked
+                # for were not made, because files of those names stood in the folders of earlier runs (below
+                # a read folder, or in folders that are read folders themselves). Where the request clearly
+                # asks to produce the file, no older file stands in for it, wherever it is.
                 produced = output_names(text) if produced is None else produced
-                if any(top for top, _ in there.values()) or key not in produced:
+                if key not in produced:
                     continue
             expected[key], added = name, True
             run.setdefault('_output_before', {})[key] = {path: state for path, (_, state) in there.items()}
@@ -1025,6 +1104,9 @@ class VerificationMixin:
         text = self._citations_gate(run, agent)
         if text:
             return 'sources_review', text
+        text = self._main_pdf_gate(run, agent)
+        if text:
+            return 'main_pdf_unread', text
         text = self._tables_gate(run, agent)
         if text:
             return 'table_missing', text
