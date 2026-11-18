@@ -142,7 +142,9 @@ async function contextCompactionAcceptance({context,origin,providerRequests,stat
       assert.match(await page.locator('#runMetrics').textContent(),/実行時間（チーム共有）/);
       // Narrow screens show the inspector and network as alternate views.
       // Use the visible navigation control before inspecting network metrics.
-      if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+      if(await page.locator('#progressView').getAttribute('aria-pressed')!=='true')await page.locator('#progressView').click();
+      // The run's numbers are one line away: open them, as a person would, before measuring them.
+      if(!await page.locator('#runFacts').evaluate(details=>details.open))await page.locator('#runFacts > summary').click();
       await modelMetric.scrollIntoViewIfNeeded();assert(await modelMetric.isVisible());
       const budgetLayout=await modelMetric.evaluate(metric=>{
         const box=metric.getBoundingClientRect(),panel=document.querySelector('#runOverview').getBoundingClientRect();

@@ -472,7 +472,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('#settingsLockStatus').scrollIntoViewIfNeeded();await screenshot('active-lock-desktop');
     await page.setViewportSize({width:390,height:844});await page.locator('#settingsLockStatus').scrollIntoViewIfNeeded();await screenshot('active-lock-narrow');
     await closeSettingsDialog(page);
-    if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+    if(await page.locator('#progressView').getAttribute('aria-pressed')!=='true')await page.locator('#progressView').click();
     await page.locator('#stopRun').click();await waitRun(activeRunId,'stopped');activeRunId=null;
     await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();await openSettings();
     assert.equal(await page.locator('#saveSettings').isEnabled(),true);await closeSettingsDialog(page);

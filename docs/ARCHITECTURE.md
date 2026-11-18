@@ -865,6 +865,23 @@ the human turned it on (0.1.1.dev61; off by default).
   opener is set only when the run has `browser_fetch`), and what its result
   means; `Engine._browser_tries_publish` turns each try into an event.
 
+## The centre's tabs and the faces (0.1.1.dev90)
+
+- `ui.cockpitView` is `progress` (the default), `network`, `board` or
+  `inspector`; `setCockpitView` writes it to `.app-shell[data-cockpit-view]`
+  and the pressed state of the four buttons. The style sheet's last block
+  hides the diagram in `progress` and the status cards and messages in
+  `network`; the diagram's own window (`data-layout=network-popout`) is
+  left out of those rules and starts in `network`.
+- A diagram laid out while it is not on the screen is fitted with a
+  guessed size (`networkViewport`); `fitNetwork` marks that as
+  `fitPending` and `setCockpitView('network')` fits it again.
+- `FACES` lists the drawings; `faceSvg(face)` builds one as SVG elements
+  with presentation attributes only (the content policy allows no style
+  attributes). `faceOrder(runId)` shuffles the list with a generator seeded
+  by the run's id (no `Math.random`), and `agentFace(agent)` takes the
+  face at the agent's place among the run's agents.
+
 ## Looking at the screen (0.1.1.dev89)
 
 - `screen.capture()` pictures the primary screen through GDI (`StretchBlt`

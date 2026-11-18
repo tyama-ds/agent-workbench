@@ -473,7 +473,7 @@ async function main() {
     await allQuestionsAcceptance({page,fixture,compactFixture,artifacts,report,holdNextRequest,releaseResponse,assertLayout});
     await taskReuseAcceptance({page,fixture,compactFixture,providerRequests,artifacts,report,holdNextRequest,releaseResponse,assertLayout,assertDialogLayout});
     await inputPresenceAcceptance({page,fixture,compactFixture,providerRequests,artifacts,report,holdNextRequest,releaseResponse,assertLayout});
-    if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+    if(await page.locator('#progressView').getAttribute('aria-pressed')!=='true')await page.locator('#progressView').click();
     assert.equal(await page.locator('#activityFeed img').count(),0);assert.equal(await page.evaluate(()=>Boolean(window.fixtureInjected)),false);
     assert.equal(await page.locator('#runForm').isVisible(),false);await page.evaluate(()=>window.scrollTo(0,0));
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
@@ -519,7 +519,7 @@ async function main() {
     await page.waitForFunction(()=>!document.querySelector('#conversationProfile').textContent.includes('最大長表示名'));
     await page.locator('#conversationHeading').evaluate(node=>{node.scrollTop=0;});
     report.checks.push('maximum configured label/model stays in bounded keyboard-scrollable heading; unchanged polling preserves metadata scroll; tablet/narrow long-question composer and narrow assignment text remain visible');
-    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();
+    await page.setViewportSize({width:1366,height:768});await page.locator('#progressView').click();
     await page.locator('#navSettings').click();assert.equal(await page.locator('#saveSettings').isDisabled(),true);assert.equal(await page.locator('#systemPolicy').isDisabled(),true);
     await page.locator('#closeSettings').click();
     await page.locator('#messageInput').fill('PMに送る未送信メモ');await page.locator('#agentTabs [data-focus-key="tab:fixture-worker-1"]').click();await page.locator('#messageInput').fill('担当者への未送信メモ');await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();assert.equal(await page.locator('#messageInput').inputValue(),'PMに送る未送信メモ');
@@ -575,7 +575,7 @@ async function main() {
     await page.locator('#inspectorView').click();
     await page.locator('#humanQuestion').filter({hasText:'[SYNTHETIC] Continue this test run?'}).waitFor();
     await page.waitForFunction(()=>document.querySelectorAll('.agent-card').length===2);
-    await page.locator('#networkView').click();
+    await page.locator('#progressView').click();
     await page.locator('#activityFeed').filter({hasText:'Worker review complete.'}).waitFor();
     assert.equal(await page.locator('#conversationStatus').textContent(),'回答待ち');
     assert.equal(await page.locator('#activeRunStatus').textContent(),'回答待ち');
@@ -587,7 +587,7 @@ async function main() {
     await page.locator('#messageInput').fill('[SYNTHETIC] Continue until cancellation.');await page.locator('#sendMessage').click();
     await page.locator('#messageStatus').filter({hasText:'送信しました'}).waitFor();
     await page.locator('#humanQuestion').waitFor({state:'hidden'});
-    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();
+    await page.setViewportSize({width:1366,height:768});await page.locator('#progressView').click();
     await page.screenshot({path:path.join(artifacts,'workbench-real-engine-desktop.png'),fullPage:true,animations:'disabled'});
     await page.locator('#stopRun').click();await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();
     assert.equal(await page.locator('#messageInput').isDisabled(),true);
@@ -611,7 +611,7 @@ async function main() {
     await page.screenshot({path:path.join(artifacts,'workbench-recovery-settings-narrow.png'),fullPage:true,animations:'disabled'});
     report.checks.push('real assignment display/search and question status; completed run rejects exhausted turn budget, later settings changes show stale-config recovery without resetting budgets');
     // Real engine writes a file and emits an ordinary terminal assistant answer.
-    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();
+    await page.setViewportSize({width:1366,height:768});await page.locator('#progressView').click();
     await page.locator('#newRun').click();await page.locator('#taskInput').fill('[SYNTHETIC] Save result.');await page.locator('#maxWorkers').fill('0');await page.locator('#startRun').click();
     await page.locator('#activeRunStatus').filter({hasText:'完了'}).waitFor();
     await page.locator('#resultsPanel > summary').click();
@@ -655,7 +655,7 @@ async function main() {
     await retentionAcceptance({page,context,origin,workspace,stateDir,providerRequests,artifacts,report,assertLayout,
       resultOption,receiptOption,exported,receiptExport});
     // The next admission/settings phase uses the desktop network plus inspector.
-    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();
+    await page.setViewportSize({width:1366,height:768});await page.locator('#progressView').click();
     // A fresh text-only PM can start without file scopes, even with an unused
     // cloud worker selected. Preview/settings must preserve earlier outputs.
     await page.locator('#runList .run-link').filter({hasText:'[SYNTHETIC] Save result.'}).click();
@@ -738,7 +738,7 @@ async function main() {
     assert.equal(await saveText('workbench-result.txt'),exported);
     await page.locator('#resultSelection').selectOption(receiptOption);
     assert.equal(await saveText('workbench-save-receipt.txt'),receiptExport);
-    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();await assertLayout(page,'desktop historical profile');
+    await page.setViewportSize({width:1366,height:768});await page.locator('#progressView').click();await assertLayout(page,'desktop historical profile');
     await page.screenshot({path:path.join(artifacts,'workbench-attribution-desktop.png'),fullPage:true,animations:'disabled'});
     await page.setViewportSize({width:390,height:844});await assertLayout(page,'narrow historical profile');
     await page.screenshot({path:path.join(artifacts,'workbench-attribution-narrow.png'),fullPage:true,animations:'disabled'});

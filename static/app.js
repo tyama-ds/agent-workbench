@@ -124,7 +124,7 @@ Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
 Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotified:new Set(),questionNotifications:new Map(),notificationPermissionRequest:null,notificationError:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
-Object.assign(ui,{cockpitView:'network',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
+Object.assign(ui,{cockpitView:'progress',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
 // A separate tab/window that shows only the mission network (?view=network&run=ID).
 // It is the same page and session cookie; no new server route or credential.
 const NETWORK_POPOUT=(()=>{const query=new URLSearchParams(globalThis.location?.search||'');return query.get('view')==='network'?{run:query.get('run')||''}:null;})();
@@ -1631,11 +1631,14 @@ async function submitWorkBoardPost(retry=false) {
   }finally{if(instance===ui.instanceId&&ui.workBoards.get(run.id)===board&&currentRunBoard(run.id)){renderWorkBoard(getRun());if(!board.operation)void loadWorkBoard(getRun(),true);}}
 }
 function setCockpitView(view) {
-  if(!['network','board','inspector'].includes(view))return;
+  // The centre shows one thing at a time: progress (who is doing what, and the messages), the team diagram, or the board.
+  if(!['progress','network','board','inspector'].includes(view))return;
   rememberWorkBoardView();
   ui.cockpitView=view;document.querySelector('.app-shell').dataset.cockpitView=view;
-  for(const [id,mode] of [['networkView','network'],['boardView','board'],['inspectorView','inspector']])$(id).setAttribute('aria-pressed',String(view===mode));
+  for(const [id,mode] of [['progressView','progress'],['networkView','network'],['boardView','board'],['inspectorView','inspector']])$(id).setAttribute('aria-pressed',String(view===mode));
   if(view!=='network'){clearNetworkHover();stopNetworkMotion();}
+  // A diagram that was laid out while it was not on the screen is fitted to the space it now has.
+  else if(ui.selectedRun&&ui.networkLayout&&networkViewState().fitPending)fitNetwork();
   renderWorkBoard(getRun());renderNetworkPreview();paintNetworkMotionState();
 }
 function revealInspector() { if(window.matchMedia?.('(max-width: 1100px)').matches)setCockpitView('inspector'); }
@@ -1643,6 +1646,141 @@ function svgElement(tag,attributes={}) {
   const node=document.createElementNS('http://www.w3.org/2000/svg',tag);
   for(const [key,value] of Object.entries(attributes))node.setAttribute(key,String(value));
   return node;
+}
+// --- Faces: every agent is drawn with a face, and each piece of work deals them out afresh ----------------
+// Original drawings, built here from a few shapes (no image files). kind: human or robot.
+// hair: [style, colour]; wear: [kind, main colour, second colour, third colour]; extra: things worn or grown.
+const FACE_SKINS=['#f3cfae','#e9b991','#d8a276','#c18a61','#f7dcc4','#a8734f'];
+const FACES=[
+  {id:'shades',name:'黒スーツとサングラス',kind:'human',bg:'#3c4654',skin:1,hair:['slick','#141518'],eyes:'none',mouth:'flat',wear:['suit','#15161a','#eeeeea','#0d0e10'],extra:['shades']},
+  {id:'office',name:'ふつうの会社員',kind:'human',bg:'#3f5870',skin:0,hair:['short','#2e221b'],eyes:'normal',mouth:'smile',wear:['suit','#27405f','#f2f4f6','#b9413c'],extra:[]},
+  {id:'languid',name:'気だるそうなお姉さん',kind:'human',bg:'#6a5568',skin:4,hair:['long','#5b3a2c'],eyes:'sleepy',mouth:'pout',wear:['cardigan','#c9b79a','#f4efe6',''],extra:['mole']},
+  {id:'ledger',name:'眼鏡の経理さん',kind:'human',bg:'#4d5a52',skin:0,hair:['side','#22201f'],eyes:'normal',mouth:'flat',wear:['suit','#6b7078','#f2f4f6','#3d5a80'],extra:['glasses']},
+  {id:'rookie',name:'元気な新人',kind:'human',bg:'#3d6a74',skin:1,hair:['spiky','#3a2a1e'],eyes:'wide',mouth:'grin',wear:['shirt','#f2f4f6','#dfe5ea','#d9534a'],extra:['blush']},
+  {id:'chief',name:'ベテラン課長',kind:'human',bg:'#5c5346',skin:2,hair:['bald','#8d8f93'],eyes:'smile',mouth:'smile',wear:['suit','#5a4635','#f0ece2','#7c2f2f'],extra:['mustache']},
+  {id:'planner',name:'ポニーテールの企画さん',kind:'human',bg:'#3f6b58',skin:0,hair:['pony','#3b2a22'],eyes:'smile',mouth:'smile',wear:['coat','#2f7d63','#f4efe6',''],extra:['blush']},
+  {id:'labcoat',name:'ボブの研究員',kind:'human',bg:'#51607c',skin:4,hair:['bob','#1f1d22'],eyes:'normal',mouth:'flat',wear:['coat','#f1f3f5','#8fb3d9',''],extra:['glasses']},
+  {id:'beard',name:'ひげのエンジニア',kind:'human',bg:'#3d4f45',skin:2,hair:['beanie','#b3523f'],eyes:'normal',mouth:'smile',wear:['hoodie','#3f5a48','#cfd8d2',''],extra:['beard']},
+  {id:'operator',name:'ヘッドセットのオペレーター',kind:'human',bg:'#3a5f7d',skin:1,hair:['short','#4a3324'],eyes:'smile',mouth:'smile',wear:['shirt','#5d87b8','#eef2f6',''],extra:['headset']},
+  {id:'secretary',name:'お団子の秘書さん',kind:'human',bg:'#6d4450',skin:0,hair:['bun','#231a18'],eyes:'sharp',mouth:'smirk',wear:['suit','#7a2f45','#f6f1ea','#f6f1ea'],extra:['earring']},
+  {id:'advisor',name:'白髪の顧問',kind:'human',bg:'#474a52',skin:1,hair:['slick','#d9dadd'],eyes:'sharp',mouth:'flat',wear:['suit','#33363d','#f2f4f6','#8a6d2f'],extra:['brows']},
+  {id:'nightowl',name:'パーカーの夜型',kind:'human',bg:'#463f63',skin:4,hair:['curly','#2a2430'],eyes:'sleepy',mouth:'flat',wear:['hoodie','#5b4a86','#d9d3ea',''],extra:['bags']},
+  {id:'foreman',name:'現場の職人',kind:'human',bg:'#6a5a3c',skin:3,hair:['helmet','#e6b422'],eyes:'normal',mouth:'grin',wear:['work','#d2691e','#f0e6c8',''],extra:['stubble']},
+  {id:'courier',name:'キャップの配達員',kind:'human',bg:'#3c5f6a',skin:2,hair:['cap','#2b6f9e'],eyes:'smile',mouth:'grin',wear:['shirt','#2b6f9e','#e8eef2',''],extra:[]},
+  {id:'designer',name:'カーリーヘアのデザイナー',kind:'human',bg:'#6b5a3a',skin:3,hair:['curly','#3b2418'],eyes:'normal',mouth:'smile',wear:['knit','#c9962e','#e0b24f',''],extra:['roundglasses']},
+  {id:'detective',name:'トレンチコートの調査役',kind:'human',bg:'#55503f',skin:1,hair:['side','#3a3027'],eyes:'sharp',mouth:'smirk',wear:['coat','#b79b6c','#3b3f48',''],extra:['stubble']},
+  {id:'athlete',name:'短髪の体育会系',kind:'human',bg:'#3f6a4b',skin:3,hair:['buzz','#1c1a19'],eyes:'wide',mouth:'grin',wear:['knit','#2f8f5b','#f2f4f6',''],extra:['brows']},
+  {id:'boxbot',name:'四角いロボ',kind:'robot',bg:'#2f4856',shape:'box',metal:'#9fb4c2',dark:'#4f6472',led:'#6fe3f2'},
+  {id:'visorbot',name:'バイザーロボ',kind:'robot',bg:'#3a3550',shape:'visor',metal:'#c9cbd6',dark:'#5a5d73',led:'#ff6b6b'},
+  {id:'eyebot',name:'一つ目ロボ',kind:'robot',bg:'#35523f',shape:'cyclops',metal:'#b9c7a8',dark:'#5c6f55',led:'#ffd166'},
+  {id:'retrobot',name:'レトロロボ',kind:'robot',bg:'#5a4634',shape:'retro',metal:'#d0b48a',dark:'#7a6248',led:'#7bdc8a'},
+  {id:'tvbot',name:'モニターロボ',kind:'robot',bg:'#2d3f5c',shape:'tv',metal:'#8fa3bf',dark:'#3f4d66',led:'#8ef0c0'},
+  {id:'sitebot',name:'工事ロボ',kind:'robot',bg:'#4c4a36',shape:'dome',metal:'#e3b62e',dark:'#3a3a36',led:'#ff9f43'},
+  {id:'bugbot',name:'まるいロボ',kind:'robot',bg:'#4a3d5e',shape:'bug',metal:'#e6e2ee',dark:'#7c7396',led:'#b79cff'},
+  {id:'catbot',name:'ねこ耳ロボ',kind:'robot',bg:'#5a3f4a',shape:'cat',metal:'#f0c7cf',dark:'#9a6b78',led:'#ff8fb1'}
+];
+const FACE_INK='#1d1d22';
+function drawHumanFace(add,face) {
+  const skin=FACE_SKINS[face.skin]||FACE_SKINS[0],[hair,tint]=face.hair,[wear,main,second,third]=face.wear,extra=new Set(face.extra);
+  const shape=(d,fill,more={})=>add('path',{d,fill,...more}),line=(d,stroke,width,more={})=>add('path',{d,fill:'none',stroke,'stroke-width':width,'stroke-linecap':'round','stroke-linejoin':'round',...more});
+  // Hair that falls behind the head.
+  if(hair==='long')shape('M15 27Q14 7 32 7Q50 7 49 27L50 51Q42 48 41 36L23 36Q22 48 14 51Z',tint);
+  if(hair==='bob')shape('M16 27Q15 8 32 8Q49 8 48 27L48 39Q44 42 42 36L22 36Q20 42 16 39Z',tint);
+  if(hair==='pony')shape('M43 14Q57 14 55 31Q54 38 50 40Q52 30 46 24Z',tint);
+  if(hair==='bun')add('circle',{cx:32,cy:7.5,r:5.5,fill:tint});
+  // Shoulders and what is worn.
+  shape('M6 64Q8 47 23 44L41 44Q56 47 58 64Z',main);
+  if(wear==='suit'){shape('M25 44L32 56L39 44Z',second);shape('M30.6 46.5L33.4 46.5L34.6 55L32 58.5L29.4 55Z',third);line('M25 44L29.5 57M39 44L34.5 57','#00000055',1);}
+  if(wear==='shirt'){shape('M25 44L32 51L28 54Z',second);shape('M39 44L32 51L36 54Z',second);if(third)shape('M31 50.5L33 50.5L34 58L32 60.5L30 58Z',third);}
+  if(wear==='hoodie'){line('M21.5 45.5Q32 56 42.5 45.5',second,2.2);line('M29.5 52L29 60M34.5 52L35 60',second,1.1);}
+  if(wear==='knit')add('rect',{x:25.5,y:40.5,width:13,height:6.5,rx:2.5,fill:second});
+  if(wear==='coat'){shape('M26 44L32 58L38 44Z',second);line('M26 44L21.5 52L27 55M38 44L42.5 52L37 55','#00000040',1);}
+  if(wear==='cardigan'){shape('M24 44L32 61L40 44Z',second);line('M24 44L32 61L40 44','#00000030',.9);}
+  if(wear==='work'){add('rect',{x:9,y:55,width:46,height:3,fill:second});shape('M27 44L32 50L37 44Z','#00000033');}
+  // Neck, ears and head.
+  if(wear!=='knit')add('rect',{x:27.5,y:37,width:9,height:9,fill:skin});
+  add('rect',{x:27.5,y:39.5,width:9,height:3,fill:'#00000018'});
+  add('circle',{cx:19.6,cy:29,r:2.6,fill:skin});add('circle',{cx:44.4,cy:29,r:2.6,fill:skin});
+  shape('M20 26Q20 12 32 12Q44 12 44 26Q44 40 32 42Q20 40 20 26Z',skin);
+  if(extra.has('stubble'))shape('M21.5 31Q22 42 32 43.2Q42 42 42.5 31Q40 36.5 32 37Q24 36.5 21.5 31Z',tint==='#e6b422'?'#3a2f28':tint,{'fill-opacity':.28});
+  if(extra.has('beard'))shape('M21.2 30Q21.5 42.5 32 44Q42.5 42.5 42.8 30Q40.5 36 32 36.6Q23.5 36 21.2 30Z','#4a3324');
+  if(extra.has('blush')){add('circle',{cx:24.3,cy:33,r:2.5,fill:'#f08a7a','fill-opacity':.38});add('circle',{cx:39.7,cy:33,r:2.5,fill:'#f08a7a','fill-opacity':.38});}
+  // Hair in front of the head, or what is worn on it.
+  if(hair==='slick'){shape('M20 25Q19 10 32 10Q45 10 44 25Q42 17 32 16.5Q22 17 20 25Z',tint);line('M25 13.2Q32 11.4 39 13.2M27 15.4Q32 14.2 37 15.4','#ffffff30',.8);}
+  if(hair==='short')shape('M20 26Q18 10 32 10Q46 10 44 26Q43 20 38 18Q30 21 23 18Q21 21 20 26Z',tint);
+  if(hair==='side')shape('M20 27Q17 10 33 10Q46 10 44 27Q43 19 36 17Q27 16 23 21Q21 23 20 27Z',tint);
+  if(hair==='long')shape('M20 26Q21 13 32 13Q43 13 44 26Q40 18.5 33 19Q25 18.5 20 26Z',tint);
+  if(hair==='bob')shape('M20 25Q20 12 32 12Q44 12 44 25Q38 21 32 22Q26 21 20 25Z',tint);
+  if(hair==='pony'||hair==='bun')shape('M20 25Q19 10 32 10Q45 10 44 25Q41 17 32 17Q23 17 20 25Z',tint);
+  if(hair==='spiky')shape('M19 26L20 14L24.5 18L27 9L31.5 16L36 9L38.5 17L44 13L45 26Q40 18 32 18Q24 18 19 26Z',tint);
+  if(hair==='curly')for(const [cx,cy,r] of [[21,22.5,4],[22.5,17,5],[27,12.5,5.5],[33.5,11.5,5.5],[39.5,13.5,5.5],[43.5,19,4.6]])add('circle',{cx,cy,r,fill:tint});
+  if(hair==='buzz')shape('M20.5 24Q20 11.5 32 11.5Q44 11.5 43.5 24Q40 15.5 32 15.5Q24 15.5 20.5 24Z',tint,{'fill-opacity':.85});
+  if(hair==='bald'){shape('M19.8 28Q18.8 20 22.4 16.5Q21.2 22.5 21.4 28Z',tint);shape('M44.2 28Q45.2 20 41.6 16.5Q42.8 22.5 42.6 28Z',tint);line('M27 15Q30 13.4 33 14',  '#ffffff40',1);}
+  if(hair==='cap'){shape('M19.5 23Q20 9 32 9Q44 9 44.5 23Z',tint);shape('M18 22.5L49 22.5Q52.5 23 51.5 25.6L18 25.6Z','#00000055');shape('M18 22.5L49 22.5Q52.5 23 51.5 25.6L18 25.6Z',tint,{'fill-opacity':.75});}
+  if(hair==='helmet'){shape('M18.5 24Q19 8 32 8Q45 8 45.5 24Z',tint);add('rect',{x:16.5,y:22.6,width:31,height:3.2,rx:1.4,fill:tint});line('M32 8.4L32 22.4','#00000030',1.4);}
+  if(hair==='beanie'){shape('M19.5 24Q19 9 32 9Q45 9 44.5 24Z',tint);add('rect',{x:19,y:20.5,width:26,height:5,rx:1.6,fill:'#ffffff33'});add('rect',{x:19,y:20.5,width:26,height:5,rx:1.6,fill:tint,'fill-opacity':.6});}
+  // Eyes.
+  if(extra.has('brows'))line('M24 24.6L29.8 25.4M40 24.6L34.2 25.4',FACE_INK,1.6);
+  if(face.eyes==='normal'){add('circle',{cx:27,cy:28.5,r:1.7,fill:FACE_INK});add('circle',{cx:37,cy:28.5,r:1.7,fill:FACE_INK});}
+  if(face.eyes==='wide')for(const cx of [27,37]){add('circle',{cx,cy:28.4,r:3,fill:'#ffffff'});add('circle',{cx,cy:28.6,r:1.6,fill:FACE_INK});}
+  if(face.eyes==='smile')line('M24.6 29Q27 26.2 29.4 29M34.6 29Q37 26.2 39.4 29',FACE_INK,1.5);
+  if(face.eyes==='sleepy'){shape('M25.2 28.2Q27 31 28.8 28.2ZM35.2 28.2Q37 31 38.8 28.2Z',FACE_INK);line('M24.2 28L29.8 28M34.2 28L39.8 28',FACE_INK,1.6);}
+  if(face.eyes==='sharp'){add('circle',{cx:27.4,cy:29.2,r:1.25,fill:FACE_INK});add('circle',{cx:36.6,cy:29.2,r:1.25,fill:FACE_INK});line('M24.4 27.2L29.8 28.4M39.6 27.2L34.2 28.4',FACE_INK,1.3);}
+  if(extra.has('bags'))line('M24.8 31.2Q27 32.4 29.2 31.2M34.8 31.2Q37 32.4 39.2 31.2','#00000045',.9);
+  // Mouth.
+  if(extra.has('mustache'))shape('M26.6 33.8Q29.4 31.6 32 33.4Q34.6 31.6 37.4 33.8Q34.6 35.4 32 34.3Q29.4 35.4 26.6 33.8Z',tint);
+  if(face.mouth==='smile')line('M27.5 35Q32 38.6 36.5 35','#7a3b2e',1.5);
+  if(face.mouth==='grin')shape('M27 34.4Q32 40.4 37 34.4Z','#ffffff',{stroke:'#7a3b2e','stroke-width':.9,'stroke-linejoin':'round'});
+  if(face.mouth==='flat')line('M28.6 35.8L35.4 35.8','#7a3b2e',1.5);
+  if(face.mouth==='smirk')line('M28 36Q33 37 36.6 34','#7a3b2e',1.5);
+  if(face.mouth==='pout'){line('M29.6 35.8Q32 34.6 34.4 35.8','#a3473f',1.6);line('M30.4 37.4Q32 38 33.6 37.4','#a3473f',1);}
+  if(extra.has('mole'))add('circle',{cx:36.9,cy:33.4,r:.75,fill:'#4a2f28'});
+  // Things worn on the face and head.
+  if(extra.has('shades')){shape('M21.5 25.5L30.6 25.5L30 30.6Q26 32.2 22.4 30.6Z',  '#0b0c0f');shape('M33.4 25.5L42.5 25.5L41.6 30.6Q38 32.2 34 30.6Z','#0b0c0f');line('M30.4 26.6L33.6 26.6M21.6 26.4L19.6 27.4M42.4 26.4L44.4 27.4','#0b0c0f',1.3);line('M23.2 27L25.6 27M35.2 27L37.6 27','#ffffff55',.8);}
+  if(extra.has('glasses')||extra.has('roundglasses')){const rim=extra.has('roundglasses')?'#b8892b':'#262a33';for(const cx of [26.6,37.4])add('circle',{cx,cy:28.6,r:4.1,fill:'#ffffff','fill-opacity':.14,stroke:rim,'stroke-width':1.2});line('M30.7 28.2L33.3 28.2M22.5 28L20 27.4M41.5 28L44 27.4',rim,1.1);}
+  if(extra.has('earring'))add('circle',{cx:19.4,cy:33.2,r:1.35,fill:'#e6c15a'});
+  if(extra.has('headset')){line('M18.6 27Q18.6 8.2 32 8.2Q45.4 8.2 45.4 27','#24272d',2.4);add('rect',{x:15.6,y:24,width:5.2,height:9.4,rx:2.2,fill:'#24272d'});add('rect',{x:43.2,y:24,width:5.2,height:9.4,rx:2.2,fill:'#24272d'});line('M18.4 33Q19.6 39.6 27 38.8','#24272d',1.4);add('circle',{cx:27.6,cy:38.7,r:1.5,fill:'#24272d'});}
+}
+function drawRobotFace(add,face) {
+  const {metal,dark,led}=face,screen='#10161d';
+  const shape=(d,fill,more={})=>add('path',{d,fill,...more}),line=(d,stroke,width,more={})=>add('path',{d,fill:'none',stroke,'stroke-width':width,'stroke-linecap':'round','stroke-linejoin':'round',...more});
+  const box=(x,y,width,height,rx,fill,more={})=>add('rect',{x,y,width,height,rx,fill,...more}),dot=(cx,cy,r,fill,more={})=>add('circle',{cx,cy,r,fill,...more});
+  shape('M9 64Q11 50 24 48L40 48Q53 50 55 64Z',dark);box(27.5,41,9,8,1.5,dark);line('M27.5 44.5L36.5 44.5','#00000040',1);
+  if(face.shape==='box'){line('M32 14L32 7.5',dark,1.6);dot(32,6,2.6,led);box(11.5,23.5,4.5,9,1.5,dark);box(48,23.5,4.5,9,1.5,dark);box(16,14,32,28,6,metal);
+    for(const cx of [25,39]){dot(cx,26,4.4,screen);dot(cx,26,2.2,led);}box(24,34.2,16,4.2,1.2,screen);line('M28 34.6L28 38M32 34.6L32 38M36 34.6L36 38',metal,.9);}
+  if(face.shape==='visor'){box(16,12.5,32,29.5,12,metal);box(19,21.5,26,8.5,4.2,screen);line('M23.5 25.8L40.5 25.8',led,2.4);dot(32,35.6,1.2,dark);dot(27.6,35.6,1.2,dark);dot(36.4,35.6,1.2,dark);box(13,24,3.2,7,1.2,dark);box(47.8,24,3.2,7,1.2,dark);}
+  if(face.shape==='cyclops'){line('M26 14L22.5 7M38 14L41.5 7',dark,1.5);dot(22.2,6.4,1.9,led);dot(41.8,6.4,1.9,led);dot(32,27,15,metal);dot(32,26,7.4,screen);dot(32,26,3.6,led);dot(33.6,24.4,1,'#ffffff');line('M26 36.4Q32 39.4 38 36.4',dark,1.5);}
+  if(face.shape==='retro'){line('M24 16L21 8M40 16L43 8',dark,1.5);dot(20.8,7.4,2,led);dot(43.2,7.4,2,led);shape('M17 16L47 16L45 42L19 42Z',metal);box(21.5,21.5,7,6.5,1,screen);box(35.5,21.5,7,6.5,1,screen);box(23.6,23.4,2.8,2.8,.4,led);box(37.6,23.4,2.8,2.8,.4,led);
+    line('M24 33.4L40 33.4M24 36L40 36M24 38.6L40 38.6',dark,1.1);dot(19.6,18.6,.9,dark);dot(44.4,18.6,.9,dark);}
+  if(face.shape==='tv'){line('M32 13L26.5 6.5M32 13L37.5 6.5',dark,1.5);box(14,13,36,29,4.5,dark);box(17,16,30,22.5,2.5,screen);for(const x of [22.5,37.5])box(x,21,4,5.5,.6,led);
+    shape('M24 31L26.5 31L26.5 33.4L37.5 33.4L37.5 31L40 31L40 35.8L24 35.8Z',led);dot(45.6,40,.9,led);}
+  if(face.shape==='dome'){box(29.6,5.6,4.8,6,1.6,led);shape('M17 41L17 27Q17 12 32 12Q47 12 47 27L47 41Z',metal);shape('M17 30L47 30L47 34.5L17 34.5Z',dark);shape('M20 30L24 30L21 34.5L17 34.5ZM28 30L32 30L29 34.5L25 34.5ZM36 30L40 30L37 34.5L33 34.5ZM44 30L47 30L47 31L45 34.5L41 34.5Z',metal);
+    add('ellipse',{cx:26,cy:22.6,rx:3.4,ry:4,fill:screen});add('ellipse',{cx:38,cy:22.6,rx:3.4,ry:4,fill:screen});dot(26,22.6,1.5,led);dot(38,22.6,1.5,led);line('M27.5 38L36.5 38',dark,1.4);}
+  if(face.shape==='bug'){dot(32,27,15.5,metal);dot(25.4,25.6,6,screen);dot(38.6,25.6,6,screen);dot(25.4,25.6,3,led);dot(38.6,25.6,3,led);dot(26.6,24.2,.9,'#ffffff');dot(39.8,24.2,.9,'#ffffff');line('M28.4 35.6Q32 38 35.6 35.6',dark,1.4);line('M32 11.5L32 7',dark,1.4);dot(32,6,1.8,led);}
+  if(face.shape==='cat'){shape('M17.5 20L19.5 7.5L28.5 14.5Z',metal);shape('M46.5 20L44.5 7.5L35.5 14.5Z',metal);shape('M19.8 16.6L20.8 11L25 14.4Z',led);shape('M44.2 16.6L43.2 11L39 14.4Z',led);box(16,13.5,32,28,11,metal);
+    box(19.5,20.5,25,10.5,5,screen);line('M23.6 27Q26 24 28.4 27M35.6 27Q38 24 40.4 27',led,1.7);shape('M30.8 34.4L33.2 34.4L32 36Z',dark);line('M32 36L32 37.4M29.6 38Q32 39.6 34.4 38',dark,1);line('M21 35L16.5 34M21 37L16.5 38M43 35L47.5 34M43 37L47.5 38',dark,.8);}
+}
+function faceSvg(face) {
+  const svg=svgElement('svg',{viewBox:'6 2 52 52',class:'face','aria-hidden':'true',focusable:'false'});svg.dataset.face=face.id;
+  const add=(tag,attributes)=>{const node=svgElement(tag,Object.fromEntries(Object.entries(attributes).filter(([,value])=>value!=='')));svg.appendChild(node);return node;};
+  add('rect',{x:0,y:0,width:64,height:64,fill:face.bg});
+  (face.kind==='robot'?drawRobotFace:drawHumanFace)(add,face);
+  return svg;
+}
+// Which face an agent has: the faces are shuffled by the piece of work, and dealt in the order its agents joined.
+// The same work always shows the same faces; another piece of work has another cast.
+function faceOrder(runId) {
+  if(!ui.faceOrders)ui.faceOrders=new Map();
+  let order=ui.faceOrders.get(runId);if(order)return order;
+  let seed=2166136261;for(const char of String(runId)){seed^=char.codePointAt(0);seed=Math.imul(seed,16777619)>>>0;}
+  order=FACES.map((_,index)=>index);
+  for(let index=order.length-1;index>0;index--){seed=(Math.imul(seed,1664525)+1013904223)>>>0;const other=seed%(index+1);[order[index],order[other]]=[order[other],order[index]];}
+  ui.faceOrders.set(runId,order);while(ui.faceOrders.size>64)ui.faceOrders.delete(ui.faceOrders.keys().next().value);
+  return order;
+}
+function agentFace(agent) {
+  const place=Math.max(0,(ui.state?.agents||[]).filter(item=>item.run_id===agent.run_id).findIndex(item=>item.id===agent.id));
+  return FACES[faceOrder(agent.run_id)[place%FACES.length]];
 }
 function retainedTeamEvents(run) {
   if(!run||(ui.compactState&&ui.loadedEventsRun!==run.id))return [];
@@ -1684,7 +1822,7 @@ function currentMailLinks(agents,events) {
   return [...pairs.values()].slice(-12);
 }
 function selectMailPair(from,to) {
-  ui.activityPair={from,to};ui.activityFilter='pair';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});
+  ui.activityPair={from,to};ui.activityFilter='pair';setCockpitView('progress');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});
 }
 function networkMailPath(from,to,index) {
   return networkLinkGeometry(from,to,index).path;
@@ -1865,6 +2003,7 @@ function fitNetwork() {
   if(!ui.networkLayout||!ui.selectedRun)return;
   const bounds=networkBounds(),viewport=networkViewport(),scale=Math.min(1,Math.max(.01,Math.min(viewport.width/bounds.width,viewport.height/bounds.height)));
   networkViewState().camera={scale,x:(viewport.width-bounds.width*scale)/2-bounds.x*scale,y:(viewport.height-bounds.height*scale)/2-bounds.y*scale};
+  networkViewState().fitPending=!$('teamMap').clientWidth;  // not on the screen now: its size was a guess
   paintNetworkCamera();
 }
 function zoomNetwork(factor,anchor) {
@@ -1992,7 +2131,7 @@ function renderTeamMap(agents) {
       const place=layout.positions.get(agent.id),button=element('button','network-node');button.type='button';button.dataset.agentId=agent.id;button.dataset.networkRole=independentReviewer(agent)?'reviewer':agent.parent_id?'worker':'pm';button.dataset.focusKey=`map:${agent.id}`;
       button.style.left=`${place.x}px`;button.style.top=`${place.y}px`;
       const glyph=element('span','network-glyph'),inner=element('span','network-orb-inner'),monogram=element('span','network-monogram'),role=element('span','network-role',agentRoleTag(agent)),name=element('strong','network-name'),state=element('span','network-state');
-      glyph.setAttribute('aria-hidden','true');inner.append(monogram,role);button.append(glyph,inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
+      glyph.setAttribute('aria-hidden','true');const face=faceSvg(agentFace(agent));face.classList.add('network-face');inner.append(face,monogram,role);button.append(glyph,inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
       button.addEventListener('pointerenter',()=>{cancelNetworkPreviewDismiss();if(!ui.networkGesture){ui.networkHoverAgent=agent.id;renderNetworkPreview();}});
       button.addEventListener('pointerleave',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
       button.addEventListener('focus',()=>{cancelNetworkPreviewDismiss();ui.networkFocusAgent=agent.id;renderNetworkPreview();});
@@ -2144,7 +2283,7 @@ function renderAgents(agents) {
     const top=element('div','agent-card-top'),stateLine=element('span','agent-state-line'),inputBadge=messageInputBadge(agent);
     const glyph=element('span','crew-glyph',CREW_STATES[crew].glyph);glyph.setAttribute('aria-hidden','true');
     stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason,agent));if(inputBadge)stateLine.append(inputBadge);
-    const avatar=element('span','agent-avatar');avatar.append(element('span','agent-avatar-ring'),glyph,element('span','agent-avatar-mark',independentReviewer(agent)?'R':!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`));avatar.setAttribute('aria-hidden','true');
+    const avatar=element('span','agent-avatar has-face');avatar.append(faceSvg(agentFace(agent)),element('span','agent-avatar-ring'),glyph,element('span','agent-avatar-mark',independentReviewer(agent)?'R':!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`));avatar.setAttribute('aria-hidden','true');
     top.append(avatar,stateLine);
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
@@ -2535,6 +2674,8 @@ function renderConversation(agent) {
   if(detailStatus.textContent!==detailMessage)detailStatus.textContent=detailMessage;
   $('conversationLog').setAttribute('aria-busy',String(loading));$('resultsPanel').setAttribute('aria-busy',String(loading));
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
+  const faceHolder=$('conversationFace'),faceKey=agent?`${agent.run_id}:${agent.id}`:'';
+  if(faceHolder.dataset.agent!==faceKey){const face=agent?agentFace(agent):null;faceHolder.dataset.agent=faceKey;faceHolder.replaceChildren(...(face?[faceSvg(face)]:[]));faceHolder.title=face?face.name:'';faceHolder.hidden=!face;}
   $('conversationMeta').textContent=agent?`${agentRoleLabel(agent)} · ${agent.profile_id} · 応答 ${agent.turns||0} 回`:'';
   const memory=agent?.context_memory;
   $('contextMemoryStatus').hidden=!memory;
@@ -2833,7 +2974,7 @@ function renderCoordinationMonitor(run,agents) {
   for(const agent of agents) {
     const text=agentMonitorText(agent);if(!text)continue;
     const card=element('button','monitor-agent');card.type='button';card.dataset.focusKey=`monitor-agent:${run.id}:${agent.id}`;
-    card.append(element('strong','',agent.name||agent.id),element('span','',text));card.addEventListener('click',()=>selectAgent(agent.id));crew.appendChild(card);
+    card.append(faceSvg(agentFace(agent)),element('strong','',agent.name||agent.id),element('span','',text));card.addEventListener('click',()=>selectAgent(agent.id));crew.appendChild(card);
   }
   content.appendChild(crew);
   const mail=$('mailLifecycleList');mail.replaceChildren();
@@ -2942,9 +3083,10 @@ async function initialize() {
   $('openQuestionNotice').addEventListener('click',()=>{if($('taskDialog').open||$('settingsDialog').open)return;const entry=questionEntries()[0];if(entry)openQuestion(entry.agent.id);});
   renderQuestionNotice(questionEntries());
   initializeNetworkControls();
+  $('progressView').addEventListener('click',()=>setCockpitView('progress'));
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
   $('networkOpenWindow')?.addEventListener('click',openNetworkWindow);
-  if(NETWORK_POPOUT){document.documentElement.dataset.layout='network-popout';document.title='Mission Network · Workbench';}
+  if(NETWORK_POPOUT){ui.cockpitView='network';document.querySelector('.app-shell').dataset.cockpitView='network';$('progressView').setAttribute('aria-pressed','false');$('networkView').setAttribute('aria-pressed','true');document.documentElement.dataset.layout='network-popout';document.title='Mission Network · Workbench';}
   $('boardView').addEventListener('click',()=>setCockpitView('board'));
   $('workBoardForm').addEventListener('submit',event=>{event.preventDefault();void submitWorkBoardPost();});
   $('workBoardInput').addEventListener('input',event=>{saveWorkBoardDraft(event);renderWorkBoardControls(getRun());});
@@ -2957,7 +3099,7 @@ async function initialize() {
   $('workBoardRetry').addEventListener('click',()=>{const run=getRun();if(run)void submitWorkBoardPost(true);});
   $('inspectorView').addEventListener('click',()=>setCockpitView('inspector'));
   for(const [id,filter] of [['activityAll','all'],['activityMail','mail'],['activitySelected','selected']])$(id).addEventListener('click',()=>{ui.activityFilter=filter;renderActivity(getRun());});
-  $('inspectAgentMail').addEventListener('click',()=>{ui.activityFilter='selected';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});});
+  $('inspectAgentMail').addEventListener('click',()=>{ui.activityFilter='selected';setCockpitView('progress');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});});
   $('resultSelection').addEventListener('change',()=>{ui.outputSelections.set(outputOwner(),$('resultSelection').value);renderResults(getAgent());$('resultText').scrollTop=0;});
   $('copyResult').addEventListener('click',copySelectedOutput);$('restoreReceipt').addEventListener('click',restoreSelectedReceipt);$('stopAgent').addEventListener('click',stopSelectedAgent);$('exportResult').addEventListener('click',exportSelectedOutput);
   $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',openSettings);

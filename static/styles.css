@@ -408,3 +408,27 @@ body{background:var(--cp-bg)}
 .history-search-results{display:grid;gap:4px;padding:0 9px 6px;max-height:180px;overflow:auto;flex:none}.history-search-results:empty{display:none}
 .history-result{width:100%;min-width:0;border-color:var(--cp-line,#2a2e35)}.history-match{font-size:10px;line-height:1.5;color:#b7bcc4;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .radio-field .choice{display:flex;align-items:center;gap:8px;padding:8px 10px;text-align:left}.radio-field .choice input{width:auto;flex:none;margin:0}
+/* dev90 — The centre shows one thing at a time. 進み具合: who is doing what, and the messages.
+   チーム図: the diagram alone. 掲示板: the board. (The diagram's own window keeps its layout.) */
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .active-run{overflow-y:auto}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .network-panel{display:none}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .network-workspace{grid-template-rows:minmax(300px,1fr);min-height:300px}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .coordination-monitor{flex-shrink:0;max-height:42%}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .coordination-monitor,:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .activity-panel{display:none}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .network-workspace{grid-template-rows:minmax(420px,1fr)}
+@media(max-width:1100px){.app-shell[data-cockpit-view=progress]>.inspector-rail{display:none}}
+@media(max-width:640px){:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .network-workspace{grid-template-rows:minmax(370px,1fr)}}
+.cockpit-view-controls .button[aria-pressed=true]{border-color:var(--cp-amber,#e3bc79);color:var(--cp-amber,#e3bc79)}
+.run-facts{margin-top:2px}.run-facts>summary{cursor:pointer;font-size:11px;color:#a6aeb9;width:max-content;max-width:100%}.run-facts[open]>summary{margin-bottom:8px}
+/* Faces: a drawn face for each agent. */
+.face{display:block;width:100%;height:100%;border-radius:50%}
+.agent-avatar.has-face{background:none;box-shadow:none}
+.agent-avatar.has-face>.face{position:absolute;inset:0}
+.agent-avatar.has-face .agent-avatar-mark{display:none}
+.network-node .network-face{width:38px;height:38px;flex:none;margin-bottom:1px;box-shadow:0 0 0 1px #ffffff2e}
+.network-node .network-face~.network-monogram,.network-node .network-face~.network-role{display:none}
+.team-map.is-compact .network-node .network-face{width:44px;height:44px}
+.monitor-agent{display:grid;grid-template-columns:36px minmax(0,1fr);column-gap:10px;row-gap:6px;align-items:center;align-content:start}
+.monitor-agent>.face{width:36px;height:36px}
+.monitor-agent>span{grid-column:1/-1}
+.conversation-face{flex:none;width:40px;height:40px;margin-right:10px}

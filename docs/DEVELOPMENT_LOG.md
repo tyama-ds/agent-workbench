@@ -4,6 +4,28 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev90 — One thing at a time in the centre; a face for every agent (2026-11-18)
+
+"The screen is split into too many panels and has become hard to read."
+The centre stacked the run's numbers, the automatic team, the status of
+every agent, the team diagram and the messages, each in its own box and
+each with its own scrolling, and showed every agent four times (the list,
+the status cards, the diagram, the detail).
+
+- The centre shows one thing at a time. The buttons at the top are its
+  tabs: 進み具合 (who is doing what, and the messages; where the screen
+  opens), チーム図 (the diagram alone, with the room it needs), 掲示板,
+  and 担当ログ. A link that leads to the messages opens 進み具合.
+- The run's numbers and settings are one line away ("予算と設定の詳細")
+  instead of three rows that are always there.
+- Every agent has a face: 26 original drawings (18 people, 8 robots),
+  built in the page from a few shapes, with no image files. They stand in
+  the list, on the status cards, in the diagram and beside the selected
+  agent's name. Each piece of work shuffles the faces by its id and deals
+  them in the order its agents joined: one work keeps its cast, another
+  work has another.
+- The start screen and the settings are as they were.
+
 ## 0.1.1.dev89 — Looking at the screen (2026-11-18)
 
 Desktop, first stage: an agent can be shown the screen. It cannot operate

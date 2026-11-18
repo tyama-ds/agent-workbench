@@ -21,6 +21,8 @@ Node.prototype.replaceChildren=function(...items){
  this.children=[];this.append(...items);
 };
 window.matchMedia=()=>({matches:false});
+// These tests are about the team diagram: its tab is the one that is open (the centre opens on 進み具合).
+ui.cockpitView='network';
 // Send the shared synthetic full state through the production acceptance path.
 const originalNetworkSeed=seedSelection;
 seedSelection=()=>{originalNetworkSeed();applyState({...ui.state,...(ui.instanceId?{instance_id:ui.instanceId}:{})},{run:ui.selectedRun,agent:ui.selectedAgent});renderNetworkPreview();};

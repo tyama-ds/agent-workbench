@@ -82,7 +82,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
     await page.locator('#conversationLog[aria-busy="false"]').waitFor();await paint();
   };
   const reuse=async(key='Enter')=>{
-    if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+    if(await page.locator('#progressView').getAttribute('aria-pressed')!=='true')await page.locator('#progressView').click();
     await page.locator('#reuseTask').focus();await page.keyboard.press(key);
     await page.locator('#taskDialog').waitFor({state:'visible'});await paint();
     assert.equal(await page.locator('#taskDialog').evaluate(dialog=>dialog.contains(document.activeElement)),true,
@@ -316,7 +316,7 @@ async function taskReuseAcceptance({page,fixture,compactFixture,providerRequests
       await page.screenshot({path:path.join(artifacts,'workbench-task-reuse-'+name+'-controls.png'),fullPage:true,animations:'disabled'});
       await page.locator('#keepTaskDraft').focus();await page.keyboard.press('Enter');await close();
       await assertLayout(page,'task reuse underlying '+name);
-      if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+      if(await page.locator('#progressView').getAttribute('aria-pressed')!=='true')await page.locator('#progressView').click();
       await page.locator('#reuseTask').focus();await assertVisible('#reuseTask',name+' reuse entry');
       await page.screenshot({path:path.join(artifacts,'workbench-task-reuse-'+name+'-entry.png'),fullPage:true,animations:'disabled'});
     }
