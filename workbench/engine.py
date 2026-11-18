@@ -1018,8 +1018,12 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 '保存済み設定のパスを確認し、現在のPCに合わせて保存してから作業を開始してください。', field='settings')
         if len(self.runs) >= 20:
             raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動後も保存済み履歴は閲覧専用で残ります。今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます')
-        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team', 'approval_mode', 'browser_fetch', 'python'}:
+        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team', 'approval_mode', 'browser_fetch', 'python', 'review', 'browser_operation'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
+        if type(payload.get('browser_operation', False)) is not bool:
+            raise AdmissionError('invalid_browser_operation', 'browser_operation は真偽値です。', field='browser_operation')
+        if type(payload.get('review', True)) is not bool:
+            raise AdmissionError('invalid_review', 'review は真偽値です。', field='review')
         if type(payload.get('python', False)) is not bool:
             raise AdmissionError('invalid_python', 'python は真偽値です。', field='python')
         if type(payload.get('adaptive_team', False)) is not bool:
@@ -1098,7 +1102,22 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         config = effective_config(self.settings.value)
         # Python for this piece of work: the human's choice on the start screen, else what the settings say.
         config['python']['enabled'] = self._python_chosen(config, payload)
+        # Operating pages in the browser (opening, clicking, typing): the same kind of choice.
+        config['selenium']['enabled'] = self._browser_operation_chosen(config, payload)
         return config
+
+    @staticmethod
+    def _browser_operation_chosen(config, payload):
+        """This work may operate pages in the browser: the human's choice at start, else the setting."""
+        wanted = payload.get('browser_operation', config['selenium']['enabled'])
+        if payload.get('browser_operation') is True:
+            selenium, python = config['selenium'], config['python']
+            if not (selenium['browser_executable'] and selenium['driver_executable'] and python['executable']
+                    and python['network_enabled']):
+                raise AdmissionError('browser_operation_not_configured',
+                                     'この作業でブラウザ内の操作を使うには、先に「設定」で Selenium のブラウザとドライバー、Python の python.exe、'
+                                     'Python のネットワーク利用を設定してください。', field='browser_operation')
+        return bool(wanted)
 
     @staticmethod
     def _python_chosen(config, payload):
@@ -1221,6 +1240,12 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                'browser_fetch': self._browser_fetch_chosen(config, payload),
                # Whether this work may run Python (the start screen's choice, else the setting).
                'python': bool(config['python']['enabled']),
+               # Whether this work may operate pages in the browser (the start screen's choice, else the setting).
+               'browser_operation': bool(config['selenium']['enabled']),
+               # A reviewer that took no part in the work reads the saved files before the coordinator finishes
+               # (the default; the start screen can turn it off for one piece of work). A team formed by the
+               # application has its own independent reviewer.
+               'review': bool(payload.get('review', type(self).review_default)) and not payload.get('adaptive_team', False),
                '_memo': self.redact(self.memo.text)}
         if payload.get('adaptive_team'):
             run['adaptive_team'] = True
@@ -1616,6 +1641,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
     # Whether the application nudges a team in which everybody waits for
     # somebody else. Scripted fixtures that park agents on purpose turn it off.
     stall_recovery = True
+    # A reviewer reads the saved files before the coordinator finishes, unless the human starts the work without it.
+    review_default = True
     STALL_NOTICES = 3
 
     def _stall_check(self, run):
@@ -2901,7 +2928,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                         terminal_response += (self._outputs_footer(run) + self._tests_footer(run)
                                               + self._source_footer(run) + self._citations_footer(run)
                                               + self._tables_footer(run) + self._quotes_footer(run) + self._pdf_footer(run)
-                                              + self._main_pdf_footer(run))
+                                              + self._main_pdf_footer(run) + self._review_footer(run))
                     self.record_result(agent, 'assistant_response', terminal_response, revision=turn_revision)
                 if agent.parent_id and not ordered_report_sent:
                     parent = self.agents[agent.parent_id]
@@ -3452,7 +3479,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 if agent.parent_id is None:
                     summary += (self._outputs_footer(run) + self._tests_footer(run) + self._source_footer(run)
                                 + self._citations_footer(run) + self._tables_footer(run) + self._quotes_footer(run)
-                                + self._pdf_footer(run) + self._main_pdf_footer(run))
+                                + self._pdf_footer(run) + self._main_pdf_footer(run) + self._review_footer(run))
                 self.log(agent, 'result', summary)
                 self.record_result(agent, 'finish_work', summary, revision=getattr(agent, '_turn_revision', agent.result_revision))
                 agent.finished_revision = getattr(agent, '_turn_revision', agent.result_revision)

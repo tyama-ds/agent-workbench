@@ -509,6 +509,115 @@ class VerificationMixin:
                     return rows
         return rows
 
+    # --- a reviewer reads what is handed in ----------------------------------------
+    # The coordinator made the plan, gave out the work, accepted the reports and declared the result good: nobody
+    # else looked at what goes to the human. Unless the human chose to work without it, one agent that took no
+    # part in the work reads the saved files before the coordinator may finish, and says what it found.
+
+    REVIEW_FILES, REVIEW_REPORT = 12, 1200
+
+    def _review_files(self, run):
+        """The files saved in this work that still exist: [(path, the tool that reads it)]."""
+        rows = []
+        for name, path in (run.get('_saved_paths') or {}).items():
+            try:
+                if Path(path).is_file():
+                    rows.append((path, 'pdf_read' if name.endswith('.pdf') else _reader_tool(name)))
+            except OSError:
+                continue
+        return rows[:self.REVIEW_FILES]
+
+    def _review_assignment(self, run, files):
+        read = list((run.get('_pdf_read_ids') or {}).items())[-3:]
+        return ('You are the reviewer of this piece of work. You took no part in making its files, and you change nothing: '
+                'you read them and say what you find. The human\'s request is in your instructions.\n\n'
+                'Files saved in this work:\n' + '\n'.join(f'- {path} (read it with {tool})' for path, tool in files) + '\n\n'
+                + ('Sources this work read: ' + '; '.join(f'pdf_id {ident} ({url})' for ident, url in read)
+                   + '. Check figures and quotations against them with pdf_search and pdf_read.\n\n' if read else '')
+                + 'Check, by reading every file in full:\n'
+                '1. Everything the request asks for is there: each file, each item, the form asked for (tables, number of '
+                'slides, language).\n'
+                '2. Figures, names and dates agree between the files, and with the sources where you can open them.\n'
+                '3. Nothing is a placeholder or left open ("TODO", "未確認", "（ページ未確認）") without the text saying so plainly.\n'
+                '4. What is stated as a fact has a source; what could not be confirmed is marked as such.\n\n'
+                'Report with finish_work. First line: "VERDICT: pass" or "VERDICT: fix". Then numbered findings, each with '
+                'the file, the place, what is wrong and what it should be. Report only what you saw by reading; if a file '
+                'could not be read, say so. Do not rewrite the files and do not ask the human.')
+
+    def _review_gate(self, run, agent):
+        """The root coordinator is about to finish: the reviewer reads first. -> text for the coordinator, or None."""
+        if (agent.parent_id is not None or not run.get('review') or run.get('adaptive_team') or run.get('_ordered_work')
+                or run.get('_turns') is not None):
+            return None
+        state = run.setdefault('_review', {})
+        if state.get('state') in {'reported', 'skipped'}:
+            return None
+        if not state:
+            files = self._review_files(run)
+            if not files:
+                return None  # nothing was saved: there is nothing to read
+            profile = next(iter(run.get('worker_profiles') or []), None) or agent.profile_id
+            limits = run['_config']['limits']
+            if run['model_calls'] + 4 >= limits['max_model_calls'] or run['auto_collaborations'] >= run['max_auto_collaborations']:
+                state.update(state='skipped', reason='上限に近いため')
+                self.event(run['id'], agent.id, 'review', '提出前レビュー: モデル呼び出しまたは連携の上限に近いため、行いませんでした')
+                return None
+            reviewer = self._new_agent(run, profile, 'reviewer', agent.id, assignment=self._review_assignment(run, files))
+            reviewer.read_only = reviewer._reviewer = True
+            # The application's own check: not one of the coordinator's workers whose report it accepts or waits on by rule.
+            reviewer._settled = True
+            reviewer.name = 'Reviewer'
+            self.enqueue(reviewer, reviewer.assignment, _initial=True)
+            run['auto_collaborations'] += 1
+            writes = run.get('_output_writes') or {}
+            state.update(state='requested', agent_id=reviewer.id, files=[path for path, _ in files],
+                         shas={name: record.get('sha256') for name, record in writes.items()})
+            self.event(run['id'], agent.id, 'review',
+                       f'提出前レビュー: {reviewer.name} が、保存済みのファイル {len(files)} 件の確認を始めました')
+        reviewer = self.agents.get(state.get('agent_id'))
+        if reviewer is None or reviewer.closing or reviewer.status in {'error', 'stopped'}:
+            state.update(state='skipped', reason='レビュー担当が停止したため')
+            self.event(run['id'], agent.id, 'review', '提出前レビュー: レビュー担当が停止したため、完了していません')
+            return None
+        if reviewer.status != 'done' or reviewer.pending:
+            return ('[application notice] Before this work is handed in, a reviewer that took no part in it reads the saved '
+                    f'files: {reviewer.name} (worker_id {reviewer.id}) is doing that now. Call wait_for_workers. When its report '
+                    'arrives, correct what it found, or say for each finding in your result why it stands; then finish. '
+                    'Do not finish before the report has arrived.')
+        report = next((row['text'] for row in reversed(reviewer.results)), '')
+        verdict = re.search(r'VERDICT\s*[:：]\s*(pass|fix)', report, re.I)
+        writes = run.get('_output_writes') or {}
+        changed = sorted(name for name, record in writes.items() if state.get('shas', {}).get(name) != record.get('sha256'))
+        state.update(report=report[:self.REVIEW_REPORT], verdict=(verdict.group(1).lower() if verdict else 'unclear'), changed=changed)
+        if agent.pending:
+            return ('[application notice] The reviewer\'s report is in your messages and you have not read it yet. Read it, '
+                    'act on it, then finish.')
+        if state['verdict'] != 'pass' and not changed and not state.get('pressed'):
+            # The report asks for corrections and no file was saved since: said once.
+            state['pressed'] = True
+            return ('[application notice] The reviewer found things to correct, and no file has been saved since its report:\n'
+                    + self.redact(report[:self.REVIEW_REPORT]) + '\nCorrect each finding now and save the files, or state for each '
+                    'one in your result why it stands. Then finish.')
+        state['state'] = 'reported'
+        self.event(run['id'], agent.id, 'review', '提出前レビュー: 判定は「'
+                   + {'pass': '合格', 'fix': '要修正'}.get(state['verdict'], '判定の記載なし') + '」でした'
+                   + (f'（指摘のあとに保存し直されたファイル: {"、".join(changed[:6])}）' if changed else ''))
+        return None
+
+    def _review_footer(self, run):
+        state = run.get('_review') or {}
+        if state.get('state') == 'skipped':
+            return f"\n\n【アプリの確認】提出前レビューは完了していません（{state.get('reason', '')}）。"
+        if state.get('state') != 'reported':
+            return ''
+        verdict = {'pass': '合格', 'fix': '要修正'}.get(state.get('verdict'), '判定の記載なし')
+        changed = state.get('changed') or []
+        return ('\n\n【アプリの確認】提出前レビュー: 作成に関わっていないレビュー担当が、保存済みのファイル '
+                f"{len(state.get('files') or [])} 件を読みました。判定は「{verdict}」です。"
+                + ('指摘のあとに保存し直されたファイル: ' + '、'.join(self.redact(name) for name in changed[:8]) + '。' if changed
+                   else ('指摘のあとに保存し直されたファイルはありません。' if state.get('verdict') != 'pass' else ''))
+                + ('\nレビュー担当の報告（冒頭）:\n' + self.redact(state.get('report', '')) if state.get('report') else ''))
+
     # --- a worker that reports without having done its assignment -----------------
     # Real-machine case: the worker that was to make the slides ended without one tool call, was "done", and
     # the run had no slides. The application knows what a worker saved and whether it used a tool at all.
@@ -516,7 +625,8 @@ class VerificationMixin:
     def _assignment_undone(self, run, agent):
         """Once per worker: text sending it back when its assignment names a file that was not saved, or when
         it used no tool at all while files the request asks for are still missing."""
-        if (agent.parent_id is None or getattr(agent, '_undone_told', False) or run.get('_ordered_work')
+        if (agent.parent_id is None or getattr(agent, '_undone_told', False) or getattr(agent, '_reviewer', False)
+                or run.get('_ordered_work')
                 or run.get('adaptive_team') or run.get('_turns') is not None or not run['_harness'].write_roots):
             return None
         saved = run.get('_saved_names') or set()
@@ -1193,4 +1303,7 @@ class VerificationMixin:
         if text:
             return 'table_missing', text
         text = self._quotes_gate(run, agent)
-        return ('quotations_review', text) if text else None
+        if text:
+            return 'quotations_review', text
+        text = self._review_gate(run, agent)  # last: what the reviewer reads is what the other checks left
+        return ('review_pending', text) if text else None
