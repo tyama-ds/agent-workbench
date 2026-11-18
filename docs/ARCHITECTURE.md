@@ -974,6 +974,16 @@ the human turned it on (0.1.1.dev61; off by default).
 - `VerificationMixin._stated_folders` reads the folder a request names for
   saving; `_outputs_note_request` asks only there whether a file exists.
 
+## The review before completion (0.1.1.dev88)
+
+`VerificationMixin._review_gate` is the last of the completion notices.
+It creates the reviewer through `_new_agent` (`read_only`, `_reviewer`,
+`_settled`: the coordinator neither accepts its report by rule nor counts
+it among its workers), keeps `run['_review']` (requested, reported or
+skipped), and `_review_footer` writes the outcome under the result.
+`Engine.review_default` is the default of the `review` key of a run;
+tests and scripted fixtures set it to False.
+
 ## Slides with a design (0.1.1.dev73)
 
 `workbench/slides.py` validates `pptx_write`'s slides (`slide`, `design`),

@@ -14,6 +14,7 @@ def pytest_configure(config):
     config.addinivalue_line('markers', 'plan: keep the mandatory plan_work gate for root PMs')
     config.addinivalue_line('markers', 'question_limits: keep the limit on questions that wait for a person')
     config.addinivalue_line('markers', 'stall: keep the wake-up of a team in which everybody waits')
+    config.addinivalue_line('markers', 'review: keep the reviewer that reads the saved files before completion')
 
 
 @pytest.fixture(autouse=True)
@@ -78,3 +79,14 @@ def _fresh_search_guard():
     SEARCH_GUARD.min_interval = 2.0
     BRAVE_PACE.reset()
     BRAVE_PACE.min_interval = 1.1
+
+
+@pytest.fixture(autouse=True)
+def _no_review_before_completion_unless_marked(request):
+    """A reviewer reads the saved files before the coordinator finishes (the shipped default). Existing tests
+    script every agent of a run, so they run without it; tests marked `review` keep the shipped behaviour."""
+    from workbench.engine import Engine
+    previous = Engine.review_default
+    Engine.review_default = request.node.get_closest_marker('review') is not None
+    yield
+    Engine.review_default = previous

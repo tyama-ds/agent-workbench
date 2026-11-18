@@ -72,6 +72,7 @@ def synthetic_native(profile, text, calls=(), *, private=''):
 Engine.plan_required = False
 Engine.human_question_limit = None
 Engine.stall_recovery = False
+Engine.review_default = False  # every agent here is scripted; the reviewer has its own tests
 
 
 class SyntheticClient:

@@ -1002,3 +1002,161 @@ async def test_a_stated_destination_folder_decides_whether_a_named_file_already_
         assert engine._stated_folders(run, '保存先は C:\\Users\\user\\Documents\\out フォルダー、または /etc/out') == []
     finally:
         await engine.close()
+
+
+async def test_python_is_chosen_for_one_piece_of_work_on_the_start_screen(tmp_path):
+    """Python is off unless the human turns it on, in the settings or for one piece of work."""
+    from workbench.engine import AdmissionError
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        assert engine.settings.value['python']['enabled'] is False
+        run, pm = await start(engine, max_workers=0)
+        assert run['python'] is False and run['_config']['python']['enabled'] is False
+        # Chosen for this work, without a python.exe set in the settings: said at once, with where to set it.
+        with pytest.raises(AdmissionError, match='設定 → Python'):
+            await start(engine, max_workers=0, python=True)
+        with pytest.raises(AdmissionError, match='真偽値'):
+            await start(engine, max_workers=0, python='yes')
+        # A python.exe is set and the setting stays off: the choice at start turns it on for that work only.
+        engine.settings.value['python']['executable'] = 'C:\\Python313\\python.exe'
+        run, pm = await start(engine, max_workers=0, python=True)
+        assert run['python'] is True and run['_config']['python']['enabled'] is True
+        assert engine.settings.value['python']['enabled'] is False
+        run, pm = await start(engine, max_workers=0)
+        assert run['python'] is False
+        # The setting is on: a piece of work can still be started without Python.
+        engine.settings.value['python']['enabled'] = True
+        run, pm = await start(engine, max_workers=0)
+        assert run['python'] is True
+        run, pm = await start(engine, max_workers=0, python=False)
+        assert run['python'] is False and run['_config']['python']['enabled'] is False
+        assert 'python_execute' not in {tool['name'] for tool in engine._model_tools(run, pm)}
+    finally:
+        await engine.close()
+    page = (Path(__file__).resolve().parents[1] / 'static' / 'index.html').read_text(encoding='utf-8')
+    script = (Path(__file__).resolve().parents[1] / 'static' / 'app.js').read_text(encoding='utf-8')
+    assert 'id="pythonAllow" type="checkbox"' in page and 'この作業で Python の実行を許可' in page
+    assert "payload.python=python" in script and "$('pythonChoice').hidden=!ui.config?.python?.executable" in script
+
+
+@pytest.mark.review
+async def test_a_reviewer_reads_the_saved_files_before_the_coordinator_may_finish(tmp_path):
+    """The coordinator planned, gave out the work, accepted the reports and declared the result good; nobody else
+    looked at what goes to the human. By default one agent that took no part in the work reads the files first."""
+    class Client:
+        def __init__(self):
+            self.engine, self.steps, self.seen, self.work = None, {}, [], None
+
+        @staticmethod
+        def last_tool(messages, name):
+            return json.loads(next(item for item in reversed(messages)
+                                   if item.get('role') == 'tool' and item.get('name') == name)['content'])
+
+        async def complete(self, profile, messages, tools, system, limits, *, conversation_id=None):
+            agent = self.engine.agents[conversation_id.rsplit('/', 1)[1]]
+            step = self.steps.get(agent.id, 0)
+            self.steps[agent.id] = step + 1
+            names = {tool['name'] for tool in tools}
+            self.seen.append((agent.role, step, names, messages[-1].get('content') if messages else ''))
+            assert len(self.seen) <= 12, 'the run does not end'
+            path = str(self.work / 'summary.docx')
+            if agent.role == 'reviewer':
+                # It reads, and it cannot write, run code or create workers.
+                assert 'docx_read' in names and not names & {'docx_write', 'docx_edit', 'write_text', 'spawn_worker', 'pdf_save'}
+                if step == 0:
+                    return reply(calls=[('docx_read', {'path': path})])
+                return reply(calls=[('finish_work', {'summary': 'VERDICT: fix\n1. summary.docx 第2段落: 成長率が 3.1% とあるが、出典の記載がない。'})])
+            if step == 0:
+                return reply(calls=[('docx_write', {'path': path, 'expected_sha256': 'missing', 'paragraphs': ['要約', '成長率は 3.1%。']}),
+                                    ('finish_work', {'summary': '要約を保存しました。'})])
+            if step == 1:
+                return reply(calls=[('wait_for_workers', {})])
+            if step == 2:
+                return reply(calls=[('finish_work', {'summary': '要約を保存しました。'})])   # the report is in, nothing was changed
+            current = (await self.engine.execute_tool(self.engine.runs[agent.run_id], agent, 'file_hash', {'path': path}))['sha256']
+            return reply(calls=[('docx_write', {'path': path, 'expected_sha256': current,
+                                                'paragraphs': ['要約', '成長率は 3.1%（出典: 報告書 p. 12）。']}),
+                                ('finish_work', {'summary': '指摘を直して保存しました。'})])
+
+    client = Client()
+    engine, work = configured(tmp_path, client)
+    client.engine, client.work = engine, work
+    try:
+        run, pm = await asyncio.wait_for(start(engine, max_workers=0, task='要約を summary.docx に保存して'), 20)
+        await asyncio.wait_for(settled(engine), 20)
+        assert run['review'] is True and run['status'] == 'done' and pm.status == 'done'
+        reviewer = next(agent for agent in engine.agents.values() if agent.role == 'reviewer')
+        assert reviewer.name == 'Reviewer' and reviewer.read_only and reviewer.parent_id == pm.id and reviewer.status == 'done'
+        # The coordinator was held until the report was in, and once more when it had changed nothing.
+        pm_inputs = [content for role, _, _, content in client.seen if role != 'reviewer']
+        held = [json.loads(content) for content in pm_inputs if isinstance(content, str) and content.startswith('{') and 'review_pending' in content]
+        assert len(held) == 2 and 'Call wait_for_workers' in held[0]['error'] and 'no file has been saved since its report' in held[1]['error']
+        assert '出典の記載がない' in held[1]['error']
+        # The human sees what happened: in the events and under the result.
+        events = [row['text'] for row in engine.events if row['kind'] == 'review']
+        assert events[0] == '提出前レビュー: Reviewer が、保存済みのファイル 1 件の確認を始めました'
+        assert events[-1] == '提出前レビュー: 判定は「要修正」でした（指摘のあとに保存し直されたファイル: summary.docx）'
+        result = pm.results[-1]['text']
+        assert '提出前レビュー: 作成に関わっていないレビュー担当が、保存済みのファイル 1 件を読みました。判定は「要修正」です。' in result
+        assert '指摘のあとに保存し直されたファイル: summary.docx。' in result and 'VERDICT: fix' in result
+        assert Document(str(work / 'summary.docx')).paragraphs[1].text == '成長率は 3.1%（出典: 報告書 p. 12）。'
+    finally:
+        await asyncio.wait_for(engine.close(), 20)
+
+
+@pytest.mark.review
+async def test_the_review_is_left_out_when_the_human_chose_so_or_nothing_was_saved(tmp_path):
+    from workbench.engine import AdmissionError
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        # Chosen at start: the coordinator finishes on its own word.
+        run, pm = await start(engine, max_workers=0, review=False, task='要約を summary.docx に保存して')
+        pm.pending.clear()
+        await engine.execute_tool(run, pm, 'docx_write', {'path': str(work / 'summary.docx'), 'expected_sha256': 'missing', 'paragraphs': ['要約']})
+        done = await engine.execute_tool(run, pm, 'finish_work', {'summary': '保存しました。'})
+        assert run['review'] is False and done.get('ok') is not False and '提出前レビュー' not in done['summary']
+        assert not [agent for agent in engine.agents.values() if agent.role == 'reviewer' and agent.run_id == run['id']]
+        # Nothing was saved: there is nothing to read.
+        run, pm = await start(engine, max_workers=0, task='この表の意味を教えて')
+        pm.pending.clear()
+        assert run['review'] is True and engine._review_gate(run, pm) is None and not run['_review']
+        # A team formed by the application has its own independent reviewer.
+        run, pm = await start(engine, max_workers=3, adaptive_team=True)
+        assert run['review'] is False
+        with pytest.raises(AdmissionError, match='真偽値'):
+            await start(engine, max_workers=0, review='no')
+    finally:
+        await engine.close()
+    page = (Path(__file__).resolve().parents[1] / 'static' / 'index.html').read_text(encoding='utf-8')
+    script = (Path(__file__).resolve().parents[1] / 'static' / 'app.js').read_text(encoding='utf-8')
+    assert 'id="reviewAllow" type="checkbox" checked' in page and '提出前に、レビュー担当が成果物を確認する' in page
+    assert "$('reviewAllow').checked!==true)payload.review=false" in script
+
+
+async def test_operating_pages_in_the_browser_is_chosen_for_one_piece_of_work(tmp_path):
+    """Like Python: off unless the human turns it on, in the settings or for one piece of work."""
+    from workbench.engine import AdmissionError
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0)
+        assert run['browser_operation'] is False and run['_config']['selenium']['enabled'] is False
+        with pytest.raises(AdmissionError, match='Selenium のブラウザとドライバー'):
+            await start(engine, max_workers=0, browser_operation=True)
+        with pytest.raises(AdmissionError, match='真偽値'):
+            await start(engine, max_workers=0, browser_operation=1)
+        settings = engine.settings.value
+        settings['python'].update(executable='C:\\Python313\\python.exe', network_enabled=True)
+        settings['selenium'].update(browser_executable='C:\\Edge\\msedge.exe', driver_executable='C:\\Edge\\msedgedriver.exe')
+        run, pm = await start(engine, max_workers=0, browser_operation=True)
+        assert run['browser_operation'] is True and run['_config']['selenium']['enabled'] is True
+        assert settings['selenium']['enabled'] is False and run['python'] is False    # each choice is its own
+        settings['selenium']['enabled'] = True
+        run, pm = await start(engine, max_workers=0, browser_operation=False)
+        assert run['browser_operation'] is False and run['_config']['selenium']['enabled'] is False
+    finally:
+        await engine.close()
+    page = (Path(__file__).resolve().parents[1] / 'static' / 'index.html').read_text(encoding='utf-8')
+    assert 'id="browserOperationAllow" type="checkbox"' in page and 'パソコンの画面全体の操作とは別の設定です' in page

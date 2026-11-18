@@ -4,7 +4,33 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
-## 0.1.1.dev86 — A list of things to make; the folder the request names (2026-11-18)
+## 0.1.1.dev88 — Someone else reads what is handed in (2026-11-18)
+
+"The coordinator is a dictator": it plans, gives out the work, accepts the
+reports and declares the result good, and nobody else looks at what goes
+to the human. An independent review existed only inside the strict mode in
+which the application also forms the team, off by default.
+
+- By default, before the root coordinator finishes a piece of work in
+  which files were saved, one agent that took no part in the work reads
+  them (read-only, outside the worker cap) and reports a verdict with
+  findings. The coordinator finishes after it has the report, and is sent
+  back once when the verdict asks for corrections and nothing was saved.
+  The result says what the reviewer found and what was changed after it.
+  The start screen has the checkbox, ticked; working without a reviewer is
+  what one chooses.
+- Operating pages in the browser can be chosen per piece of work, like
+  Python.
+
+Python for one piece of work (2026-11-18)
+
+- Python could be turned on only for the whole installation, in the
+  settings. The start screen now offers it per piece of work, like the
+  browser window: it starts as the setting says (off unless turned on),
+  and a run can have it on while the setting stays off, or off while the
+  setting is on. It needs the python.exe set in the settings.
+
+A list of things to make; the folder the request names (2026-11-18)
 
 At dev85 the slides were missing and the run was "done" a third time.
 The tester found the cause by running the request through the two
