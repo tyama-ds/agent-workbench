@@ -350,7 +350,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab reaches optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false,'The default single-PM scenario keeps additional PM controls collapsed');
     assert.equal(await page.locator('#adaptiveTeam').isChecked(),false,'The retained-worker focus scenario remains in manual mode');
-    for(const id of ['reviewAllow','adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults','approvalAlwaysAllow','screenViewAllow']){
+    for(const id of ['reviewAllow','personaAllow','adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults','approvalAlwaysAllow','screenViewAllow']){
       await page.keyboard.press('Tab');
       assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
     }
@@ -388,7 +388,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab preserves the optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false);
     assert.equal(await page.locator('#adaptiveTeam').isChecked(),false,'The removed-worker focus scenario remains in manual mode');
-    for(const id of ['reviewAllow','adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults','approvalAlwaysAllow','screenViewAllow']){
+    for(const id of ['reviewAllow','personaAllow','adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults','approvalAlwaysAllow','screenViewAllow']){
       await page.keyboard.press('Tab');
       assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
     }

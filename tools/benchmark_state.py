@@ -29,6 +29,7 @@ import workbench.engine as engine_module
 
 engine_module.Engine.plan_required = False  # scripted models call team tools directly
 engine_module.Engine.review_default = False  # scripted models; no reviewer is part of the measurement
+engine_module.Engine.persona_default = False  # nor a manner of speaking
 engine_module.Engine.human_question_limit = None
 engine_module.Engine.stall_recovery = False
 from workbench.config import Settings

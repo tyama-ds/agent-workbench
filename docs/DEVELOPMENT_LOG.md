@@ -47,6 +47,26 @@ Three manners: an illustration, and two sets of pictures (2026-11-18)
   use. "顔の絵柄" fixes one for as long as the page is open. Neither
   choice is stored.
 
+A manner of speaking for each face (2026-11-18)
+
+- "Make the way they talk fit the pictures." Every character has a manner
+  of speaking (`workbench/personas.py`): the man in the black suit says
+  little and says it flatly, the newcomer is eager, the cat-eared robot
+  ends its sentences with "にゃ". An agent is told the manner of the
+  character the screen shows it as, at the end of its instructions.
+- The server deals the characters with the same shuffle as the screen (a
+  test compares the two), so the manner belongs to the face the human
+  sees.
+- It is wording only: facts, numbers, quotations and fixed formats stay
+  as they are, and the contents of files are written in the style the
+  task calls for. Reviewers (their verdict is parsed), ordered work and
+  turn-taking are left out.
+- The start screen has "担当が、顔のキャラクターに合った口調で話す",
+  ticked; unticked, that piece of work speaks plainly. Tests and scripted
+  fixtures run without it, like the reviewer.
+- Not verified here: how a real model carries a manner, and whether a
+  small model lets it leak into files or drop content.
+
 ## 0.1.1.dev89 — Looking at the screen (2026-11-18)
 
 Desktop, first stage: an agent can be shown the screen. It cannot operate

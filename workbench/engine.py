@@ -25,7 +25,7 @@ from .checkpoints import CheckpointStore
 from .memo import MemoStore, MAX_PROPOSAL_CHARS, clean as memo_clean
 from .turn_engine import TurnWorkMixin, PLAN_TOOL_NAMES, PLAN_NUDGE
 from .verification import VerificationMixin, RUN_TESTS_TOOL
-from . import screen, slides as slide_design, sources, statdata
+from . import personas, screen, slides as slide_design, sources, statdata
 from .harness import HarnessError, PathHarness, ToolExecutor
 from .skills import SkillCatalog
 from .dependencies import WorkerDependenciesMixin, DependencyBlocked
@@ -1031,8 +1031,10 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 '保存済み設定のパスを確認し、現在のPCに合わせて保存してから作業を開始してください。', field='settings')
         if len(self.runs) >= 20:
             raise AdmissionError('engine_unavailable', '実行履歴が1起動20作業の上限に達しました。必要な報告・保存記録を .txt 保存し、すべての作業完了後にサーバーを再起動してください。再起動後も保存済み履歴は閲覧専用で残ります。今回のみ入力した API キーは引き継ぎません。明示的に暗号化保存したキーは同じ Windows ユーザーで引き継ぎます')
-        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team', 'approval_mode', 'browser_fetch', 'python', 'review', 'browser_operation', 'screen_view'}:
+        if not isinstance(payload, dict) or set(payload) - {'task', 'pm_profile', 'pm_profiles', 'worker_profiles', 'max_workers', 'delegation_level', 'workers_per_pm', 'max_delegation_depth', 'ordered_reference', 'adaptive_team', 'approval_mode', 'browser_fetch', 'python', 'review', 'browser_operation', 'screen_view', 'persona'}:
             raise AdmissionError('invalid_payload', '実行設定が不正です')
+        if type(payload.get('persona', True)) is not bool:
+            raise AdmissionError('invalid_persona', 'persona は真偽値です。', field='persona')
         if type(payload.get('screen_view', False)) is not bool:
             raise AdmissionError('invalid_screen_view', 'screen_view は真偽値です。', field='screen_view')
         if payload.get('screen_view') is True and not type(self).screen_available():
@@ -1263,6 +1265,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                # Whether this work may look at the human's screen (view only). Never from the settings: off unless
                # ticked on the start screen for this one piece of work.
                'screen_view': payload.get('screen_view') is True,
+               # Agents speak in the manner of the character the screen shows them as (wording only; the default).
+               'persona': bool(payload.get('persona', type(self).persona_default)),
                # A reviewer that took no part in the work reads the saved files before the coordinator finishes
                # (the default; the start screen can turn it off for one piece of work). A team formed by the
                # application has its own independent reviewer.
@@ -1664,6 +1668,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
     stall_recovery = True
     # A reviewer reads the saved files before the coordinator finishes, unless the human starts the work without it.
     review_default = True
+    # Agents speak like the faces the screen gives them (see personas.py). Tests and scripted fixtures turn it off.
+    persona_default = True
     STALL_NOTICES = 3
 
     def _stall_check(self, run):
@@ -2244,7 +2250,16 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         recovery_policy = RECOVERY_POLICY if not self._ordered_for(run, agent) and any(
             child.status == 'error' and child.stop_reason == 'provider_output_limit'
             for child in self._owned_workers(run, agent)) else ''
-        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + self._memo_policy(run) + self._tests_policy(run) + self._pdf_policy(run) + self._slides_policy(run) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy
+        return system_policy + FILE_OPERATION_POLICY + team_policy + delegation_policy + mail_policy + board_policy + budget_policy + shared_request + (MEMORY_POLICY if config['limits']['auto_compact'] else '') + role_binding + self._ordered_context(run, agent) + self._memo_policy(run) + self._tests_policy(run) + self._pdf_policy(run) + self._slides_policy(run) + '\n\nVerified runtime identity and user-selected scope:\n' + json.dumps(identity, ensure_ascii=False, separators=(',', ':')) + skill_policy + self._formation_policy(run, agent) + recovery_policy + self._persona_policy(run, agent)
+
+    def _persona_policy(self, run, agent):
+        """The manner of speaking of the character this agent is shown as: wording only, where the work allows it."""
+        if run.get('persona') is not True or agent.id not in run['agent_ids']:
+            return ''
+        # Work with fixed wording keeps it: ordered work, turn-taking, and both kinds of reviewer (their verdicts are parsed).
+        if self._ordered_for(run, agent) or getattr(agent, '_reviewer', False) or self._formation_reviewer(run, agent):
+            return ''
+        return personas.policy(run['id'], run['agent_ids'].index(agent.id))
 
     def _contextual_team_tool(self, run, agent, tool):
         """One provider/validation contract without enlarging unrelated requests."""

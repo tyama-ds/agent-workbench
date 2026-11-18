@@ -890,6 +890,12 @@ the human turned it on (0.1.1.dev61; off by default).
   true; `faceStyle(runId)` is the chosen `ui.faceStyle` when it is in use,
   else a manner seeded by the run's id. The manner is part of the refresh
   keys of the list, the status cards and the diagram.
+- `personas.CHARACTERS` gives each character its manner of speaking and
+  `personas.order(run_id)` repeats the screen's shuffle (`faceOrder`).
+  `Engine._persona_policy(run, agent)` appends `personas.policy(...)` to
+  `_policy` when `run['persona']` is true, except for reviewers, ordered
+  work and turn players. `Engine.persona_default` is the shipped default
+  (true); the test suite and the scripted fixtures set it false.
 
 ## Looking at the screen (0.1.1.dev89)
 

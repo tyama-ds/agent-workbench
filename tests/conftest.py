@@ -15,6 +15,7 @@ def pytest_configure(config):
     config.addinivalue_line('markers', 'question_limits: keep the limit on questions that wait for a person')
     config.addinivalue_line('markers', 'stall: keep the wake-up of a team in which everybody waits')
     config.addinivalue_line('markers', 'review: keep the reviewer that reads the saved files before completion')
+    config.addinivalue_line('markers', 'persona: keep the manner of speaking that goes with an agent\'s face')
 
 
 @pytest.fixture(autouse=True)
@@ -90,3 +91,15 @@ def _no_review_before_completion_unless_marked(request):
     Engine.review_default = request.node.get_closest_marker('review') is not None
     yield
     Engine.review_default = previous
+
+
+@pytest.fixture(autouse=True)
+def _no_manner_of_speaking_unless_marked(request):
+    """Agents are told to speak like the face the screen gives them (the shipped default). That adds a paragraph
+    to every agent's instructions; existing tests compare or script those, so they run without it. Tests marked
+    `persona` keep the shipped behaviour."""
+    from workbench.engine import Engine
+    previous = Engine.persona_default
+    Engine.persona_default = request.node.get_closest_marker('persona') is not None
+    yield
+    Engine.persona_default = previous
