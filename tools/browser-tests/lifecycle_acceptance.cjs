@@ -136,7 +136,7 @@ async function lifecycleAcceptance({page,agentContract,fixtureContext,artifacts,
     await page.locator('#conversationLog').filter({hasText:'Lifecycle log '+accepted.run.id}).waitFor();
     assert.equal(requests.start.length,1,'Recovered acceptance never replays POST');
     await screenshot('start-recovered-narrow');
-    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();await screenshot('start-recovered-desktop');
+    await page.setViewportSize({width:1366,height:768});await page.locator('#progressView').click();await screenshot('start-recovered-desktop');
     report.checks.push('lifecycle: deferred native pointer/keyboard Start admits one POST; successful ID stays pending through 503 and healthy missing-ID polls; interval recovery selects/closes only the unchanged owner; no automatic replay; desktop/narrow pending and recovery screenshots');
 
     // A visible draft edited away and back is still a new editing generation.
@@ -189,7 +189,7 @@ async function lifecycleAcceptance({page,agentContract,fixtureContext,artifacts,
     await page.setViewportSize({width:390,height:844});await screenshot('new-draft-recovery-narrow',true);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#messageInput').inputValue(),'[SYNTHETIC] Keep selected agent draft.');
-    await page.setViewportSize({width:1366,height:768});await page.locator('#networkView').click();
+    await page.setViewportSize({width:1366,height:768});await page.locator('#progressView').click();
     report.checks.push('lifecycle: dismissed/reopened identical dialog and team A → B → A with a newer task draft survive late POST/state recovery; no selection, dialog, draft or focus theft');
 
     // Failure is retryable only by a new explicit user activation.

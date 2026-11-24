@@ -1,0 +1,9 @@
+Pictures of agents' faces: 26 characters (18 people, 8 robots) in two manners.
+
+real/01.webp to real/26.webp    photographic manner
+anime/01.webp to anime/26.webp  anime manner
+
+All are fictional characters generated with an image model and supplied by the
+project's owner on 2026-11-18 as 1024x1024 WebP files; the files here are those
+pictures made smaller (256x256, WebP). They show no real person. The numbers
+follow the order of FACES in static/app.js (01 is the first entry).

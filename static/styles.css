@@ -408,3 +408,56 @@ body{background:var(--cp-bg)}
 .history-search-results{display:grid;gap:4px;padding:0 9px 6px;max-height:180px;overflow:auto;flex:none}.history-search-results:empty{display:none}
 .history-result{width:100%;min-width:0;border-color:var(--cp-line,#2a2e35)}.history-match{font-size:10px;line-height:1.5;color:#b7bcc4;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 .radio-field .choice{display:flex;align-items:center;gap:8px;padding:8px 10px;text-align:left}.radio-field .choice input{width:auto;flex:none;margin:0}
+/* dev90: the centre shows one thing at a time. progress: who is doing what, and the messages.
+   network: the diagram alone. board: the board. (The diagram's own window keeps its layout.)
+   No Japanese in this file: tests read it with the platform's default encoding. */
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .active-run{overflow-y:auto}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .network-panel{display:none}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .network-workspace{grid-template-rows:minmax(300px,1fr);min-height:300px}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=progress] .coordination-monitor{flex-shrink:0;max-height:42%}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .coordination-monitor,:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .activity-panel{display:none}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .network-workspace{grid-template-rows:minmax(420px,1fr)}
+@media(max-width:1100px){.app-shell[data-cockpit-view=progress]>.inspector-rail{display:none}}
+@media(max-width:640px){:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .network-workspace{grid-template-rows:minmax(370px,1fr)}}
+.cockpit-view-controls .button[aria-pressed=true]{border-color:var(--cp-amber,#e3bc79);color:var(--cp-amber,#e3bc79)}
+.run-facts{margin-top:2px}.run-facts>summary{cursor:pointer;font-size:11px;color:#a6aeb9;width:max-content;max-width:100%}.run-facts[open]>summary{margin-bottom:8px}
+/* Faces: a drawn face for each agent. */
+.face{display:block;width:100%;height:100%;border-radius:50%}
+.agent-avatar.has-face{background:none;box-shadow:none}
+.agent-avatar.has-face>.face{position:absolute;inset:0}
+.agent-avatar.has-face .agent-avatar-mark{display:none}
+.network-node .network-face{width:38px;height:38px;flex:none;margin-bottom:1px;box-shadow:0 0 0 1px #ffffff2e}
+.network-node .network-face~.network-monogram,.network-node .network-face~.network-role{display:none}
+.team-map.is-compact .network-node .network-face{width:44px;height:44px}
+.monitor-agent{display:grid;grid-template-columns:36px minmax(0,1fr);column-gap:10px;row-gap:6px;align-items:center;align-content:start}
+.monitor-agent>.face{width:36px;height:36px}
+.monitor-agent>span{grid-column:1/-1}
+.conversation-face{flex:none;width:40px;height:40px;margin-right:10px}
+/* On a narrow screen the heading keeps its width and height for its text: the face is in the list above. */
+@media(max-width:640px){.conversation-face{display:none}}
+.face-style{display:flex;align-items:center;gap:8px;font-size:12px;color:#a6aeb9;white-space:nowrap}
+.face-style select{min-height:32px;padding:4px 8px;border:1px solid var(--cp-line-strong,#3d4651);border-radius:8px;background:#14171c;color:inherit;font:inherit}
+.app-shell[data-cockpit-view=progress] .monitor-heading{flex-direction:row;align-items:center;flex-wrap:wrap}
+.app-shell[data-cockpit-view=progress] .monitor-heading .face-style{margin-left:auto}
+.face{object-fit:cover;user-select:none;-webkit-user-drag:none}
+.face-anime{display:flex;align-items:center;gap:6px;font-size:12px;color:#a6aeb9;min-height:32px}
+/* Narrow screens: a fourth view button made the top bar wrap to one more row, and the 28px it took were missing
+   below (a help text no longer fitted its scrolling area). The name of the application gives its place to the
+   button there (it is wider than the button), so the bar is no taller than it was with three buttons. */
+@media(max-width:640px){.topbar .brand{display:none}}
+/* What was asked for and what was saved, in one place (the progress view only). */
+.deliverables-panel{flex-shrink:0;margin:0 0 10px;padding:12px 16px;border:1px solid var(--cp-line-strong,#3d4651);border-radius:14px;background:linear-gradient(125deg,#16181c,#121418);color:var(--cp-ink,#ddd9cf)}
+.deliverables-panel h2{margin:0 0 8px;font-size:17px}
+.deliverable-row{display:grid;grid-template-columns:150px minmax(0,1fr);gap:4px 14px;padding:8px 0;border-top:1px solid #2b3038}
+.deliverable-row:first-child{border-top:0}
+.deliverable-row>strong{font-size:12px;line-height:1.6;color:#a6aeb9}
+.deliverable-items{display:flex;flex-direction:column;gap:3px;min-width:0}
+.deliverable-items p{margin:0;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.deliverable.missing,.deliverable.review-fix{color:#f0b56a}
+.deliverable.saved,.deliverable.review-pass{color:#9fd8a5}
+.deliverable-name{font-weight:600}
+.deliverable-by{color:#a6aeb9;margin-left:4px}
+.deliverable-path{display:block;font:11px var(--mono);color:#8f97a3}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .deliverables-panel{display:none}
+:root[data-layout=network-popout] .deliverables-panel{display:none}
+@media(max-width:640px){.deliverable-row{grid-template-columns:minmax(0,1fr)}}

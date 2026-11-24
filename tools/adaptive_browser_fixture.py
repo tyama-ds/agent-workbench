@@ -33,6 +33,7 @@ Engine.plan_required = False  # scripted models call team tools directly (adapti
 Engine.human_question_limit = None
 Engine.stall_recovery = False
 Engine.review_default = False  # an automatically formed team has its own independent reviewer
+Engine.persona_default = False  # scripted agents: their instructions are compared as they are
 
 
 MANUAL = '[SYNTHETIC-ADAPTIVE-UI] Manual compatibility.'

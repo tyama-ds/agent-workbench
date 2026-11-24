@@ -73,7 +73,10 @@ const child=prepareDependencies(),malicious='<img src=x onerror=alert(1)>';
 namedAgent('prior-worker').name=malicious;child.worker_dependencies.depends_on.push(malicious);
 child.worker_dependencies.blocked_by.push(malicious);renderRun();renderInspector(child);
 assert(monitorText(dependencyCard()).includes(malicious));assert($('inspectorMonitor').textContent.includes(malicious));
-assert.equal(monitorNodes(dependencyCard()).filter(node=>node.tagName==='IMG').length,0);
+// The name did not become an image. The only pictures in the card are the application's own faces, from its own files.
+const pictures=monitorNodes(dependencyCard()).filter(node=>node.tagName==='IMG');
+assert.equal(pictures.filter(node=>!(node.dataset&&node.dataset.face)).length,0);
+for(const picture of pictures)assert.match(picture.src,/^\/faces\/(real|anime)\/\d\d\.webp$/);
 assert.equal(requests.length,0);
 ''')
 

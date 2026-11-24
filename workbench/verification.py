@@ -560,6 +560,7 @@ class VerificationMixin:
             limits = run['_config']['limits']
             if run['model_calls'] + 4 >= limits['max_model_calls'] or run['auto_collaborations'] >= run['max_auto_collaborations']:
                 state.update(state='skipped', reason='上限に近いため')
+                self._deliverables_publish(run)
                 self.event(run['id'], agent.id, 'review', '提出前レビュー: モデル呼び出しまたは連携の上限に近いため、行いませんでした')
                 return None
             reviewer = self._new_agent(run, profile, 'reviewer', agent.id, assignment=self._review_assignment(run, files))
@@ -574,9 +575,11 @@ class VerificationMixin:
                          shas={name: record.get('sha256') for name, record in writes.items()})
             self.event(run['id'], agent.id, 'review',
                        f'提出前レビュー: {reviewer.name} が、保存済みのファイル {len(files)} 件の確認を始めました')
+            self._deliverables_publish(run)
         reviewer = self.agents.get(state.get('agent_id'))
         if reviewer is None or reviewer.closing or reviewer.status in {'error', 'stopped'}:
             state.update(state='skipped', reason='レビュー担当が停止したため')
+            self._deliverables_publish(run)
             self.event(run['id'], agent.id, 'review', '提出前レビュー: レビュー担当が停止したため、完了していません')
             return None
         if reviewer.status != 'done' or reviewer.pending:
@@ -599,6 +602,7 @@ class VerificationMixin:
                     + self.redact(report[:self.REVIEW_REPORT]) + '\nCorrect each finding now and save the files, or state for each '
                     'one in your result why it stands. Then finish.')
         state['state'] = 'reported'
+        self._deliverables_publish(run)
         self.event(run['id'], agent.id, 'review', '提出前レビュー: 判定は「'
                    + {'pass': '合格', 'fix': '要修正'}.get(state['verdict'], '判定の記載なし') + '」でした'
                    + (f'（指摘のあとに保存し直されたファイル: {"、".join(changed[:6])}）' if changed else ''))
@@ -1167,6 +1171,28 @@ class VerificationMixin:
             record['last'] = agent.name
         if name in (run.get('_expected_outputs') or {}):
             self._outputs_publish(run)
+        self._deliverables_publish(run)
+
+    DELIVERABLE_FILES = 24  # files listed for the human; the newest are kept
+
+    def _deliverables_publish(self, run):
+        """For the human, in one place: the files this work saved (name, where, by whom) and how the review stands.
+
+        Until now this stood only in sentences at the end of the coordinator's result. It is published with the
+        run, so the screen can show it while the work is going on.
+        """
+        paths, writes = run.get('_saved_paths') or {}, run.get('_output_writes') or {}
+        files = [{'name': PureWindowsPath(str(path)).name, 'path': str(path), 'by': str((writes.get(name) or {}).get('last') or '')}
+                 for name, path in list(paths.items())[-self.DELIVERABLE_FILES:]]
+        review = run.get('_review') or {}
+        state = ('none' if not run.get('review') or run.get('adaptive_team') else
+                 'skipped' if review.get('state') == 'skipped' else
+                 'waiting' if review.get('state') == 'requested' else
+                 (review.get('verdict') if review.get('verdict') in {'pass', 'fix'} else 'unclear') if review.get('state') == 'reported' else
+                 'pending')
+        if files or state not in {'none', 'pending'}:
+            run['deliverables'] = self._redact_tree({'files': files, 'review': state,
+                                                     'resaved': [str(name) for name in (review.get('changed') or [])][:12]})
 
     def _outputs_read(self, run, agent, args, result):
         """The root coordinator read a file: remember which content it saw."""

@@ -30,6 +30,8 @@ from .runtime_paths import FROZEN
 
 APP_KEY = web.AppKey('engine', Engine)
 STATIC = ROOT / 'static'
+FACE_STYLES = frozenset({'real', 'anime'})         # the sets of pictures under static/faces
+FACE_FILE = re.compile(r'(0[1-9]|1[0-9]|2[0-6])\.webp')  # 01.webp to 26.webp
 
 
 def private_directory(path):
@@ -125,6 +127,10 @@ class BrowserAuth:
             'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY',
             'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'",
             'Cross-Origin-Resource-Policy': 'same-origin'})
+        if request.path.startswith('/faces/') and response.status == 200:
+            # The pictures of faces are fixed files of the application: the page need not fetch each one again
+            # every time a list is drawn. Everything else stays uncached.
+            response.headers['Cache-Control'] = 'private, max-age=86400'
         return response
 
     async def bootstrap(self, request):
@@ -167,6 +173,21 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
             raise web.HTTPNotFound()
         return web.FileResponse(STATIC / name)
 
+    async def face(request):
+        """A picture of an agent's face: one of the fixed files under static/faces (two sets of 26).
+
+        The style and the number are checked against what exists; nothing else
+        under the folder can be asked for. The pictures are the same for every
+        user and every run, so the page may keep them for a day.
+        """
+        style, name = request.match_info['style'], request.match_info['name']
+        if style not in FACE_STYLES or not FACE_FILE.fullmatch(name):
+            raise web.HTTPNotFound()
+        path = STATIC / 'faces' / style / name
+        if not path.is_file():
+            raise web.HTTPNotFound()
+        return web.Response(body=path.read_bytes(), content_type='image/webp')
+
     async def config(request):
         if request.method == 'PUT':
             value = await body(request)
@@ -181,6 +202,10 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
             engine.save_settings(value.get('config'))
             engine.schedule_copilot_sync()
         return web.json_response(engine.public_config())
+
+    async def preferences(request):
+        """How the human likes the screen to look (the manner of the faces). Saved at any time, also while a team runs."""
+        return web.json_response({'ok': True, 'preferences': engine.preferences.save(await body(request))})
 
     async def config_export(request):
         return web.json_response(settings.export())
@@ -386,6 +411,8 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_get('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/provider-test', provider_test)
+    app.router.add_put('/api/preferences', preferences)
+    app.router.add_get('/faces/{style}/{name}', face)
     app.router.add_get('/{name}', static)
     return app
 

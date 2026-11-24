@@ -121,10 +121,10 @@ Object.assign(ui,{settingsStorage:null,settingsTransferOperation:null,historySto
 Object.assign(ui,{workBoards:new Map(),boardOwner:null,boardComposingRun:null,boardRedactionRevision:null});
 const WORK_BOARD_DEFAULTS={enabled:false};
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
-Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotified:new Set(),questionNotifications:new Map(),notificationPermissionRequest:null,notificationError:''});
+Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotified:new Set(),questionNotifications:new Map(),approvalNotified:new Set(),approvalNotifications:new Map(),notificationPermissionRequest:null,notificationError:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
-Object.assign(ui,{cockpitView:'network',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
+Object.assign(ui,{cockpitView:'progress',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
 // A separate tab/window that shows only the mission network (?view=network&run=ID).
 // It is the same page and session cookie; no new server route or credential.
 const NETWORK_POPOUT=(()=>{const query=new URLSearchParams(globalThis.location?.search||'');return query.get('view')==='network'?{run:query.get('run')||''}:null;})();
@@ -215,7 +215,7 @@ function acceptServerInstance(response,configuration=false) {
   if(!changed)return false;
   ui.selectionGeneration++;ui.navigationGeneration++;ui.workspaceGeneration++;ui.credentialGeneration++;
   ui.selectedRun=null;ui.selectedAgent=null;ui.loadedDetail=null;ui.loadedEventsRun=null;ui.detailError=false;
-  ui.drafts.clear();ui.draftRevisions.clear();ui.draftQuestions.clear();ui.composerQuestion=null;closeQuestionNotifications();ui.conversationViews.clear();ui.outputSelections.clear();
+  ui.drafts.clear();ui.draftRevisions.clear();ui.draftQuestions.clear();ui.composerQuestion=null;closeQuestionNotifications();closeApprovalNotifications();ui.conversationViews.clear();ui.outputSelections.clear();
   invalidateWorkBoardContent();ui.workBoards.clear();ui.boardOwner=null;ui.boardComposingRun=null;ui.boardRedactionRevision=null;
   stopNetworkMotion();clearNetworkPreview();ui.networkNodes.clear();ui.networkViews.clear();ui.networkGesture=null;ui.networkSuppressClick=null;ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
   $('teamMap').classList.remove('is-dragging');
@@ -488,7 +488,7 @@ async function discardSettings() {
     const response=await api('/api/config');
     if(workspace!==ui.workspaceGeneration||!$('settingsDialog').open)return;
     if(!validSavedSettings(response,response.config_revision))throw new Error('保存済み設定を確認できませんでした。');
-    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);
+    ui.config=response.config;applyFacePreferences(response.preferences);ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);
     renderSettings();invalidateDiagnostics();renderProfileChoices(true);inlineStatus($('settingsStatus'),'未保存の変更を破棄し、保存済み設定を読み直しました。');
   } catch(error){if(workspace===ui.workspaceGeneration&&$('settingsDialog').open)inlineStatus($('settingsStatus'),errorText(error),true);}
   finally{ui.settingsReloading=false;setSettingsLock(true);schedulePreflight();}
@@ -566,7 +566,7 @@ async function saveSettings(event) {
     // Acceptance updates the saved baseline even after close. It never submits,
     // discards, defaults or clamps the separate current task/settings drafts.
     let sameDraft=false;try{sameDraft=action.draft===ui.settingsDraftGeneration&&JSON.stringify(collectConfig())===JSON.stringify(action.config);}catch(_){}
-    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status;ui.credentialGeneration++;acceptConnectionSettings(response);
+    ui.config=response.config;applyFacePreferences(response.preferences);ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status;ui.credentialGeneration++;acceptConnectionSettings(response);
     ui.settingsDirty=!sameDraft;
     if(sameDraft){
       $('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card._credential.id=inputValue(card.querySelector('[data-key="id"]'));});
@@ -853,6 +853,8 @@ function runPayload() {
   // The review before completion is on unless the human unticks it for this piece of work.
   if($('reviewAllow')&&$('reviewAllow').checked!==true)payload.review=false;
   if($('screenViewAllow')?.checked===true)payload.screen_view=true;
+  // Agents speak like the faces the screen gives them unless the human unticks it for this piece of work.
+  if($('personaAllow')&&$('personaAllow').checked!==true)payload.persona=false;
   if(ui.config?.python?.executable&&$('pythonAllow')){
     const python=$('pythonAllow').checked===true;
     if(python!==(ui.config?.python?.enabled===true))payload.python=python;
@@ -1348,6 +1350,43 @@ function syncQuestionNotifications(entries) {
     }catch(_){ui.notificationError='ブラウザー通知を表示できませんでした。画面内の質問通知を確認してください。';}
   }
 }
+// An operation that waits for the human's approval is announced like a question: some of them (a look at the
+// screen, a site's check) count as refused when nobody answers in time. The announcement says nothing of what
+// is asked; one attempt per request in this page session.
+function approvalNotificationKey(run,agent,approval) { return JSON.stringify([ui.instanceId,run.id,agent.id,approval.id]); }
+function closeApprovalNotifications() {
+  for(const notification of ui.approvalNotifications.values()){try{notification.close();}catch(_){}}
+  ui.approvalNotifications.clear();
+}
+async function openNotifiedApproval(owner) {
+  if(ui.instanceId!==owner.instance||!ui.authenticated||$('taskDialog').open||$('settingsDialog').open)return;
+  const navigation=ui.navigationGeneration,workspace=ui.workspaceGeneration;
+  await pollState(true);
+  if(ui.instanceId!==owner.instance||ui.navigationGeneration!==navigation||ui.workspaceGeneration!==workspace||
+    !ui.networkConnected||ui.detailError||$('taskDialog').open||$('settingsDialog').open)return;
+  const entry=approvalEntries().find(({run,agent})=>run.id===owner.run&&agent.id===owner.agent&&pendingApproval(agent)?.id===owner.approval);
+  if(!entry)return;
+  window.focus?.();ui.navigationGeneration++;const changed=changeSelection(entry.run.id,entry.agent.id);revealInspector();renderState();
+  $('approvalCard').focus();if(changed)void pollState();
+}
+function syncApprovalNotifications(entries) {
+  const pending=new Map();
+  for(const {run,agent} of entries){const approval=pendingApproval(agent);if(approval)pending.set(approvalNotificationKey(run,agent,approval),{run,agent,approval});}
+  for(const [key,notification] of ui.approvalNotifications){if(!pending.has(key)||!ui.networkConnected){try{notification.close();}catch(_){}ui.approvalNotifications.delete(key);}}
+  if(!ui.authenticated||!ui.networkConnected||ui.detailError||!ui.instanceId||notificationCapability()!=='granted')return;
+  for(const [key,{run,agent,approval}] of pending){
+    if(ui.approvalNotified.has(key))continue;
+    ui.approvalNotified.add(key);
+    try{
+      const timed=Number(approval.expires_at)>0;
+      const notification=new Notification('Workbench: 承認待ちの操作があります',{body:timed?'アプリを開いて内容を確認してください。期限までに応答がないと、却下として扱われます。':'アプリを開いて内容を確認してください。',tag:key});
+      ui.approvalNotifications.set(key,notification);
+      const owner={instance:ui.instanceId,run:run.id,agent:agent.id,approval:approval.id};
+      notification.onclick=()=>{try{notification.close();}catch(_){}void openNotifiedApproval(owner);};
+      notification.onerror=()=>{ui.notificationError='ブラウザー通知を表示できませんでした。画面内の承認待ちを確認してください。';renderQuestionNotice(questionEntries());};
+    }catch(_){ui.notificationError='ブラウザー通知を表示できませんでした。画面内の承認待ちを確認してください。';}
+  }
+}
 function renderQuestionNotice(entries) {
   syncQuestionNotifications(entries);
   const capability=notificationCapability(),button=$('enableQuestionNotifications');
@@ -1631,11 +1670,14 @@ async function submitWorkBoardPost(retry=false) {
   }finally{if(instance===ui.instanceId&&ui.workBoards.get(run.id)===board&&currentRunBoard(run.id)){renderWorkBoard(getRun());if(!board.operation)void loadWorkBoard(getRun(),true);}}
 }
 function setCockpitView(view) {
-  if(!['network','board','inspector'].includes(view))return;
+  // The centre shows one thing at a time: progress (who is doing what, and the messages), the team diagram, or the board.
+  if(!['progress','network','board','inspector'].includes(view))return;
   rememberWorkBoardView();
   ui.cockpitView=view;document.querySelector('.app-shell').dataset.cockpitView=view;
-  for(const [id,mode] of [['networkView','network'],['boardView','board'],['inspectorView','inspector']])$(id).setAttribute('aria-pressed',String(view===mode));
+  for(const [id,mode] of [['progressView','progress'],['networkView','network'],['boardView','board'],['inspectorView','inspector']])$(id).setAttribute('aria-pressed',String(view===mode));
   if(view!=='network'){clearNetworkHover();stopNetworkMotion();}
+  // A diagram that was laid out while it was not on the screen is fitted to the space it now has.
+  else if(ui.selectedRun&&ui.networkLayout&&networkViewState().fitPending)fitNetwork();
   renderWorkBoard(getRun());renderNetworkPreview();paintNetworkMotionState();
 }
 function revealInspector() { if(window.matchMedia?.('(max-width: 1100px)').matches)setCockpitView('inspector'); }
@@ -1644,6 +1686,195 @@ function svgElement(tag,attributes={}) {
   for(const [key,value] of Object.entries(attributes))node.setAttribute(key,String(value));
   return node;
 }
+// --- Faces: every agent is shown with a face, and each piece of work deals them out afresh ----------------
+// 26 characters (kind: human or robot), each in three manners (FACE_STYLES): an illustration drawn here from a
+// few shapes, and two sets of pictures kept under static/faces (real and anime; fictional, made with an image
+// model and supplied by the project's owner). The anime set is used only where the human ticked it.
+// hair: [style, colour]; wear: [kind, main colour, second colour, third colour]; extra: things worn or grown.
+const FACE_SKINS=['#f3cfae','#e9b991','#d8a276','#c18a61','#f7dcc4','#a8734f'];
+const FACE_STYLES=['flat','real','anime'],FACE_STYLE_LABELS={flat:'イラスト',real:'リアル',anime:'アニメ'};
+const FACES=[
+  {id:'shades',name:'黒スーツとサングラス',kind:'human',bg:'#3c4654',skin:1,hair:['slick','#141518'],eyes:'none',mouth:'flat',wear:['suit','#15161a','#eeeeea','#0d0e10'],extra:['shades']},
+  {id:'office',name:'ふつうの会社員',kind:'human',bg:'#3f5870',skin:0,hair:['short','#2e221b'],eyes:'normal',mouth:'smile',wear:['suit','#27405f','#f2f4f6','#b9413c'],extra:[]},
+  {id:'languid',name:'気だるそうなお姉さん',kind:'human',bg:'#6a5568',skin:4,hair:['long','#5b3a2c'],eyes:'sleepy',mouth:'pout',wear:['cardigan','#c9b79a','#f4efe6',''],extra:['mole']},
+  {id:'ledger',name:'眼鏡の経理さん',kind:'human',bg:'#4d5a52',skin:0,hair:['side','#22201f'],eyes:'normal',mouth:'flat',wear:['suit','#6b7078','#f2f4f6','#3d5a80'],extra:['glasses']},
+  {id:'rookie',name:'元気な新人',kind:'human',bg:'#3d6a74',skin:1,hair:['spiky','#3a2a1e'],eyes:'wide',mouth:'grin',wear:['shirt','#f2f4f6','#dfe5ea','#d9534a'],extra:['blush']},
+  {id:'chief',name:'ベテラン課長',kind:'human',bg:'#5c5346',skin:2,hair:['bald','#8d8f93'],eyes:'smile',mouth:'smile',wear:['suit','#5a4635','#f0ece2','#7c2f2f'],extra:['mustache']},
+  {id:'planner',name:'ポニーテールの企画さん',kind:'human',bg:'#3f6b58',skin:0,hair:['pony','#3b2a22'],eyes:'smile',mouth:'smile',wear:['coat','#2f7d63','#f4efe6',''],extra:['blush']},
+  {id:'labcoat',name:'ボブの研究員',kind:'human',bg:'#51607c',skin:4,hair:['bob','#1f1d22'],eyes:'normal',mouth:'flat',wear:['coat','#f1f3f5','#8fb3d9',''],extra:['glasses']},
+  {id:'beard',name:'ひげのエンジニア',kind:'human',bg:'#3d4f45',skin:2,hair:['beanie','#b3523f'],eyes:'normal',mouth:'smile',wear:['hoodie','#3f5a48','#cfd8d2',''],extra:['beard']},
+  {id:'operator',name:'ヘッドセットのオペレーター',kind:'human',bg:'#3a5f7d',skin:1,hair:['short','#4a3324'],eyes:'smile',mouth:'smile',wear:['shirt','#5d87b8','#eef2f6',''],extra:['headset']},
+  {id:'secretary',name:'お団子の秘書さん',kind:'human',bg:'#6d4450',skin:0,hair:['bun','#231a18'],eyes:'sharp',mouth:'smirk',wear:['suit','#7a2f45','#f6f1ea','#f6f1ea'],extra:['earring']},
+  {id:'advisor',name:'白髪の顧問',kind:'human',bg:'#474a52',skin:1,hair:['slick','#d9dadd'],eyes:'sharp',mouth:'flat',wear:['suit','#33363d','#f2f4f6','#8a6d2f'],extra:['brows']},
+  {id:'nightowl',name:'パーカーの夜型',kind:'human',bg:'#463f63',skin:4,hair:['curly','#2a2430'],eyes:'sleepy',mouth:'flat',wear:['hoodie','#5b4a86','#d9d3ea',''],extra:['bags']},
+  {id:'foreman',name:'現場の職人',kind:'human',bg:'#6a5a3c',skin:3,hair:['helmet','#e6b422'],eyes:'normal',mouth:'grin',wear:['work','#d2691e','#f0e6c8',''],extra:['stubble']},
+  {id:'courier',name:'キャップの配達員',kind:'human',bg:'#3c5f6a',skin:2,hair:['cap','#2b6f9e'],eyes:'smile',mouth:'grin',wear:['shirt','#2b6f9e','#e8eef2',''],extra:[]},
+  {id:'designer',name:'カーリーヘアのデザイナー',kind:'human',bg:'#6b5a3a',skin:3,hair:['curly','#3b2418'],eyes:'normal',mouth:'smile',wear:['knit','#c9962e','#e0b24f',''],extra:['roundglasses']},
+  {id:'detective',name:'トレンチコートの調査役',kind:'human',bg:'#55503f',skin:1,hair:['side','#3a3027'],eyes:'sharp',mouth:'smirk',wear:['coat','#b79b6c','#3b3f48',''],extra:['stubble']},
+  {id:'athlete',name:'短髪の体育会系',kind:'human',bg:'#3f6a4b',skin:3,hair:['buzz','#1c1a19'],eyes:'wide',mouth:'grin',wear:['knit','#2f8f5b','#f2f4f6',''],extra:['brows']},
+  {id:'boxbot',name:'四角いロボ',kind:'robot',bg:'#2f4856',shape:'box',metal:'#9fb4c2',dark:'#4f6472',led:'#6fe3f2'},
+  {id:'visorbot',name:'バイザーロボ',kind:'robot',bg:'#3a3550',shape:'visor',metal:'#c9cbd6',dark:'#5a5d73',led:'#ff6b6b'},
+  {id:'eyebot',name:'一つ目ロボ',kind:'robot',bg:'#35523f',shape:'cyclops',metal:'#b9c7a8',dark:'#5c6f55',led:'#ffd166'},
+  {id:'retrobot',name:'レトロロボ',kind:'robot',bg:'#5a4634',shape:'retro',metal:'#d0b48a',dark:'#7a6248',led:'#7bdc8a'},
+  {id:'tvbot',name:'モニターロボ',kind:'robot',bg:'#2d3f5c',shape:'tv',metal:'#8fa3bf',dark:'#3f4d66',led:'#8ef0c0'},
+  {id:'sitebot',name:'工事ロボ',kind:'robot',bg:'#4c4a36',shape:'dome',metal:'#e3b62e',dark:'#3a3a36',led:'#ff9f43'},
+  {id:'bugbot',name:'まるいロボ',kind:'robot',bg:'#4a3d5e',shape:'bug',metal:'#e6e2ee',dark:'#7c7396',led:'#b79cff'},
+  {id:'catbot',name:'ねこ耳ロボ',kind:'robot',bg:'#5a3f4a',shape:'cat',metal:'#f0c7cf',dark:'#9a6b78',led:'#ff8fb1'}
+];
+const FACE_INK='#1d1d22';
+// A lighter (amount > 0) or darker (amount < 0) shade of a #rrggbb colour.
+function faceTone(hex,amount) {
+  const value=parseInt(hex.slice(1,7),16),toward=amount<0?0:255,share=Math.abs(amount);
+  return '#'+[value>>16,(value>>8)&255,value&255].map(part=>Math.round(part+(toward-part)*share).toString(16).padStart(2,'0')).join('');
+}
+function facePen(add) {
+  return {shape:(d,fill,more={})=>add('path',{d,fill,...more}),
+    line:(d,stroke,width,more={})=>add('path',{d,fill:'none',stroke,'stroke-width':width,'stroke-linecap':'round','stroke-linejoin':'round',...more})};
+}
+// Hair that falls behind the head.
+function faceHairBack(add,hair,fill) {
+  const {shape}=facePen(add);
+  if(hair==='long')shape('M15 27Q14 7 32 7Q50 7 49 27L50 51Q42 48 41 36L23 36Q22 48 14 51Z',fill);
+  if(hair==='bob')shape('M16 27Q15 8 32 8Q49 8 48 27L48 39Q44 42 42 36L22 36Q20 42 16 39Z',fill);
+  if(hair==='pony')shape('M43 14Q57 14 55 31Q54 38 50 40Q52 30 46 24Z',fill);
+  if(hair==='bun')add('circle',{cx:32,cy:7.5,r:5.5,fill});
+}
+// Shoulders and what is worn. fill: the main colour, or a shading of it.
+function faceWear(add,face,fill) {
+  const [wear,,second,third]=face.wear,{shape,line}=facePen(add);
+  shape('M6 64Q8 47 23 44L41 44Q56 47 58 64Z',fill);
+  if(wear==='suit'){shape('M25 44L32 56L39 44Z',second);shape('M30.6 46.5L33.4 46.5L34.6 55L32 58.5L29.4 55Z',third);line('M25 44L29.5 57M39 44L34.5 57','#00000055',1);}
+  if(wear==='shirt'){shape('M25 44L32 51L28 54Z',second);shape('M39 44L32 51L36 54Z',second);if(third)shape('M31 50.5L33 50.5L34 58L32 60.5L30 58Z',third);}
+  if(wear==='hoodie'){line('M21.5 45.5Q32 56 42.5 45.5',second,2.2);line('M29.5 52L29 60M34.5 52L35 60',second,1.1);}
+  if(wear==='knit')add('rect',{x:25.5,y:40.5,width:13,height:6.5,rx:2.5,fill:second});
+  if(wear==='coat'){shape('M26 44L32 58L38 44Z',second);line('M26 44L21.5 52L27 55M38 44L42.5 52L37 55','#00000040',1);}
+  if(wear==='cardigan'){shape('M24 44L32 61L40 44Z',second);line('M24 44L32 61L40 44','#00000030',.9);}
+  if(wear==='work'){add('rect',{x:9,y:55,width:46,height:3,fill:second});shape('M27 44L32 50L37 44Z','#00000033');}
+}
+// Hair in front of the head, or what is worn on it. fill: the hair's colour or a shading of it; tint: its plain colour.
+function faceHairFront(add,hair,fill,tint) {
+  const {shape,line}=facePen(add);
+  if(hair==='slick'){shape('M20 25Q19 10 32 10Q45 10 44 25Q42 17 32 16.5Q22 17 20 25Z',fill);line('M25 13.2Q32 11.4 39 13.2M27 15.4Q32 14.2 37 15.4','#ffffff30',.8);}
+  if(hair==='short')shape('M20 26Q18 10 32 10Q46 10 44 26Q43 20 38 18Q30 21 23 18Q21 21 20 26Z',fill);
+  if(hair==='side')shape('M20 27Q17 10 33 10Q46 10 44 27Q43 19 36 17Q27 16 23 21Q21 23 20 27Z',fill);
+  if(hair==='long')shape('M20 26Q21 13 32 13Q43 13 44 26Q40 18.5 33 19Q25 18.5 20 26Z',fill);
+  if(hair==='bob')shape('M20 25Q20 12 32 12Q44 12 44 25Q38 21 32 22Q26 21 20 25Z',fill);
+  if(hair==='pony'||hair==='bun')shape('M20 25Q19 10 32 10Q45 10 44 25Q41 17 32 17Q23 17 20 25Z',fill);
+  if(hair==='spiky')shape('M19 26L20 14L24.5 18L27 9L31.5 16L36 9L38.5 17L44 13L45 26Q40 18 32 18Q24 18 19 26Z',fill);
+  if(hair==='curly')for(const [cx,cy,r] of [[21,22.5,4],[22.5,17,5],[27,12.5,5.5],[33.5,11.5,5.5],[39.5,13.5,5.5],[43.5,19,4.6]])add('circle',{cx,cy,r,fill});
+  if(hair==='buzz')shape('M20.5 24Q20 11.5 32 11.5Q44 11.5 43.5 24Q40 15.5 32 15.5Q24 15.5 20.5 24Z',fill,{'fill-opacity':.85});
+  if(hair==='bald'){shape('M19.8 28Q18.8 20 22.4 16.5Q21.2 22.5 21.4 28Z',fill);shape('M44.2 28Q45.2 20 41.6 16.5Q42.8 22.5 42.6 28Z',fill);line('M27 15Q30 13.4 33 14','#ffffff40',1);}
+  if(hair==='cap'){shape('M19.5 23Q20 9 32 9Q44 9 44.5 23Z',fill);shape('M18 22.5L49 22.5Q52.5 23 51.5 25.6L18 25.6Z',faceTone(tint,-.35));}
+  if(hair==='helmet'){shape('M18.5 24Q19 8 32 8Q45 8 45.5 24Z',fill);add('rect',{x:16.5,y:22.6,width:31,height:3.2,rx:1.4,fill:tint});line('M32 8.4L32 22.4','#00000030',1.4);}
+  if(hair==='beanie'){shape('M19.5 24Q19 9 32 9Q45 9 44.5 24Z',fill);add('rect',{x:19,y:20.5,width:26,height:5,rx:1.6,fill:faceTone(tint,.22)});}
+}
+// Things worn on the face and head, the same in every manner.
+function faceWorn(add,face) {
+  const extra=new Set(face.extra),{shape,line}=facePen(add);
+  if(extra.has('shades')){shape('M21.5 25.5L30.6 25.5L30 30.6Q26 32.2 22.4 30.6Z','#0b0c0f');shape('M33.4 25.5L42.5 25.5L41.6 30.6Q38 32.2 34 30.6Z','#0b0c0f');line('M30.4 26.6L33.6 26.6M21.6 26.4L19.6 27.4M42.4 26.4L44.4 27.4','#0b0c0f',1.3);line('M23.2 27L25.6 27M35.2 27L37.6 27','#ffffff55',.8);}
+  if(extra.has('glasses')||extra.has('roundglasses')){const rim=extra.has('roundglasses')?'#b8892b':'#262a33';for(const cx of [26.6,37.4])add('circle',{cx,cy:28.6,r:4.3,fill:'#ffffff','fill-opacity':.14,stroke:rim,'stroke-width':1.2});line('M30.9 28.2L33.1 28.2M22.3 28L20 27.4M41.7 28L44 27.4',rim,1.1);}
+  if(extra.has('earring'))add('circle',{cx:19.4,cy:33.2,r:1.35,fill:'#e6c15a'});
+  if(extra.has('headset')){line('M18.6 27Q18.6 8.2 32 8.2Q45.4 8.2 45.4 27','#24272d',2.4);add('rect',{x:15.6,y:24,width:5.2,height:9.4,rx:2.2,fill:'#24272d'});add('rect',{x:43.2,y:24,width:5.2,height:9.4,rx:2.2,fill:'#24272d'});line('M18.4 33Q19.6 39.6 27 38.8','#24272d',1.4);add('circle',{cx:27.6,cy:38.7,r:1.5,fill:'#24272d'});}
+}
+// The flat illustration.
+function drawHumanFace(add,face) {
+  const skin=FACE_SKINS[face.skin]||FACE_SKINS[0],[hair,tint]=face.hair,wear=face.wear[0],extra=new Set(face.extra),{shape,line}=facePen(add);
+  faceHairBack(add,hair,tint);faceWear(add,face,face.wear[1]);
+  if(wear!=='knit')add('rect',{x:27.5,y:37,width:9,height:9,fill:skin});
+  add('rect',{x:27.5,y:39.5,width:9,height:3,fill:'#00000018'});
+  add('circle',{cx:19.6,cy:29,r:2.6,fill:skin});add('circle',{cx:44.4,cy:29,r:2.6,fill:skin});
+  shape('M20 26Q20 12 32 12Q44 12 44 26Q44 40 32 42Q20 40 20 26Z',skin);
+  if(extra.has('stubble'))shape('M21.5 31Q22 42 32 43.2Q42 42 42.5 31Q40 36.5 32 37Q24 36.5 21.5 31Z',hair==='helmet'?'#3a2f28':tint,{'fill-opacity':.28});
+  if(extra.has('beard'))shape('M21.2 30Q21.5 42.5 32 44Q42.5 42.5 42.8 30Q40.5 36 32 36.6Q23.5 36 21.2 30Z','#4a3324');
+  if(extra.has('blush')){add('circle',{cx:24.3,cy:33,r:2.5,fill:'#f08a7a','fill-opacity':.38});add('circle',{cx:39.7,cy:33,r:2.5,fill:'#f08a7a','fill-opacity':.38});}
+  faceHairFront(add,hair,tint,tint);
+  if(extra.has('brows'))line('M24 24.6L29.8 25.4M40 24.6L34.2 25.4',FACE_INK,1.6);
+  if(face.eyes==='normal'){add('circle',{cx:27,cy:28.5,r:1.7,fill:FACE_INK});add('circle',{cx:37,cy:28.5,r:1.7,fill:FACE_INK});}
+  if(face.eyes==='wide')for(const cx of [27,37]){add('circle',{cx,cy:28.4,r:3,fill:'#ffffff'});add('circle',{cx,cy:28.6,r:1.6,fill:FACE_INK});}
+  if(face.eyes==='smile')line('M24.6 29Q27 26.2 29.4 29M34.6 29Q37 26.2 39.4 29',FACE_INK,1.5);
+  if(face.eyes==='sleepy'){shape('M25.2 28.2Q27 31 28.8 28.2ZM35.2 28.2Q37 31 38.8 28.2Z',FACE_INK);line('M24.2 28L29.8 28M34.2 28L39.8 28',FACE_INK,1.6);}
+  if(face.eyes==='sharp'){add('circle',{cx:27.4,cy:29.2,r:1.25,fill:FACE_INK});add('circle',{cx:36.6,cy:29.2,r:1.25,fill:FACE_INK});line('M24.4 27.2L29.8 28.4M39.6 27.2L34.2 28.4',FACE_INK,1.3);}
+  if(extra.has('bags'))line('M24.8 31.2Q27 32.4 29.2 31.2M34.8 31.2Q37 32.4 39.2 31.2','#00000045',.9);
+  if(extra.has('mustache'))shape('M26.6 33.8Q29.4 31.6 32 33.4Q34.6 31.6 37.4 33.8Q34.6 35.4 32 34.3Q29.4 35.4 26.6 33.8Z',tint);
+  if(face.mouth==='smile')line('M27.5 35Q32 38.6 36.5 35','#7a3b2e',1.5);
+  if(face.mouth==='grin')shape('M27 34.4Q32 40.4 37 34.4Z','#ffffff',{stroke:'#7a3b2e','stroke-width':.9,'stroke-linejoin':'round'});
+  if(face.mouth==='flat')line('M28.6 35.8L35.4 35.8','#7a3b2e',1.5);
+  if(face.mouth==='smirk')line('M28 36Q33 37 36.6 34','#7a3b2e',1.5);
+  if(face.mouth==='pout'){line('M29.6 35.8Q32 34.6 34.4 35.8','#a3473f',1.6);line('M30.4 37.4Q32 38 33.6 37.4','#a3473f',1);}
+  if(extra.has('mole'))add('circle',{cx:36.9,cy:33.4,r:.75,fill:'#4a2f28'});
+  faceWorn(add,face);
+}
+function drawRobotFace(add,face) {
+  const {metal,dark,led}=face,screen='#10161d',{shape,line}=facePen(add);
+  const box=(x,y,width,height,rx,fill,more={})=>add('rect',{x,y,width,height,rx,fill,...more}),dot=(cx,cy,r,fill,more={})=>add('circle',{cx,cy,r,fill,...more});
+  shape('M9 64Q11 50 24 48L40 48Q53 50 55 64Z',dark);box(27.5,41,9,8,1.5,dark);line('M27.5 44.5L36.5 44.5','#00000040',1);
+  if(face.shape==='box'){line('M32 14L32 7.5',dark,1.6);dot(32,6,2.6,led);box(11.5,23.5,4.5,9,1.5,dark);box(48,23.5,4.5,9,1.5,dark);box(16,14,32,28,6,metal);
+    for(const cx of [25,39]){dot(cx,26,4.4,screen);dot(cx,26,2.2,led);}box(24,34.2,16,4.2,1.2,screen);line('M28 34.6L28 38M32 34.6L32 38M36 34.6L36 38',metal,.9);}
+  if(face.shape==='visor'){box(16,12.5,32,29.5,12,metal);box(19,21.5,26,8.5,4.2,screen);line('M23.5 25.8L40.5 25.8',led,2.4);dot(32,35.6,1.2,dark);dot(27.6,35.6,1.2,dark);dot(36.4,35.6,1.2,dark);box(13,24,3.2,7,1.2,dark);box(47.8,24,3.2,7,1.2,dark);}
+  if(face.shape==='cyclops'){line('M26 14L22.5 7M38 14L41.5 7',dark,1.5);dot(22.2,6.4,1.9,led);dot(41.8,6.4,1.9,led);dot(32,27,15,metal);dot(32,26,7.4,screen);dot(32,26,3.6,led);dot(33.6,24.4,1,'#ffffff');line('M26 36.4Q32 39.4 38 36.4',dark,1.5);}
+  if(face.shape==='retro'){line('M24 16L21 8M40 16L43 8',dark,1.5);dot(20.8,7.4,2,led);dot(43.2,7.4,2,led);shape('M17 16L47 16L45 42L19 42Z',metal);box(21.5,21.5,7,6.5,1,screen);box(35.5,21.5,7,6.5,1,screen);box(23.6,23.4,2.8,2.8,.4,led);box(37.6,23.4,2.8,2.8,.4,led);
+    line('M24 33.4L40 33.4M24 36L40 36M24 38.6L40 38.6',dark,1.1);dot(19.6,18.6,.9,dark);dot(44.4,18.6,.9,dark);}
+  if(face.shape==='tv'){line('M32 13L26.5 6.5M32 13L37.5 6.5',dark,1.5);box(14,13,36,29,4.5,dark);box(17,16,30,22.5,2.5,screen);for(const x of [22.5,37.5])box(x,21,4,5.5,.6,led);
+    shape('M24 31L26.5 31L26.5 33.4L37.5 33.4L37.5 31L40 31L40 35.8L24 35.8Z',led);dot(45.6,40,.9,led);}
+  if(face.shape==='dome'){box(29.6,5.6,4.8,6,1.6,led);shape('M17 41L17 27Q17 12 32 12Q47 12 47 27L47 41Z',metal);shape('M17 30L47 30L47 34.5L17 34.5Z',dark);shape('M20 30L24 30L21 34.5L17 34.5ZM28 30L32 30L29 34.5L25 34.5ZM36 30L40 30L37 34.5L33 34.5ZM44 30L47 30L47 31L45 34.5L41 34.5Z',metal);
+    add('ellipse',{cx:26,cy:22.6,rx:3.4,ry:4,fill:screen});add('ellipse',{cx:38,cy:22.6,rx:3.4,ry:4,fill:screen});dot(26,22.6,1.5,led);dot(38,22.6,1.5,led);line('M27.5 38L36.5 38',dark,1.4);}
+  if(face.shape==='bug'){dot(32,27,15.5,metal);dot(25.4,25.6,6,screen);dot(38.6,25.6,6,screen);dot(25.4,25.6,3,led);dot(38.6,25.6,3,led);dot(26.6,24.2,.9,'#ffffff');dot(39.8,24.2,.9,'#ffffff');line('M28.4 35.6Q32 38 35.6 35.6',dark,1.4);line('M32 11.5L32 7',dark,1.4);dot(32,6,1.8,led);}
+  if(face.shape==='cat'){shape('M17.5 20L19.5 7.5L28.5 14.5Z',metal);shape('M46.5 20L44.5 7.5L35.5 14.5Z',metal);shape('M19.8 16.6L20.8 11L25 14.4Z',led);shape('M44.2 16.6L43.2 11L39 14.4Z',led);box(16,13.5,32,28,11,metal);
+    box(19.5,20.5,25,10.5,5,screen);line('M23.6 27Q26 24 28.4 27M35.6 27Q38 24 40.4 27',led,1.7);shape('M30.8 34.4L33.2 34.4L32 36Z',dark);line('M32 36L32 37.4M29.6 38Q32 39.6 34.4 38',dark,1);line('M21 35L16.5 34M21 37L16.5 38M43 35L47.5 34M43 37L47.5 38',dark,.8);}
+}
+// The illustration of a face, drawn here.
+function faceSvg(face) {
+  const svg=svgElement('svg',{viewBox:'6 2 52 52',class:'face','aria-hidden':'true',focusable:'false'});svg.dataset.face=face.id;svg.dataset.faceStyle='flat';
+  const add=(tag,attributes)=>{const node=svgElement(tag,Object.fromEntries(Object.entries(attributes).filter(([,value])=>value!=='')));svg.appendChild(node);return node;};
+  add('rect',{x:0,y:0,width:64,height:64,fill:face.bg});
+  (face.kind==='robot'?drawRobotFace:drawHumanFace)(add,face);
+  return svg;
+}
+// The picture of a face in the real or the anime manner: one of the files under /faces. A picture that cannot be
+// loaded gives way to the illustration of the same face.
+function facePicture(face,style) {
+  const image=document.createElement('img');image.className='face';image.alt='';image.setAttribute('aria-hidden','true');
+  image.decoding='async';image.draggable=false;image.width=256;image.height=256;image.dataset.face=face.id;image.dataset.faceStyle=style;
+  image.addEventListener('error',()=>{if(image.parentNode){const drawn=faceSvg(face);drawn.setAttribute('class',image.className);image.replaceWith(drawn);}},{once:true});
+  image.src=`/faces/${style}/${String(FACES.indexOf(face)+1).padStart(2,'0')}.webp`;
+  return image;
+}
+function faceElement(face,style) { return style==='real'||style==='anime'?facePicture(face,style):faceSvg(face); }
+// Which face an agent has: the faces are shuffled by the piece of work, and dealt in the order its agents joined.
+// The same work always shows the same faces; another piece of work has another cast.
+function faceSeed(text) { let seed=2166136261;for(const char of String(text)){seed^=char.codePointAt(0);seed=Math.imul(seed,16777619)>>>0;}return seed; }
+function faceOrder(runId) {
+  if(!ui.faceOrders)ui.faceOrders=new Map();
+  let order=ui.faceOrders.get(runId);if(order)return order;
+  let seed=faceSeed(runId);
+  order=FACES.map((_,index)=>index);
+  for(let index=order.length-1;index>0;index--){seed=(Math.imul(seed,1664525)+1013904223)>>>0;const other=seed%(index+1);[order[index],order[other]]=[order[other],order[index]];}
+  ui.faceOrders.set(runId,order);while(ui.faceOrders.size>64)ui.faceOrders.delete(ui.faceOrders.keys().next().value);
+  return order;
+}
+function agentFace(agent) {
+  const place=Math.max(0,(ui.state?.agents||[]).filter(item=>item.run_id===agent.run_id).findIndex(item=>item.id===agent.id));
+  return FACES[faceOrder(agent.run_id)[place%FACES.length]];
+}
+// The manners in use: the illustration and the real pictures, and the anime pictures only where the human ticked them.
+function faceStyles() { return ui.faceAnime===true?FACE_STYLES:FACE_STYLES.filter(style=>style!=='anime'); }
+// The manner of a piece of work: the one chosen on the screen, else one that goes with the work.
+function faceStyle(runId) { const styles=faceStyles();return styles.includes(ui.faceStyle)?ui.faceStyle:styles[faceSeed('style:'+runId)%styles.length]; }
+// The manner of the faces and the tick for the anime pictures are kept by the application (not by the browser):
+// what was saved is taken over when the configuration is read, and a change is saved at once.
+function applyFacePreferences(value) {
+  const anime=value?.face_anime===true,style=['flat','real','anime'].includes(value?.face_style)&&(value.face_style!=='anime'||anime)?value.face_style:'';
+  ui.faceAnime=anime;ui.faceStyle=style;
+  const select=$('faceStyleSelect'),box=$('faceAnimeAllow');if(!select||!box)return;
+  box.checked=anime;select.value=style||'auto';
+  const option=select.querySelector?.('option[value="anime"]');if(option)option.disabled=!anime;
+}
+async function saveFacePreferences() {
+  const wanted={face_style:ui.faceStyle||'auto',face_anime:ui.faceAnime===true},status=$('facePreferenceStatus');
+  try{await api('/api/preferences',{method:'PUT',body:wanted});if(status)status.textContent='';}
+  catch(_){if(status)status.textContent='絵柄の選択を保存できませんでした。この画面を開いている間は、選んだとおりに表示します。';}
+}
+function agentFaceSvg(agent) { return faceElement(agentFace(agent),faceStyle(agent.run_id)); }
 function retainedTeamEvents(run) {
   if(!run||(ui.compactState&&ui.loadedEventsRun!==run.id))return [];
   return ui.state.events.filter(event=>event.run_id===run.id).slice(-100);
@@ -1684,7 +1915,7 @@ function currentMailLinks(agents,events) {
   return [...pairs.values()].slice(-12);
 }
 function selectMailPair(from,to) {
-  ui.activityPair={from,to};ui.activityFilter='pair';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});
+  ui.activityPair={from,to};ui.activityFilter='pair';setCockpitView('progress');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});
 }
 function networkMailPath(from,to,index) {
   return networkLinkGeometry(from,to,index).path;
@@ -1865,6 +2096,7 @@ function fitNetwork() {
   if(!ui.networkLayout||!ui.selectedRun)return;
   const bounds=networkBounds(),viewport=networkViewport(),scale=Math.min(1,Math.max(.01,Math.min(viewport.width/bounds.width,viewport.height/bounds.height)));
   networkViewState().camera={scale,x:(viewport.width-bounds.width*scale)/2-bounds.x*scale,y:(viewport.height-bounds.height*scale)/2-bounds.y*scale};
+  networkViewState().fitPending=!$('teamMap').clientWidth;  // not on the screen now: its size was a guess
   paintNetworkCamera();
 }
 function zoomNetwork(factor,anchor) {
@@ -1967,7 +2199,7 @@ function initializeNetworkControls() {
 }
 function renderTeamMap(agents) {
   pruneNetworkViews();
-  const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,agents.map(agent=>[agent.id,agent.parent_id,agent.kind])]);
+  const map=$('teamMap'),layoutKey=JSON.stringify([ui.selectedRun,faceStyle(ui.selectedRun||''),agents.map(agent=>[agent.id,agent.parent_id,agent.kind])]);
   $('teamMapMeta').textContent=`${agents.length} 人`;
   const counts=[['作業中',agents.filter(a=>!archivedAgent(a)&&['working','running'].includes(a.status)).length],['待機',agents.filter(a=>!archivedAgent(a)&&['queued','waiting','idle'].includes(a.status)&&!needsHuman(a)).length],['要回答',agents.filter(needsHuman).length]];
   $('networkCounts').textContent=archivedRun(getRun())?'保存時点の担当と通信 · 現在は実行していません':counts.map(([label,count])=>`${label} ${count}`).join('  /  ');
@@ -1992,7 +2224,7 @@ function renderTeamMap(agents) {
       const place=layout.positions.get(agent.id),button=element('button','network-node');button.type='button';button.dataset.agentId=agent.id;button.dataset.networkRole=independentReviewer(agent)?'reviewer':agent.parent_id?'worker':'pm';button.dataset.focusKey=`map:${agent.id}`;
       button.style.left=`${place.x}px`;button.style.top=`${place.y}px`;
       const glyph=element('span','network-glyph'),inner=element('span','network-orb-inner'),monogram=element('span','network-monogram'),role=element('span','network-role',agentRoleTag(agent)),name=element('strong','network-name'),state=element('span','network-state');
-      glyph.setAttribute('aria-hidden','true');inner.append(monogram,role);button.append(glyph,inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
+      glyph.setAttribute('aria-hidden','true');const face=agentFaceSvg(agent);face.classList.add('network-face');inner.append(face,monogram,role);button.append(glyph,inner,name,state);button.addEventListener('click',event=>networkNodeClick(event,agent.id));button.addEventListener('pointerdown',event=>startNetworkGesture(event,agent.id));button.addEventListener('keydown',event=>networkNodeKey(event,agent.id));
       button.addEventListener('pointerenter',()=>{cancelNetworkPreviewDismiss();if(!ui.networkGesture){ui.networkHoverAgent=agent.id;renderNetworkPreview();}});
       button.addEventListener('pointerleave',event=>scheduleNetworkPreviewDismiss(event.relatedTarget));
       button.addEventListener('focus',()=>{cancelNetworkPreviewDismiss();ui.networkFocusAgent=agent.id;renderNetworkPreview();});
@@ -2136,7 +2368,7 @@ function renderCrewSummary(agents) {
   panel.append(total,bar,chips);
 }
 function renderAgents(agents) {
-  const signature=JSON.stringify([ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.read_only_worker,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
+  const signature=JSON.stringify([faceStyle(ui.selectedRun||''),ui.selectedAgent,ui.needsOnly,$('agentSearch').value,agents.map(agent=>[agent.id,agent.parent_id,agent.name,agent.profile_id,agent.configured_profile,agent.status,agent.status_reason,agent.stop_reason,agent.archived,agent.read_only,agent.read_only_worker,agent.assignment,agent.question,agent.last_error,workerDependencyLabel(agent),agentHierarchyLabel(agent),hasMessageInput(agent)])]);if(signature===ui.rosterSignature)return;ui.rosterSignature=signature;
   $('agentCount').textContent=String(agents.length);$('agentCards').replaceChildren();$('rosterEmpty').hidden=filteredAgents(agents).length>0;$('rosterEmpty').textContent=agents.length?'条件に一致するエージェントはいません。':'チームを開始すると、ここに担当者が並びます。';
   crewOrder(filteredAgents(agents)).forEach((agent,index)=>{
     const card=element('button','agent-card'+(agent.id===ui.selectedAgent?' selected':''));card.type='button';card.dataset.agentId=agent.id;card.dataset.focusKey=`agent:${agent.id}`;card.setAttribute('aria-pressed',String(agent.id===ui.selectedAgent));
@@ -2144,7 +2376,7 @@ function renderAgents(agents) {
     const top=element('div','agent-card-top'),stateLine=element('span','agent-state-line'),inputBadge=messageInputBadge(agent);
     const glyph=element('span','crew-glyph',CREW_STATES[crew].glyph);glyph.setAttribute('aria-hidden','true');
     stateLine.append(archivedAgent(agent)?element('span','status-badge archived',stateLabel(agent)):badge(agent.status,agent.status_reason,agent));if(inputBadge)stateLine.append(inputBadge);
-    const avatar=element('span','agent-avatar');avatar.append(element('span','agent-avatar-ring'),glyph,element('span','agent-avatar-mark',independentReviewer(agent)?'R':!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`));avatar.setAttribute('aria-hidden','true');
+    const avatar=element('span','agent-avatar has-face');avatar.append(agentFaceSvg(agent),element('span','agent-avatar-ring'),glyph,element('span','agent-avatar-mark',independentReviewer(agent)?'R':!agent.parent_id?'PM':`W${agents.filter(item=>item.parent_id).findIndex(item=>item.id===agent.id)+1}`));avatar.setAttribute('aria-hidden','true');
     top.append(avatar,stateLine);
     const profile=configuredProfile(agent),model=element('span','agent-model',profile?profileLabel(profile):'開始時の設定情報なし');
     model.title=configuredProfileLabel(agent)+'（応答モデル未確認）';
@@ -2351,7 +2583,8 @@ function approvalEntries() {
     archivedRun(run)||['stopping','stopped'].includes(run.status)?[]:ui.state.agents.filter(agent=>agent.run_id===run.id&&pendingApproval(agent)).map(agent=>({run,agent})));
 }
 function renderApprovalSummary() {
-  const count=approvalEntries().length;$('approvalQueue').hidden=!count;setVisibleText($('approvalCount'),String(count));
+  const entries=approvalEntries(),count=entries.length;$('approvalQueue').hidden=!count;setVisibleText($('approvalCount'),String(count));
+  syncApprovalNotifications(entries);
 }
 function openNextApproval() {
   if($('taskDialog').open||$('settingsDialog').open)return;
@@ -2535,6 +2768,8 @@ function renderConversation(agent) {
   if(detailStatus.textContent!==detailMessage)detailStatus.textContent=detailMessage;
   $('conversationLog').setAttribute('aria-busy',String(loading));$('resultsPanel').setAttribute('aria-busy',String(loading));
   $('conversationTitle').textContent=agent?(agent.name||agent.id):'作業ログ';
+  const faceHolder=$('conversationFace'),faceKey=agent?`${agent.run_id}:${agent.id}:${faceStyle(agent.run_id)}`:'';
+  if(faceHolder.dataset.agent!==faceKey){const face=agent?agentFace(agent):null;faceHolder.dataset.agent=faceKey;faceHolder.replaceChildren(...(face?[agentFaceSvg(agent)]:[]));faceHolder.title=face?face.name:'';faceHolder.hidden=!face;}
   $('conversationMeta').textContent=agent?`${agentRoleLabel(agent)} · ${agent.profile_id} · 応答 ${agent.turns||0} 回`:'';
   const memory=agent?.context_memory;
   $('contextMemoryStatus').hidden=!memory;
@@ -2811,10 +3046,31 @@ function mailLifecycleLabel(row) {
   const delay=row.queued!==null&&row.consumed!==null&&row.consumed>=row.queued?`（間隔 ${observedSeconds(row.consumed-row.queued)}）`:'';
   return `${from} → ${to}${delay}`;
 }
+// For the human, in one place: the files that were asked for, the files that were saved (where, and by whom),
+// how the review stands, and the tests. The same facts stand in sentences at the end of the coordinator's result.
+const REVIEW_STATE_LABELS={waiting:'確認中（レビュー担当が保存済みのファイルを読んでいます）',pass:'合格',fix:'要修正（指摘あり）',unclear:'判定の記載なし',skipped:'行われませんでした'};
+function renderDeliverables(run) {
+  const panel=$('deliverablesPanel');if(!panel)return;
+  const text=value=>typeof value==='string'?value:'',list=value=>Array.isArray(value)?value:[];
+  const expected=list(run?.output_check?.expected).filter(name=>typeof name==='string').slice(0,12),missing=new Set(list(run?.output_check?.missing));
+  const files=list(run?.deliverables?.files).filter(file=>file&&typeof file==='object'&&text(file.name)).slice(-24);
+  const review=Object.hasOwn(REVIEW_STATE_LABELS,run?.deliverables?.review)?run.deliverables.review:'',resaved=list(run?.deliverables?.resaved).filter(name=>typeof name==='string').slice(0,12);
+  const tests=testCheckLabel(run?.test_check);
+  const signature=run?JSON.stringify([run.id,expected,[...missing],files,review,resaved,tests]):'';
+  panel.hidden=!run||!(expected.length||files.length||review||tests);
+  if(signature===ui.deliverablesSignature)return;ui.deliverablesSignature=signature;
+  const content=$('deliverablesContent');content.replaceChildren();if(panel.hidden)return;
+  const row=(label,...items)=>{const line=element('div','deliverable-row');line.append(element('strong','',label));const body=element('div','deliverable-items');body.append(...items);line.appendChild(body);content.appendChild(line);};
+  if(expected.length)row('依頼されたファイル',...expected.map(name=>element('p',missing.has(name)?'deliverable missing':'deliverable saved',`${missing.has(name)?'未保存':'保存済み'}: ${name.slice(0,120)}`)));
+  if(files.length)row('保存されたファイル',...files.map(file=>{
+    const item=element('p','deliverable-file');item.append(element('span','deliverable-name',text(file.name).slice(0,120)),element('span','deliverable-by',text(file.by)?`（${text(file.by).slice(0,60)}）`:''),element('span','deliverable-path',text(file.path).slice(0,400)));return item;}));
+  if(review)row('提出前のレビュー',element('p',`deliverable review-${review}`,REVIEW_STATE_LABELS[review]+(resaved.length?` · 指摘のあとに保存し直されたファイル: ${resaved.map(name=>name.slice(0,60)).join('、')}`:'')));
+  if(tests)row('テスト',element('p','deliverable',tests));
+}
 function renderCoordinationMonitor(run,agents) {
   const panel=$('coordinationMonitor');if(!panel)return;panel.hidden=!run;if(!run)return;
   const c=run.coordination,rows=mailLifecycles(retainedTeamEvents(run),run.id);
-  const signature=JSON.stringify([run.id,run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.worker_dependencies,a.provider_observation]),rows]);
+  const signature=JSON.stringify([run.id,faceStyle(run.id),run.archived,ui.networkConnected,c,agents.map(a=>[a.id,a.name,a.coordination,a.worker_dependencies,a.provider_observation]),rows]);
   if(signature===ui.monitorSignature)return;ui.monitorSignature=signature;
   const content=$('coordinationContent');content.replaceChildren();
   const name=id=>agents.find(a=>a.id===id)?.name||id||'未記録';
@@ -2833,7 +3089,7 @@ function renderCoordinationMonitor(run,agents) {
   for(const agent of agents) {
     const text=agentMonitorText(agent);if(!text)continue;
     const card=element('button','monitor-agent');card.type='button';card.dataset.focusKey=`monitor-agent:${run.id}:${agent.id}`;
-    card.append(element('strong','',agent.name||agent.id),element('span','',text));card.addEventListener('click',()=>selectAgent(agent.id));crew.appendChild(card);
+    card.append(agentFaceSvg(agent),element('strong','',agent.name||agent.id),element('span','',text));card.addEventListener('click',()=>selectAgent(agent.id));crew.appendChild(card);
   }
   content.appendChild(crew);
   const mail=$('mailLifecycleList');mail.replaceChildren();
@@ -2847,7 +3103,7 @@ function renderCoordinationMonitor(run,agents) {
 function renderRunContent() {
   reconcileTaskReuse();syncTaskReuseControl();
   const run=getRun();renderArchiveNotice(run);$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;$('networkWorkspace').hidden=!run;renderWorkBoard(run);
-  const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderApprovalSummary();renderMessageInputSummary();renderCoordinationMonitor(run,agents);renderFormation(run);
+  const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderApprovalSummary();renderMessageInputSummary();renderDeliverables(run);renderCoordinationMonitor(run,agents);renderFormation(run);
   $('rosterHeading').textContent=ui.needsOnly?'質問':'担当';
   $('rosterScope').textContent=ui.needsOnly?'全チーム · チームの開始順。開くだけでは回答・再開しません。':run?`表示中のチーム · ${shortRunId(run)}`:'選択したチームの担当者';
   $('agentSearchLabel').textContent=ui.needsOnly?'全チームの質問・依頼・担当者を検索':'エージェントを検索';
@@ -2861,7 +3117,7 @@ function renderRunContent() {
   $('collaborationLimitNotice').hidden=!collaborationBlocked;
   $('collaborationLimitNotice').textContent=collaborationBlocked?'自動連携が上限に達したため、新しい委任・メール・完了通知を停止しました。この連携上限だけでは、開始済み・待機中の作業は停止しません。停止したチームは再開できません。上限を変更して続ける場合は、作業の停止後に設定を保存し、新しい作業を開始してください。追加の指示や回答では回数はリセットされません。':'';
   $('stopRun').disabled=!canStopRun(run);
-  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(typeof run.review==='boolean'&&run.adaptive_team!==true?[['提出前のレビュー',run.review?'あり（レビュー担当が成果物を確認）':'なし（この作業では省略）']]:[]),...(run.python===true?[['Python の実行','この作業で許可']]:[]),...(run.browser_operation===true?[['ブラウザ内の操作','この作業で許可（ページを開く・クリック・入力）']]:[]),...(run.screen_view===true?[['画面の閲覧','この作業で許可（撮るたびに承認。操作はしない）']]:[]),...(run.browser_fetch===true?[['ブラウザ操作','この作業で許可（拒否されたとき、画面に表示して1回だけ試す）']]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(outputCheckLabel(run.output_check)?[['依頼されたファイル',outputCheckLabel(run.output_check)]]:[]),...(searchUseLabel(run.search_use)?[['Web の利用',searchUseLabel(run.search_use)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
+  const metricValues=[['自動連携',`${run.auto_collaborations??0} / ${run.max_auto_collaborations??24}`],[run.budget?.shared===true?'モデル呼び出し（チーム共有）':'モデル呼び出し',sharedBudgetCount(run,'model_calls',run.model_calls||0)],[run.budget?.shared===true?'ツール実行（チーム共有）':'ツール実行',sharedBudgetCount(run,'tool_calls',run.tool_calls||0)],...sharedBudgetMetrics(run),...runtimeStopMetrics(run),['作業者の上限',run.max_workers||0],['PMの分担方針',run.adaptive_team===true?'自動編成（手動方針は未使用）':delegationLabel(run.delegation_level)],['委任深さ上限',delegationDepthLabel(run.max_delegation_depth)],['PMごとの委任人数',run.adaptive_team===true?'自動編成では未使用':Number.isInteger(run.workers_per_pm)?`${run.workers_per_pm} 人${run.delegation_level===0?'（未使用）':''}`:'未記録'],...(Object.hasOwn(APPROVAL_MODE_LABELS,run.approval_mode)?[['操作の承認',APPROVAL_MODE_LABELS[run.approval_mode]]]:[]),...(typeof run.review==='boolean'&&run.adaptive_team!==true?[['提出前のレビュー',run.review?'あり（レビュー担当が成果物を確認）':'なし（この作業では省略）']]:[]),...(run.python===true?[['Python の実行','この作業で許可']]:[]),...(run.browser_operation===true?[['ブラウザ内の操作','この作業で許可（ページを開く・クリック・入力）']]:[]),...(run.persona===true?[['担当の口調','顔のキャラクターに合わせる（言い回しだけ）']]:[]),...(run.screen_view===true?[['画面の閲覧','この作業で許可（撮るたびに承認。操作はしない）']]:[]),...(run.browser_fetch===true?[['ブラウザ操作','この作業で許可（拒否されたとき、画面に表示して1回だけ試す）']]:[]),...(testCheckLabel(run.test_check)?[['テストの実行',testCheckLabel(run.test_check)]]:[]),...(outputCheckLabel(run.output_check)?[['依頼されたファイル',outputCheckLabel(run.output_check)]]:[]),...(searchUseLabel(run.search_use)?[['Web の利用',searchUseLabel(run.search_use)]]:[]),...(Number.isInteger(run.turn_work?.total)?[['手番',`${run.turn_work.done??0} / ${run.turn_work.total}${run.turn_work.status==='complete'?'（終了）':run.turn_work.current?` · 次は ${String(run.turn_work.current).slice(0,24)}`:''}`]]:[])],metricSignature=JSON.stringify([run.id,metricValues]);
   if(metricSignature!==ui.metricSignature){ui.metricSignature=metricSignature;const metrics=$('runMetrics');metrics.replaceChildren();for(const [label,value] of metricValues){const metric=element('span','metric',label);metric.appendChild(element('b','',value));metrics.appendChild(metric);}}
   renderTeamMap(agents);renderAgentTabs(agents);renderConversation(getAgent());renderActivity(run);
 }
@@ -2942,9 +3198,20 @@ async function initialize() {
   $('openQuestionNotice').addEventListener('click',()=>{if($('taskDialog').open||$('settingsDialog').open)return;const entry=questionEntries()[0];if(entry)openQuestion(entry.agent.id);});
   renderQuestionNotice(questionEntries());
   initializeNetworkControls();
+  $('progressView').addEventListener('click',()=>setCockpitView('progress'));
+  // The manner the faces are drawn in, for as long as this page is open: one of the three, or whatever goes with each piece of work.
+  $('faceStyleSelect').addEventListener('change',event=>{ui.faceStyle=faceStyles().includes(event.target.value)?event.target.value:'';renderRun();void saveFacePreferences();});
+  // The anime pictures are used only while this is ticked (it starts unticked): then they join the manners that go with
+  // each piece of work, and can be chosen. Unticked again, a choice of anime goes back to "whatever goes with the work".
+  $('faceAnimeAllow').addEventListener('change',event=>{
+    ui.faceAnime=event.target.checked===true;const select=$('faceStyleSelect'),anime=select.querySelector('option[value="anime"]');
+    if(anime)anime.disabled=!ui.faceAnime;
+    if(!ui.faceAnime&&(ui.faceStyle==='anime'||select.value==='anime')){ui.faceStyle='';select.value='auto';}
+    renderRun();void saveFacePreferences();
+  });
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
   $('networkOpenWindow')?.addEventListener('click',openNetworkWindow);
-  if(NETWORK_POPOUT){document.documentElement.dataset.layout='network-popout';document.title='Mission Network · Workbench';}
+  if(NETWORK_POPOUT){ui.cockpitView='network';document.querySelector('.app-shell').dataset.cockpitView='network';$('progressView').setAttribute('aria-pressed','false');$('networkView').setAttribute('aria-pressed','true');document.documentElement.dataset.layout='network-popout';document.title='Mission Network · Workbench';}
   $('boardView').addEventListener('click',()=>setCockpitView('board'));
   $('workBoardForm').addEventListener('submit',event=>{event.preventDefault();void submitWorkBoardPost();});
   $('workBoardInput').addEventListener('input',event=>{saveWorkBoardDraft(event);renderWorkBoardControls(getRun());});
@@ -2957,7 +3224,7 @@ async function initialize() {
   $('workBoardRetry').addEventListener('click',()=>{const run=getRun();if(run)void submitWorkBoardPost(true);});
   $('inspectorView').addEventListener('click',()=>setCockpitView('inspector'));
   for(const [id,filter] of [['activityAll','all'],['activityMail','mail'],['activitySelected','selected']])$(id).addEventListener('click',()=>{ui.activityFilter=filter;renderActivity(getRun());});
-  $('inspectAgentMail').addEventListener('click',()=>{ui.activityFilter='selected';setCockpitView('network');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});});
+  $('inspectAgentMail').addEventListener('click',()=>{ui.activityFilter='selected';setCockpitView('progress');renderActivity(getRun());$('activityTitle').focus({preventScroll:true});});
   $('resultSelection').addEventListener('change',()=>{ui.outputSelections.set(outputOwner(),$('resultSelection').value);renderResults(getAgent());$('resultText').scrollTop=0;});
   $('copyResult').addEventListener('click',copySelectedOutput);$('restoreReceipt').addEventListener('click',restoreSelectedReceipt);$('stopAgent').addEventListener('click',stopSelectedAgent);$('exportResult').addEventListener('click',exportSelectedOutput);
   $('navWork').addEventListener('click',()=>showView('work'));$('navSettings').addEventListener('click',openSettings);
@@ -3066,7 +3333,7 @@ async function initialize() {
   try {
     const fragment=new URLSearchParams(location.hash.slice(1)),token=fragment.get('token');
     if(token){history.replaceState(null,'',location.pathname+location.search);acceptServerInstance(await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}}));}
-    const response=await api('/api/config');ui.config=response.config;ui.configRevision=response.config_revision;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);ui.authenticated=true;renderSettings();renderProfileChoices();await pollState();
+    const response=await api('/api/config');ui.config=response.config;applyFacePreferences(response.preferences);ui.configRevision=response.config_revision;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);ui.authenticated=true;renderSettings();renderProfileChoices();await pollState();
   }catch(error){notice(errorText(error),true);setConnection(false,'Workbench 接続待ち');$('startRun').disabled=true;}
   window.setInterval(()=>pollState(),1000);
 }

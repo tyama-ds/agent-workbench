@@ -80,9 +80,9 @@ setConnection(true,'online');assert.equal(document.activeElement.dataset.focusKe
 ''')
 
 
-def test_lifecycle_from_board_switches_to_visible_network_without_sending():
+def test_lifecycle_from_board_switches_to_the_messages_without_sending():
     check(r'''
 prepareNetwork([mail(1)]);setCockpitView('board');renderRun();
 const row=monitorNodes($('mailLifecycleList')).find(n=>n.tagName==='BUTTON');row.listeners.click();
-assert.equal(ui.cockpitView,'network');assert.deepEqual(ui.activityPair,{from:'agent-a',to:'agent-b'});assert.equal(document.activeElement,$('activityTitle'));assert.equal(requests.length,0);
+assert.equal(ui.cockpitView,'progress');assert.deepEqual(ui.activityPair,{from:'agent-a',to:'agent-b'});assert.equal(document.activeElement,$('activityTitle'));assert.equal(requests.length,0);
 ''')

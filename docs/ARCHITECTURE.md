@@ -865,6 +865,48 @@ the human turned it on (0.1.1.dev61; off by default).
   opener is set only when the run has `browser_fetch`), and what its result
   means; `Engine._browser_tries_publish` turns each try into an event.
 
+## The centre's tabs and the faces (0.1.1.dev90)
+
+- `ui.cockpitView` is `progress` (the default), `network`, `board` or
+  `inspector`; `setCockpitView` writes it to `.app-shell[data-cockpit-view]`
+  and the pressed state of the four buttons. The style sheet's last block
+  hides the diagram in `progress` and the status cards and messages in
+  `network`; the diagram's own window (`data-layout=network-popout`) is
+  left out of those rules and starts in `network`.
+- A diagram laid out while it is not on the screen is fitted with a
+  guessed size (`networkViewport`); `fitNetwork` marks that as
+  `fitPending` and `setCockpitView('network')` fits it again.
+- `FACES` lists the characters; `faceSvg(face)` builds the illustration of one as SVG elements
+  with presentation attributes only (the content policy allows no style
+  attributes). `faceOrder(runId)` shuffles the list with a generator seeded
+  by the run's id (no `Math.random`), and `agentFace(agent)` takes the
+  face at the agent's place among the run's agents.
+- `faceElement(face, style)` gives the illustration (`faceSvg`) for
+  `flat` and an `img` (`facePicture`) for `real` and `anime`, whose file
+  is the character's number under `/faces/<style>/`. `server.face` serves
+  those files after checking the style and the name against
+  `FACE_STYLES` and `FACE_FILE`; the middleware lets only these responses
+  be cached. `faceStyles()` leaves `anime` out unless `ui.faceAnime` is
+  true; `faceStyle(runId)` is the chosen `ui.faceStyle` when it is in use,
+  else a manner seeded by the run's id. The manner is part of the refresh
+  keys of the list, the status cards and the diagram.
+- `personas.CHARACTERS` gives each character its manner of speaking and
+  `personas.order(run_id)` repeats the screen's shuffle (`faceOrder`).
+  `Engine._persona_policy(run, agent)` appends `personas.policy(...)` to
+  `_policy` when `run['persona']` is true, except for reviewers, ordered
+  work and turn players. `Engine.persona_default` is the shipped default
+  (true); the test suite and the scripted fixtures set it false.
+- `VerificationMixin._deliverables_publish(run)` writes `run['deliverables']`
+  from `_saved_paths`, `_output_writes` and `_review` whenever a file is
+  saved or the review changes state; `renderDeliverables` shows it with
+  `output_check` and `test_check`. `syncApprovalNotifications` mirrors
+  `syncQuestionNotifications` for `agent.approval`.
+- `preferences.Preferences` keeps `{face_style, face_anime}` in
+  `ui-preferences.json`; `Engine.public_config` returns it as
+  `preferences`, the page applies it with `applyFacePreferences` wherever
+  it takes over a configuration, and `saveFacePreferences` sends a change
+  to `PUT /api/preferences`.
+
 ## Looking at the screen (0.1.1.dev89)
 
 - `screen.capture()` pictures the primary screen through GDI (`StretchBlt`

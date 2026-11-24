@@ -5,6 +5,8 @@ const path=require('node:path');
 
 async function networkInteractionAcceptance({page,fixture,artifacts,report}) {
   const previousViewport=page.viewportSize(),previousEvents=fixture.events,previousDraft=await page.locator('#messageInput').inputValue();
+  // This test is about the team diagram: it opens that tab (the centre opens on 進み具合) and leaves on 進み具合.
+  await page.locator('#networkView').click();
   const node=page.locator('#teamMap [data-agent-id="fixture-worker-1"]');
   const geometry=()=>page.evaluate(()=>({
     left:parseFloat(document.querySelector('#teamMap [data-agent-id="fixture-worker-1"]').style.left),
@@ -132,9 +134,12 @@ async function networkInteractionAcceptance({page,fixture,artifacts,report}) {
     await page.locator('#activityFeed').filter({hasText:'[SYNTHETIC] Recorded mail only'}).waitFor();
     await page.locator('#activityFeed .activity-item').nth(2).waitFor();
     assert.equal(await page.locator('#activityFeed .activity-item').count(),3,'Mail edge filters only the recorded pair and keeps separate queue/consumption records');
-    await line.focus();await page.keyboard.press('Enter');await page.locator('#activityTitle:focus').waitFor();
+    // The pair's messages are on 進み具合: the mail edge led there. Back on the diagram, the keyboard leads there as well.
+    assert.equal(await page.locator('#progressView').getAttribute('aria-pressed'),'true','A mail edge opens the tab that holds the messages');
+    await page.locator('#networkView').click();await line.focus();await page.keyboard.press('Enter');await page.locator('#activityTitle:focus').waitFor();
     assert.match(await page.locator('#activityFeed').textContent(),/会話へ取り込み済み/);
     assert.match(await page.locator('#activityFeed').textContent(),/理解・完了の確認ではありません/);
+    await page.locator('#networkView').click();
     await node.click();if(await node.getAttribute('aria-pressed')!=='true')await node.click();
     await page.screenshot({path:path.join(artifacts,'interactive-network-desktop.png'),fullPage:true});
     await page.setViewportSize({width:1920,height:1080});await page.locator('#networkFit').click();
@@ -172,7 +177,7 @@ async function networkInteractionAcceptance({page,fixture,artifacts,report}) {
     fixture.events=previousEvents;await page.emulateMedia({reducedMotion:'reduce'});await page.setViewportSize(previousViewport);await page.locator('#networkView').click();await page.locator('#networkReset').click();
     if(await page.locator('#networkPreview').isVisible())await page.locator('#networkPreviewClose').click();
     const refreshed=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/state');
-    await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();await page.locator('#activityAll').click();
+    await page.locator('#agentCards [data-agent-id="fixture-pm"]').click();await page.locator('#progressView').click();await page.locator('#activityAll').click();
     await (await refreshed).finished();await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
     await page.locator('#messageInput').fill(previousDraft);
   }

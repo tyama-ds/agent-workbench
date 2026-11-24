@@ -350,7 +350,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab reaches optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false,'The default single-PM scenario keeps additional PM controls collapsed');
     assert.equal(await page.locator('#adaptiveTeam').isChecked(),false,'The retained-worker focus scenario remains in manual mode');
-    for(const id of ['reviewAllow','adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults','approvalAlwaysAllow','screenViewAllow']){
+    for(const id of ['reviewAllow','personaAllow','adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults','approvalAlwaysAllow','screenViewAllow']){
       await page.keyboard.press('Tab');
       assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
     }
@@ -388,7 +388,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     assert.equal(await page.locator('#additionalPMSettings > summary').evaluate(node=>node===document.activeElement),true,'Native Tab preserves the optional PM disclosure before worker choices');
     assert.equal(await page.locator('#additionalPMSettings').evaluate(node=>node.open),false);
     assert.equal(await page.locator('#adaptiveTeam').isChecked(),false,'The removed-worker focus scenario remains in manual mode');
-    for(const id of ['reviewAllow','adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults','approvalAlwaysAllow','screenViewAllow']){
+    for(const id of ['reviewAllow','personaAllow','adaptiveTeam','delegationLevel','workersPerPM','maxDelegationDepth','useOrchestrationDefaults','approvalAlwaysAllow','screenViewAllow']){
       await page.keyboard.press('Tab');
       assert.equal(await page.locator('#'+id).evaluate(node=>node===document.activeElement),true,'Native Tab reaches the current orchestration control '+id);
     }
@@ -472,7 +472,7 @@ async function settingsSaveAcceptance({page,context,origin,providerUrl,providerR
     await page.locator('#settingsLockStatus').scrollIntoViewIfNeeded();await screenshot('active-lock-desktop');
     await page.setViewportSize({width:390,height:844});await page.locator('#settingsLockStatus').scrollIntoViewIfNeeded();await screenshot('active-lock-narrow');
     await closeSettingsDialog(page);
-    if(await page.locator('#networkView').getAttribute('aria-pressed')!=='true')await page.locator('#networkView').click();
+    if(await page.locator('#progressView').getAttribute('aria-pressed')!=='true')await page.locator('#progressView').click();
     await page.locator('#stopRun').click();await waitRun(activeRunId,'stopped');activeRunId=null;
     await page.locator('#activeRunStatus').filter({hasText:'停止'}).waitFor();await openSettings();
     assert.equal(await page.locator('#saveSettings').isEnabled(),true);await closeSettingsDialog(page);

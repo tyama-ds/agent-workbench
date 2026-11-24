@@ -4,6 +4,94 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev90 — One thing at a time in the centre; a face for every agent (2026-11-18)
+
+"The screen is split into too many panels and has become hard to read."
+The centre stacked the run's numbers, the automatic team, the status of
+every agent, the team diagram and the messages, each in its own box and
+each with its own scrolling, and showed every agent four times (the list,
+the status cards, the diagram, the detail).
+
+- The centre shows one thing at a time. The buttons at the top are its
+  tabs: 進み具合 (who is doing what, and the messages; where the screen
+  opens), チーム図 (the diagram alone, with the room it needs), 掲示板,
+  and 担当ログ. A link that leads to the messages opens 進み具合.
+- The run's numbers and settings are one line away ("予算と設定の詳細")
+  instead of three rows that are always there.
+- Every agent has a face: 26 characters (18 people, 8 robots). They stand in
+  the list, on the status cards, in the diagram and beside the selected
+  agent's name. Each piece of work shuffles the faces by its id and deals
+  them in the order its agents joined: one work keeps its cast, another
+  work has another.
+- The start screen and the settings are as they were.
+
+Three manners: an illustration, and two sets of pictures (2026-11-18)
+
+- The drawn "real" and "anime" manners were tried and set aside: shapes
+  drawn in the page do not make a photograph or an anime drawing. The
+  project's owner had the 26 characters made with an image model in both
+  manners (fictional characters, no real person) and supplied them as
+  1024-pixel WebP files. They are kept under `static/faces/real` and
+  `static/faces/anime` at 256 pixels (417 KB in all), with a note of where
+  they came from.
+- イラスト is still drawn in the page. リアル and アニメ are those
+  pictures, served from `/faces/<style>/<NN>.webp`: signed-in pages only,
+  the two folders and the 26 names only. They are the one thing the page
+  may keep (a day), so that a list drawn again does not fetch its faces
+  again; everything else stays uncached. A picture that cannot be loaded
+  gives way to the illustration of the same face.
+- The anime set is used only while "アニメ絵も使う" is ticked; the page
+  opens with it unticked. Unticked, no piece of work is shown in that
+  manner and it cannot be chosen.
+- A piece of work is shown in one manner, chosen by its id from those in
+  use. "顔の絵柄" fixes one for as long as the page is open. Neither
+  choice is stored.
+
+A manner of speaking for each face (2026-11-18)
+
+- "Make the way they talk fit the pictures." Every character has a manner
+  of speaking (`workbench/personas.py`): the man in the black suit says
+  little and says it flatly, the newcomer is eager, the cat-eared robot
+  ends its sentences with "にゃ". An agent is told the manner of the
+  character the screen shows it as, at the end of its instructions.
+- The server deals the characters with the same shuffle as the screen (a
+  test compares the two), so the manner belongs to the face the human
+  sees.
+- It is wording only: facts, numbers, quotations and fixed formats stay
+  as they are, and the contents of files are written in the style the
+  task calls for. Reviewers (their verdict is parsed), ordered work and
+  turn-taking are left out.
+- The start screen has "担当が、顔のキャラクターに合った口調で話す",
+  ticked; unticked, that piece of work speaks plainly. Tests and scripted
+  fixtures run without it, like the reviewer.
+- Not verified here: how a real model carries a manner, and whether a
+  small model lets it leak into files or drop content.
+
+Approvals are announced; what was saved stands in one place (2026-11-24)
+
+- A question that waited for the human was announced by the browser; an
+  operation that waited for approval was not, and two kinds of approval
+  (a look at the screen, a site's check) count as refused after three
+  minutes. A waiting approval is now announced the same way: once per
+  request, saying nothing of what is asked, closed when it is answered,
+  and leading to the request when clicked. The permission is the one the
+  question announcements use.
+- The progress tab has "成果物": the files that were asked for (saved or
+  not), the files that were saved (where, and by whom), how the review
+  before completion stands, and the tests. Until now this stood in
+  sentences at the end of the coordinator's result. The run publishes
+  `deliverables` for it.
+
+The face choices are kept (2026-11-24)
+
+- The manner of the faces and the tick for the anime pictures were held
+  in the page and gone at the next reload. They are kept by the
+  application now, in `ui-preferences.json` beside the settings: read
+  with the configuration, saved at once when changed, also while a team
+  runs. They are not settings of the work and not part of a settings
+  backup. A choice of anime without the tick does not stand, when saved
+  and when read. The page's own storage is still not used.
+
 ## 0.1.1.dev89 — Looking at the screen (2026-11-18)
 
 Desktop, first stage: an agent can be shown the screen. It cannot operate

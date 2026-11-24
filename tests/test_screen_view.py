@@ -10,6 +10,7 @@ import json
 import os
 import struct
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -218,6 +219,17 @@ async def test_where_the_screen_cannot_be_pictured_the_choice_is_refused_at_the_
         await asyncio.wait_for(engine.close(), 20)
 
 
+async def finished(engine, seconds=60):
+    """settled(), with the patience a slow disk needs: the history is saved at every event of a run."""
+    end = time.monotonic() + seconds
+    while True:
+        try:
+            return await settled(engine)
+        except AssertionError:
+            if time.monotonic() > end:
+                raise
+
+
 async def approving(engine):
     """The human at the screen: approves every look that is asked for."""
     while True:
@@ -241,9 +253,9 @@ async def test_the_model_sees_the_latest_picture_with_its_next_requests(tmp_path
     human = asyncio.create_task(approving(engine))
     try:
         run, pm = await asyncio.wait_for(start(engine, max_workers=0, screen_view=True, task='画面を見て、開いているものを教えて'), 20)
-        await asyncio.wait_for(settled(engine), 20)
+        await finished(engine)
         engine.enqueue(pm, 'もう一度見てください')
-        await asyncio.wait_for(settled(engine), 20)
+        await finished(engine)
         assert taken == [1, 2] and len(seen) == 4
         first, second = (base64.b64encode(b'PNG%d' % n).decode('ascii') for n in (1, 2))
         # Before the look there is no picture; after it, the picture goes with each request that holds its result.
@@ -276,7 +288,7 @@ async def test_a_model_connection_that_cannot_take_a_picture_is_told_and_the_wor
     human = asyncio.create_task(approving(engine))
     try:
         run, pm = await asyncio.wait_for(start(engine, max_workers=0, screen_view=True, task='画面を見て'), 20)
-        await asyncio.wait_for(settled(engine), 20)
+        await finished(engine)
         # The request with the picture was turned away; the same request went again without it, with a note
         # that the screen was not seen.
         assert taken == [1] and [with_picture for with_picture, _ in seen] == [True, False]
