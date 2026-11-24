@@ -4,6 +4,58 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev92 — Copilot is given the rules first, and only this application's rules (2026-11-25)
+
+"When the bridge is used from here, the tools are explained first, and the
+instruction right after that is answered without a tool request. With the
+explanation, then something else, then the instruction, it works. Can
+there be such a warm-up?"
+
+- The bridge puts everything a new Copilot chat needs into its first
+  message: its own rules, this application's exchange rules and operation
+  list, and the first instruction. Copilot's first answer then often
+  speaks about the rules instead of following them.
+- The warm-up is the bridge's (copilot-bridge, `warmup`): the rules go
+  first and are answered with a bare acknowledgement that the bridge
+  throws away; the conversation follows in the next message of the same
+  chat. It happens again whenever the bridge has to start the chat anew
+  (history rewritten by a summary, a browser restart, another model).
+- This application asks for it with the header `X-Bridge-Warmup: 1` on
+  every request of the managed Copilot agent. A bridge that does not know
+  the header ignores it; the human can turn it off at the bridge
+  (`"warmup": "off"`). No request is added here, and nothing is sent to
+  other Local servers.
+- Cost: one more exchange with Copilot for each new chat.
+
+Reading the bridge for this showed two more things about how the managed
+Copilot agent reaches Copilot.
+
+- Two formats in one message. The bridge wrapped every new chat in its
+  own rules: write `<tool_call>` blocks, mark a final answer, "no actions:
+  just answer normally" (the tools list of these requests is empty), and
+  "the format of this document takes precedence". The exchange rules of
+  this application (one JSON object) came after that, as "reference".
+  Requests of the managed agent now carry `X-Bridge-Format: own`
+  (copilot-bridge, `own_format`): the bridge sends the system text and
+  the conversation as they are, adds no reminder to later messages, does
+  not read the answer for operations, strips no mark and asks for no
+  rewording. The answer comes back as Copilot wrote it, and is checked
+  here as before.
+- A new Copilot chat for every turn. The bridge continues a chat when
+  the history it is sent begins with what it sent and received. This
+  application sends the last answer back as its own record (with the
+  call ids it issued), not as Copilot's text, so nothing ever matched:
+  every request started a new chat with the rules and the whole history.
+  With `X-Bridge-Format: own` and the conversation id, the bridge takes
+  that record as the continuation and sends it (so that the ids can be
+  followed) together with what was added since. A history that was
+  rewritten before that point (a summary) still starts a new chat.
+- Not verified here: that Copilot's first answer is in the format after
+  the warm-up; that it keeps to the format over a long chat now that the
+  rules are not sent again with every turn (an answer out of format still
+  fails that turn here, and the request that follows starts a new chat
+  with the rules). No Copilot is reached from here.
+
 ## 0.1.1.dev91 — The bridge check says what did not fit; a report's file is come to by its pages (2026-11-24)
 
 "The Copilot bridge's API cannot be reached; check the route." The route

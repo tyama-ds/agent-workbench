@@ -490,6 +490,20 @@ def _request_headers(kind: str, profile: dict, conversation_id: str | None) -> d
     headers = {"Content-Type": "application/json"}
     if kind == "local" and conversation_id:
         headers["X-Conversation-Id"] = re.sub(r"[^A-Za-z0-9_./:-]", "_", conversation_id)[:128]
+    if kind == "local" and profile.get("id") == "copilot-agent" and profile.get("_copilot_agent") is True:
+        # The managed Copilot bridge is asked to begin each new Copilot chat in two steps: the rules of the
+        # exchange first (answered with a bare acknowledgement that the bridge throws away), the conversation
+        # in the next message. Real-machine case: with the rules and the first instruction in one message, the
+        # first answer was not in the format; after one exchange in between, it was. A bridge that does not
+        # know the header ignores it, and the human can turn it off at the bridge (its "warmup" setting).
+        headers["X-Bridge-Warmup"] = "1"
+        # And to add no format of its own. The bridge otherwise wraps every new chat in its own rules
+        # (<tool_call> blocks, a mark for final answers, "no actions: just answer normally" when the tools
+        # list is empty, "this document's format takes precedence"), which contradict the JSON exchange
+        # that the system text of these requests defines. With this header the bridge sends the system
+        # text and the conversation as they are, returns the answer as written, and takes this
+        # application's own record of the last answer as the continuation of the same chat.
+        headers["X-Bridge-Format"] = "own"
     key = profile.get("api_key", "")
     if not isinstance(key, str) or any(ord(c) < 32 or ord(c) == 127 for c in key):
         raise ProviderError("Invalid API key value")
