@@ -121,7 +121,7 @@ Object.assign(ui,{settingsStorage:null,settingsTransferOperation:null,historySto
 Object.assign(ui,{workBoards:new Map(),boardOwner:null,boardComposingRun:null,boardRedactionRevision:null});
 const WORK_BOARD_DEFAULTS={enabled:false};
 Object.assign(ui,{draftRevisions:new Map(),questionSearch:'',crewSearch:''});
-Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotified:new Set(),questionNotifications:new Map(),notificationPermissionRequest:null,notificationError:''});
+Object.assign(ui,{draftQuestions:new Map(),composerQuestion:null,questionNotified:new Set(),questionNotifications:new Map(),approvalNotified:new Set(),approvalNotifications:new Map(),notificationPermissionRequest:null,notificationError:''});
 Object.assign(ui,{taskReuseCandidate:null,taskReuseSource:null});
 Object.assign(ui,{additionalPMSequence:0,taskOrchestrationInitialized:false});
 Object.assign(ui,{cockpitView:'progress',networkNodes:new Map(),networkLayoutKey:'',networkMailKey:'',activityFilter:'all'});
@@ -215,7 +215,7 @@ function acceptServerInstance(response,configuration=false) {
   if(!changed)return false;
   ui.selectionGeneration++;ui.navigationGeneration++;ui.workspaceGeneration++;ui.credentialGeneration++;
   ui.selectedRun=null;ui.selectedAgent=null;ui.loadedDetail=null;ui.loadedEventsRun=null;ui.detailError=false;
-  ui.drafts.clear();ui.draftRevisions.clear();ui.draftQuestions.clear();ui.composerQuestion=null;closeQuestionNotifications();ui.conversationViews.clear();ui.outputSelections.clear();
+  ui.drafts.clear();ui.draftRevisions.clear();ui.draftQuestions.clear();ui.composerQuestion=null;closeQuestionNotifications();closeApprovalNotifications();ui.conversationViews.clear();ui.outputSelections.clear();
   invalidateWorkBoardContent();ui.workBoards.clear();ui.boardOwner=null;ui.boardComposingRun=null;ui.boardRedactionRevision=null;
   stopNetworkMotion();clearNetworkPreview();ui.networkNodes.clear();ui.networkViews.clear();ui.networkGesture=null;ui.networkSuppressClick=null;ui.networkLayoutKey='';ui.networkMailKey='';ui.activitySignature='';ui.runsSignature='';ui.rosterSignature='';
   $('teamMap').classList.remove('is-dragging');
@@ -1348,6 +1348,43 @@ function syncQuestionNotifications(entries) {
       notification.onclick=()=>{try{notification.close();}catch(_){}void openNotifiedQuestion(owner);};
       notification.onerror=()=>{ui.notificationError='ブラウザー通知を表示できませんでした。画面内の質問通知を確認してください。';renderQuestionNotice(questionEntries());};
     }catch(_){ui.notificationError='ブラウザー通知を表示できませんでした。画面内の質問通知を確認してください。';}
+  }
+}
+// An operation that waits for the human's approval is announced like a question: some of them (a look at the
+// screen, a site's check) count as refused when nobody answers in time. The announcement says nothing of what
+// is asked; one attempt per request in this page session.
+function approvalNotificationKey(run,agent,approval) { return JSON.stringify([ui.instanceId,run.id,agent.id,approval.id]); }
+function closeApprovalNotifications() {
+  for(const notification of ui.approvalNotifications.values()){try{notification.close();}catch(_){}}
+  ui.approvalNotifications.clear();
+}
+async function openNotifiedApproval(owner) {
+  if(ui.instanceId!==owner.instance||!ui.authenticated||$('taskDialog').open||$('settingsDialog').open)return;
+  const navigation=ui.navigationGeneration,workspace=ui.workspaceGeneration;
+  await pollState(true);
+  if(ui.instanceId!==owner.instance||ui.navigationGeneration!==navigation||ui.workspaceGeneration!==workspace||
+    !ui.networkConnected||ui.detailError||$('taskDialog').open||$('settingsDialog').open)return;
+  const entry=approvalEntries().find(({run,agent})=>run.id===owner.run&&agent.id===owner.agent&&pendingApproval(agent)?.id===owner.approval);
+  if(!entry)return;
+  window.focus?.();ui.navigationGeneration++;const changed=changeSelection(entry.run.id,entry.agent.id);revealInspector();renderState();
+  $('approvalCard').focus();if(changed)void pollState();
+}
+function syncApprovalNotifications(entries) {
+  const pending=new Map();
+  for(const {run,agent} of entries){const approval=pendingApproval(agent);if(approval)pending.set(approvalNotificationKey(run,agent,approval),{run,agent,approval});}
+  for(const [key,notification] of ui.approvalNotifications){if(!pending.has(key)||!ui.networkConnected){try{notification.close();}catch(_){}ui.approvalNotifications.delete(key);}}
+  if(!ui.authenticated||!ui.networkConnected||ui.detailError||!ui.instanceId||notificationCapability()!=='granted')return;
+  for(const [key,{run,agent,approval}] of pending){
+    if(ui.approvalNotified.has(key))continue;
+    ui.approvalNotified.add(key);
+    try{
+      const timed=Number(approval.expires_at)>0;
+      const notification=new Notification('Workbench: 承認待ちの操作があります',{body:timed?'アプリを開いて内容を確認してください。期限までに応答がないと、却下として扱われます。':'アプリを開いて内容を確認してください。',tag:key});
+      ui.approvalNotifications.set(key,notification);
+      const owner={instance:ui.instanceId,run:run.id,agent:agent.id,approval:approval.id};
+      notification.onclick=()=>{try{notification.close();}catch(_){}void openNotifiedApproval(owner);};
+      notification.onerror=()=>{ui.notificationError='ブラウザー通知を表示できませんでした。画面内の承認待ちを確認してください。';renderQuestionNotice(questionEntries());};
+    }catch(_){ui.notificationError='ブラウザー通知を表示できませんでした。画面内の承認待ちを確認してください。';}
   }
 }
 function renderQuestionNotice(entries) {
@@ -2532,7 +2569,8 @@ function approvalEntries() {
     archivedRun(run)||['stopping','stopped'].includes(run.status)?[]:ui.state.agents.filter(agent=>agent.run_id===run.id&&pendingApproval(agent)).map(agent=>({run,agent})));
 }
 function renderApprovalSummary() {
-  const count=approvalEntries().length;$('approvalQueue').hidden=!count;setVisibleText($('approvalCount'),String(count));
+  const entries=approvalEntries(),count=entries.length;$('approvalQueue').hidden=!count;setVisibleText($('approvalCount'),String(count));
+  syncApprovalNotifications(entries);
 }
 function openNextApproval() {
   if($('taskDialog').open||$('settingsDialog').open)return;
@@ -2994,6 +3032,27 @@ function mailLifecycleLabel(row) {
   const delay=row.queued!==null&&row.consumed!==null&&row.consumed>=row.queued?`（間隔 ${observedSeconds(row.consumed-row.queued)}）`:'';
   return `${from} → ${to}${delay}`;
 }
+// For the human, in one place: the files that were asked for, the files that were saved (where, and by whom),
+// how the review stands, and the tests. The same facts stand in sentences at the end of the coordinator's result.
+const REVIEW_STATE_LABELS={waiting:'確認中（レビュー担当が保存済みのファイルを読んでいます）',pass:'合格',fix:'要修正（指摘あり）',unclear:'判定の記載なし',skipped:'行われませんでした'};
+function renderDeliverables(run) {
+  const panel=$('deliverablesPanel');if(!panel)return;
+  const text=value=>typeof value==='string'?value:'',list=value=>Array.isArray(value)?value:[];
+  const expected=list(run?.output_check?.expected).filter(name=>typeof name==='string').slice(0,12),missing=new Set(list(run?.output_check?.missing));
+  const files=list(run?.deliverables?.files).filter(file=>file&&typeof file==='object'&&text(file.name)).slice(-24);
+  const review=Object.hasOwn(REVIEW_STATE_LABELS,run?.deliverables?.review)?run.deliverables.review:'',resaved=list(run?.deliverables?.resaved).filter(name=>typeof name==='string').slice(0,12);
+  const tests=testCheckLabel(run?.test_check);
+  const signature=run?JSON.stringify([run.id,expected,[...missing],files,review,resaved,tests]):'';
+  panel.hidden=!run||!(expected.length||files.length||review||tests);
+  if(signature===ui.deliverablesSignature)return;ui.deliverablesSignature=signature;
+  const content=$('deliverablesContent');content.replaceChildren();if(panel.hidden)return;
+  const row=(label,...items)=>{const line=element('div','deliverable-row');line.append(element('strong','',label));const body=element('div','deliverable-items');body.append(...items);line.appendChild(body);content.appendChild(line);};
+  if(expected.length)row('依頼されたファイル',...expected.map(name=>element('p',missing.has(name)?'deliverable missing':'deliverable saved',`${missing.has(name)?'未保存':'保存済み'}: ${name.slice(0,120)}`)));
+  if(files.length)row('保存されたファイル',...files.map(file=>{
+    const item=element('p','deliverable-file');item.append(element('span','deliverable-name',text(file.name).slice(0,120)),element('span','deliverable-by',text(file.by)?`（${text(file.by).slice(0,60)}）`:''),element('span','deliverable-path',text(file.path).slice(0,400)));return item;}));
+  if(review)row('提出前のレビュー',element('p',`deliverable review-${review}`,REVIEW_STATE_LABELS[review]+(resaved.length?` · 指摘のあとに保存し直されたファイル: ${resaved.map(name=>name.slice(0,60)).join('、')}`:'')));
+  if(tests)row('テスト',element('p','deliverable',tests));
+}
 function renderCoordinationMonitor(run,agents) {
   const panel=$('coordinationMonitor');if(!panel)return;panel.hidden=!run;if(!run)return;
   const c=run.coordination,rows=mailLifecycles(retainedTeamEvents(run),run.id);
@@ -3030,7 +3089,7 @@ function renderCoordinationMonitor(run,agents) {
 function renderRunContent() {
   reconcileTaskReuse();syncTaskReuseControl();
   const run=getRun();renderArchiveNotice(run);$('workEmpty').hidden=Boolean(run);$('runOverview').hidden=!run;document.querySelector('.conversation-panel').hidden=!run;$('networkWorkspace').hidden=!run;renderWorkBoard(run);
-  const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderApprovalSummary();renderMessageInputSummary();renderCoordinationMonitor(run,agents);renderFormation(run);
+  const agents=ui.state.agents.filter(agent=>agent.run_id===run?.id),questions=questionEntries();renderQuestionSummary(questions);renderApprovalSummary();renderMessageInputSummary();renderDeliverables(run);renderCoordinationMonitor(run,agents);renderFormation(run);
   $('rosterHeading').textContent=ui.needsOnly?'質問':'担当';
   $('rosterScope').textContent=ui.needsOnly?'全チーム · チームの開始順。開くだけでは回答・再開しません。':run?`表示中のチーム · ${shortRunId(run)}`:'選択したチームの担当者';
   $('agentSearchLabel').textContent=ui.needsOnly?'全チームの質問・依頼・担当者を検索':'エージェントを検索';

@@ -896,6 +896,11 @@ the human turned it on (0.1.1.dev61; off by default).
   `_policy` when `run['persona']` is true, except for reviewers, ordered
   work and turn players. `Engine.persona_default` is the shipped default
   (true); the test suite and the scripted fixtures set it false.
+- `VerificationMixin._deliverables_publish(run)` writes `run['deliverables']`
+  from `_saved_paths`, `_output_writes` and `_review` whenever a file is
+  saved or the review changes state; `renderDeliverables` shows it with
+  `output_check` and `test_check`. `syncApprovalNotifications` mirrors
+  `syncQuestionNotifications` for `agent.approval`.
 
 ## Looking at the screen (0.1.1.dev89)
 

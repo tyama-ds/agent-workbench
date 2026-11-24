@@ -67,6 +67,21 @@ A manner of speaking for each face (2026-11-18)
 - Not verified here: how a real model carries a manner, and whether a
   small model lets it leak into files or drop content.
 
+Approvals are announced; what was saved stands in one place (2026-11-24)
+
+- A question that waited for the human was announced by the browser; an
+  operation that waited for approval was not, and two kinds of approval
+  (a look at the screen, a site's check) count as refused after three
+  minutes. A waiting approval is now announced the same way: once per
+  request, saying nothing of what is asked, closed when it is answered,
+  and leading to the request when clicked. The permission is the one the
+  question announcements use.
+- The progress tab has "成果物": the files that were asked for (saved or
+  not), the files that were saved (where, and by whom), how the review
+  before completion stands, and the tests. Until now this stood in
+  sentences at the end of the coordinator's result. The run publishes
+  `deliverables` for it.
+
 ## 0.1.1.dev89 — Looking at the screen (2026-11-18)
 
 Desktop, first stage: an agent can be shown the screen. It cannot operate

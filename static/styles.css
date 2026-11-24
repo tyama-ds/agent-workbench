@@ -445,3 +445,19 @@ body{background:var(--cp-bg)}
    below (a help text no longer fitted its scrolling area). The name of the application gives its place to the
    button there (it is wider than the button), so the bar is no taller than it was with three buttons. */
 @media(max-width:640px){.topbar .brand{display:none}}
+/* What was asked for and what was saved, in one place (the progress view only). */
+.deliverables-panel{flex-shrink:0;margin:0 0 10px;padding:12px 16px;border:1px solid var(--cp-line-strong,#3d4651);border-radius:14px;background:linear-gradient(125deg,#16181c,#121418);color:var(--cp-ink,#ddd9cf)}
+.deliverables-panel h2{margin:0 0 8px;font-size:17px}
+.deliverable-row{display:grid;grid-template-columns:150px minmax(0,1fr);gap:4px 14px;padding:8px 0;border-top:1px solid #2b3038}
+.deliverable-row:first-child{border-top:0}
+.deliverable-row>strong{font-size:12px;line-height:1.6;color:#a6aeb9}
+.deliverable-items{display:flex;flex-direction:column;gap:3px;min-width:0}
+.deliverable-items p{margin:0;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.deliverable.missing,.deliverable.review-fix{color:#f0b56a}
+.deliverable.saved,.deliverable.review-pass{color:#9fd8a5}
+.deliverable-name{font-weight:600}
+.deliverable-by{color:#a6aeb9;margin-left:4px}
+.deliverable-path{display:block;font:11px var(--mono);color:#8f97a3}
+:root:not([data-layout=network-popout]) .app-shell[data-cockpit-view=network] .deliverables-panel{display:none}
+:root[data-layout=network-popout] .deliverables-panel{display:none}
+@media(max-width:640px){.deliverable-row{grid-template-columns:minmax(0,1fr)}}
