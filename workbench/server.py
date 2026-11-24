@@ -203,6 +203,10 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
             engine.schedule_copilot_sync()
         return web.json_response(engine.public_config())
 
+    async def preferences(request):
+        """How the human likes the screen to look (the manner of the faces). Saved at any time, also while a team runs."""
+        return web.json_response({'ok': True, 'preferences': engine.preferences.save(await body(request))})
+
     async def config_export(request):
         return web.json_response(settings.export())
 
@@ -407,6 +411,7 @@ def create_app(directory: Path, auth: BrowserAuth, *, client=None):
     app.router.add_get('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/runs/{id}/work-board', work_board)
     app.router.add_post('/api/provider-test', provider_test)
+    app.router.add_put('/api/preferences', preferences)
     app.router.add_get('/faces/{style}/{name}', face)
     app.router.add_get('/{name}', static)
     return app

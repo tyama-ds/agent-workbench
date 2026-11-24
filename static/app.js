@@ -488,7 +488,7 @@ async function discardSettings() {
     const response=await api('/api/config');
     if(workspace!==ui.workspaceGeneration||!$('settingsDialog').open)return;
     if(!validSavedSettings(response,response.config_revision))throw new Error('保存済み設定を確認できませんでした。');
-    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);
+    ui.config=response.config;applyFacePreferences(response.preferences);ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);
     renderSettings();invalidateDiagnostics();renderProfileChoices(true);inlineStatus($('settingsStatus'),'未保存の変更を破棄し、保存済み設定を読み直しました。');
   } catch(error){if(workspace===ui.workspaceGeneration&&$('settingsDialog').open)inlineStatus($('settingsStatus'),errorText(error),true);}
   finally{ui.settingsReloading=false;setSettingsLock(true);schedulePreflight();}
@@ -566,7 +566,7 @@ async function saveSettings(event) {
     // Acceptance updates the saved baseline even after close. It never submits,
     // discards, defaults or clamps the separate current task/settings drafts.
     let sameDraft=false;try{sameDraft=action.draft===ui.settingsDraftGeneration&&JSON.stringify(collectConfig())===JSON.stringify(action.config);}catch(_){}
-    ui.config=response.config;ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status;ui.credentialGeneration++;acceptConnectionSettings(response);
+    ui.config=response.config;applyFacePreferences(response.preferences);ui.configRevision=response.config_revision;ui.configStale=false;ui.secretStatus=response.secret_status;ui.credentialGeneration++;acceptConnectionSettings(response);
     ui.settingsDirty=!sameDraft;
     if(sameDraft){
       $('profilesEditor').querySelectorAll('.profile-editor').forEach(card=>{card._credential.id=inputValue(card.querySelector('[data-key="id"]'));});
@@ -1860,6 +1860,20 @@ function agentFace(agent) {
 function faceStyles() { return ui.faceAnime===true?FACE_STYLES:FACE_STYLES.filter(style=>style!=='anime'); }
 // The manner of a piece of work: the one chosen on the screen, else one that goes with the work.
 function faceStyle(runId) { const styles=faceStyles();return styles.includes(ui.faceStyle)?ui.faceStyle:styles[faceSeed('style:'+runId)%styles.length]; }
+// The manner of the faces and the tick for the anime pictures are kept by the application (not by the browser):
+// what was saved is taken over when the configuration is read, and a change is saved at once.
+function applyFacePreferences(value) {
+  const anime=value?.face_anime===true,style=['flat','real','anime'].includes(value?.face_style)&&(value.face_style!=='anime'||anime)?value.face_style:'';
+  ui.faceAnime=anime;ui.faceStyle=style;
+  const select=$('faceStyleSelect'),box=$('faceAnimeAllow');if(!select||!box)return;
+  box.checked=anime;select.value=style||'auto';
+  const option=select.querySelector?.('option[value="anime"]');if(option)option.disabled=!anime;
+}
+async function saveFacePreferences() {
+  const wanted={face_style:ui.faceStyle||'auto',face_anime:ui.faceAnime===true},status=$('facePreferenceStatus');
+  try{await api('/api/preferences',{method:'PUT',body:wanted});if(status)status.textContent='';}
+  catch(_){if(status)status.textContent='絵柄の選択を保存できませんでした。この画面を開いている間は、選んだとおりに表示します。';}
+}
 function agentFaceSvg(agent) { return faceElement(agentFace(agent),faceStyle(agent.run_id)); }
 function retainedTeamEvents(run) {
   if(!run||(ui.compactState&&ui.loadedEventsRun!==run.id))return [];
@@ -3186,14 +3200,14 @@ async function initialize() {
   initializeNetworkControls();
   $('progressView').addEventListener('click',()=>setCockpitView('progress'));
   // The manner the faces are drawn in, for as long as this page is open: one of the three, or whatever goes with each piece of work.
-  $('faceStyleSelect').addEventListener('change',event=>{ui.faceStyle=faceStyles().includes(event.target.value)?event.target.value:'';renderRun();});
+  $('faceStyleSelect').addEventListener('change',event=>{ui.faceStyle=faceStyles().includes(event.target.value)?event.target.value:'';renderRun();void saveFacePreferences();});
   // The anime pictures are used only while this is ticked (it starts unticked): then they join the manners that go with
   // each piece of work, and can be chosen. Unticked again, a choice of anime goes back to "whatever goes with the work".
   $('faceAnimeAllow').addEventListener('change',event=>{
     ui.faceAnime=event.target.checked===true;const select=$('faceStyleSelect'),anime=select.querySelector('option[value="anime"]');
     if(anime)anime.disabled=!ui.faceAnime;
     if(!ui.faceAnime&&(ui.faceStyle==='anime'||select.value==='anime')){ui.faceStyle='';select.value='auto';}
-    renderRun();
+    renderRun();void saveFacePreferences();
   });
   $('networkView').addEventListener('click',()=>setCockpitView('network'));
   $('networkOpenWindow')?.addEventListener('click',openNetworkWindow);
@@ -3319,7 +3333,7 @@ async function initialize() {
   try {
     const fragment=new URLSearchParams(location.hash.slice(1)),token=fragment.get('token');
     if(token){history.replaceState(null,'',location.pathname+location.search);acceptServerInstance(await api('/api/bootstrap',{method:'POST',headers:{'X-Workbench-Bootstrap':token},body:{}}));}
-    const response=await api('/api/config');ui.config=response.config;ui.configRevision=response.config_revision;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);ui.authenticated=true;renderSettings();renderProfileChoices();await pollState();
+    const response=await api('/api/config');ui.config=response.config;applyFacePreferences(response.preferences);ui.configRevision=response.config_revision;ui.secretStatus=response.secret_status||{};acceptConnectionSettings(response);ui.authenticated=true;renderSettings();renderProfileChoices();await pollState();
   }catch(error){notice(errorText(error),true);setConnection(false,'Workbench 接続待ち');$('startRun').disabled=true;}
   window.setInterval(()=>pollState(),1000);
 }

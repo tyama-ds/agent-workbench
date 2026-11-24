@@ -901,6 +901,11 @@ the human turned it on (0.1.1.dev61; off by default).
   saved or the review changes state; `renderDeliverables` shows it with
   `output_check` and `test_check`. `syncApprovalNotifications` mirrors
   `syncQuestionNotifications` for `agent.approval`.
+- `preferences.Preferences` keeps `{face_style, face_anime}` in
+  `ui-preferences.json`; `Engine.public_config` returns it as
+  `preferences`, the page applies it with `applyFacePreferences` wherever
+  it takes over a configuration, and `saveFacePreferences` sends a change
+  to `PUT /api/preferences`.
 
 ## Looking at the screen (0.1.1.dev89)
 

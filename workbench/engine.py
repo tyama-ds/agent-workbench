@@ -22,6 +22,7 @@ from .config import (Settings, ROOT, DEFAULT, number, text, validate_settings, e
 from .copilot_bridge import CopilotBridgeManager
 from .runtime_paths import PROTECTED_ROOTS
 from .checkpoints import CheckpointStore
+from .preferences import Preferences
 from .memo import MemoStore, MAX_PROPOSAL_CHARS, clean as memo_clean
 from .turn_engine import TurnWorkMixin, PLAN_TOOL_NAMES, PLAN_NUDGE
 from .verification import VerificationMixin, RUN_TESTS_TOOL
@@ -477,6 +478,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         self.history = HistoryStore(settings.directory)
         self.checkpoints = CheckpointStore(settings.directory)
         self.memo = MemoStore(settings.directory)
+        self.preferences = Preferences(settings.directory)  # how the human likes the screen to look
         # Search results kept for a few hours across runs, and this PC's hourly search count.
         self.search_cache = SearchCache(settings.directory / 'search-cache.json')
         # World Bank indicator files, kept for a day so statistics cost one small download per indicator.
@@ -663,7 +665,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         public = self.settings.public()
         public['credential_storage'] = self._redact_tree(public['credential_storage'])
         return {**public, 'effective_providers': effective_profiles(self.settings.value),
-                'copilot_agent_status': self.copilot_status(),
+                'copilot_agent_status': self.copilot_status(), 'preferences': dict(self.preferences.value),
                 'instance_id': self.instance_id, 'history_storage': self._redact_tree(self.history.status(len(self._archives)))}
 
     def schedule_copilot_sync(self, *, force=False):

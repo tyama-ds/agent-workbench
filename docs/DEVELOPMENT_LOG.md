@@ -82,6 +82,16 @@ Approvals are announced; what was saved stands in one place (2026-11-24)
   sentences at the end of the coordinator's result. The run publishes
   `deliverables` for it.
 
+The face choices are kept (2026-11-24)
+
+- The manner of the faces and the tick for the anime pictures were held
+  in the page and gone at the next reload. They are kept by the
+  application now, in `ui-preferences.json` beside the settings: read
+  with the configuration, saved at once when changed, also while a team
+  runs. They are not settings of the work and not part of a settings
+  backup. A choice of anime without the tick does not stand, when saved
+  and when read. The page's own storage is still not used.
+
 ## 0.1.1.dev89 — Looking at the screen (2026-11-18)
 
 Desktop, first stage: an agent can be shown the screen. It cannot operate
