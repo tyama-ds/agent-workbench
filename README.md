@@ -88,6 +88,8 @@ Local / OpenAI 互換（`kind: local`）のエージェント推論には `X-Con
 
 「設定 → Copilot-agent mode」で、既存の `copilot-bridge` フォルダーと、その依存ライブラリを利用できる `python.exe` の絶対パスを指定します。API ベース URL の既定は `http://127.0.0.1:8800/v1`、モデル名は `copilot`、起動待ちの上限は600秒です。既定はオフで、自動インストールは行いません。
 
+copilot-bridge をすでに入れてある場合は、設定の「既存の copilot-bridge フォルダー、またはその中の start.bat」欄に、そのフォルダーの `start.bat` を絶対パスで指定できます（例：`C:\Tools\copilot-bridge\start.bat`）。Copilot-agent mode をオンにして保存すると、AWB がその `start.bat` を実行して Bridge を起動します。ダブルクリックしたときと同じく、使う Python は `start.bat` が選びます（Python 欄は使いません）。接続先・Edge 方式・専用プロファイル・ログなしの指定は、`start.bat` の引数として渡します。そのため、引数を `server.py` に渡さない（`%*` の無い）`start.bat` や、`start.bat` 以外のファイルは受け付けません。起動したプロセスは AWB が管理し、オフにしたときや AWB の終了時に止めます。Windows だけで使えます。
+
 フォルダーとPython欄を空にした場合は、隣接する既存の `copilot-bridge`（`for_eigyo/copilot-bridge` / `for-eigyo-pdf-lingua/copilot-bridge` も対象）と導入済みのPython環境を探します。見つからない場合は場所を指定してください。以前から `copilot-agent` というIDの通常プロファイルがある場合、オフでは引き続き利用できます。オンにする前に、そのIDを別名に変更してください。
 
 オンにして保存するとBridgeの準備をバックグラウンドで始めます。「起動中」と「接続可能」は別に表示し、失敗時は理由を表示します。Edgeが開いた場合は必要に応じてサインインしてください。新しい未入力の作業では `Copilot Agent` をPM・作業者の初期選択にし、明示した別のプロファイルや入力済みの下書きは保持します。既存のモデル設定を書き換えず、追加PMの候補にも表示します。Bridgeが利用できない場合に別モデルへ自動で送り直す機能ではありません。

@@ -74,6 +74,29 @@ def test_bridge_config_rejects_invalid_or_arbitrary_command_fields(change):
         validate_settings({'copilot_agent': change})
 
 
+def test_the_bridge_folder_setting_also_takes_the_bridge_s_start_bat(tmp_path):
+    """Only that file, beside the bridge's server.py; any other file, or a path the command interpreter would misread, is refused."""
+    folder = tmp_path / 'copilot-bridge'
+    folder.mkdir()
+    (folder / 'server.py').write_text('# bridge', encoding='utf-8')
+    (folder / 'start.bat').write_text('@echo off', encoding='ascii')
+    (folder / 'run.bat').write_text('@echo off', encoding='ascii')
+    saved = validate_settings({'copilot_agent': {'bridge_directory': str(folder / 'start.bat')}})
+    assert saved['copilot_agent']['bridge_directory'] == str((folder / 'start.bat').absolute())
+    assert validate_settings({'copilot_agent': {'bridge_directory': str(folder / 'START.BAT')}}, check_paths=False)
+    assert validate_settings({'copilot_agent': {'bridge_directory': str(folder)}})['copilot_agent']['bridge_directory'] == str(folder.absolute())
+    other = tmp_path / 'elsewhere'
+    other.mkdir()
+    (other / 'start.bat').write_text('@echo off', encoding='ascii')                    # no server.py beside it
+    risky = tmp_path / 'a&b'
+    risky.mkdir()
+    (risky / 'server.py').write_text('# bridge', encoding='utf-8')
+    (risky / 'start.bat').write_text('@echo off', encoding='ascii')
+    for refused in (folder / 'run.bat', other / 'start.bat', risky / 'start.bat', folder / 'missing' / 'start.bat', 'start.bat'):
+        with pytest.raises(ValueError):
+            validate_settings({'copilot_agent': {'bridge_directory': str(refused)}})
+
+
 def test_virtual_profile_is_reserved_and_does_not_mutate_saved_profiles():
     config = validate_settings({'copilot_agent': {'enabled': True}})
     before = copy.deepcopy(config)

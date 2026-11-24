@@ -42,6 +42,21 @@ _BOOTSTRAP = (
 )
 
 
+# Started through the bridge's own start.bat (the human named that file in the settings): the same
+# wait for the Job, then the batch file by the system's command interpreter, with the fixed options
+# as its arguments. sys.argv[1] is the bridge folder, sys.argv[2] the whole command line.
+_BOOTSTRAP_SCRIPT = (
+    "import subprocess,sys; "
+    "token=sys.stdin.buffer.read(1); "
+    "sys.exit(2) if token!=b'\\n' else None; "
+    "sys.exit(subprocess.call(sys.argv[2],cwd=sys.argv[1],stdin=subprocess.DEVNULL,"
+    "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=0x08000000))"
+)
+START_SCRIPT = 'start.bat'
+# Characters the command interpreter reads as its own inside a command line; a path with one is refused.
+_SCRIPT_PATH_REFUSED = '"%^&|<>!'
+
+
 class BridgeFailure(ValueError):
     def __init__(self, code, message):
         super().__init__(message)
@@ -88,6 +103,52 @@ def _bridge_directory(value):
                 and (path / 'bridge' / 'edge.py').is_file()):
             return path.resolve()
     raise BridgeFailure('bridge_not_found', '既存の copilot-bridge フォルダーを指定してください。自動インストールは行いません。')
+
+
+def _is_windows():
+    return os.name == 'nt'
+
+
+def _start_script(value):
+    """The bridge's start.bat, when the setting names that file instead of the folder; else None."""
+    if not value or Path(value).name.casefold() != START_SCRIPT:
+        return None
+    path = Path(value)
+    if not _is_windows():
+        raise BridgeFailure('start_script_unsupported', 'start.bat での起動は Windows だけで使えます。copilot-bridge のフォルダーを指定してください。')
+    if not path.is_absolute() or not path.is_file():
+        raise BridgeFailure('bridge_not_found', '指定された start.bat が見つかりません。copilot-bridge フォルダーの中の start.bat を絶対パスで指定してください。')
+    path = path.resolve()
+    if any(char in str(path) for char in _SCRIPT_PATH_REFUSED):
+        raise BridgeFailure('start_script_path', 'start.bat のパスに使えない文字（" % ^ & | < > !）が含まれています。別のフォルダーに置いてください。')
+    return path
+
+
+def _check_start_script(script):
+    """Refuse a start.bat that would not hand the options on to the bridge.
+
+    The address, the Edge backend, the profile of its own and "no log" reach the bridge as the batch
+    file's arguments. A file without %* would start a bridge with other settings (its log among them).
+    """
+    try:
+        with open(script, 'rb') as file:
+            source = file.read(MAX_RESPONSE_BYTES).decode('utf-8', 'replace')
+    except OSError:
+        raise BridgeFailure('bridge_not_found', 'start.bat を読めません。') from None
+    if '%*' not in source or 'server.py' not in source.casefold():
+        raise BridgeFailure('start_script_arguments', 'この start.bat は、受け取った引数を server.py に渡していません（%* がありません）。'
+                            '接続先・専用プロファイル・ログなしの指定を引数で渡すため、copilot-bridge に付属の start.bat を指定してください。')
+
+
+def _script_command(script, options):
+    """The command line that runs start.bat with the fixed options: quoted as a whole for /s /c.
+
+    Every option is a fixed word or a number; the empty one is written as "". The path was checked
+    for the characters the command interpreter reads as its own (see _start_script).
+    """
+    system = Path(os.environ.get('SystemRoot') or os.environ.get('WINDIR') or r'C:\Windows')
+    return (f'"{system / "System32" / "cmd.exe"}" /d /s /c ""{script}" '
+            + ' '.join(option or '""' for option in options) + '"')
 
 
 def _check_start_options(directory):
@@ -285,11 +346,14 @@ class _OwnedProcess:
                 self.job.close()
 
 
-def _spawn_owned(python, directory, cfg, state_directory):
+def _spawn_owned(python, directory, cfg, state_directory, script=None):
     parts = urlsplit(cfg['base_url'])
-    command = [str(python), '-u', '-c', _BOOTSTRAP, str(directory), str(directory / 'server.py'),
-               '--host', '127.0.0.1', '--port', str(parts.port or 80), '--backend', 'edge',
+    options = ['--host', '127.0.0.1', '--port', str(parts.port or 80), '--backend', 'edge',
                '--profile-mode', 'separate', '--log-dir', '']
+    if script:
+        command = [str(python), '-u', '-c', _BOOTSTRAP_SCRIPT, str(directory), _script_command(script, options)]
+    else:
+        command = [str(python), '-u', '-c', _BOOTSTRAP, str(directory), str(directory / 'server.py'), *options]
     environment = dict(os.environ)
     environment['COPILOT_BRIDGE_MODEL_NAME'] = cfg['model']
     environment['COPILOT_BRIDGE_PROFILE_DIR'] = str((Path(state_directory) / 'copilot-bridge' / 'profiles').resolve())
@@ -419,12 +483,15 @@ def _ready_message(observed):
     return message
 
 
-def _exit_message(code):
+def _exit_message(code, script=None):
     """Why a bridge started here ended before answering, as far as its exit code tells.
 
     What the bridge prints is not kept (it may hold what was asked of Copilot),
-    so the code is all there is to go by.
+    so the code is all there is to go by. A batch file's code says little.
     """
+    if script:
+        return ('start.bat で起動した Copilot bridge が、準備が終わる前に終了しました。copilot-bridge フォルダーの start.bat を'
+                '直接実行すると、原因の文が表示されます（Python や selenium・pyperclip が無い場合など）。')
     message = f'Copilot bridge が起動中に終了しました（終了コード {code if type(code) is int else "不明"}）。'
     if code == 2:
         return message + '起動オプションを受け付けなかった可能性があります（古い版の Bridge など）。copilot-bridge を更新してください。'
@@ -522,24 +589,33 @@ class CopilotBridgeManager:
             if self._owned:
                 await self._stop_owned()
             self._stage = 'locating_bridge'
-            directory = _bridge_directory(cfg['bridge_directory'])
+            script = _start_script(cfg['bridge_directory'])
+            directory = _bridge_directory(str(script.parent) if script else cfg['bridge_directory'])
             _check_start_options(directory)
-            self._stage = 'checking_python'
-            python = None
-            for candidate in _python_candidates(cfg['python_executable'], directory):
-                if await _has_dependencies(candidate):
-                    python = candidate
-                    break
-            if python is None:
-                raise BridgeFailure('dependencies_missing', '指定 Python に selenium と pyperclip が必要です。既存の依存導入済み Python を指定してください。')
-            self._stage = 'starting_bridge'
-            self._owned = _spawn_owned(python, directory, cfg, self.state_directory)
+            if script:
+                # The human named the bridge's own start.bat: it chooses the Python, as when it is
+                # double-clicked. This application's Python only waits for the Job and then runs it.
+                _check_start_script(script)
+                self._stage = 'starting_bridge'
+                self._owned = _spawn_owned(Path(sys.executable), directory, cfg, self.state_directory, script=script)
+            else:
+                self._stage = 'checking_python'
+                python = None
+                for candidate in _python_candidates(cfg['python_executable'], directory):
+                    if await _has_dependencies(candidate):
+                        python = candidate
+                        break
+                if python is None:
+                    raise BridgeFailure('dependencies_missing', '指定 Python に selenium と pyperclip が必要です。既存の依存導入済み Python を指定するか、'
+                                        'copilot-bridge フォルダーの start.bat を「フォルダー」欄に指定してください。')
+                self._stage = 'starting_bridge'
+                self._owned = _spawn_owned(python, directory, cfg, self.state_directory)
             self._stage = 'owned_bridge_probe'
             self._state = self._status('starting', message='Edge と Copilot の準備を待っています。必要なら開いた Edge でログインしてください。')
             while observed is None:
                 code = self._owned.poll()
                 if code is not None:
-                    raise BridgeFailure('startup_failed', _exit_message(code))
+                    raise BridgeFailure('startup_failed', _exit_message(code, script))
                 await asyncio.sleep(POLL_SECONDS)
                 try:
                     observed = await _probe(cfg)

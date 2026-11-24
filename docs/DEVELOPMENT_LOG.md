@@ -35,6 +35,36 @@ two things were wrong with how the answers were judged.
   starting is reported with its exit code, and code 2 is said to be an
   option it did not accept.
 
+"Where copilot-bridge is installed, let naming its start.bat in the
+settings start it automatically."
+
+- The folder setting also takes the path of `start.bat` in the bridge's
+  folder. The bridge is then started through that file, as a double-click
+  does: the batch file chooses the Python, and no Python is looked for or
+  asked about its libraries here. Before, a bridge installed for the
+  system's Python could not be started when none of the Pythons this
+  application knows had selenium and pyperclip.
+- What is run is fixed: this application's Python waits until the process
+  is in the Job (as for a direct start), then runs the system's `cmd.exe`
+  with `/d /s /c` and one line: the checked path in quotes and the same
+  fixed options as a direct start (`--host 127.0.0.1 --port … --backend
+  edge --profile-mode separate --log-dir ""`). The model name and the
+  profile folder go by the environment, as before. Nothing printed is
+  kept.
+- Refused before anything is started: a file not named `start.bat` or
+  without `server.py` beside it (when the settings are saved); a path with
+  one of `" % ^ & | < > !`; a batch file that does not hand its arguments
+  on (`%*`), since the address, the profile of its own and "no log" travel
+  as arguments; a bridge whose `server.py` does not know the options; any
+  system other than Windows.
+- Stopping is the Job's: the batch file, the Python it started and Edge
+  end together.
+- Verified here with a fake process, and written as a test that runs the
+  stock `start.bat` for real on the Windows runners (a folder with a space
+  in its name; the options, the empty one included, arrive unchanged; the
+  Python it started ends when the bridge is stopped). Not verified: a real
+  bridge with Edge and a sign-in started this way.
+
 "The IMF's text.pdf, opened at the same address in a visible Edge window,
 comes on one try and is refused (403) on another. Consider a second try
 in the same window after a pause, or opening the issue's page first and
