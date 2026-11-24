@@ -177,11 +177,16 @@ def validate_settings(raw, *, check_paths=True):
         supplied = text(bridge[field], f'copilot_agent.{field}', 4096)
         if supplied:
             path = Path(supplied)
-            valid = (_path_kind(path, directory=True, check_paths=check_paths)
-                     and _path_kind(path / 'server.py', check_paths=check_paths) if field == 'bridge_directory' else
-                     _path_kind(path, check_paths=check_paths) and path.name.casefold() in {'python.exe', 'pythonw.exe', 'python', 'python3'})
+            if field == 'bridge_directory' and path.name.casefold() == 'start.bat':
+                # The bridge's own start.bat instead of its folder: that file is then what starts the bridge.
+                valid = (_path_kind(path, check_paths=check_paths) and _path_kind(path.parent / 'server.py', check_paths=check_paths)
+                         and not any(char in str(path) for char in '"%^&|<>!'))
+            else:
+                valid = (_path_kind(path, directory=True, check_paths=check_paths)
+                         and _path_kind(path / 'server.py', check_paths=check_paths) if field == 'bridge_directory' else
+                         _path_kind(path, check_paths=check_paths) and path.name.casefold() in {'python.exe', 'pythonw.exe', 'python', 'python3'})
             if not path.is_absolute() or not valid:
-                raise ValueError(f'copilot_agent.{field}: 既存の bridge フォルダー / Python の絶対パスを指定してください')
+                raise ValueError(f'copilot_agent.{field}: 既存の bridge フォルダー（またはその中の start.bat）/ Python の絶対パスを指定してください')
             bridge[field] = str(path.absolute())
     for name, roots in value['paths'].items():
         if not isinstance(roots, list) or len(roots) > 32:
@@ -359,6 +364,8 @@ def missing_settings_paths(value):
                      for index, root in enumerate(value[section]['library_paths']))
     missing = [field for field, supplied in paths if supplied and not Path(supplied).exists()]
     bridge = value['copilot_agent']['bridge_directory']
+    if bridge and Path(bridge).name.casefold() == 'start.bat':
+        bridge = str(Path(bridge).parent) if Path(bridge).exists() else ''
     if bridge and Path(bridge).exists() and not (Path(bridge) / 'server.py').exists():
         missing.append('copilot_agent.bridge_directory (server.py)')
     return [f'{field}: パスが存在しません。現在のPCの場所を確認して保存してください。' for field in missing]

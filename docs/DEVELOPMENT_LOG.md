@@ -4,6 +4,98 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev91 — The bridge check says what did not fit; a report's file is come to by its pages (2026-11-24)
+
+"The Copilot bridge's API cannot be reached; check the route." The route
+is three questions to the bridge (`/health`, `/status`, `/v1/models`), and
+two things were wrong with how the answers were judged.
+
+- A window's `error` is what Copilot's last answer in that window was (one
+  of the bridge's limit or failure phrases). The bridge keeps using the
+  window and clears the mark at its next good answer. This application
+  refused to start a piece of work while any window carried the mark; where
+  it is the bridge's only user, nothing could then be sent that would clear
+  it, and Copilot stayed unusable until the bridge was started again. The
+  mark no longer refuses. How many windows carry one is in the status
+  (`error_windows`) and in the status line; what the mark says is never
+  repeated.
+- A refusal said "identity, model or Edge state does not match" for nine
+  different causes. Each answer is now checked on its own and the refusal
+  names it: which address answered with which status, that the model name
+  set here and the bridge's differ (both are shown; a name from the
+  service only when it is short and plain), that the bridge runs with
+  another backend, that the model is not listed or not the bridge's, that
+  the list of windows is missing or misshapen, or that no answer came in
+  the two seconds allowed.
+- A bridge started here that ended at once left no reason: what it prints
+  is not kept, on purpose (it may hold what was asked of Copilot). Before
+  anything is started, the text of the bridge's `server.py` is now read
+  for the options it is started with; a bridge that does not know them is
+  refused with their names (`bridge_outdated`). A bridge that ends while
+  starting is reported with its exit code, and code 2 is said to be an
+  option it did not accept.
+
+"Where copilot-bridge is installed, let naming its start.bat in the
+settings start it automatically."
+
+- The folder setting also takes the path of `start.bat` in the bridge's
+  folder. The bridge is then started through that file, as a double-click
+  does: the batch file chooses the Python, and no Python is looked for or
+  asked about its libraries here. Before, a bridge installed for the
+  system's Python could not be started when none of the Pythons this
+  application knows had selenium and pyperclip.
+- What is run is fixed: this application's Python waits until the process
+  is in the Job (as for a direct start), then runs the system's `cmd.exe`
+  with `/d /s /c` and one line: the checked path in quotes and the same
+  fixed options as a direct start (`--host 127.0.0.1 --port … --backend
+  edge --profile-mode separate --log-dir ""`). The model name and the
+  profile folder go by the environment, as before. Nothing printed is
+  kept.
+- Refused before anything is started: a file not named `start.bat` or
+  without `server.py` beside it (when the settings are saved); a path with
+  one of `" % ^ & | < > !`; a batch file that does not hand its arguments
+  on (`%*`), since the address, the profile of its own and "no log" travel
+  as arguments; a bridge whose `server.py` does not know the options; any
+  system other than Windows.
+- Stopping is the Job's: the batch file, the Python it started and Edge
+  end together.
+- Verified here with a fake process, and written as a test that runs the
+  stock `start.bat` for real on the Windows runners (a folder with a space
+  in its name; the options, the empty one included, arrive unchanged; the
+  Python it started ends when the bridge is stopped). Not verified: a real
+  bridge with Edge and a sign-in started this way.
+
+"The IMF's text.pdf, opened at the same address in a visible Edge window,
+comes on one try and is refused (403) on another. Consider a second try
+in the same window after a pause, or opening the issue's page first and
+following its link."
+
+- The second is what was built. A second request for one address is not
+  made: one try per address is the human's rule.
+- A report's file asked for on its own (the World Economic Outlook's
+  `…/weo/<year>/<month>/english/text.pdf`) is now come to the way a reader
+  comes to it, in one window: the page of the series is loaded, its link
+  to that issue's page is followed, and that page's link to the file is
+  followed. Only links that are on the page are followed (the page's own
+  navigation; nothing is clicked). Where a link is missing, the address is
+  typed in that same window, as before. The file is asked for once either
+  way, and a refusal stays final.
+- The same holds wherever a page leads to a file: the report link of a
+  page that a window read, and a PDF link opened from the page that a
+  window read earlier, are followed as links instead of typed.
+- After a followed link, the window waits until another document stands
+  in it or a file is being saved; the page that was left is not taken for
+  what the address brought.
+- Every outcome of a try says which way was taken ("by the link on the
+  page that leads to it", "by the links from the series' page through the
+  issue's page", or "after the page that leads to it was opened in the
+  same window"), so that the ways can be compared on the real machine.
+- Not verified here: whether the site refuses less often this way. No
+  browser runs here and the site is not reached from here; the page of
+  the series is assumed to link to the pages of its recent issues, and
+  where it does not, the window falls back to typing the address after
+  that page.
+
 ## 0.1.1.dev90 — One thing at a time in the centre; a face for every agent (2026-11-18)
 
 "The screen is split into too many panels and has become hard to read."

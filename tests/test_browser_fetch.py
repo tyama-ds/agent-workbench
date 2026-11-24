@@ -33,12 +33,14 @@ class Window:
 
     def __init__(self, downloads, *, arrives=None, html=PAGE, status=200, content_type='text/html', closes=False, never=False,
                  title='World Economic Outlook Reports', passes_after=None, clock=None, shown=b'', links=(), files=None,
-                 unreadable=False, busy_until=None, busy_error=None, ready='complete'):
+                 unreadable=False, busy_until=None, busy_error=None, ready='complete', silent=()):
+        self.silent = set(silent)  # addresses that bring nothing when a link to them is followed
         self.ready = ready  # what the page says of itself: 'interactive' while its images and scripts still load
         self.unreadable = unreadable  # the window stops answering when its content is asked for
         # The page does not answer questions about itself until this many seconds have passed (it is busy loading).
         self.busy_until, self.busy_error = busy_until, busy_error or TimeoutError('script timeout')
-        self.links, self.files = [list(row) for row in links], files or {}  # the page's links; address -> PDF it shows
+        # The page's links (or page address -> its links); address -> PDF it shows.
+        self.links, self.files = links if isinstance(links, dict) else [list(row) for row in links], files or {}
         self.downloads, self.arrives, self.html, self.status = downloads, arrives, html, status
         self.content_type, self.closes, self.never = content_type, closes, never
         self.calls, self.current_url, self._title = [], 'data:,', title
@@ -67,6 +69,9 @@ class Window:
 
     def get(self, url):
         self.calls.append(('get', url))
+        self._load(url)
+
+    def _load(self, url):
         if self.arrives:
             name, data = self.arrives
             (self.downloads / name).write_bytes(data)  # the window stays on its empty start page
@@ -89,7 +94,14 @@ class Window:
         if 'querySelectorAll' in script:
             assert 'click' not in script and 'dispatchEvent' not in script  # the links are read, never used
             self.calls.append(('links',))
-            return self.links
+            return self.links.get(self.current_url, []) if isinstance(self.links, dict) else self.links
+        if 'location' in script:
+            # Going on to an address the page links to: the page's own navigation, and nothing else.
+            assert script == 'window.location.assign(arguments[0]);' and len(args) == 1
+            self.calls.append(('follow', args[0]))
+            if args[0] not in self.silent:
+                self._load(args[0])
+            return None
         assert 'responseStatus' in script and 'click' not in script  # only reads how the page arrived
         if self.closes:
             raise RuntimeError('no such window')
@@ -199,6 +211,11 @@ CHECK = {'html': '<html><title>Just a moment...</title><body>Verify you are huma
 WORDS = ['just a moment', 'verify you are human']
 
 
+def moves(window):
+    """Where the window went, in order: an address typed ('get') or a link of the page followed ('follow')."""
+    return [call for call in window.calls if call[0] in ('get', 'follow')]
+
+
 def test_a_file_is_opened_from_the_page_that_links_to_it_in_the_same_window(tmp_path):
     """The page a window read before is loaded first; the file is then asked for in that window and session."""
     page, file = 'https://www.imf.org/en/publications/weo/issues/2026/10/13/outlook', 'https://www.imf.org/-/media/files/weo/text.pdf'
@@ -206,9 +223,62 @@ def test_a_file_is_opened_from_the_page_that_links_to_it_in_the_same_window(tmp_
                                              'title': 'text.pdf', 'shown': REPORT}, url=file, via=page)
     assert result['kind'] == 'download' and (tmp_path / 'downloads' / result['file']).read_bytes() == REPORT
     assert [call for call in window.calls if call[0] == 'get'] == [('get', page), ('get', file)]   # one window, in this order
-    assert window.calls[-1] == ('quit',)
+    assert window.calls[-1] == ('quit',) and result['route'] == 'address'       # the page has no link to it: the address is typed
     with pytest.raises(ValueError):
         worker.run_fetch_job(fetch_job(via='file:///C:/Users'), tmp_path, driver_factory=lambda *_: pytest.fail('no window'))
+    for pattern in ('(', 'x' * 301, 5):
+        with pytest.raises(ValueError):
+            worker.run_fetch_job(fetch_job(via=page, through=pattern), tmp_path, driver_factory=lambda *_: pytest.fail('no window'))
+
+
+def test_a_link_that_is_on_the_page_is_followed_and_an_address_that_is_not_is_typed(tmp_path):
+    """Real-machine case: a report's address, opened on its own in a window, was given on one try and refused
+    (HTTP 403) on another. Where a page leads to the file, the window goes the way a reader goes: it follows
+    the links that are there, and asks for the file once."""
+    series = 'https://www.imf.org/en/Publications/WEO'
+    issue = 'https://www.imf.org/en/Publications/WEO/Issues/2026/10/13/world-economic-outlook-october-2026'
+    older = 'https://www.imf.org/en/Publications/WEO/Issues/2026/04/14/world-economic-outlook-april-2026'
+    file = 'https://www.imf.org/-/media/files/publications/weo/2026/october/english/text.pdf'
+    written = 'https://www.imf.org/-/media/Files/Publications/WEO/2026/October/English/text.pdf?rev=4'   # as the page writes it
+    between = r'^/en/publications/weo/issues/2026/10/\d{2}/[^/]+/?$'
+    shown = {'files': {file: REPORT, written: REPORT}}
+    # The page links to the file: that link is followed, as written; the address is not typed as well.
+    result, window, _ = run_fetch(tmp_path, {'links': {issue: [[older, 'April'], [written, 'Full Report']]}, **shown}, url=file, via=issue)
+    assert result['kind'] == 'download' and result['route'] == 'link' and result['url'] == file
+    assert (tmp_path / 'downloads' / result['file']).read_bytes() == REPORT
+    assert moves(window) == [('get', issue), ('follow', written)] and window.calls[-1] == ('quit',)
+    # The series' page links to the issue, and the issue to the file: both links are followed.
+    pages = {series: [[older, 'April 2026'], [issue + '#top', 'October 2026'], ['https://elsewhere.example/en/Publications/WEO/Issues/2026/10/13/x', 'Mirror']],
+             issue: [['javascript:void(0)', 'Share'], [written, 'Full Report']]}
+    result, window, _ = run_fetch(tmp_path, {'links': pages, **shown}, url=file, via=series, through=between)
+    assert result['kind'] == 'download' and result['route'] == 'links'
+    assert moves(window) == [('get', series), ('follow', issue), ('follow', written)]
+    # No link to the issue there, or none to the file on the issue's page: the address is typed, once, in that window.
+    result, window, _ = run_fetch(tmp_path, {'links': {series: [[older, 'April 2026']]}, **shown}, url=file, via=series, through=between)
+    assert result['kind'] == 'download' and result['route'] == 'address' and moves(window) == [('get', series), ('get', file)]
+    result, window, _ = run_fetch(tmp_path, {'links': {**pages, issue: [[older, 'April']]}, **shown}, url=file, via=series, through=between)
+    assert result['kind'] == 'download' and result['route'] == 'address'
+    assert moves(window) == [('get', series), ('follow', issue), ('get', file)]
+    # Without a pattern for a page in between, only the first page's own link counts.
+    result, window, _ = run_fetch(tmp_path, {'links': pages, **shown}, url=file, via=series)
+    assert result['route'] == 'address' and moves(window) == [('get', series), ('get', file)]
+    # The followed link brings nothing: said so, and the address is not asked for a second time.
+    result, window, _ = run_fetch(tmp_path, {'links': {issue: [[written, 'Full Report']]}, 'silent': [written]}, url=file, via=issue)
+    assert result['kind'] == 'timeout' and result['route'] == 'link' and 'Nothing arrived after the link' in result['title']
+    assert moves(window) == [('get', issue), ('follow', written)]
+    # A refusal after the link was followed is what the window reports; nothing more is tried.
+    result, window, _ = run_fetch(tmp_path, {'links': {issue: [[written, 'Full Report']]}, 'status': 403, 'title': 'Access Denied',
+                                             'html': '<html>Access Denied</html>'}, url=file, via=issue)
+    assert result['kind'] == 'page' and result['status'] == 403 and result['route'] == 'link'
+    assert moves(window) == [('get', issue), ('follow', written)]
+    # Which link leads to an address: the same site and path (letter case aside); a query only where the address has none.
+    find = worker.link_to
+    assert find([[written, 'Full Report']], file) == written and find([[file + '#page=2', 'x']], file) == file
+    assert find([['https://elsewhere.example/-/media/files/publications/weo/2026/october/english/text.pdf', 'x']], file) == ''
+    assert find([['http://www.imf.org/-/media/files/publications/weo/2026/october/english/text.pdf', 'x']], file) == ''
+    assert find([[file.replace('text.pdf', 'ch1.pdf'), 'x']], file) == '' and find('x', file) == '' and find([[5, 'x'], ['x']], file) == ''
+    assert find([['https://example.org/get?id=6', 'x']], 'https://example.org/get?id=5') == ''
+    assert find([['https://example.org/get?id=5', 'x']], 'https://example.org/get?id=5') == 'https://example.org/get?id=5'
 
 
 def test_a_read_page_is_followed_by_its_full_report_in_the_same_window(tmp_path):
@@ -222,7 +292,7 @@ def test_a_read_page_is_followed_by_its_full_report_in_the_same_window(tmp_path)
     assert result['kind'] == 'page' and result['html'] == PAGE and result['url'] == page     # the page is still what came
     assert result['linked'] == {'kind': 'download', 'url': full, 'status': 200, 'file': 'shown.pdf', 'bytes': len(REPORT)}
     assert (tmp_path / 'downloads' / 'shown.pdf').read_bytes() == REPORT
-    assert [call for call in window.calls if call[0] == 'get'] == [('get', page), ('get', full)] and window.calls[-1] == ('quit',)
+    assert moves(window) == [('get', page), ('follow', full)] and window.calls[-1] == ('quit',)   # the link is followed, not typed
     # Which link: the one that says it is the full report, or is named so; the only one; never one of another site.
     pick = worker.main_pdf_link
     assert pick(links, page) == full
@@ -234,7 +304,12 @@ def test_a_read_page_is_followed_by_its_full_report_in_the_same_window(tmp_path)
                          ({'links': links, 'title': 'Just a moment...'}, {'follow': True, 'check_words': ['just a moment']}),
                          ({'links': links, 'status': 403}, {'follow': True})):
         other, window, _ = run_fetch(tmp_path, options, url=page, **job)
-        assert other['linked'] == {} and [call for call in window.calls if call[0] == 'get'] == [('get', page)]
+        assert other['linked'] == {} and moves(window) == [('get', page)]
+    # The followed link brings nothing: the page that was left is not taken for the report, and nothing is typed.
+    (tmp_path / 'silent').mkdir()   # its own folder: nothing saved by the tries above lies in it
+    other, window, _ = run_fetch(tmp_path / 'silent', {'links': links, 'silent': [full]}, url=page, follow=True)
+    assert other['kind'] == 'page' and other['linked'] == {'kind': 'timeout', 'url': full, 'status': 0, 'file': '', 'bytes': 0}
+    assert moves(window) == [('get', page), ('follow', full)]
 
 
 def test_a_window_that_does_not_answer_for_a_moment_is_not_a_closed_window(tmp_path):
@@ -399,9 +474,10 @@ def tools_with(tmp_path, answers):
     """WebTools whose browser opener answers from ``answers`` (url suffix -> result or exception) and counts its calls."""
     opened = []
 
-    async def opener(url, max_download_bytes, person_seconds=0, check_words=(), via='', follow=False):
+    async def opener(url, max_download_bytes, person_seconds=0, check_words=(), via='', follow=False, through=''):
         assert follow is True  # a PDF library is attached: the window may go on to the page's full report
-        opened.append((url, person_seconds) if person_seconds else (url, 'from', via) if via else url)
+        opened.append((url, person_seconds) if person_seconds else (url, 'from', via, 'through', through) if through
+                      else (url, 'from', via) if via else url)
         answer = next(value for key, value in answers.items() if url.endswith(key))
         if isinstance(answer, dict) and 'person' in answer:  # what the window shows once a person is there
             answer = answer['person'] if person_seconds else {key: value for key, value in answer.items() if key != 'person'}
@@ -457,7 +533,7 @@ async def test_a_refused_question_about_a_file_goes_on_to_the_file_and_a_link_is
         assert report['pages'] == 2 and report['fetched_with'] == 'browser window' and 'HTTP 403' in report['headers_only_note']
         assert opened == [base + '/issue', (base + '/files/weo.pdf', 'from', base + '/issue')]
         assert tools.browser_log[-1] == {'url': base + '/files/weo.pdf', 'outcome': 'success',
-                                         'detail': 'PDF saved, 2 pages, opened from the page that links to it'}
+                                         'detail': 'PDF saved, 2 pages, after the page that leads to it was opened in the same window'}
         # The link's window is the continuation of the page's: four more windows may still be opened.
         for index in range(4):
             await tools.execute('web_fetch', {'url': base + f'/{index}/other.pdf'})
@@ -550,6 +626,57 @@ def test_links_that_lead_to_a_pdf_are_found_in_the_forms_sites_use():
         'https://www.imf.org/files/annex.pdf',
         'https://www.imf.org/en/publications/weo/issues/2026/10/13/chapters/ch1.pdf?download=1',
         'https://www.imf.org/doc']
+
+
+async def test_a_report_asked_for_on_its_own_is_come_to_from_the_page_of_its_series(tmp_path, monkeypatch):
+    """Real-machine case: the same report address, opened on its own in a window, was given on one try and refused
+    (HTTP 403) on another. The window starts where a reader of the site starts and follows the links; the file is
+    still asked for once, in one window, and a refusal stays final."""
+    from workbench import webtools
+    file = 'https://www.imf.org/-/media/Files/Publications/WEO/2026/October/English/text.pdf'
+    assert webtools.entry_page(file) == ('https://www.imf.org/en/Publications/WEO', r'^/en/publications/weo/issues/2026/10/\d{2}/[^/]+/?$')
+    assert webtools.entry_page(webtools.report_address('https://www.imf.org/en/publications/weo/issues/2026/04/14/x'))[1].startswith(
+        '^/en/publications/weo/issues/2026/04/')
+    import re
+    assert re.compile(webtools.entry_page(file)[1], re.I).search('/en/Publications/WEO/Issues/2026/10/13/world-economic-outlook-october-2026')
+    for other in (file.replace('www.imf.org', 'example.org'), file.replace('October', 'Smarch'), file.replace('text.pdf', 'ch1.pdf'),
+                  file + '?x=1', 'https://www.imf.org/en/Publications/WEO', 'not a url'):
+        assert webtools.entry_page(other) == ('', '')
+    seen = []
+    pin(monkeypatch)
+    async with http_server(refusing(seen)) as port:
+        base = f'http://www.reports.example:{port}'
+        # In the test the series' page and the pattern of the issue's page are those of the test site.
+        monkeypatch.setattr(webtools, 'entry_page', lambda url: (base + '/series', r'^/issues/') if url.endswith('/text.pdf') else ('', ''))
+        saved = {'kind': 'download', 'file': 'shown.pdf', 'bytes': len(REPORT), 'data': REPORT}
+        for route, words in (('links', "PDF saved, 2 pages, by the links from the series' page through the issue's page"),
+                             ('link', 'PDF saved, 2 pages, by the link on the page that leads to it'),
+                             ('address', 'PDF saved, 2 pages, after the page that leads to it was opened in the same window')):
+            tools, opened = tools_with(tmp_path, {'/text.pdf': {**saved, 'route': route}, '/other.pdf': saved})
+            report = await tools.execute('web_fetch', {'url': base + '/files/text.pdf'})
+            assert report['pages'] == 2 and report['fetched_with'] == 'browser window'
+            assert opened == [(base + '/files/text.pdf', 'from', base + '/series', 'through', r'^/issues/')]
+            assert tools.browser_log == [{'url': base + '/files/text.pdf', 'outcome': 'success', 'detail': words}]
+            # It is a window like any other: four more may be opened, and the address is not opened again.
+            for index in range(4):
+                await tools.execute('web_fetch', {'url': base + f'/{index}/other.pdf'})
+            with pytest.raises(WebToolError, match='opened 5 times'):
+                await tools.execute('web_fetch', {'url': base + '/9/other.pdf'})
+            assert 'not opened again' in (await tools.execute('web_fetch', {'url': base + '/files/text.pdf'}))['fetched_note'] and len(opened) == 5
+        # Refused that way as well: final, said with the way that was taken, and never a second request.
+        tools, opened = tools_with(tmp_path, {'/text.pdf': {'status': 403, 'title': 'Access Denied', 'route': 'links'}})
+        with pytest.raises(WebToolError) as caught:
+            await tools.execute('web_fetch', {'url': base + '/files/text.pdf'})
+        assert "refused (HTTP 403), by the links from the series' page through the issue's page" in str(caught.value)
+        with pytest.raises(WebToolError, match='already tried this address once in this work'):
+            await tools.execute('web_fetch', {'url': base + '/files/text.pdf'})
+        assert len(opened) == 1 and tools.browser_log[0]['outcome'] == 'refused'
+        # A page that a window read and that links to the file comes first: the file is opened from that page.
+        tools, opened = tools_with(tmp_path, {'/text.pdf': {**saved, 'route': 'link'},
+                                              '/issue': {'title': 'October issue', 'html': PAGE.replace('/files/weo.pdf', '/files/text.pdf')}})
+        await tools.execute('web_fetch', {'url': base + '/issue'})
+        await tools.execute('web_fetch', {'url': base + '/files/text.pdf'})
+        assert opened == [base + '/issue', (base + '/files/text.pdf', 'from', base + '/issue')]
 
 
 async def test_a_refusal_or_a_check_in_the_window_is_final_and_the_human_is_asked(tmp_path, monkeypatch):

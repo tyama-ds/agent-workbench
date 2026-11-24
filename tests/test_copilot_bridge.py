@@ -59,8 +59,9 @@ def setup(monkeypatch, tmp_path):
     async def dependencies(python):
         state.setdefault('dependencies', []).append(python)
         return True
-    def spawn(python, directory, cfg, state_directory):
+    def spawn(python, directory, cfg, state_directory, script=None):
         child = Owned()
+        child.python, child.script = python, script
         state['spawned'].append(child)
         return child
     monkeypatch.setattr(cb, '_probe', probe)
@@ -294,27 +295,141 @@ async def test_real_loopback_stub_three_gets_no_inference_or_session_disclosure(
     assert (await cb._probe(stub['config']))['windows'] == 1  # Borrowed service still running.
 
 
-@pytest.mark.parametrize('change', ['health_only', 'fake', 'model', 'owner', 'windows', 'busy_type', 'duplicate', 'error'])
-async def test_loopback_readiness_rejects_partial_wrong_or_fake_service(stub, change):
-    if change == 'health_only':
-        stub['status'] = {}
+REFUSALS = {
+    'health': '/health が Copilot bridge の応答ではありません',
+    'status': '/status が Copilot bridge の応答ではありません',
+    'version': '/status と /health で版の表示が違います',
+    'fake': 'Edge 以外の方式（「fake」）で動いています',
+    'model': 'モデル名が一致しません。この画面の設定は「copilot」、Copilot bridge 側は「other」です',
+    'model_text': 'モデル名が一致しません。この画面の設定は「copilot」、Copilot bridge 側は別の値です',
+    'models': '/v1/models が Copilot bridge の応答ではありません',
+    'unlisted': '/v1/models に「copilot」がありません',
+    'owner': '/v1/models の「copilot」は Copilot bridge のものではありません',
+    'windows': '/status にウィンドウの一覧がありません',
+    'busy_type': 'ウィンドウ情報が、想定した形ではありません',
+    'duplicate': 'ウィンドウ情報が、想定した形ではありません',
+}
+
+
+@pytest.mark.parametrize('change', list(REFUSALS))
+async def test_loopback_readiness_rejects_partial_wrong_or_fake_service_and_says_which_answer_did_not_fit(stub, change):
+    if change == 'health':
+        stub['health'] = {'ok': 'true', 'version': '0.1.0'}
+    elif change == 'status':
+        stub['status'] = []
+    elif change == 'version':
+        stub['status']['version'] = '0.0.9'
     elif change == 'fake':
         stub['status']['backend'] = 'fake'
     elif change == 'model':
         stub['status']['model'] = 'other'
+    elif change == 'model_text':
+        stub['status']['model'] = 'SECRET <b>free text</b> from whatever listens there'
+    elif change == 'models':
+        stub['models'] = {'data': 'SECRET'}
+    elif change == 'unlisted':
+        stub['models']['data'][0]['id'] = 'SECRET-other'
     elif change == 'owner':
-        stub['models']['data'][0]['owned_by'] = 'other'
+        stub['models']['data'][0]['owned_by'] = 'SECRET-other'
     elif change == 'windows':
         stub['status']['windows'] = []
     elif change == 'busy_type':
         stub['status']['windows'][0]['busy'] = 'false'
-    elif change == 'duplicate':
-        stub['status']['windows'] *= 2
     else:
-        stub['status']['windows'][0]['error'] = 'SECRET_ERROR_CONTENT'
+        stub['status']['windows'] *= 2
     with pytest.raises(cb.BridgeFailure) as caught:
         await cb._probe(stub['config'])
-    assert 'SECRET' not in str(caught.value)
+    assert caught.value.code == 'unexpected_service'
+    assert REFUSALS[change] in str(caught.value)
+    assert 'SECRET' not in str(caught.value) and '<' not in str(caught.value)
+
+
+async def test_an_answer_that_is_not_ok_names_the_address_and_the_status(stub):
+    stub['redirect'] = True
+    with pytest.raises(cb.BridgeFailure) as caught:
+        await cb._probe(stub['config'])
+    assert caught.value.code == 'unexpected_service'
+    assert '/health が状態 302 を返しました' in str(caught.value) and '127.0.0.1:1' not in str(caught.value)
+
+
+async def test_a_window_whose_last_answer_was_an_error_is_reported_and_does_not_block(stub, tmp_path):
+    """The bridge keeps using such a window and clears the mark at its next good answer.
+
+    Refusing left the mark in place for good when this application was the
+    bridge's only user: nothing could be sent that would clear it.
+    """
+    stub['status']['windows'] = [{'id': 'w0', 'busy': False, 'error': 'SECRET_ERROR_CONTENT'},
+                                 {'id': 'w1', 'busy': True, 'error': ''}]
+    observed = await cb._probe(stub['config'])
+    assert observed == {'version': '0.1.0', 'windows': 2, 'busy_windows': 1, 'error_windows': 1}
+    manager = cb.CopilotBridgeManager(tmp_path)
+    result = await manager.sync(stub['config'])
+    assert result['ready'] and result['error_windows'] == 1
+    assert '2 個のうち 1 個のウィンドウは、直前の回答が制限または障害の表示でした' in result['message']
+    assert 'SECRET' not in json.dumps(result, ensure_ascii=False)
+    # Every window marked: still not refused, and a piece of work may start (only an answer can clear the marks).
+    stub['status']['windows'][1]['error'] = 'SECRET_ERROR_CONTENT'
+    await manager.ensure(stub['config'])
+    status = manager.status(stub['config'])
+    assert status['ready'] and status['error_windows'] == 2 and '2 個のうち 2 個' in status['message']
+    assert 'SECRET' not in json.dumps(status, ensure_ascii=False)
+    # Cleared at the bridge: the note goes away.
+    for window in stub['status']['windows']:
+        window['error'] = ''
+    await manager.ensure(stub['config'])
+    assert manager.status(stub['config'])['error_windows'] == 0 and '直前の回答' not in manager.status(stub['config'])['message']
+    await manager.close()
+
+
+async def test_no_answer_within_the_time_allowed_says_so(stub, monkeypatch):
+    async def slow(session, url):
+        raise asyncio.TimeoutError
+    monkeypatch.setattr(cb, '_get_json', slow)
+    with pytest.raises(cb.BridgeFailure) as caught:
+        await cb._probe(stub['config'])
+    assert caught.value.code == 'connection_failed' and f'{cb.HTTP_TIMEOUT} 秒以内に応答しませんでした' in str(caught.value)
+
+
+@pytest.mark.parametrize('source,missing', [
+    ('p.add_argument("--host")\np.add_argument("--port")\np.add_argument("--backend")\n', ['--profile-mode', '--log-dir']),
+    ("p.add_argument('--host')\np.add_argument('--port')\np.add_argument('--backend')\np.add_argument('--profile-mode')\n", ['--log-dir']),
+])
+async def test_a_bridge_that_does_not_know_the_start_options_is_refused_before_anything_starts(setup, tmp_path, source, missing):
+    (tmp_path / 'server.py').write_text(source, encoding='utf-8')
+    result = await cb.CopilotBridgeManager(tmp_path).sync(CONFIG)
+    assert result['code'] == 'bridge_outdated' and result['stage'] == 'locating_bridge' and not result['ready']
+    assert '・'.join(missing) in result['message'] and '更新してください' in result['message']
+    assert setup['spawned'] == [] and 'dependencies' not in setup
+
+
+async def test_a_bridge_that_knows_the_start_options_is_started(setup, tmp_path):
+    (tmp_path / 'server.py').write_text(''.join(f'p.add_argument("{option}")\n' for option in cb.START_OPTIONS), encoding='utf-8')
+    result = await cb.CopilotBridgeManager(tmp_path).sync(CONFIG)
+    assert result['ready'] and len(setup['spawned']) == 1
+
+
+def test_the_real_bridge_text_shape_passes_and_an_unreadable_file_is_left_to_the_start(tmp_path):
+    cb._check_start_options(tmp_path)                                    # no file: nothing to read
+    (tmp_path / 'server.py').write_text('', encoding='utf-8')
+    cb._check_start_options(tmp_path)                                    # empty: nothing to judge by
+    (tmp_path / 'server.py').write_text(
+        'p.add_argument("--host")\np.add_argument("--port", type=int)\np.add_argument("--backend", choices=["edge", "fake"])\n'
+        'p.add_argument("--profile-mode", dest="profile_mode",\n    choices=["separate"])\np.add_argument("--log-dir", dest="log_dir")\n',
+        encoding='utf-8')
+    cb._check_start_options(tmp_path)
+
+
+@pytest.mark.parametrize('code,expected', [(2, '起動オプションを受け付けなかった可能性'), (1, 'python server.py を直接起動'), (-9, '終了コード -9')])
+async def test_a_bridge_that_ends_while_starting_reports_its_exit_code(setup, tmp_path, monkeypatch, code, expected):
+    def spawn(python, directory, cfg, state_directory):
+        child = Owned()
+        child.code = code
+        setup['spawned'].append(child)
+        return child
+    monkeypatch.setattr(cb, '_spawn_owned', spawn)
+    result = await cb.CopilotBridgeManager(tmp_path).sync(CONFIG)
+    assert result['code'] == 'startup_failed' and result['stage'] == 'owned_bridge_probe'
+    assert f'終了コード {code}' in result['message'] and expected in result['message']
 
 
 @pytest.mark.parametrize('raw', [b'{"ok":true,"ok":false}', b'{"ok":NaN}', b'\xff', b'x' * (cb.MAX_RESPONSE_BYTES + 1)],
@@ -479,6 +594,138 @@ async def test_new_endpoint_cleans_owned_then_borrows_new_service(setup, tmp_pat
     assert len(setup['spawned']) == 1 and setup['spawned'][0].stops == 1
     await manager.close()
     assert setup['spawned'][0].stops == 1
+
+
+STOCK_START_BAT = ('@echo off\r\n'
+                   'rem Start the bridge (double-click). Reads config.json when there is one.\r\n'
+                   'cd /d "%~dp0"\r\n'
+                   'where py >nul 2>nul && (py -3 server.py %*) || (python server.py %*)\r\n'
+                   'pause\r\n')
+
+
+async def test_naming_the_bridge_s_start_bat_starts_the_bridge_through_it(setup, tmp_path, monkeypatch):
+    """The human names copilot-bridge\\start.bat in the settings: that file starts the bridge, as a double-click does,
+    and chooses the Python itself. No Python is looked for and none is asked about its libraries."""
+    monkeypatch.setattr(cb, '_is_windows', lambda: True)
+    script = tmp_path / 'start.bat'
+    script.write_bytes(STOCK_START_BAT.encode('ascii'))
+    seen = []
+    monkeypatch.setattr(cb, '_bridge_directory', lambda value: seen.append(value) or tmp_path)
+    monkeypatch.setattr(cb, '_python_candidates', lambda value, directory: pytest.fail('no Python is looked for'))
+    result = await cb.CopilotBridgeManager(tmp_path).sync({**CONFIG, 'bridge_directory': str(script)})
+    assert result['ready'] and result['owned'] and seen == [str(tmp_path.resolve())]      # the folder is the file's folder
+    assert len(setup['spawned']) == 1 and setup['spawned'][0].script == script.resolve() and 'dependencies' not in setup
+    assert setup['spawned'][0].python == Path(sys.executable)
+    # It ends before the bridge answers: said so, with what to do; the batch file's exit code says nothing.
+    def ending(python, directory, cfg, state_directory, script=None):
+        child = Owned()
+        child.code = 0
+        setup['spawned'].append(child)
+        return child
+    monkeypatch.setattr(cb, '_spawn_owned', ending)
+    setup['responses'] = [None]
+    result = await cb.CopilotBridgeManager(tmp_path).sync({**CONFIG, 'bridge_directory': str(script)})
+    assert result['code'] == 'startup_failed' and 'start.bat を直接実行すると' in result['message'] and '終了コード' not in result['message']
+
+
+@pytest.mark.parametrize('case', ['no_arguments', 'no_server', 'missing', 'characters', 'not_windows', 'outdated'])
+async def test_a_start_bat_that_cannot_be_used_is_refused_before_anything_starts(setup, tmp_path, monkeypatch, case):
+    monkeypatch.setattr(cb, '_is_windows', lambda: case != 'not_windows')
+    folder = tmp_path / ('a&b' if case == 'characters' else 'bridge')
+    folder.mkdir()
+    monkeypatch.setattr(cb, '_bridge_directory', lambda value: folder)
+    script = folder / 'start.bat'
+    if case != 'missing':
+        script.write_text({'no_arguments': STOCK_START_BAT.replace(' %*', ''),
+                           'no_server': STOCK_START_BAT.replace('server.py', 'other.py')}.get(case, STOCK_START_BAT), encoding='ascii')
+    if case == 'outdated':
+        (folder / 'server.py').write_text('p.add_argument("--host")\np.add_argument("--port")\np.add_argument("--backend")\n', encoding='utf-8')
+    result = await cb.CopilotBridgeManager(tmp_path).sync({**CONFIG, 'bridge_directory': str(script)})
+    code, words = {'no_arguments': ('start_script_arguments', '%* がありません'), 'no_server': ('start_script_arguments', '%* がありません'),
+                   'missing': ('bridge_not_found', 'start.bat が見つかりません'), 'characters': ('start_script_path', '使えない文字'),
+                   'not_windows': ('start_script_unsupported', 'Windows だけ'), 'outdated': ('bridge_outdated', '--profile-mode')}[case]
+    assert result['code'] == code and words in result['message'] and not result['ready']
+    assert result['stage'] == 'locating_bridge' and setup['spawned'] == []
+
+
+def test_the_command_line_for_start_bat_is_fixed_words_around_the_checked_path(tmp_path, monkeypatch):
+    events = []
+    class Child:
+        pid = 123
+        _handle = 456
+        stdin = io.BytesIO()
+        def poll(self):
+            return None
+    class Job:
+        def assign(self, child):
+            events.append(('assign', child.pid))
+    monkeypatch.setattr(cb, '_WindowsJob', Job)
+    monkeypatch.setattr(cb.subprocess, 'Popen', lambda command, **kwargs: events.append(('spawn', command, kwargs)) or Child())
+    monkeypatch.setenv('SystemRoot', 'C:\\Windows')
+    script = tmp_path / 'copilot bridge {1}' / 'start.bat'
+    cb._spawn_owned(tmp_path / 'python.exe', script.parent, CONFIG, tmp_path / 'state', script=script)
+    command, kwargs = next(event[1:] for event in events if event[0] == 'spawn')
+    interpreter = Path('C:\\Windows') / 'System32' / 'cmd.exe'
+    assert command == [str(tmp_path / 'python.exe'), '-u', '-c', cb._BOOTSTRAP_SCRIPT, str(script.parent),
+                       f'"{interpreter}" /d /s /c ""{script}" --host 127.0.0.1 --port 8800 --backend edge --profile-mode separate --log-dir """']
+    assert kwargs['shell'] is False and kwargs['stdout'] == kwargs['stderr'] == subprocess.DEVNULL
+    assert kwargs['env']['COPILOT_BRIDGE_MODEL_NAME'] == CONFIG['model']
+    assert kwargs['env']['COPILOT_BRIDGE_PROFILE_DIR'] == str((tmp_path / 'state/copilot-bridge/profiles').resolve())
+    compile(cb._BOOTSTRAP_SCRIPT, 'bootstrap', 'exec')
+    assert "sys.exit(2) if token!=b'\\n'" in cb._BOOTSTRAP_SCRIPT and 'shell' not in cb._BOOTSTRAP_SCRIPT
+    # Naming the folder, or nothing, is as before: no batch file is involved.
+    assert cb._start_script('') is None and cb._start_script(str(tmp_path)) is None and cb._start_script(str(tmp_path / 'run.bat')) is None
+
+
+@pytest.mark.skipif(cb.os.name != 'nt', reason='A real batch file run by the real command interpreter')
+async def test_real_windows_start_bat_receives_the_options_and_is_stopped_with_its_python(tmp_path, monkeypatch):
+    """The stock start.bat in a folder with a space in its name, run for real: the options arrive unchanged
+    (the empty one too), the environment is the child's, and stopping ends the Python the batch file started."""
+    monkeypatch.setattr(cb.subprocess, 'Popen', REAL_POPEN)
+    folder = tmp_path / 'copilot bridge'
+    folder.mkdir()
+    (folder / 'start.bat').write_bytes(STOCK_START_BAT.encode('ascii'))
+    (folder / 'server.py').write_text(
+        "import json,os,sys,time\n"
+        "from pathlib import Path\n"
+        "Path('ready.tmp').write_text(json.dumps({'pid':os.getpid(),'argv':sys.argv[1:],'cwd':os.getcwd(),"
+        "'model':os.environ.get('COPILOT_BRIDGE_MODEL_NAME'),'profiles':os.environ.get('COPILOT_BRIDGE_PROFILE_DIR')}),encoding='utf-8')\n"
+        "Path('ready.tmp').replace('ready.json')\n"
+        "time.sleep(120)\n", encoding='utf-8')
+    script = cb._start_script(str(folder / 'start.bat'))
+    cb._check_start_script(script)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    owned, handle, stopped = None, None, False
+    try:
+        owned = cb._spawn_owned(Path(sys.executable).resolve(), script.parent, CONFIG, tmp_path / 'state', script=script)
+        ready, deadline = script.parent / 'ready.json', time.monotonic() + 30
+        while not ready.exists():
+            assert owned.poll() is None, 'The batch file ended before its Python wrote the receipt'
+            assert time.monotonic() < deadline, 'The batch file did not start its Python in time'
+            await asyncio.sleep(.05)
+        details = json.loads(ready.read_text(encoding='utf-8'))
+        assert details['argv'] == ['--host', '127.0.0.1', '--port', '8800', '--backend', 'edge', '--profile-mode', 'separate', '--log-dir', '']
+        assert Path(details['cwd']).resolve() == script.parent
+        assert details['model'] == CONFIG['model']
+        assert details['profiles'] == str((tmp_path / 'state/copilot-bridge/profiles').resolve())
+        assert details['pid'] != owned.pid                       # the Python that start.bat chose, not the one that waited
+        handle = kernel.OpenProcess(0x00100000, False, details['pid'])  # SYNCHRONIZE
+        assert handle, 'The Python started by the batch file could not be opened'
+        assert kernel.WaitForSingleObject(handle, 0) == 0x102  # still running
+        await owned.stop()
+        stopped = True
+        assert kernel.WaitForSingleObject(handle, 5000) == 0   # ended with the Job
+    finally:
+        if handle:
+            kernel.CloseHandle(handle)
+        if owned and not stopped:
+            await owned.stop()
 
 
 @pytest.mark.skipif(cb.os.name != 'nt', reason='Native Windows Job process containment')

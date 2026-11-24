@@ -7,8 +7,8 @@ const FIELD_GROUPS = {
   work_board: [['enabled','新しい作業で共有掲示板を使う','checkbox']],
   copilot_agent: [
     ['enabled','Copilot-agent mode を有効にする','checkbox'],
-    ['bridge_directory','既存の copilot-bridge フォルダー','text','例：C:\\Tools\\copilot-bridge'],
-    ['python_executable','Bridge 用 python.exe の絶対パス','text','例：C:\\Python312\\python.exe'],
+    ['bridge_directory','既存の copilot-bridge フォルダー、またはその中の start.bat','text','例：C:\\Tools\\copilot-bridge\\start.bat'],
+    ['python_executable','Bridge 用 python.exe の絶対パス（start.bat を指定したときは使いません）','text','例：C:\\Python312\\python.exe'],
     ['base_url','Bridge の API ベース URL','url','http://127.0.0.1:8800/v1'],
     ['model','Bridge のモデル名','text','copilot'],
     ['startup_timeout_seconds','Bridge 起動の待機上限（秒）','number',5,'1','Edge の準備とサインインを待つ時間です。',1200],

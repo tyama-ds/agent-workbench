@@ -216,3 +216,5 @@ session/environment usage available when no saved vault requires recovery; unrea
 identity-mismatched or exclusively owned storage errors are surfaced rather than
 silently discarding stored credentials. Browser mutations retain authentication,
 exact config revision, fresh process-instance and same-origin checks.
+
+The Copilot bridge can be started through its own `start.bat` when the human names that file in the settings (the folder field). It is the only batch file the application runs, and only from a folder that holds the bridge's `server.py`. The command line is fixed words around that path; a path with a character the command interpreter reads as its own is refused, as is a batch file that does not hand its arguments on. The batch file is run with the human's own rights, like the Python named in the settings: name only a bridge you installed yourself. A settings file taken from someone else can name such a path, so read that field before saving imported settings.
