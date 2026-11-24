@@ -497,6 +497,13 @@ def _request_headers(kind: str, profile: dict, conversation_id: str | None) -> d
         # first answer was not in the format; after one exchange in between, it was. A bridge that does not
         # know the header ignores it, and the human can turn it off at the bridge (its "warmup" setting).
         headers["X-Bridge-Warmup"] = "1"
+        # And to add no format of its own. The bridge otherwise wraps every new chat in its own rules
+        # (<tool_call> blocks, a mark for final answers, "no actions: just answer normally" when the tools
+        # list is empty, "this document's format takes precedence"), which contradict the JSON exchange
+        # that the system text of these requests defines. With this header the bridge sends the system
+        # text and the conversation as they are, returns the answer as written, and takes this
+        # application's own record of the last answer as the continuation of the same chat.
+        headers["X-Bridge-Format"] = "own"
     key = profile.get("api_key", "")
     if not isinstance(key, str) or any(ord(c) < 32 or ord(c) == 127 for c in key):
         raise ProviderError("Invalid API key value")
