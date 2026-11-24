@@ -362,6 +362,32 @@ def report_address(url: str) -> str:
             f"{_MONTHS[int(match.group(2)) - 1]}/english/text.pdf")
 
 
+# The full report of one issue of the IMF's World Economic Outlook, the page of the series, and the pages of
+# that issue (whose day and title words the report's address does not tell).
+_IMF_REPORT = re.compile(r"^/-/media/files/publications/weo/(\d{4})/([a-z]+)/english/text\.pdf$", re.I)
+_IMF_SERIES = "https://www.imf.org/en/Publications/WEO"
+
+
+def entry_page(url: str) -> tuple[str, str]:
+    """Where a reader of the site starts on the way to a report's file, where a publisher's pattern is known.
+
+    -> (the page of the series, a pattern for the path of the issue's page that lies in between), or ("", "").
+    Real-machine case: the same report address, opened on its own in a browser window, was given on one
+    try and refused (HTTP 403) on another. A window that is to open such a file starts at the series' page
+    and follows the links that are there (to the issue, and from the issue to the file), and asks for the
+    file once. Nothing is disguised: the pages are loaded and their own links followed, as a reader does.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return "", ""
+    match = _IMF_REPORT.match(parts.path) if (parts.hostname or "").lower() == "www.imf.org" and not parts.query else None
+    if not match or match.group(2).lower() not in _MONTHS:
+        return "", ""
+    month = _MONTHS.index(match.group(2).lower()) + 1
+    return _IMF_SERIES, rf"^/en/publications/weo/issues/{match.group(1)}/{month:02d}/\d{{2}}/[^/]+/?$"
+
+
 _SESSION_NAMES = {"jsessionid", "phpsessid", "sessionid", "session_id", "sid", "aspsessionid"}
 
 
@@ -646,6 +672,8 @@ class WebTools:
         self._browser_results = {}
         # PDF links of a page that a browser window read -> that page; and the links opened from their page.
         self._browser_from, self._browser_followed = {}, set()
+        # A report's file that no read page led to -> (the page a reader starts at, the pattern of the page between).
+        self._browser_entry = {}
         self._browser_failures = 0  # tries in which the browser itself did not run
         # PDFs this run downloaded (pdf_id -> its record); the library that keeps them is the application's.
         self._pdf_library, self._pdf_bytes, self.pdf_ids = None, 0, {}
@@ -996,6 +1024,14 @@ class WebTools:
             via_parsed = _url(via)
             await _public_addresses(via_parsed.hostname, via_parsed.port or (443 if via_parsed.scheme == "https" else 80))
             self._browser_followed.add(url)
+        else:
+            # A report's file asked for on its own: the window starts at the page a reader of the site starts
+            # at and follows the links that are there. It is still this address's one try, in one window.
+            start, between = entry_page(url)
+            if start:
+                start_parsed = _url(start)
+                await _public_addresses(start_parsed.hostname, start_parsed.port or 443)
+                self._browser_entry[url] = (start, between)
         self._browser_tried[url] = "started"
         return await self._browser_window(url, refused, 0)
 
@@ -1013,9 +1049,11 @@ class WebTools:
         # The page that links to this file, read in a window earlier in this work: the window opens that page
         # first and then the file, in the same session, as a person following the link would.
         via = self._browser_from.get(url, "") if url in self._browser_followed else ""
+        start, between = ("", "") if via else self._browser_entry.get(url, ("", ""))
         try:
             page = await self._browser_fetch(url, self._pdf_bytes or self.max_bytes, person_seconds, list(PERSON_CHECK_WORDS),
-                                             **({"via": via} if via else {}), **({"follow": True} if self._pdf_library is not None else {}))
+                                             **({"via": via or start} if via or start else {}), **({"through": between} if between else {}),
+                                             **({"follow": True} if self._pdf_library is not None else {}))
         except ValueError as exc:
             text = str(exc)[:700]
             if text.startswith("The browser could not be started or did not finish"):
@@ -1038,6 +1076,10 @@ class WebTools:
             self._browser_record(url, "failed", "the browser could not be opened: " + self._browser_unavailable)
             raise WebToolError(f"{refused}. A browser window was to try once, but could not be opened: {self._browser_unavailable}." + ask) from None
         kind = page.get("kind")
+        # How the window came to the address: said with every outcome, so that the ways can be compared.
+        route = {"link": ", by the link on the page that leads to it",
+                 "links": ", by the links from the series' page through the issue's page"}.get(
+                     page.get("route"), ", after the page that leads to it was opened in the same window" if via or start else "")
         if kind == "download":
             data = page.get("data") or b""
             if self._pdf_library is None or not looks_like_pdf(data):
@@ -1049,7 +1091,7 @@ class WebTools:
                 self._browser_record(url, "failed", "the PDF was saved but could not be read")
                 raise WebToolError(f"The browser window saved the PDF, but it could not be read: {exc}") from None
             self._browser_record(url, "success", f"PDF saved, {result.get('pages')} pages" + (" after a person passed the check" if person_seconds else "")
-                                 + (", opened from the page that links to it" if via else ""))
+                                 + route)
             self._browser_results[url] = self._browser_marked(result)
             return copy.deepcopy(self._browser_results[url])
         if kind == "too_large":
@@ -1084,7 +1126,7 @@ class WebTools:
         if status >= 400 or status == 202 or _words_in(_DENIED_WORDS, title, html_text):
             # This address was refused. Another address of the site is still its own try: real-machine case,
             # an older issue's file was refused and the current issue's file was then never tried.
-            detail = f"refused (HTTP {status})" if status >= 400 or status == 202 else "the site refused the browser as well"
+            detail = (f"refused (HTTP {status})" if status >= 400 or status == 202 else "the site refused the browser as well") + route
             self._browser_record(url, "refused", detail)
             message = (f"{refused}. A browser window tried once and was also turned away: {detail}. "
                        "The application does not solve checks or disguise the browser.")

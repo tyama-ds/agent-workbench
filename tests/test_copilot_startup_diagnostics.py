@@ -37,7 +37,7 @@ async def test_owned_probe_failures_remain_within_total_deadline(setup, tmp_path
     assert len(setup['spawned']) == 1 and setup['spawned'][0].stops == 1
 
 
-@pytest.mark.parametrize('code', ['invalid_response', 'unexpected_service', 'bridge_error'])
+@pytest.mark.parametrize('code', ['invalid_response', 'unexpected_service', 'bridge_outdated'])
 async def test_owned_contract_errors_are_terminal_without_retry(setup, tmp_path, code):
     setup['responses'] = [None, cb.BridgeFailure(code, 'contract rejected'), OBSERVED]
     result = await cb.CopilotBridgeManager(tmp_path).sync(CONFIG)

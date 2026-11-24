@@ -1158,11 +1158,12 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
 
     def _browser_fetcher(self, config, harness):
         """Opens one address once in a visible window of the configured browser (a fresh profile, deleted afterwards)."""
-        async def fetch(url, max_download_bytes, person_seconds=0, check_words=(), via='', follow=False):
+        async def fetch(url, max_download_bytes, person_seconds=0, check_words=(), via='', follow=False, through=''):
             try:
                 return await execute_fetch(config['selenium'], config['python'], harness, url,
                                            proxy_url=config['search']['proxy_url'], max_download_bytes=max_download_bytes,
-                                           person_seconds=person_seconds, check_words=check_words, via=via, follow=follow)
+                                           person_seconds=person_seconds, check_words=check_words, via=via, follow=follow,
+                                           through=through)
             except HarnessError as exc:
                 raise ValueError(str(exc)) from None
         return fetch

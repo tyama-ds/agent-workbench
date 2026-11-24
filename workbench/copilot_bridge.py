@@ -13,6 +13,7 @@ from ctypes import wintypes
 import errno
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -26,6 +27,8 @@ from .providers import strict_json
 MAX_RESPONSE_BYTES = 256 * 1024
 HTTP_TIMEOUT = 2
 POLL_SECONDS = .25
+# The options this module starts a bridge with; a bridge's own text is checked for them first.
+START_OPTIONS = ('--host', '--port', '--backend', '--profile-mode', '--log-dir')
 ROOT = Path(__file__).resolve().parent.parent
 
 # The child cannot import the bridge (or launch Edge) before Job assignment.
@@ -85,6 +88,24 @@ def _bridge_directory(value):
                 and (path / 'bridge' / 'edge.py').is_file()):
             return path.resolve()
     raise BridgeFailure('bridge_not_found', '既存の copilot-bridge フォルダーを指定してください。自動インストールは行いません。')
+
+
+def _check_start_options(directory):
+    """Refuse, before anything is started, a bridge whose own text shows it does not know the options used here.
+
+    A bridge that does not know an option ends at once, and what it prints is
+    never kept, so nothing would say why. Only the file's text is read; a file
+    that cannot be read is left for the start itself to report.
+    """
+    try:
+        with open(Path(directory) / 'server.py', 'rb') as file:
+            source = file.read(MAX_RESPONSE_BYTES * 4).decode('utf-8', 'replace')
+    except OSError:
+        return
+    missing = [option for option in START_OPTIONS if f'"{option}"' not in source and f"'{option}'" not in source]
+    if source.strip() and missing:
+        raise BridgeFailure('bridge_outdated', 'copilot-bridge フォルダーの server.py が、起動に使うオプション '
+                            + '・'.join(missing) + ' に対応していません（古い版の可能性があります）。copilot-bridge を更新してください。')
 
 
 def _python_candidates(value, directory):
@@ -300,7 +321,8 @@ def _spawn_owned(python, directory, cfg, state_directory):
 async def _get_json(session, url):
     async with session.get(url, allow_redirects=False) as response:
         if response.status != 200:
-            raise BridgeFailure('unexpected_service', '接続先が Copilot bridge の確認 API に応答しません。既存サービスは停止していません。')
+            raise BridgeFailure('unexpected_service', f'接続先の {urlsplit(url).path} が状態 {response.status} を返しました。'
+                                'Copilot bridge ではない別のサービスか、対応していない版です。既存サービスは停止していません。')
         data = bytearray()
         async for chunk in response.content.iter_chunked(16384):
             data.extend(chunk)
@@ -310,6 +332,56 @@ async def _get_json(session, url):
             return strict_json(data.decode('utf-8'))
         except (ValueError, UnicodeError):
             raise BridgeFailure('invalid_response', 'Copilot bridge の確認応答が不正です。') from None
+
+
+def _named(value):
+    """How a name the service gave is repeated in a message: only a short plain one, never free text."""
+    if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9._:-]{1,64}', value):
+        return f'「{value}」'
+    return '別の値'
+
+
+def _refuse(message):
+    return BridgeFailure('unexpected_service', message)
+
+
+def _contract(cfg, health, state, models):
+    """Check the three answers one by one, so that a refusal says which one did not fit.
+
+    Returns the list of windows. Nothing the service sent is repeated except
+    a short plain name (see _named): the answers come from whatever listens
+    on that port.
+    """
+    wanted = cfg['model'] if len(cfg['model']) <= 64 else cfg['model'][:64] + '…'
+    if not (isinstance(health, dict) and health.get('ok') is True
+            and isinstance(health.get('version'), str) and 0 < len(health['version']) <= 50):
+        raise _refuse('接続先の /health が Copilot bridge の応答ではありません（ok と版の表示が必要です）。'
+                      '同じポートで別のサービスが動いていないか確認してください。')
+    if not isinstance(state, dict):
+        raise _refuse('接続先の /status が Copilot bridge の応答ではありません。')
+    if state.get('version') != health['version']:
+        raise _refuse('接続先の /status と /health で版の表示が違います。Copilot bridge を起動し直してください。')
+    if state.get('backend') != 'edge':
+        raise _refuse(f'Copilot bridge が Edge 以外の方式（{_named(state.get("backend"))}）で動いています。'
+                      'Edge 方式（--backend edge）で起動し直してください。')
+    if state.get('model') != cfg['model']:
+        raise _refuse(f'モデル名が一致しません。この画面の設定は「{wanted}」、Copilot bridge 側は{_named(state.get("model"))}です。'
+                      '設定のモデル名か、Bridge の model_name のどちらかを合わせてください。')
+    if not (isinstance(models, dict) and isinstance(models.get('data'), list)):
+        raise _refuse('接続先の /v1/models が Copilot bridge の応答ではありません。')
+    listed = [m for m in models['data'] if isinstance(m, dict) and m.get('id') == cfg['model']]
+    if not listed:
+        raise _refuse(f'接続先の /v1/models に「{wanted}」がありません。設定のモデル名を確認してください。')
+    if not any(m.get('owned_by') == 'copilot-bridge' for m in listed):
+        raise _refuse(f'接続先の /v1/models の「{wanted}」は Copilot bridge のものではありません。同じポートで別のサービスが動いていないか確認してください。')
+    windows = state.get('windows')
+    if not (isinstance(windows, list) and 1 <= len(windows) <= 32):
+        raise _refuse('Copilot bridge の /status にウィンドウの一覧がありません（1〜32 個が必要です）。Edge の準備が終わっているか確認してください。')
+    if not (all(isinstance(w, dict) and isinstance(w.get('id'), str)
+                and type(w.get('busy')) is bool and isinstance(w.get('error'), str) for w in windows)
+            and len({w['id'] for w in windows}) == len(windows)):
+        raise _refuse('Copilot bridge の /status のウィンドウ情報が、想定した形ではありません（番号・使用中・エラーの各項目と、重複のない番号が必要です）。')
+    return windows
 
 
 async def _probe(cfg):
@@ -323,27 +395,41 @@ async def _probe(cfg):
         if exc.os_error.errno in (errno.ECONNREFUSED, 10061):
             return None
         raise BridgeFailure('connection_failed', 'Copilot bridge の接続を確認できません。') from None
-    except (aiohttp.ClientError, asyncio.TimeoutError):
-        raise BridgeFailure('connection_failed', 'Copilot bridge の確認が失敗またはタイムアウトしました。') from None
-    valid = (isinstance(health, dict) and health.get('ok') is True
-             and isinstance(health.get('version'), str) and 0 < len(health['version']) <= 50
-             and isinstance(state, dict) and state.get('version') == health['version']
-             and state.get('backend') == 'edge' and state.get('model') == cfg['model']
-             and isinstance(models, dict) and isinstance(models.get('data'), list)
-             and any(isinstance(m, dict) and m.get('id') == cfg['model'] and m.get('owned_by') == 'copilot-bridge'
-                     for m in models['data']))
-    windows = state.get('windows') if isinstance(state, dict) else None
-    valid = valid and isinstance(windows, list) and 1 <= len(windows) <= 32
-    if valid:
-        valid = all(isinstance(w, dict) and isinstance(w.get('id'), str)
-                    and type(w.get('busy')) is bool and isinstance(w.get('error'), str) for w in windows)
-        valid = valid and len({w['id'] for w in windows}) == len(windows)
-    if not valid:
-        raise BridgeFailure('unexpected_service', '接続先の Copilot bridge 識別・モデル・Edge 状態が一致しません。')
-    if any(w['error'] for w in windows):
-        raise BridgeFailure('bridge_error', 'Copilot bridge がブラウザーのエラーを報告しています。Bridge 側を確認してください。')
+    except asyncio.TimeoutError:
+        raise BridgeFailure('connection_failed', f'Copilot bridge が {HTTP_TIMEOUT} 秒以内に応答しませんでした。'
+                            'Bridge が混んでいるか、起動の途中です。少し待ってから再接続してください。') from None
+    except aiohttp.ClientError:
+        raise BridgeFailure('connection_failed', 'Copilot bridge の確認が途中で失敗しました（応答が切れた、または読めない応答でした）。') from None
+    windows = _contract(cfg, health, state, models)
+    # A window's error is what its last answer was (a limit or a failure shown by Copilot). The bridge
+    # keeps using that window and clears the mark at its next good answer, so the mark is reported and
+    # is not a reason to refuse: refusing would leave it set until the bridge is started again.
+    # What the mark says is never repeated; only how many windows carry one.
     return {'version': health['version'], 'windows': len(windows),
-            'busy_windows': sum(w['busy'] for w in windows)}
+            'busy_windows': sum(w['busy'] for w in windows),
+            'error_windows': sum(bool(w['error']) for w in windows)}
+
+
+def _ready_message(observed):
+    message = 'Bridge API に接続しました。ログインの継続・推論・ツール応答は未検証です。'
+    marked = observed.get('error_windows', 0)
+    if marked:
+        message += (f' {observed["windows"]} 個のうち {marked} 個のウィンドウは、直前の回答が制限または障害の表示でした'
+                    '（次に正常な回答が返ると消えます。続く場合は Edge の Copilot 画面を確認してください）。')
+    return message
+
+
+def _exit_message(code):
+    """Why a bridge started here ended before answering, as far as its exit code tells.
+
+    What the bridge prints is not kept (it may hold what was asked of Copilot),
+    so the code is all there is to go by.
+    """
+    message = f'Copilot bridge が起動中に終了しました（終了コード {code if type(code) is int else "不明"}）。'
+    if code == 2:
+        return message + '起動オプションを受け付けなかった可能性があります（古い版の Bridge など）。copilot-bridge を更新してください。'
+    return message + ('Python・Edge ドライバー・Bridge 設定を確認してください。原因の文は、copilot-bridge フォルダーで '
+                      'python server.py を直接起動すると表示されます。')
 
 
 class CopilotBridgeManager:
@@ -437,6 +523,7 @@ class CopilotBridgeManager:
                 await self._stop_owned()
             self._stage = 'locating_bridge'
             directory = _bridge_directory(cfg['bridge_directory'])
+            _check_start_options(directory)
             self._stage = 'checking_python'
             python = None
             for candidate in _python_candidates(cfg['python_executable'], directory):
@@ -450,8 +537,9 @@ class CopilotBridgeManager:
             self._stage = 'owned_bridge_probe'
             self._state = self._status('starting', message='Edge と Copilot の準備を待っています。必要なら開いた Edge でログインしてください。')
             while observed is None:
-                if self._owned.poll() is not None:
-                    raise BridgeFailure('startup_failed', 'Copilot bridge が起動中に終了しました。Python・Edge ドライバー・Bridge 設定を確認してください。')
+                code = self._owned.poll()
+                if code is not None:
+                    raise BridgeFailure('startup_failed', _exit_message(code))
                 await asyncio.sleep(POLL_SECONDS)
                 try:
                     observed = await _probe(cfg)
@@ -469,8 +557,7 @@ class CopilotBridgeManager:
         self._stage = 'existing_bridge_probe'
         try:
             observed = await asyncio.wait_for(self._prepare_connect(cfg), cfg['startup_timeout_seconds'])
-            self._state = self._status('ready', True, **observed,
-                message='Bridge API に接続しました。ログインの継続・推論・ツール応答は未検証です。')
+            self._state = self._status('ready', True, **observed, message=_ready_message(observed))
         except asyncio.CancelledError:
             await self._stop_owned()
             raise
@@ -513,8 +600,7 @@ class CopilotBridgeManager:
         except BridgeFailure as exc:
             self._state = self._status('error', code=exc.code, message=str(exc))
             raise ValueError(str(exc)) from None
-        self._state = self._status('ready', True, **observed,
-            message='Bridge API に接続しました。ログインの継続・推論・ツール応答は未検証です。')
+        self._state = self._status('ready', True, **observed, message=_ready_message(observed))
 
     async def close(self):
         async with self._lock:

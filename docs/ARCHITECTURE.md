@@ -34,7 +34,7 @@ flowchart LR
 - `workbench/providers.py`: stateless wire conversions. OpenAI native response output is replayed with encrypted reasoning; Anthropic thinking signatures/redacted blocks remain intact; Local native content/reasoning is retained. Display reasoning is separate from protocol data.
 - `workbench/copilot_protocol.py`: managed Copilot JSON request envelopes, strict whole-response validation and text-only replay with call/result IDs. The same deterministic request representation supplies context measurement and HTTP dispatch. Ordinary provider parsing and no-tools summaries retain their existing contracts. See [Copilot protocol](COPILOT_PROTOCOL.md).
 - `workbench/resources.py`: shared Local admission control, queue limits, start interval, bounded retry settings, fixed NVIDIA query. A failed or cancelled request releases its slot.
-- `workbench/copilot_bridge.py`: background opt-in startup, bounded identity probes and owned-process cleanup. Existing bridges are borrowed. Managed starts use a dedicated Edge profile and no transcript log. The virtual Copilot profile shares the Local queue/time limits, omits local GPU admission and disables automatic HTTP retry. API readiness is not inference or login verification.
+- `workbench/copilot_bridge.py`: background opt-in startup, bounded identity probes and owned-process cleanup. Existing bridges are borrowed. Managed starts use a dedicated Edge profile and no transcript log. The virtual Copilot profile shares the Local queue/time limits, omits local GPU admission and disables automatic HTTP retry. API readiness is not inference or login verification. The three answers are checked one by one (`_contract`), so a refusal names the answer that did not fit; nothing the service sent is repeated except a short plain name. A window's `error` (its last answer was one of the bridge's limit or failure phrases) is counted in `error_windows` and does not refuse: the bridge clears it at that window's next good answer, which a refusal would prevent. Before a bridge is started, the text of its `server.py` is read for the start options (`START_OPTIONS`); what a started bridge prints is not kept, so an early end is reported by its exit code.
 - `workbench/harness.py`: host data transfers, bounded name/content searches and Office parsing/writing.
 - `workbench/python_runner.py`: explicit input/output mappings, trusted existing runtime selection, cancellation draining and per-file save receipts.
 - `workbench/windows_sandbox.py`: fresh LPAC, network disabled by default with explicit capability opt-in, child-process restriction, Job Object, runtime ACL cleanup and cross-process ACL mutex. OS-public/runtime read exceptions are described in SECURITY.md.
@@ -864,6 +864,28 @@ the human turned it on (0.1.1.dev61; off by default).
   `WebTools._browser_once` decides whether a window is opened at all (the
   opener is set only when the run has `browser_fetch`), and what its result
   means; `Engine._browser_tries_publish` turns each try into an event.
+
+## The way to a file in a browser window (0.1.1.dev91)
+
+- `selenium_worker.run_fetch_job` asks for the address once. With `via`
+  (a page that leads to it) that page is loaded first; `link_to` looks for
+  the page's own link to the address (same site and path, letter case
+  aside) and `_FOLLOW` goes on to it by the page's navigation
+  (`window.location.assign`), which is what following a link is. With
+  `through` (a pattern for the path of a page in between) and no such
+  link, the first link that fits is followed and the link to the address
+  is looked for there. No link: the address is typed (`driver.get`). The
+  result's `route` is `link`, `links` or `address`.
+- `arrived` waits after a followed link until another document stands in
+  the window or a file is being saved, because the page's navigation does
+  not wait for the answer. Nothing arrived: the result is `timeout`, and
+  the address is not typed as well.
+- `webtools.entry_page` gives, for a report's file of a known publisher
+  pattern, the page a reader starts at and the pattern of the page in
+  between; `_browser_once` keeps it in `_browser_entry` when no read page
+  led to the file. It is that address's one window try, counted like any
+  other. A page that a window read and that links to the file comes first
+  (`_browser_from`).
 
 ## The centre's tabs and the faces (0.1.1.dev90)
 

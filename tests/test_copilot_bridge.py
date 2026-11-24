@@ -294,27 +294,141 @@ async def test_real_loopback_stub_three_gets_no_inference_or_session_disclosure(
     assert (await cb._probe(stub['config']))['windows'] == 1  # Borrowed service still running.
 
 
-@pytest.mark.parametrize('change', ['health_only', 'fake', 'model', 'owner', 'windows', 'busy_type', 'duplicate', 'error'])
-async def test_loopback_readiness_rejects_partial_wrong_or_fake_service(stub, change):
-    if change == 'health_only':
-        stub['status'] = {}
+REFUSALS = {
+    'health': '/health が Copilot bridge の応答ではありません',
+    'status': '/status が Copilot bridge の応答ではありません',
+    'version': '/status と /health で版の表示が違います',
+    'fake': 'Edge 以外の方式（「fake」）で動いています',
+    'model': 'モデル名が一致しません。この画面の設定は「copilot」、Copilot bridge 側は「other」です',
+    'model_text': 'モデル名が一致しません。この画面の設定は「copilot」、Copilot bridge 側は別の値です',
+    'models': '/v1/models が Copilot bridge の応答ではありません',
+    'unlisted': '/v1/models に「copilot」がありません',
+    'owner': '/v1/models の「copilot」は Copilot bridge のものではありません',
+    'windows': '/status にウィンドウの一覧がありません',
+    'busy_type': 'ウィンドウ情報が、想定した形ではありません',
+    'duplicate': 'ウィンドウ情報が、想定した形ではありません',
+}
+
+
+@pytest.mark.parametrize('change', list(REFUSALS))
+async def test_loopback_readiness_rejects_partial_wrong_or_fake_service_and_says_which_answer_did_not_fit(stub, change):
+    if change == 'health':
+        stub['health'] = {'ok': 'true', 'version': '0.1.0'}
+    elif change == 'status':
+        stub['status'] = []
+    elif change == 'version':
+        stub['status']['version'] = '0.0.9'
     elif change == 'fake':
         stub['status']['backend'] = 'fake'
     elif change == 'model':
         stub['status']['model'] = 'other'
+    elif change == 'model_text':
+        stub['status']['model'] = 'SECRET <b>free text</b> from whatever listens there'
+    elif change == 'models':
+        stub['models'] = {'data': 'SECRET'}
+    elif change == 'unlisted':
+        stub['models']['data'][0]['id'] = 'SECRET-other'
     elif change == 'owner':
-        stub['models']['data'][0]['owned_by'] = 'other'
+        stub['models']['data'][0]['owned_by'] = 'SECRET-other'
     elif change == 'windows':
         stub['status']['windows'] = []
     elif change == 'busy_type':
         stub['status']['windows'][0]['busy'] = 'false'
-    elif change == 'duplicate':
-        stub['status']['windows'] *= 2
     else:
-        stub['status']['windows'][0]['error'] = 'SECRET_ERROR_CONTENT'
+        stub['status']['windows'] *= 2
     with pytest.raises(cb.BridgeFailure) as caught:
         await cb._probe(stub['config'])
-    assert 'SECRET' not in str(caught.value)
+    assert caught.value.code == 'unexpected_service'
+    assert REFUSALS[change] in str(caught.value)
+    assert 'SECRET' not in str(caught.value) and '<' not in str(caught.value)
+
+
+async def test_an_answer_that_is_not_ok_names_the_address_and_the_status(stub):
+    stub['redirect'] = True
+    with pytest.raises(cb.BridgeFailure) as caught:
+        await cb._probe(stub['config'])
+    assert caught.value.code == 'unexpected_service'
+    assert '/health が状態 302 を返しました' in str(caught.value) and '127.0.0.1:1' not in str(caught.value)
+
+
+async def test_a_window_whose_last_answer_was_an_error_is_reported_and_does_not_block(stub, tmp_path):
+    """The bridge keeps using such a window and clears the mark at its next good answer.
+
+    Refusing left the mark in place for good when this application was the
+    bridge's only user: nothing could be sent that would clear it.
+    """
+    stub['status']['windows'] = [{'id': 'w0', 'busy': False, 'error': 'SECRET_ERROR_CONTENT'},
+                                 {'id': 'w1', 'busy': True, 'error': ''}]
+    observed = await cb._probe(stub['config'])
+    assert observed == {'version': '0.1.0', 'windows': 2, 'busy_windows': 1, 'error_windows': 1}
+    manager = cb.CopilotBridgeManager(tmp_path)
+    result = await manager.sync(stub['config'])
+    assert result['ready'] and result['error_windows'] == 1
+    assert '2 個のうち 1 個のウィンドウは、直前の回答が制限または障害の表示でした' in result['message']
+    assert 'SECRET' not in json.dumps(result, ensure_ascii=False)
+    # Every window marked: still not refused, and a piece of work may start (only an answer can clear the marks).
+    stub['status']['windows'][1]['error'] = 'SECRET_ERROR_CONTENT'
+    await manager.ensure(stub['config'])
+    status = manager.status(stub['config'])
+    assert status['ready'] and status['error_windows'] == 2 and '2 個のうち 2 個' in status['message']
+    assert 'SECRET' not in json.dumps(status, ensure_ascii=False)
+    # Cleared at the bridge: the note goes away.
+    for window in stub['status']['windows']:
+        window['error'] = ''
+    await manager.ensure(stub['config'])
+    assert manager.status(stub['config'])['error_windows'] == 0 and '直前の回答' not in manager.status(stub['config'])['message']
+    await manager.close()
+
+
+async def test_no_answer_within_the_time_allowed_says_so(stub, monkeypatch):
+    async def slow(session, url):
+        raise asyncio.TimeoutError
+    monkeypatch.setattr(cb, '_get_json', slow)
+    with pytest.raises(cb.BridgeFailure) as caught:
+        await cb._probe(stub['config'])
+    assert caught.value.code == 'connection_failed' and f'{cb.HTTP_TIMEOUT} 秒以内に応答しませんでした' in str(caught.value)
+
+
+@pytest.mark.parametrize('source,missing', [
+    ('p.add_argument("--host")\np.add_argument("--port")\np.add_argument("--backend")\n', ['--profile-mode', '--log-dir']),
+    ("p.add_argument('--host')\np.add_argument('--port')\np.add_argument('--backend')\np.add_argument('--profile-mode')\n", ['--log-dir']),
+])
+async def test_a_bridge_that_does_not_know_the_start_options_is_refused_before_anything_starts(setup, tmp_path, source, missing):
+    (tmp_path / 'server.py').write_text(source, encoding='utf-8')
+    result = await cb.CopilotBridgeManager(tmp_path).sync(CONFIG)
+    assert result['code'] == 'bridge_outdated' and result['stage'] == 'locating_bridge' and not result['ready']
+    assert '・'.join(missing) in result['message'] and '更新してください' in result['message']
+    assert setup['spawned'] == [] and 'dependencies' not in setup
+
+
+async def test_a_bridge_that_knows_the_start_options_is_started(setup, tmp_path):
+    (tmp_path / 'server.py').write_text(''.join(f'p.add_argument("{option}")\n' for option in cb.START_OPTIONS), encoding='utf-8')
+    result = await cb.CopilotBridgeManager(tmp_path).sync(CONFIG)
+    assert result['ready'] and len(setup['spawned']) == 1
+
+
+def test_the_real_bridge_text_shape_passes_and_an_unreadable_file_is_left_to_the_start(tmp_path):
+    cb._check_start_options(tmp_path)                                    # no file: nothing to read
+    (tmp_path / 'server.py').write_text('', encoding='utf-8')
+    cb._check_start_options(tmp_path)                                    # empty: nothing to judge by
+    (tmp_path / 'server.py').write_text(
+        'p.add_argument("--host")\np.add_argument("--port", type=int)\np.add_argument("--backend", choices=["edge", "fake"])\n'
+        'p.add_argument("--profile-mode", dest="profile_mode",\n    choices=["separate"])\np.add_argument("--log-dir", dest="log_dir")\n',
+        encoding='utf-8')
+    cb._check_start_options(tmp_path)
+
+
+@pytest.mark.parametrize('code,expected', [(2, '起動オプションを受け付けなかった可能性'), (1, 'python server.py を直接起動'), (-9, '終了コード -9')])
+async def test_a_bridge_that_ends_while_starting_reports_its_exit_code(setup, tmp_path, monkeypatch, code, expected):
+    def spawn(python, directory, cfg, state_directory):
+        child = Owned()
+        child.code = code
+        setup['spawned'].append(child)
+        return child
+    monkeypatch.setattr(cb, '_spawn_owned', spawn)
+    result = await cb.CopilotBridgeManager(tmp_path).sync(CONFIG)
+    assert result['code'] == 'startup_failed' and result['stage'] == 'owned_bridge_probe'
+    assert f'終了コード {code}' in result['message'] and expected in result['message']
 
 
 @pytest.mark.parametrize('raw', [b'{"ok":true,"ok":false}', b'{"ok":NaN}', b'\xff', b'x' * (cb.MAX_RESPONSE_BYTES + 1)],

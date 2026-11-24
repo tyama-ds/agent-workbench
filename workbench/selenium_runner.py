@@ -397,19 +397,24 @@ def _execute_page(config, python_config, harness, url, ready, visible, wait_seco
 
 # --- one visible try of an address that refused the ordinary request ---------------------
 
-_FETCH_KEYS = {'kind', 'url', 'status', 'content_type', 'title', 'html', 'truncated', 'file', 'bytes', 'check', 'linked'}
+_FETCH_KEYS = {'kind', 'url', 'status', 'content_type', 'title', 'html', 'truncated', 'file', 'bytes', 'check', 'linked', 'route'}
+_FETCH_ROUTES = {'address', 'link', 'links'}
 _LINKED_KEYS = {'kind', 'url', 'status', 'file', 'bytes'}
 _FETCH_KINDS = {'download', 'page', 'closed', 'timeout', 'too_large'}
 
 
 def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url, max_page_chars, max_download_bytes, cancel,
-                   person_seconds=0, check_words=(), via='', follow=False):
+                   person_seconds=0, check_words=(), via='', follow=False, through=''):
     if os.name != 'nt':
         raise HarnessError('Opening a browser window for a refused page currently requires Windows')
     try:
         url, proxy = validate_url(url), validate_proxy(proxy_url or '')
         via = validate_url(via) if via else ''
-    except (ValueError, UnicodeError) as exc:
+        if not isinstance(through, str) or len(through) > 300:
+            raise ValueError('Invalid pattern for the page in between')
+        through = through if via else ''
+        re.compile(through)
+    except (ValueError, UnicodeError, re.error) as exc:
         raise HarnessError(str(exc)) from exc
     wait_seconds = _integer(wait_seconds, 'fetch wait', 5, 300)
     person_seconds = _integer(person_seconds, 'wait for a person', 0, 600)
@@ -425,7 +430,7 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
                    'proxy_url': proxy, 'url': url, 'wait_seconds': wait_seconds, 'max_page_chars': max_page_chars,
                    'max_download_bytes': max_download_bytes, 'person_seconds': person_seconds,
                    'check_words': [str(word)[:80] for word in list(check_words)[:60]], 'via': via,
-                   'follow': follow is True}
+                   'follow': follow is True, 'through': through}
             job_path, worker = workspace / 'job.json', workspace / 'worker.py'
             job_path.write_text(json.dumps(job, ensure_ascii=False), encoding='utf-8')
             worker.write_bytes(Path(__file__).with_name('selenium_worker.py').read_bytes())
@@ -433,7 +438,7 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
                 # The profile and the download both live in the private folder and are deleted with it.
                 result = run_browser_job([str(executable), '-I', '-S', '-B', '-u', '-X', 'utf8',
                                           str(worker), str(job_path)], workspace,
-                                         timeout=(max(wait_seconds, person_seconds) + (135 if via else 75)
+                                         timeout=(max(wait_seconds, person_seconds) + (135 if via else 75) + (70 if through else 0)
                                                   + (wait_seconds + 60 if follow is True else 0)), memory_mb=memory,
                                          output_limit=16384, workspace_limit=max_download_bytes + 512 * 1024 * 1024, cancel=cancel)
             except SandboxError as exc:
@@ -454,6 +459,7 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
                         or not all(isinstance(page[key], str) for key in ('url', 'content_type', 'title', 'html', 'file'))
                         or type(page['status']) is not int or type(page['bytes']) is not int
                         or type(page['truncated']) is not bool or type(page['check']) is not bool
+                        or page['route'] not in _FETCH_ROUTES
                         or len(page['html']) > max_page_chars):
                     raise ValueError()
                 def saved(name):
@@ -484,11 +490,13 @@ def _execute_fetch(config, python_config, harness, url, wait_seconds, proxy_url,
 
 
 async def execute_fetch(config, python_config, harness, url, *, wait_seconds=60, proxy_url='', max_page_chars=1500000,
-                        max_download_bytes=50 * 1024 * 1024, person_seconds=0, check_words=(), via='', follow=False):
+                        max_download_bytes=50 * 1024 * 1024, person_seconds=0, check_words=(), via='', follow=False,
+                        through=''):
     """Load one address once in a visible browser window; return what came, with a downloaded file's bytes in ``data``.
 
-    With ``via`` (the page that links to the address, read in a window before) that page is loaded first and
-    the address then, in the same window.
+    With ``via`` (a page that leads to the address) that page is loaded first and the address then, in the
+    same window: by the page's link to it where there is one, with ``through`` also by way of a page in
+    between whose path fits that pattern (see selenium_worker.run_fetch_job). ``route`` in the result says which.
 
     The human turned this on for the run. Nothing is clicked or typed, the
     browser is not disguised, and the window is closed whatever happens.
@@ -497,7 +505,7 @@ async def execute_fetch(config, python_config, harness, url, *, wait_seconds=60,
     cancel = threading.Event()
     task = asyncio.create_task(asyncio.to_thread(_execute_fetch, config, python_config, harness, url, wait_seconds,
                                                 proxy_url, max_page_chars, max_download_bytes, cancel,
-                                                person_seconds, tuple(check_words), via, follow))
+                                                person_seconds, tuple(check_words), via, follow, through))
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:

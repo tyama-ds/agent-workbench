@@ -324,6 +324,54 @@ def main_pdf_link(rows, page_url):
     return next(iter(found)) if len(found) == 1 else ''
 
 
+# Going on from the page in the window to an address that this page itself links to: the page's own
+# navigation, which is what following a link is. Nothing is clicked, and no address is opened this way
+# that the page does not link to; an address the page does not link to is typed, as before.
+_FOLLOW = "window.location.assign(arguments[0]);"
+
+
+def _site_links(rows, page_url):
+    """The addresses a page links to on one site, as the page writes them (without fragments), in page order."""
+    from urllib.parse import urldefrag
+    wanted = urlsplit(page_url)
+    for row in rows if isinstance(rows, list) else []:
+        if not (isinstance(row, (list, tuple)) and len(row) == 2 and isinstance(row[0], str)):
+            continue
+        try:
+            address = validate_url(urldefrag(row[0])[0])
+            parts = urlsplit(address)
+            same = (parts.scheme.lower() == wanted.scheme.lower() and (parts.hostname or '').lower() == (wanted.hostname or '').lower()
+                    and parts.port == wanted.port)
+        except ValueError:
+            continue
+        if same and len(address) <= 2000:
+            yield address, parts
+
+
+def link_to(rows, target):
+    """The link of a read page that leads to ``target``, as the page writes it, or ''.
+
+    The same site and the same path (letter case aside). A query the target has must be the link's too;
+    a target without one is also reached by a link that adds one (a revision mark, for example).
+    """
+    try:
+        wanted = urlsplit(validate_url(target))
+    except ValueError:
+        return ''
+    for address, parts in _site_links(rows, target):
+        if parts.path.casefold() == wanted.path.casefold() and (not wanted.query or parts.query == wanted.query):
+            return address
+    return ''
+
+
+def link_through(rows, page_url, pattern):
+    """The first link of a read page to a page of its own site whose path fits ``pattern``, or ''."""
+    for address, parts in _site_links(rows, page_url):
+        if pattern.search(parts.path):
+            return address
+    return ''
+
+
 _SHOWN_FETCH = ("const done = arguments[arguments.length - 1];"
                 "fetch(window.location.href, {credentials: 'include', cache: 'force-cache'})"
                 ".then(r => { if (!r.ok) throw new Error('status ' + r.status); return r.arrayBuffer(); })"
@@ -364,14 +412,19 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
 
     Nothing is clicked, typed or solved. The window is closed whatever happens. A PDF that the window shows
     in its viewer is read through the page's own fetch (its session and cache) and saved like a download.
-    With ``via`` the page that links to the address is loaded first, in the same window.
+    With ``via`` a page that leads to the address is loaded first, in the same window. Where that page links
+    to the address, the link is followed (the page's own navigation; nothing is clicked). With ``through``
+    (a pattern for the path of a page in between, e.g. the page of one issue) and no such link on the first
+    page, its first link to such a page is followed and the link to the address is looked for there. Where
+    no link is found, the address is typed, as without ``via``. Either way the address is asked for once.
+    ``route`` says which: "address" (typed), "link" (followed from ``via``), "links" (through the page between).
     With ``person_seconds`` a person has agreed to pass the site's check in this window: while the page is
     such a check (one of ``check_words`` in its title or its short text), the window stays open and is
     looked at again, until the page or a download arrives, the window is closed, or that time is over.
     With ``follow`` a page that links to its full report on its own site (see main_pdf_link) is followed by
     that file, in the same window; what came of it is in ``linked`` ({kind, url, status, file, bytes}, or {}).
     Returns {kind: download|page|closed|timeout|too_large, url, status, content_type, title, html, truncated,
-    file, bytes, check, linked}.
+    file, bytes, check, linked, route}.
     """
     url = validate_url(job['url'])
     wait, maximum, largest = job['wait_seconds'], job['max_page_chars'], job['max_download_bytes']
@@ -382,6 +435,13 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
         raise ValueError('Invalid check words')
     words = [word.casefold() for word in words]
     via = validate_url(job['via']) if job.get('via') else ''
+    through = job.get('through', '')
+    if not isinstance(through, str) or len(through) > 300:
+        raise ValueError('Invalid pattern for the page in between')
+    try:
+        through = re.compile(through, re.I) if through and via else None
+    except re.error:
+        raise ValueError('Invalid pattern for the page in between') from None
 
     def is_check(title, text):
         title, text = title.casefold(), text[:6000].casefold()
@@ -395,7 +455,7 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
     downloads = workspace / 'downloads'
     downloads.mkdir(exist_ok=True)
     result = {'kind': 'timeout', 'url': url, 'status': 0, 'content_type': '', 'title': '', 'html': '',
-              'truncated': False, 'file': '', 'bytes': 0, 'check': False, 'linked': {}}
+              'truncated': False, 'file': '', 'bytes': 0, 'check': False, 'linked': {}, 'route': 'address'}
     _step('start browser')
     driver = (driver_factory or create_driver)(job, workspace)
     try:
@@ -408,13 +468,8 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
         except Exception:
             pass  # the profile's download folder is set as well; a browser without this command still saves there
         _step('open address')
-        if via:
-            # The page that links to the file, which a window read before: it is loaded first, and the file is
-            # then asked for in the same window, with the session that page set up. Nothing is clicked.
-            try:
-                driver.get(via)
-            except Exception:
-                pass
+
+        def settle():
             settled = clock() + 15
             while clock() < settled:
                 try:
@@ -423,6 +478,65 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
                 except Exception:
                     break
                 sleep(.5)
+
+        def here():
+            try:
+                return str(driver.current_url)
+            except Exception:
+                return ''
+
+        def links():
+            try:
+                return driver.execute_script(_PDF_LINKS)
+            except Exception:
+                return []
+
+        def follow(address):
+            """Go on to an address that the page in the window links to, by the page's own navigation."""
+            try:
+                driver.execute_script(_FOLLOW, address)
+                return True
+            except Exception:
+                return False
+
+        def arrived(before, began, limit):
+            """After a link was followed: wait until another document stands in the window or a file is being saved.
+
+            The page's own navigation does not wait for the answer, and until the answer comes the page that
+            was left still stands in the window; it must not be taken for what the address brought.
+            """
+            while clock() - began < limit:
+                if any(item.is_file() for item in downloads.iterdir()):
+                    return True
+                try:
+                    if str(driver.current_url) != before:
+                        return True
+                except Exception as exc:
+                    if window_gone(exc):
+                        return True  # the look that follows tells a closed window apart
+                sleep(.5)
+            return False
+
+        target = ''
+        if via:
+            # A page that leads to the file is loaded first, and the file is then asked for in the same window,
+            # with the session that page set up, as a person reading the site would come to it.
+            try:
+                driver.get(via)
+            except Exception:
+                pass
+            settle()
+            rows = links()
+            target = link_to(rows, url)
+            if target:
+                result['route'] = 'link'
+            elif through is not None:
+                between, before = link_through(rows, via, through), here()
+                if between and between != before and follow(between) and arrived(before, clock(), 45):
+                    settle()
+                    target = link_to(links(), url)
+                    if target:
+                        result['route'] = 'links'
             for item in downloads.iterdir():  # only what the address itself brings counts as its download
                 if item.is_file():
                     item.unlink()
@@ -506,13 +620,20 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
                 else:
                     result['title'] = ('The PDF was shown but could not be read from the page: ' + reason)[:300]
 
-        started = clock()
-        try:
-            driver.get(url)
-        except Exception:
-            pass  # an address that starts a download does not "load"; what arrived is looked at below
+        started, before, came = clock(), here(), True
+        if target and target != before and follow(target):
+            came = arrived(before, started, min(45, wait))
+            if not came:
+                result['title'] = 'Nothing arrived after the link to the address was followed'
+        else:
+            result['route'] = 'address'
+            try:
+                driver.get(url)
+            except Exception:
+                pass  # an address that starts a download does not "load"; what arrived is looked at below
         _step('wait for the address')
-        watch(result, started, started + max(wait, person))
+        if came:
+            watch(result, started, started + max(wait, person))
         if result['kind'] == 'page':
             _step('read the page')
             try:
@@ -534,7 +655,7 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
             _step('follow the report link')
             if (job.get('follow') is True and not result['check'] and result['status'] in (0, 200)
                     and not result['content_type'].lower().startswith('application/pdf')):
-                # The page is read. Where it links to its full report on its own site, that file is asked for
+                # The page is read. Where it links to its full report on its own site, that link is followed
                 # next in this same window and session, as a person reading the page would; nothing is clicked.
                 try:
                     link = main_pdf_link(driver.execute_script(_PDF_LINKS), result['url'])
@@ -543,12 +664,16 @@ def run_fetch_job(job, workspace, *, driver_factory=None, clock=time.monotonic, 
                 if link:
                     linked = {'kind': 'timeout', 'url': link, 'status': 0, 'content_type': '', 'title': '', 'file': '',
                               'bytes': 0, 'check': False}
-                    began = clock()
-                    try:
-                        driver.get(link)
-                    except Exception:
-                        pass
-                    watch(linked, began, began + wait)
+                    began, before, came = clock(), here(), True
+                    if link != before and follow(link):
+                        came = arrived(before, began, min(45, wait))
+                    else:
+                        try:
+                            driver.get(link)
+                        except Exception:
+                            pass
+                    if came:
+                        watch(linked, began, began + wait)
                     result['linked'] = {key: linked[key] for key in ('kind', 'url', 'status', 'file', 'bytes')}
         return result
     finally:
