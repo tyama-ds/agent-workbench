@@ -267,9 +267,12 @@ async def test_managed_bridge_keeps_queue_timeout_and_conversation_but_no_gpu_or
     assert admissions[0]['queue_timeout_seconds'] == 44
     assert local['gpu_guard_enabled'] is True and local['max_retries'] == 3
     assert requests[0][2]['X-Conversation-Id'] == 'run/agent'
+    # The managed bridge is asked to give Copilot the rules before the conversation (see copilot-bridge "warmup").
+    assert requests[0][2]['X-Bridge-Warmup'] == '1'
     assert requests[0][3] == 55 and requests[0][4] is None
     legacy = {key: value for key, value in profile.items() if key != '_copilot_agent'}
     with pytest.raises(ProviderError, match='Busy'):
         await client.complete(legacy, [{'role': 'user', 'content': 'fixture'}], [], 'fixture',
                               {'local': {**local, 'max_retries': 0}})
     assert admissions[-1]['gpu_guard_enabled'] is True
+    assert 'X-Bridge-Warmup' not in requests[-1][2]   # an ordinary Local profile: no such request is made of its server
