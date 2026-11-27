@@ -453,7 +453,7 @@ body{background:var(--cp-bg)}
 .deliverable-row>strong{font-size:12px;line-height:1.6;color:#a6aeb9}
 .deliverable-items{display:flex;flex-direction:column;gap:3px;min-width:0}
 .deliverable-items p{margin:0;font-size:12px;line-height:1.6;overflow-wrap:anywhere}
-.deliverable.missing,.deliverable.review-fix{color:#f0b56a}
+.deliverable.missing,.deliverable.review-fix,.deliverable.review-unaddressed{color:#f0b56a}
 .deliverable.saved,.deliverable.review-pass{color:#9fd8a5}
 .deliverable-name{font-weight:600}
 .deliverable-by{color:#a6aeb9;margin-left:4px}

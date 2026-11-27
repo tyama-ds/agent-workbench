@@ -148,6 +148,10 @@ _LIST_LINE = re.compile(r'\s*(?:\d{1,2}[.)．）、]|[（(]\d{1,2}[）)]|[①-�
 _LIST_INTRO = re.compile(r'次の|以下|下記|following|below', re.I)
 
 
+# How many sentences may stand between the sentence that introduces a list and the list itself.
+_INTRO_REACH = 3
+
+
 def _introduces_outputs(sentence):
     """A sentence before a list says that what the list names is to be produced.
 
@@ -187,10 +191,16 @@ def file_roles(text):
     "1. 要約レポート（weo2026_summary.docx）", "2. 説明スライド（weo2026_slides.pptx）". The word of making stood
     in the sentence before the list, and each list line was looked at alone. A sentence that introduces a
     list as things to produce now holds for the names in the lines of that list.
+
+    Real-machine case: one more sentence stood between that introduction and its list ("…次の2つを作成して
+    提出してください。ダウンロードした PDF も同じフォルダーに保存してください。" and then the numbered list), and no
+    file was taken as one to produce. The introduction holds until its list has come: a few sentences in
+    between do not end it, unless one of them introduces a list of its own.
     """
     if not isinstance(text, str):
         return {}
     text, roles, carried, segments = _LINK.sub(' ', text), {}, False, []
+    began, between = False, 0   # the introduced list has begun; sentences since the introduction, before its list
     for line in text.split('\n'):
         marker = _LIST_LINE.match(line)   # the marker is taken off first: "1. 要約…" is one line of a list, not "1" and a sentence
         segments += [(part, marker is not None) for part in re.split(r'。|\.\s', line[marker.end():] if marker else line)
@@ -200,7 +210,15 @@ def file_roles(text):
                         for match in pattern.finditer(segment)})
         if not in_list:
             # Prose: it may introduce the list that follows, and it ends the list before it.
-            carried = _introduces_outputs(segment)
+            if _introduces_outputs(segment):
+                carried, began, between = True, False, 0
+            elif (carried and not began and between < _INTRO_REACH and not _LIST_INTRO.search(segment)
+                  and not segment.rstrip().endswith((':', '：'))):
+                between += 1                          # the list that was introduced is still to come
+            else:
+                carried = False
+        elif carried:
+            began = True
         kinds, listed = [], []
         for index, (start, end, _) in enumerate(found):
             after = segment[end:found[index + 1][0] if index + 1 < len(found) else len(segment)]
@@ -599,14 +617,44 @@ class VerificationMixin:
             # The report asks for corrections and no file was saved since: said once.
             state['pressed'] = True
             return ('[application notice] The reviewer found things to correct, and no file has been saved since its report:\n'
-                    + self.redact(report[:self.REVIEW_REPORT]) + '\nCorrect each finding now and save the files, or state for each '
-                    'one in your result why it stands. Then finish.')
+                    + self.redact(report[:self.REVIEW_REPORT]) + '\nCorrect each finding now and save the files, then finish. '
+                    'Where a finding is mistaken, say so for each one in your result. If you finish without saving any file '
+                    'again, the work is shown to the human as not complete ("review findings not addressed") and they decide.')
         state['state'] = 'reported'
         self._deliverables_publish(run)
         self.event(run['id'], agent.id, 'review', '提出前レビュー: 判定は「'
                    + {'pass': '合格', 'fix': '要修正'}.get(state['verdict'], '判定の記載なし') + '」でした'
                    + (f'（指摘のあとに保存し直されたファイル: {"、".join(changed[:6])}）' if changed else ''))
         return None
+
+    def _review_unaddressed(self, run):
+        """The reviewer's verdict was "fix", the coordinator was sent back once, and no file was saved since the report.
+
+        Real-machine case: the verdict was "fix", "no file was saved again after the findings" stood at the very
+        end of the result, and the run was "done". Whether the findings are right is for the human to judge; a
+        work that ends like this is not shown as finished.
+        """
+        state = run.get('_review') or {}
+        return state.get('state') == 'reported' and state.get('verdict') == 'fix' and not state.get('changed')
+
+    def _review_header(self, run):
+        """What stands at the head of the coordinator's result when the review's findings were left as they were."""
+        if not self._review_unaddressed(run):
+            return ''
+        return ('【アプリの確認】レビューの指摘が未対応です。提出前レビューの判定は「要修正」で、指摘のあとに保存し直された'
+                'ファイルはありません。指摘の内容は、この結果の末尾にあります。この作業は「完了」ではなく「未完了」として表示します。\n\n')
+
+    def _review_incomplete(self, run):
+        """The work has ended with the review's findings left as they were: said once, where the human follows the work."""
+        if not self._review_unaddressed(run):
+            run.pop('_review_unaddressed_told', None)
+            return False
+        if not run.get('_review_unaddressed_told'):
+            run['_review_unaddressed_told'] = True
+            lead = (run.get('pm_agent_ids') or run['agent_ids'])[0]
+            self.event(run['id'], lead, 'incomplete', '未完了（レビューの指摘が未対応）: 提出前レビューの判定は「要修正」で、'
+                       '指摘のあとに保存し直されたファイルがありません')
+        return True
 
     def _review_footer(self, run):
         state = run.get('_review') or {}
@@ -1192,7 +1240,8 @@ class VerificationMixin:
                  'pending')
         if files or state not in {'none', 'pending'}:
             run['deliverables'] = self._redact_tree({'files': files, 'review': state,
-                                                     'resaved': [str(name) for name in (review.get('changed') or [])][:12]})
+                                                     'resaved': [str(name) for name in (review.get('changed') or [])][:12],
+                                                     'unaddressed': self._review_unaddressed(run)})
 
     def _outputs_read(self, run, agent, args, result):
         """The root coordinator read a file: remember which content it saw."""

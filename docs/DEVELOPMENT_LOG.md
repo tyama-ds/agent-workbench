@@ -4,6 +4,35 @@ Historical PR handoff evidence, source/run/artifact links and exact snapshot pro
 are available in the [verification evidence index](evidence/README.md). The current PR
 overview keeps only the latest head’s checks; archived claims retain their original scope.
 
+## 0.1.1.dev93 — Review findings left as they were are not "done"; a list keeps its introduction (2026-11-27)
+
+Real-machine check of dev92 (IEA and IMF World Economic/Energy Outlook
+requests): both the document and the slides were there in both runs. Two
+things were left.
+
+- The reviewer's verdict was "fix", no file was saved after its report,
+  and the run was "done" with that said in the last lines of the result.
+  The coordinator is still sent back once with the findings, and is now
+  told what follows if it finishes without saving anything again: the
+  result begins with "【アプリの確認】レビューの指摘が未対応です", the run
+  ends as `incomplete` and not `done` (status reason `review_unaddressed`,
+  shown as "未完了（レビューの指摘が未対応）" in the list, the header and
+  saved history), the summary of what was handed in says "要修正（指摘が
+  未対応のまま終了しました）", and the event list says it once. Whether a
+  finding is right is for the human to judge; the coordinator may still
+  say in its result why one is mistaken. A verdict without the "VERDICT:"
+  line is treated as before.
+- `output_names` returned nothing for a request whose list of files came
+  one sentence after the sentence that introduced it ("…次の2つを作成して
+  提出してください。ダウンロードした PDF も同じフォルダーに保存してください。"
+  and then the numbered list). Every sentence of prose reset the
+  introduction. It now holds until its list has come: up to three
+  sentences in between do not end it, unless one of them introduces a
+  list of its own ("以下のファイルを読んで…", a line ending in a colon).
+  That request is a test, with the user's folder name replaced.
+- Not changed: the report's own PDF of the IMF issue is refused (HTTP 403)
+  to a browser driven by WebDriver also when it is come to by its pages.
+
 ## 0.1.1.dev92 — Copilot is given the rules first, and only this application's rules (2026-11-25)
 
 "When the bridge is used from here, the tools are explained first, and the

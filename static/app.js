@@ -2311,8 +2311,10 @@ function renderRunList() {
   if(!ui.state.runs.length){$('runList').appendChild(element('p','sidebar-empty','ここにチームの作業が並びます'));return;}
   [...ui.state.runs].reverse().forEach(run=>{const button=element('button','run-link'+(run.id===ui.selectedRun?' selected':'')+(archivedRun(run)?' archived':''));button.type='button';button.dataset.focusKey=`run:${run.id}`;button.append(element('span','run-link-title',String(run.task||'作業').split('\n')[0]),element('span','run-link-meta',`${stateLabel(run)} · ${localTime(run.created_at)} · ${shortRunId(run)}${counts.get(run.id)?` · 質問 ${counts.get(run.id)}件`:''}${approvals.get(run.id)?` · 承認待ち ${approvals.get(run.id)}件`:''}${inputs.get(run.id)?` · 入力 ${inputs.get(run.id)}人`:''}`));button.addEventListener('click',()=>selectRun(run.id));$('runList').appendChild(button);});
 }
-const REASON_LABELS = {approval:'承認待ち',peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー'};
-function stateLabel(item) { const human=item?.stop_reason==='human_stop'?'人が停止':'';return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${human||statusLabel(displayStatus(item))}`:human||(item?.status==='error'&&item?.stop_reason==='provider_output_limit'?'モデル出力上限':item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status)); }
+const REASON_LABELS = {approval:'承認待ち',peer_message:'チーム連絡待ち',human_input:'回答待ち',teammates:'作業者待ち',teammate_error:'作業者エラー',delegation_incomplete:'委任手順が未完了',dependency_wait:'前工程の承認待ち',dependency_stale:'前工程変更・PM再依頼待ち',unit_stale:'単位内の成果が失効・親の再依頼待ち',collaboration_limit:'連携上限',needs_attention:'要確認',error:'エラー',review_unaddressed:'未完了（レビューの指摘が未対応）'};
+// A saved work that ended with the reviewer's findings left as they were, and with every requested file there.
+function reviewLeftOpen(item) { return item?.status==='incomplete'&&item?.deliverables?.unaddressed===true&&!(Array.isArray(item?.output_check?.missing)&&item.output_check.missing.length); }
+function stateLabel(item) { const human=item?.stop_reason==='human_stop'?'人が停止':'';return archivedRun(item)||archivedAgent(item)?`保存履歴 · ${human||(reviewLeftOpen(item)?REASON_LABELS.review_unaddressed:statusLabel(displayStatus(item)))}`:human||(item?.status==='error'&&item?.stop_reason==='provider_output_limit'?'モデル出力上限':item?.status_reason==='dependency_stale'&&agentHierarchy(item)?.depth>=2?'前工程変更・直属親の再依頼待ち':REASON_LABELS[item?.status_reason]||statusLabel(item?.status)); }
 function badge(status,reason,agent=null) { return element('span','status-badge '+(Object.hasOwn(STATUS_LABELS,status)?status:''),agent?stateLabel(agent):REASON_LABELS[reason]||statusLabel(status)); }
 // Crew state vocabulary: icon + label + motion, never color alone. The label stays stateLabel().
 const CREW_STATES={working:{glyph:'▶',label:'作業中'},human:{glyph:'⏎',label:'回答待ち'},queued:{glyph:'⋯',label:'順番待ち'},waiting:{glyph:'Ⅱ',label:'待機'},
@@ -3048,13 +3050,13 @@ function mailLifecycleLabel(row) {
 }
 // For the human, in one place: the files that were asked for, the files that were saved (where, and by whom),
 // how the review stands, and the tests. The same facts stand in sentences at the end of the coordinator's result.
-const REVIEW_STATE_LABELS={waiting:'確認中（レビュー担当が保存済みのファイルを読んでいます）',pass:'合格',fix:'要修正（指摘あり）',unclear:'判定の記載なし',skipped:'行われませんでした'};
+const REVIEW_STATE_LABELS={waiting:'確認中（レビュー担当が保存済みのファイルを読んでいます）',pass:'合格',fix:'要修正（指摘あり）',unaddressed:'要修正（指摘が未対応のまま終了しました）',unclear:'判定の記載なし',skipped:'行われませんでした'};
 function renderDeliverables(run) {
   const panel=$('deliverablesPanel');if(!panel)return;
   const text=value=>typeof value==='string'?value:'',list=value=>Array.isArray(value)?value:[];
   const expected=list(run?.output_check?.expected).filter(name=>typeof name==='string').slice(0,12),missing=new Set(list(run?.output_check?.missing));
   const files=list(run?.deliverables?.files).filter(file=>file&&typeof file==='object'&&text(file.name)).slice(-24);
-  const review=Object.hasOwn(REVIEW_STATE_LABELS,run?.deliverables?.review)?run.deliverables.review:'',resaved=list(run?.deliverables?.resaved).filter(name=>typeof name==='string').slice(0,12);
+  const reviewed=Object.hasOwn(REVIEW_STATE_LABELS,run?.deliverables?.review)?run.deliverables.review:'',review=reviewed==='fix'&&run.deliverables.unaddressed===true?'unaddressed':reviewed,resaved=list(run?.deliverables?.resaved).filter(name=>typeof name==='string').slice(0,12);
   const tests=testCheckLabel(run?.test_check);
   const signature=run?JSON.stringify([run.id,expected,[...missing],files,review,resaved,tests]):'';
   panel.hidden=!run||!(expected.length||files.length||review||tests);
