@@ -1068,6 +1068,11 @@ It creates the reviewer through `_new_agent` (`read_only`, `_reviewer`,
 `_settled`: the coordinator neither accepts its report by rule nor counts
 it among its workers), keeps `run['_review']` (requested, reported or
 skipped), and `_review_footer` writes the outcome under the result.
+A verdict of "fix" with no file saved since the report, after the one
+send-back, is `_review_unaddressed`: `_review_header` stands at the head of
+the result, `_run_status` ends the run as `incomplete`
+(`run_status_reason` gives `review_unaddressed`), and
+`deliverables.unaddressed` is published with the run.
 `Engine.review_default` is the default of the `review` key of a run;
 tests and scripted fixtures set it to False.
 

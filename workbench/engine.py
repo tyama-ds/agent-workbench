@@ -1562,6 +1562,8 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
         return bool(agent.depends_on) and agent.status != 'stopped' and not getattr(agent, '_settled', False)
 
     def run_status_reason(self, run):
+        if run['status'] == 'incomplete' and self._review_unaddressed(run) and not self._outputs_missing(run):
+            return 'review_unaddressed'  # the files are there; what the reviewer found was left as it was
         if run['status'] != 'waiting':
             return run['status']
         agents = [self.agents[ident] for ident in run['agent_ids']]
@@ -2987,6 +2989,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 agent.status = 'idle' if children and any(a.status not in {'done', 'stopped'} for a in children) else 'done'
                 if terminal_response:
                     if agent.parent_id is None:
+                        terminal_response = self._review_header(run) + terminal_response
                         terminal_response += (self._outputs_footer(run) + self._tests_footer(run)
                                               + self._source_footer(run) + self._citations_footer(run)
                                               + self._tables_footer(run) + self._quotes_footer(run) + self._pdf_footer(run)
@@ -3067,6 +3070,9 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
             run['status'] = 'waiting'
         if run['status'] == 'done' and self._outputs_incomplete(run):
             # Everyone has finished, but a file the request names was never saved: that is not "done".
+            run['status'] = 'incomplete'
+        if run['status'] in {'done', 'incomplete'} and self._review_incomplete(run):
+            # Everyone has finished with the reviewer's findings left as they were: that is not "done" either.
             run['status'] = 'incomplete'
         if run['status'] in {'done', 'incomplete'}:
             run.setdefault('_budget_finished_at', time.time())
@@ -3539,6 +3545,7 @@ class Engine(TurnWorkMixin, VerificationMixin, PdfToolMixin, WorkerRecoveryMixin
                 agent._revise_pending = False
                 summary += self._turn_footer(run, agent)
                 if agent.parent_id is None:
+                    summary = self._review_header(run) + summary
                     summary += (self._outputs_footer(run) + self._tests_footer(run) + self._source_footer(run)
                                 + self._citations_footer(run) + self._tables_footer(run) + self._quotes_footer(run)
                                 + self._pdf_footer(run) + self._main_pdf_footer(run) + self._review_footer(run))

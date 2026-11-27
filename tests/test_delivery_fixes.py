@@ -951,6 +951,58 @@ def test_files_named_in_a_numbered_list_after_a_sentence_of_making_are_outputs()
         'a.docx': 'out', 'b.pptx': 'out', 'c.xlsx': 'in'}
 
 
+# The request of a real run, as it was typed (the user's folder name is replaced). One sentence stands between the
+# sentence that introduces the list and the list: no file was taken as one to produce.
+SEPARATED_REQUEST = '''IEA の World Energy Outlook（WEO）の最新版の報告書 PDF を、公式の配布元からダウンロードして読み込んでください。PDF に書かれている内容をもとに、次の2つを作成して提出してください。ダウンロードした PDF も同じフォルダーに保存してください。
+
+1. 要約レポート（weo_energy_summary.docx）
+   - 全体の要旨、シナリオ別の見通し（需要・電力・石油・ガス・排出）、重要なテーマ、政策への示唆を日本語でまとめる。
+   - 主要な数値や主張には、PDF のページ番号と原文の短い引用を付ける。
+   - 主要な数値は表にする。
+   - PDF から読めなかった部分は推測で補わず、「未確認」と明記する。
+
+2. 説明スライド（weo_energy_slides.pptx）
+   - 要約レポートの内容を説明する 8〜10 枚程度のスライドにする。
+   - ファッショナブルでモダンなデザインにする（16:9、統一した配色、余白を活かしたレイアウト、大きな見出し、要点は簡潔に）。
+   - 主要な数値はグラフで見せる。
+
+保存先は C:\\Users\\user\\Documents\\AgentWorkbenchOutputs\\weo_energy10 フォルダー。完了する前に、数値が PDF と一致しているかを pdf_search で確認してください。
+'''
+
+
+def test_a_sentence_between_the_introduction_and_its_list_does_not_end_the_introduction():
+    from workbench.verification import file_roles, named_files, output_names
+    assert named_files(SEPARATED_REQUEST) == ['weo_energy_summary.docx', 'weo_energy_slides.pptx']
+    assert output_names(SEPARATED_REQUEST) == {'weo_energy_summary.docx', 'weo_energy_slides.pptx'}
+    # A few sentences in between, on one line or on lines of their own.
+    assert output_names('次の2つを作成してください。期限は金曜です。図は少なめにします。\n\n1. a.docx\n2. b.pptx') == {'a.docx', 'b.pptx'}
+    assert output_names('Please produce the following. Keep it short.\n- report.docx\n- slides.pptx') == {'report.docx', 'slides.pptx'}
+    # A sentence in between that introduces a list of its own takes the list: what it names is read.
+    assert output_names('次の2つを作成してください。以下のファイルを読んで参考にしてください。\n- a.xlsx\n- b.docx') == set()
+    assert output_names('次の2つを作成してください。参考資料:\n- a.pdf\n- b.xlsx') == set()
+    # It reaches no further than a few sentences, and not past its own list.
+    far = '次の2つを作成してください。' + '補足です。' * 4 + '\n- a.docx\n- b.pptx'
+    assert output_names(far) == set()
+    assert file_roles('次の2つを作成してください。\n1. a.docx\n2. b.pptx\n\n以上です。確認用の資料は次のとおり。\n- c.xlsx') == {
+        'a.docx': 'out', 'b.pptx': 'out'}
+
+
+async def test_the_separated_request_expects_both_files_and_the_copy_of_the_pdf(tmp_path):
+    """With nothing expected, a file that was never made would not be missed and the run would be "done"."""
+    engine, work = configured(tmp_path, None)
+    engine.kick = lambda agent: None
+    try:
+        run, pm = await start(engine, max_workers=0, task=SEPARATED_REQUEST)
+        expected = set((run.get('_expected_outputs') or {}).values())
+        assert {'weo_energy_summary.docx', 'weo_energy_slides.pptx'} <= expected and len(expected) == 3   # and the PDF itself
+        pm.pending.clear()
+        held = await engine.execute_tool(run, pm, 'finish_work', {'summary': '完了しました。'})
+        assert held['ok'] is False and held['code'] == 'outputs_missing'
+        assert 'weo_energy_summary.docx' in held['error'] and 'weo_energy_slides.pptx' in held['error']
+    finally:
+        await engine.close()
+
+
 async def test_the_numbered_request_is_checked_although_older_files_of_those_names_exist(tmp_path):
     """Real-machine case (three runs): the request above, with the output of earlier runs under the same names in the
     folders beside it. Nothing was expected, so nothing was missed: no send-back, no note, "done"."""
